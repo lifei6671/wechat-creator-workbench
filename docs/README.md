@@ -14,7 +14,7 @@
 
 - **产品**：微信公众号写作与灵感收集工作台；借鉴 Obsidian 的侧边栏、编辑区、标签页等交互方式。
 - **数据库**：SQLite 保存 Markdown 正文及文章元数据；图片存储在本地文件系统，采集后的公众号文章仅保留清洗后的 Markdown 和来源信息。
-- **桌面**：Tauri 2 + React + TypeScript + Rust；编辑器采用 CodeMirror 6。
+- **桌面**：Tauri 2 + React + TypeScript + Rust；使用 Milkdown 富文本编辑和 Markdown 持久化。
 - **技术复用**：从 [Plainly](https://github.com/lifei6671/plainly) 选择性抽取 Markdown 渲染、主题注册、公众号排版与图片识别逻辑，不沿用其整套应用壳层。
 - **公众号**：富文本复制和图片持久性必须通过真实公众号草稿保存、重新打开验证。
 - **资料管理**：灵感、资料、文章三类内容，以素材、分类、标签和来源关联。

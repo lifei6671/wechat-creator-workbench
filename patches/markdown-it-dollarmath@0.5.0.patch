@@ -1,0 +1,23 @@
+diff --git a/dist/index.js b/dist/index.js
+index 1fad52cf1e958ca56865e3d70b155eed86de2f38..9e19c90e0bc9ca16624f3d5f442f69a66bd4f55e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,4 +1,4 @@
+-import { escapeHtml } from "markdown-it/lib/common/utils.js";
++import { escapeHtml } from "markdown-it/lib/common/utils.mjs";
+ const OptionDefaults = {
+     allow_space: true,
+     allow_digits: true,
+@@ -225,6 +225,12 @@ function math_block_dollar(options) {
+         let label = undefined;
+         // search for end of block on same line
+         let lineText = state.src.slice(startPos, end);
++        if (!options.allow_labels) {
++            const close = [...lineText.matchAll(/\$\$/g)].slice(1).find(match => !isEscaped(state, startPos + match.index));
++            if (close && lineText.slice(close.index + 2).trim()) {
++                return false;
++            }
++        }
+         if (lineText.trim().length > 3) {
+             if (lineText.trim().endsWith("$$")) {
+                 haveEndMarker = true;

@@ -38,7 +38,7 @@
 
 | 能力 | MVP 最低交付 | 后续扩展 |
 | --- | --- | --- |
-| 写作 | Markdown 源码编辑、实时预览、快捷键、查找替换、自动保存、多标签页 | 所见即所得、复杂插件 |
+| 写作 | 富文本编辑、只读阅读、公众号实时预览、快捷键、查找替换、自动保存、多标签页 | 复杂插件 |
 | 内容 | 收集箱、资料库、文章库、二级分类、标签、全文搜索、内容关联 | 双向链接知识图谱 |
 | 图片 | 粘贴/拖拽、本地落盘、哈希去重、图片预览、S3 图床 | 素材批量加工、云端同步 |
 | 排版 | 主题选择、公众号预览、CSS 内联、富文本复制、图片处理、HTML/Markdown 导出 | 微信公众号官方草稿接口 |
@@ -88,7 +88,7 @@ workspace/
 | --- | --- | --- |
 | 桌面运行时 | Tauri 2 / Rust | 系统文件、剪贴板、数据库、S3、任务、MCP 服务 |
 | 前端 | React + TypeScript + Vite | Obsidian 式操作布局与交互 |
-| 编辑器 | CodeMirror 6 | Markdown 源码编辑、快捷键、选区、滚动映射 |
+| 编辑器 | Milkdown / ProseMirror | Markdown 双向转换、富文本编辑、快捷键、选区、滚动映射 |
 | 主题与排版 | Plainly 选择性抽离，markdown-it、juice | Markdown → HTML → 公众号富文本 |
 | 本地数据库 | SQLite + rusqlite | 事务、关系、版本、FTS5 检索 |
 | HTTP / 网络 | Rust reqwest + Axum | 公众号文章下载、AI 调用、本地 MCP |
@@ -98,14 +98,14 @@ workspace/
 | 机密 | 操作系统安全凭据存储 | S3 与模型 API 密钥 |
 | 质量 | Rust 单元/集成测试 + 前端组件测试 + E2E | 领域规则、复制与恢复回归 |
 
-沿用 React 而不是切换 Vue，理由是 Plainly 为 React 18 + TypeScript，主题与渲染能力的选择性复用成本更低。CodeMirror 5 升级 CodeMirror 6 时以新组件/适配器实现，不直接迁移旧 MobX 编辑器实例。
+沿用 React 和 TypeScript 复用 Plainly 排版能力。正文编辑器使用 Milkdown 和 ProseMirror，编辑事务经过 Markdown 序列化再进入既有 SaveQueue。
 
 ### 2.3 组件分层
 
 ~~~mermaid
 flowchart TB
   UI["React 桌面应用<br/>收集箱 / 资料 / 文章 / 编辑器 / 排版预览"]
-  EDIT["editor-react<br/>CodeMirror 6"]
+  EDIT["editor-react<br/>Milkdown / ProseMirror"]
   RENDER["markdown-core + wechat-renderer<br/>解析 / 主题 / HTML / 导出"]
   IPC["Tauri IPC 命令"]
   MCP["本地 Streamable HTTP MCP"]
@@ -132,7 +132,7 @@ flowchart TB
 
 ## 3. Plainly 复用与重构
 
-源仓库：https://github.com/lifei6671/plainly ，以 master 分支当前结构为参考，抽取前先锁定具体提交哈希，记录迁移来源与修改点。
+P3 采用 [Plainly 固定提交](https://github.com/lifei6671/plainly/tree/73d906300817523b313f96d5acbbbbd96f23fbb4) 的三套 Rico 微信主题，来源、许可和迁移处理见 [排版来源](../packages/wechat-renderer/SOURCES.md)。
 
 已核对的模块与迁移策略：
 
@@ -145,7 +145,7 @@ flowchart TB
 | src/utils/converter.ts | CSS 内联、微信公式、表格修正 | 抽象 render(markdown, theme) 输出，不读固定 DOM ID |
 | src/utils/imagePaste.ts、imageCompress.ts | 粘贴识别、图片压缩 | 保留算法，分离网络下载与素材入库 |
 | src/utils/syncScroll.ts | 按标题锚点的双栏滚动同步 | 重构为独立视图适配器 |
-| src/layout/MarkdownEditor.tsx | 编辑器交互参考 | CodeMirror 6 新封装 |
+| src/layout/MarkdownEditor.tsx | 编辑器交互参考 | Milkdown 富文本编辑层 |
 | src/utils/imageHosting.ts | 图床适配经验 | 在 Rust 新建统一 S3 Provider；编辑器不直接上传 |
 | src/data/store/IDataStore.ts | 数据接口设计经验 | 替换为按领域的 Repository / Service |
 | src/data/store/browser/BrowserDataStore.ts、src/server/** | 旧存储与服务模式 | 不作为新桌面应用基础 |
@@ -158,7 +158,7 @@ flowchart TB
 3. imageHosting 目前包含通知、配置、上传、图片插入及 Tauri IPC；拆为 ImageProcessor / AssetService / S3StorageProvider / AssetUrlResolver / EditorImageExtension。
 4. 旧 ContentStore 中正文变更同时写配置存储；改为内存编辑缓冲 + 异步保存 Service。
 5. 主题持久化使用 themeId 而不是 templateNum 数组位置，兼容主题增删和排序。
-6. Plainly 旧版 CodeMirror 的快捷键与 DOM API 不应直接复制到 CodeMirror 6；做行为级迁移测试。
+6. 用行为测试确认富文本编辑器的选区、撤销、查找和剪贴板契约。
 
 ### 3.1 渲染与导出的完成条件
 
@@ -182,12 +182,14 @@ flowchart TB
 | categories | id, parent_id, name, depth, sort_order；最多两级 |
 | tags / entry_tags | 标签定义及条目关联 |
 | entry_links | 灵感、资料与文章的来源关联 |
-| sources | id, source_url（规范化后唯一）, author, account_name, original_published_at, imported_at；条目通过 source_id 关联，不存 HTML |
-| assets | id, sha256, mime_type, relative_path, kind(original/derived), source_key, bytes, created_at；source_key 仅派生图片使用；未下载图片允许 sha256 / mime_type / relative_path / bytes 为空 |
+| sources | id, source_url（规范化后唯一）, author, account_name, original_published_at, imported_at；同一来源由一条资料通过 source_id 引用，文章使用 entry_links 关联该资料。不存 HTML |
+| assets | id, sha256, mime_type, relative_path, kind(original/derived), source_key, bytes, created_at, retain_on_exit；直接导入素材库的图片设置 retain_on_exit；source_key 仅派生图片使用；未下载图片允许 sha256 / mime_type / relative_path / bytes 为空 |
 | entry_assets | 正文图片引用的**派生索引**，保存时由 Rust 重建；封面以 entries.cover_asset_id 为准，不混入导出结果状态 |
 | storage_profiles / asset_locations | 存储配置；按 sha256 关联应用上传对象的准确存储目标、object key、公开 URL 与上传/删除状态；同一哈希和目标仅一条位置记录 |
+| asset_urls | 登记过的图床公开地址与实际远端位置的关联。变更公开访问地址时保留旧地址供正文和历史判断引用，远端可用性以 asset_locations 为准 |
 | entry_revisions | 少量关键版本：entry_id, version, content_md, reason, created_at |
 | jobs | 上传、采集、AI、素材清理任务状态及失败信息；素材清理按 sha256 复用一条未完成任务；导入补图记录目标 entry_id、asset_id、原图片 URL，不保存原始 HTML |
+| wechat_sources | 规范化的公众号分享地址、实际访问地址和规范来源 URL 别名，指向同一资料 |
 | backup_records | S3 数据库备份操作记录；备份列表以 S3 实际对象为准 |
 | app_settings / entries_fts | 普通设置、稳定 workspace_id 和 FTS5 搜索；workspace_id 随数据库备份恢复 |
 
@@ -222,9 +224,9 @@ entries.content_md 是正文内容与正文图片引用的权威数据；entry_a
 
 ### 5.1 UI 信息架构
 
-- 左侧窄工具栏：收集箱、资料库、文章库、搜索、素材、设置。
-- 二级侧栏：分类树（最多两级）、标签、智能筛选、最近修改文章。
-- 中央主区：多标签文章编辑、Markdown 原文与实时预览；纯编辑、分栏、纯预览三种模式。
+- 左侧导航：目录、全文搜索、素材共用标题栏入口，回收站和设置在侧栏底部。
+- 目录树展示文件夹和内容（最多两级文件夹），图标保存在 SQLite。灵感、资料与文章按所在文件夹排列，标签用于全文搜索。
+- 中央主区：顶部标签与 Windows 自绘标题栏合并，标签下方展示内容路径。编辑区支持单栏富文本编辑、分栏、公众号预览以及只读阅读。
 - 右侧可折叠面板：文章属性、来源、关联资料、AI 助手、发布检查。
 - 顶部命令入口：新建灵感、粘贴公众号链接导入、快速搜索、切换排版主题、复制公众号格式。
 - 底部状态：字数、保存状态、图片上传/导入任务状态。
@@ -248,10 +250,12 @@ AI 结果应用到发起时的文章和范围：若正文修订已变化或原�
 ### 6.1 资源处理
 
 - 从粘贴、拖拽或公众号文章清洗过程接收图片。校验基本类型与大小、计算 SHA-256、按哈希在 assets/ 保存并复用，生成 asset://<id> 资源标识。
+- P2 支持 PNG、JPEG、GIF 和 WebP。单张最多 20 MB，单边最多 16,000 像素，总像素最多 4,000 万。
 - 同一字节内容可以因导入占位或派生来源拥有不同 asset ID，但只存一份哈希文件；S3 对象同样按工作区、存储目标和哈希去重。引用与清理统一按 sha256 归组，不能只检查某一个 asset ID。
 - 本地图片优先用于离线预览。配置 S3 图床后异步上传，发送请求前先登记准确存储目标和确定性 object key，成功后更新公开 URL 与可用状态；失败或取消仍保留目标记录，供后续重试或清理。上传失败不影响 Markdown 保存。
 - 图床上传和数据库 S3 备份彼此独立：备份流程不收集图片文件。
 - 若恢复 SQLite 后发现本地图片不存在，可根据已存图床地址尝试远程加载；没有远程副本则提示缺失。
+- 正文预览通过素材服务读取本地图片和已登记图床副本。普通外部图片地址显示缺失占位，网页图片采集随 P3 接入。
 - S3 图片对象放入本应用工作区专属前缀，删除使用 asset_locations 中记录的准确目标和 object key，不根据公开 URL 猜测路径，不删除公众号来源站点上的原图。
 - 图床连接测试使用本应用创建的测试对象验证上传、读取和删除权限。更换 endpoint、bucket 或对象前缀时使用新配置，保留仍有未删除对象映射的旧配置及凭据引用；可以更新旧密钥，但不能直接删除仍被这些映射使用的配置。只修改公开域名不改变对象存储目标。
 
@@ -276,6 +280,8 @@ AI 结果应用到发起时的文章和范围：若正文修订已变化或原�
 
 **清理时点固定为正常退出应用时，清理单位为内容哈希组。** 删除正文图片、替换封面及自动保存仅更新引用；编辑期间本地与 S3 都不物理删除。切换或关闭单个标签不触发清理；撤销能力遵循编辑器会话，不承诺关闭标签或重启后的编辑撤销，不增加素材回收站或定时回收设置。
 
+从素材库选择文件或拖入的图片设置保留标记，正常退出时保留其哈希组。此前没有记录导入渠道的原图随迁移保留。正文粘贴、编辑区拖入、外链自动保存及排版派生图片继续按引用判断。
+
 1. **准备退出。** 暂停新的编辑、MCP 写请求和任务，停止后台结果继续改正文，完成保存队列。保存失败或用户取消退出时，保留正文缓冲和撤销历史，恢复编辑与服务，不执行清理；已停止的后台任务保持可重试，不自动重发 AI。只有稿件保存完成或用户明确放弃未保存内容，并决定实际退出后，才结束编辑会话。
 2. **停止素材任务并计算引用。** 取消尚未发送的排队上传，沿用已有取消/等待机制结束在途素材任务；若仍有会写素材的任务未停止，或已发送的上传未正常结束，本次直接跳过整轮清理，保留已登记目标到下次退出处理。任务结束后，按最终已提交数据库一次性计算引用：所有正文、封面、保留关键历史、可恢复软删除条目，以及第 4.2 节派生源片段。组内任一 asset ID 或源片段仍被引用就保留整组，清理期间不重新开放业务写入。
 3. **先远程、再本地。** 无引用哈希组复用一条清理任务，逐个删除 asset_locations 中尚未完成删除的目标，包括上传失败但可能已产生对象的目标；同一目标只处理一次。每个目标成功后单独记录已删除，只有所有远程目标均完成，才删除该组本地文件；本地成功后移除该组 assets 和位置记录，将清理任务记完成，取消该组未发送的上传和过期补图项，不移除同一导入任务的其他结果。没有远程目标时直接处理本地。无文件的未引用占位只移除记录及对应补图项，不发送 S3 请求。
@@ -290,7 +296,7 @@ AI 结果应用到发起时的文章和范围：若正文修订已变化或原�
 
 ## 7. 公众号文章导入
 
-首版支持公开 mp.weixin.qq.com 文章 URL，主要操作：识别并规范化 URL、网页下载、正文及来源信息提取、图片下载与本地资产化、HTML 净化、转换 Markdown、保存为 reference 或用户指定的 article。
+首版从资料库导入公开 mp.weixin.qq.com 文章链接，保存为 reference。用户可从资料创建文章草稿并保留来源关联。Rust 导入服务使用 scraper 提取正文和来源信息，使用 Ammonia 净化，再由 htmd 转为 Markdown。微信原图下载限定已知的 HTTPS 图片域名。
 
 **仅持久化清洗后的 Markdown、来源元数据和已下载的图片。** HTML 在转换后丢弃，**不生成原网页快照、不自动保留导入前版本**。sources 表只包含原文 URL、公众号名、作者、发布时间、导入时间等可追溯信息。
 
@@ -306,9 +312,9 @@ AI 结果应用到发起时的文章和范围：若正文修订已变化或原�
 
 **每次仅生成并上传一个 SQLite 数据库快照文件**。不上传 assets/ 图片、附件、原始页面，也不建立完整工作区归档、资源 manifest 或多对象增量备份体系。
 
-- 通过 SQLite Online Backup API 生成一致性快照，不能直接复制 WAL 活跃库的主文件替代快照。
+- 通过 [SQLite Online Backup API](https://www.sqlite.org/backup.html) 从独立连接读取活跃库，生成包含已提交 WAL 写入的单文件快照。
 - 对生成的快照执行 SQLite integrity_check 和 foreign_key_check，然后上传到 S3 指定的数据库备份桶或前缀。
-- 数据库 PRAGMA user_version（或既有 migrations 表）用于判断恢复兼容性。当前应用遇到未知的较新数据库版本，拒绝直接恢复。
+- 使用 `PRAGMA user_version` 选择正式迁移，比较表、索引和触发器结构。支持在 staging 迁移的旧版本，未知版本或结构不一致的快照会被拒绝。
 - 快照对象名包含时间戳与唯一标识。默认保留最近 **5 个成功的数据库备份文件**；新备份上传成功后才清理更早文件。
 - 对象位于配置前缀下的 `wechat-creator-workbench/<workspace_id>/backups/`，保留策略只作用于选定工作区且符合本应用命名格式的备份，不清理共享桶的其他文件。新设备配置 S3 后列出可选工作区备份目录，选定后恢复数据库中的原 workspace_id。
 - S3 列举对象作为备份列表来源，不依赖已恢复数据库里的旧备份记录。
@@ -333,9 +339,9 @@ AI 结果应用到发起时的文章和范围：若正文修订已变化或原�
 ### 9.1 MCP
 
 - 传输：标准 MCP Streamable HTTP，本地默认绑定 127.0.0.1，建议路径 /mcp，端口可配置。
-- 使用[官方 Rust SDK rmcp](https://github.com/modelcontextprotocol/rust-sdk) 接入 Axum，在实现时锁定 SDK 及支持的协议版本；初始化、协商与传输由 SDK 负责，不自行实现协议栈。
+- 使用 [rmcp 3.10.0](https://crates.io/crates/rmcp/3.10.0) 接入 Axum。SDK 负责初始化、协商与传输，支持 `2025-03-26`、`2025-06-18`、`2025-11-25` 和 `2026-07-28`。
 - 生命周期：桌面启动后按设置启用；默认关闭外部写权限。
-- 安全：访问令牌、Origin 校验、权限范围 read/write、请求大小/速率限制、操作日志。回环监听也必须校验浏览器来源，避免 DNS 重绑定风险。
+- 安全：令牌保存在系统凭据库，外部工具仅通过 Bearer 令牌连接。校验回环 Host，拒绝浏览器 Origin。请求体上限 1 MiB，每分钟最多 120 次已鉴权请求，操作日志只记录工具名和结果码。
 - 统一服务：Tauri IPC 与 MCP 共用 EntryService、AssetService、ImportService，禁止 MCP 绕过业务层直接写 SQLite。
 - 远程 Agent 不能默认访问本机 HTTP 服务；MVP 仅承诺本机 Agent 连接。
 
@@ -400,7 +406,7 @@ wechat-creator-workbench/
   packages/
     markdown-core/               # Plainly 解析能力抽离
     wechat-renderer/             # 主题和富文本导出
-    editor-react/                # CodeMirror 6 受控封装
+    editor-react/                # Markdown 持久化与富文本编辑适配
     shared-types/
   tests/
     fixtures/

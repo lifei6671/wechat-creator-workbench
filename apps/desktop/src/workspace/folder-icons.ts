@@ -1,0 +1,42 @@
+import {
+  Archive, Bookmark, BookOpen, BriefcaseBusiness, CalendarDays, Camera, ClipboardList, Code2, Cpu,
+  FileText, FlaskConical, Folder, Globe, GraduationCap, Headphones, Heart, Image, Lightbulb, Link2,
+  ListChecks, Mic, Music2, Newspaper, NotebookText, PenLine, Podcast, Rocket, Sparkles, SquareTerminal, Star, Tag, Video,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import type { CategoryIcon } from "../../../../packages/shared-types";
+
+export const folderIcons = {
+  folder: [Folder, "文件夹"],
+  lightbulb: [Lightbulb, "灯泡"],
+  book: [BookOpen, "书本"],
+  file: [FileText, "文档"],
+  bookmark: [Bookmark, "书签"],
+  newspaper: [Newspaper, "报刊"],
+  archive: [Archive, "档案"],
+  star: [Star, "星标"],
+  code: [Code2, "代码"],
+  terminal: [SquareTerminal, "终端"],
+  globe: [Globe, "网络"],
+  link: [Link2, "链接"],
+  image: [Image, "图片"],
+  camera: [Camera, "相机"],
+  video: [Video, "视频"],
+  music: [Music2, "音乐"],
+  mic: [Mic, "录音"],
+  podcast: [Podcast, "播客"],
+  headphones: [Headphones, "耳机"],
+  pen: [PenLine, "写作"],
+  notebook: [NotebookText, "笔记"],
+  clipboard: [ClipboardList, "清单"],
+  briefcase: [BriefcaseBusiness, "工作"],
+  graduation: [GraduationCap, "学习"],
+  flask: [FlaskConical, "实验"],
+  cpu: [Cpu, "芯片"],
+  rocket: [Rocket, "项目"],
+  sparkles: [Sparkles, "灵感"],
+  heart: [Heart, "收藏"],
+  calendar: [CalendarDays, "日历"],
+  list: [ListChecks, "任务"],
+  tag: [Tag, "标签"],
+} satisfies Record<CategoryIcon, [LucideIcon, string]>;

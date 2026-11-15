@@ -1,0 +1,51 @@
+[
+  {
+    "markdown": "正文 $x^2$。\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\ngraph TD\nA --> B\n```",
+    "fragments": [
+      {
+        "kind": "math-inline",
+        "source": "x^2",
+        "line": 0
+      },
+      {
+        "kind": "math-block",
+        "source": "\\frac{a}{b}",
+        "line": 2
+      },
+      {
+        "kind": "mermaid",
+        "source": "graph TD\nA --> B",
+        "line": 6
+      }
+    ]
+  },
+  {
+    "markdown": "普通代码 `$not_math$`。\n\n```text\n$$not_math$$\n```\n\n$$a+b$$",
+    "fragments": [
+      {
+        "kind": "math-block",
+        "source": "a+b",
+        "line": 6
+      }
+    ]
+  },
+  {
+    "markdown": "保留 $ a $；公式 $b$。",
+    "fragments": [{ "kind": "math-inline", "source": "b", "line": 0 }]
+  },
+  {
+    "markdown": "> $$\n> x^2\n> $$",
+    "fragments": [{ "kind": "math-block", "source": "x^2", "line": 0 }]
+  },
+  {
+    "markdown": "$$a$$ 以及 $$b$$",
+    "fragments": [
+      { "kind": "math-block", "source": "a", "line": 0 },
+      { "kind": "math-block", "source": "b", "line": 0 }
+    ]
+  },
+  {
+    "markdown": "正文[^n]。\n\n[^n]: 说明 $b$。",
+    "fragments": [{ "kind": "math-inline", "source": "b", "line": 2 }]
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "markdown": "![图](asset://inline)\n\n![参考][photo]\n\n[photo]: asset://reference",
+    "images": [
+      "asset://inline",
+      "asset://reference"
+    ]
+  },
+  {
+    "markdown": "<IMG alt='封面' src='https://images.test/hash.png?x=1&amp;y=2'>",
+    "images": [
+      "https://images.test/hash.png?x=1&y=2"
+    ]
+  },
+  {
+    "markdown": "`![代码](asset://ignore)`\n\n\\![转义](asset://escaped)\n\n```html\n<img src='asset://fenced'>\n```\n\n![有效](asset://valid)",
+    "images": [
+      "asset://valid"
+    ]
+  },
+  {
+    "markdown": "<script>\n<img src='asset://script'>\n</script>\n\n<!--\n<img src='asset://comment'>\n-->\n\n<img\n src='asset://multiline'>",
+    "images": ["asset://multiline"]
+  },
+  {
+    "markdown": "> <div>\n> <img\n>   src=' asset://quoted ' \n>   alt='图'>\n> </div>\n\n![图](https://images.test/素材/cart.png)",
+    "images": ["asset://quoted", "https://images.test/%E7%B4%A0%E6%9D%90/cart.png"]
+  }
+]
