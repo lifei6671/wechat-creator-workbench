@@ -1,8 +1,24 @@
 // @vitest-environment jsdom
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SettingsDialog } from "./Settings";
+
+let enterSection: (section: HTMLElement) => void;
+beforeEach(() => {
+  vi.stubGlobal("IntersectionObserver", class {
+    constructor(callback: (entries: { isIntersecting: boolean; target: Element }[]) => void) {
+      enterSection = section => callback([{ isIntersecting: true, target: section }]);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 it("filters settings by field names and retains entered values while switching categories", () => {
   const container = document.createElement("div");
@@ -25,12 +41,54 @@ it("filters settings by field names and retains entered values while switching c
     expect(buttons().map(button => button.textContent)).toEqual(["S3 图床", "数据库备份"]);
     change(search, "令牌权限");
     expect(buttons().map(button => button.textContent)).toEqual(["MCP 服务"]);
-    flushSync(() => buttons()[0].click());
-    expect(draft.closest("section")?.hidden).toBe(true);
+    flushSync(() => search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(buttons()[0].getAttribute("aria-current")).toBe("location");
+    expect(document.activeElement?.id).toBe("settings-mcp");
+    expect(draft.closest("section")?.hidden).toBe(false);
     change(search, "");
     flushSync(() => buttons().find(button => button.textContent === "AI 模型")!.click());
     expect(draft.closest("section")?.hidden).toBe(false);
     expect(draft.value).toBe("未保存的接口配置");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("opens at the requested section, tracks the scroll position and loads storage sections when reached", async () => {
+  const offsets: Record<string, number> = {
+    appearance: 0, shortcuts: 460, model: 720, mcp: 980, images: 1250, backups: 1620,
+  };
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return offsets[this.id.replace("settings-section-", "")] ?? 0;
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const active = () => document.querySelector('.settings-nav-item[aria-current="location"]')?.textContent;
+  const renderPage = vi.fn((page: string) => <span>{page}</span>);
+  flushSync(() => root.render(<SettingsDialog initialPage="model" renderPage={renderPage} onClose={() => {}} />));
+  try {
+    const viewport = document.querySelector<HTMLElement>(".settings-pages")!;
+    expect(viewport.scrollTop).toBe(720);
+    expect(active()).toBe("AI 模型");
+    expect(document.activeElement?.id).toBe("settings-model");
+    expect(renderPage).not.toHaveBeenCalledWith("backups");
+
+    const backupAnchor = document.querySelector<HTMLButtonElement>('[aria-controls="settings-section-backups"]')!;
+    flushSync(() => backupAnchor.click());
+    expect(viewport.scrollTop).toBe(1620);
+    expect(active()).toBe("数据库备份");
+    expect(document.activeElement?.id).toBe("settings-backups");
+    flushSync(() => enterSection(document.getElementById("settings-section-backups")!));
+    expect(renderPage).toHaveBeenCalledWith("backups");
+
+    viewport.scrollTop = 1120;
+    viewport.dispatchEvent(new Event("scroll"));
+    await vi.waitFor(() => expect(active()).toBe("MCP 服务"));
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event("scroll"));
+    await vi.waitFor(() => expect(active()).toBe("通用"));
   } finally {
     flushSync(() => root.unmount());
     container.remove();

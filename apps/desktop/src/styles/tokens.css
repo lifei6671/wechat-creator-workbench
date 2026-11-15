@@ -6,6 +6,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .radix-themes {
   --app-bg: var(--gray-1);
   --sidebar-bg: var(--gray-2);
+  --workspace-chrome-bg: var(--gray-3);
   --panel-bg: var(--gray-1);
   --panel-hover: var(--gray-3);
   --panel-selected: var(--accent-3);

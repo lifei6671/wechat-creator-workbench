@@ -75,13 +75,14 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
   return <>
     <div className="settings-card">
       {!settings && !error && <p className="settings-feedback muted-text" role="status">正在读取设置…</p>}
-      {settings && <SettingRow label="备份桶" hint={configured ? settings.target?.bucket : settings.target ? "请重新填写访问密钥" : "尚未配置"}>
+      {settings && <SettingRow label="备份桶" hint={configured ? `数据库快照存放在 ${settings.target?.bucket}。`
+        : settings.target ? "重新填写访问密钥后即可读写数据库快照。" : "配置用于保存和读取数据库快照的存储桶。"}>
         <Button id="configure-backup" size="2" color="gray" variant="soft" disabled={busy} onClick={() => {
           setConfiguring(true);
           requestAnimationFrame(() => document.getElementById("backup-endpoint")?.focus());
         }}>{configured ? "修改配置" : "配置备份桶"}</Button>
       </SettingRow>}
-      {configured && <SettingRow label="备份当前工作区" hint="每个工作区保留最近 5 份">
+      {configured && <SettingRow label="备份当前工作区" hint="上传当前数据库快照，每个工作区保留最近 5 份。">
         <Button size="2" disabled={busy} onClick={() => { void onCreate(); }}>立即备份</Button>
       </SettingRow>}
       {progress && <p className="settings-feedback muted-text" role="status">{progress}</p>}
@@ -101,7 +102,7 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
       {configured && workspace && <>
         <div className="settings-group-title">备份列表</div>
         <div className="settings-card">
-        <SettingRow id="backup-workspace" label="工作区"><Select.Root value={workspace} onValueChange={setSelected}>
+        <SettingRow id="backup-workspace" label="工作区" hint="选择要查看备份的工作区。"><Select.Root value={workspace} onValueChange={setSelected}>
           <Select.Trigger id="backup-workspace" />
           <Select.Content>
             <Select.Item value={current!}>当前工作区</Select.Item>

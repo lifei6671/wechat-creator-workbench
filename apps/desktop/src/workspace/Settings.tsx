@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, Checkbox, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { desktop, errorMessage, type AiConfig, type BackupTarget, type McpConfig, type McpStatus } from "../desktop";
@@ -25,6 +25,11 @@ const groups = [
 
 export type SettingsPage = typeof groups[number]["items"][number]["id"];
 const allPages = groups.flatMap(group => [...group.items]);
+const deferredPages = ["images", "backups"] as const;
+
+function settingsSection(viewport: HTMLElement, page: SettingsPage) {
+  return viewport.querySelector<HTMLElement>(`#settings-section-${page}`)!;
+}
 
 export function SettingsDialog({ initialPage, renderPage, status, onClose }: {
   initialPage: SettingsPage;
@@ -33,26 +38,61 @@ export function SettingsDialog({ initialPage, renderPage, status, onClose }: {
   onClose(): void;
 }) {
   const [page, setPage] = useState(initialPage);
-  const [visited, setVisited] = useState<SettingsPage[]>([initialPage]);
+  const [loaded, setLoaded] = useState<SettingsPage[]>([initialPage]);
   const [query, setQuery] = useState("");
   const search = useRef<HTMLInputElement>(null);
+  const scrollArea = useRef<HTMLDivElement>(null);
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const choices = groups.map(group => ({ ...group, items: [...group.items].filter(item =>
     terms.every(term => `${group.label} ${item.label} ${item.keywords}`.toLowerCase().includes(term))) }));
   const first = choices.find(group => group.items.length)?.items[0];
 
+  const attachScrollArea = useCallback((viewport: HTMLDivElement | null) => {
+    if (!viewport) return;
+    scrollArea.current = viewport;
+    viewport.scrollTop = settingsSection(viewport, initialPage).offsetTop;
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const id = deferredPages.find(id => entry.target.id === `settings-section-${id}`)!;
+        observer.unobserve(entry.target);
+        setLoaded(current => current.includes(id) ? current : [...current, id]);
+      }
+    }, { root: viewport });
+    for (const id of deferredPages) {
+      if (id !== initialPage) observer.observe(settingsSection(viewport, id));
+    }
+    return () => { observer.disconnect(); scrollArea.current = null; };
+  }, [initialPage]);
+
   function select(next: SettingsPage) {
+    const viewport = scrollArea.current!;
+    const section = settingsSection(viewport, next);
+    viewport.scrollTop = section.offsetTop;
+    section.querySelector("h2")!.focus({ preventScroll: true });
     setPage(next);
-    setVisited(current => current.includes(next) ? current : [...current, next]);
+  }
+
+  function trackScroll(viewport: HTMLDivElement) {
+    let current: SettingsPage = allPages[0].id;
+    for (const { id } of allPages) {
+      if (settingsSection(viewport, id).offsetTop > viewport.scrollTop + 1) break;
+      current = id;
+    }
+    setPage(current);
   }
 
   return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
-    <Dialog.Content className="settings-dialog" maxWidth="864px" aria-describedby={undefined}
+    <Dialog.Content className="settings-dialog" maxWidth="912px" aria-describedby={undefined}
       onPointerDownOutside={event => event.preventDefault()}
       onEscapeKeyDown={event => { if (query) { event.preventDefault(); setQuery(""); search.current?.focus(); } }}
-      onOpenAutoFocus={event => { event.preventDefault(); search.current?.focus(); }}>
+      onOpenAutoFocus={event => {
+        event.preventDefault();
+        if (initialPage === "appearance") search.current?.focus();
+        else select(initialPage);
+      }}>
       <header className="settings-window-header">
-        <Dialog.Title className="settings-title" mb="0">设置</Dialog.Title>
+        <Dialog.Title className="settings-title">设置</Dialog.Title>
         {status && page !== "backups" && <span className="settings-header-status" role="status">{status}</span>}
         <Dialog.Close><button className="plain-button settings-close" type="button" aria-label="关闭设置"><X size={17} /></button></Dialog.Close>
       </header>
@@ -73,16 +113,18 @@ export function SettingsDialog({ initialPage, renderPage, status, onClose }: {
           <nav aria-label="设置分类" className="settings-nav">
             {choices.map(group => group.items.length > 0 && <div className="settings-nav-group" key={group.label}>
               <div className="settings-nav-label">{group.label}</div>
-              {group.items.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-current={id === page ? "page" : undefined}
+              {group.items.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-current={id === page ? "location" : undefined}
+                aria-controls={`settings-section-${id}`}
                 className="plain-button settings-nav-item" onClick={() => select(id)}><Icon size={17} strokeWidth={1.75} /><span>{label}</span></button>)}
             </div>)}
             {!first && <p className="settings-no-results" role="status">没有匹配的设置</p>}
           </nav>
         </div>
-        <div className="settings-pages">
-          {visited.map(id => <section className="settings-page" key={id} hidden={id !== page} aria-labelledby={`settings-${id}`}>
-            <h2 id={`settings-${id}`} className="settings-page-title" tabIndex={-1}>{allPages.find(item => item.id === id)!.label}</h2>
-            {renderPage(id)}
+        <div className="settings-pages" ref={attachScrollArea} onScroll={event => trackScroll(event.currentTarget)}>
+          {allPages.map(({ id, label }) => <section className="settings-page" key={id} id={`settings-section-${id}`} aria-labelledby={`settings-${id}`}>
+            <h2 id={`settings-${id}`} className="settings-page-title" tabIndex={-1}>{label}</h2>
+            {(id !== "images" && id !== "backups") || loaded.includes(id) ? renderPage(id)
+              : <div className="settings-card"><p className="settings-feedback muted-text">正在读取设置…</p></div>}
           </section>)}
         </div>
       </div>
@@ -90,10 +132,10 @@ export function SettingsDialog({ initialPage, renderPage, status, onClose }: {
   </Dialog.Root>;
 }
 
-export function SettingRow({ id, label, hint, children }: { id?: string; label: string; hint?: string; children: ReactNode }) {
+export function SettingRow({ id, label, hint, children }: { id?: string; label: string; hint: string; children: ReactNode }) {
   return <div className="setting-row"><div className="setting-copy">
     {id ? <label htmlFor={id}>{label}</label> : <span>{label}</span>}
-    {hint && <span className="setting-hint">{hint}</span>}
+    <span className="setting-hint">{hint}</span>
   </div><div className="setting-control">{children}</div></div>;
 }
 
@@ -114,14 +156,14 @@ export function S3Fields({ scope, initial, hasKey, publicBase }: {
   publicBase?: string;
 }) {
   return <>
-    <SettingRow id={`${scope}-endpoint`} label="S3 端点"><TextField.Root id={`${scope}-endpoint`} name="endpoint" type="url" required defaultValue={initial?.endpoint} /></SettingRow>
-    <SettingRow id={`${scope}-region`} label="区域"><TextField.Root id={`${scope}-region`} name="region" required defaultValue={initial?.region} /></SettingRow>
-    <SettingRow id={`${scope}-bucket`} label="桶名"><TextField.Root id={`${scope}-bucket`} name="bucket" required defaultValue={initial?.bucket} /></SettingRow>
-    <SettingRow id={`${scope}-prefix`} label="对象前缀"><TextField.Root id={`${scope}-prefix`} name="prefix" defaultValue={initial?.prefix} /></SettingRow>
-    {scope === "images" && <SettingRow id="images-public" label="公开访问地址"><TextField.Root id="images-public" name="publicBase" type="url" required defaultValue={publicBase} /></SettingRow>}
-    <SettingRow id={`${scope}-access`} label="访问密钥 ID"><TextField.Root id={`${scope}-access`} name="accessKey" type="password" autoComplete="off"
+    <SettingRow id={`${scope}-endpoint`} label="S3 端点" hint="用于连接存储服务的 API 地址。"><TextField.Root id={`${scope}-endpoint`} name="endpoint" type="url" required defaultValue={initial?.endpoint} /></SettingRow>
+    <SettingRow id={`${scope}-region`} label="区域" hint="使用服务商指定的区域代码。"><TextField.Root id={`${scope}-region`} name="region" required defaultValue={initial?.region} /></SettingRow>
+    <SettingRow id={`${scope}-bucket`} label="桶名" hint={scope === "images" ? "存放图床图片的存储桶。" : "存放数据库快照的存储桶。"}><TextField.Root id={`${scope}-bucket`} name="bucket" required defaultValue={initial?.bucket} /></SettingRow>
+    <SettingRow id={`${scope}-prefix`} label="对象前缀" hint="给桶内的对象添加路径前缀，可留空。"><TextField.Root id={`${scope}-prefix`} name="prefix" defaultValue={initial?.prefix} /></SettingRow>
+    {scope === "images" && <SettingRow id="images-public" label="公开访问地址" hint="生成可在公众号等外部页面访问的图片链接。"><TextField.Root id="images-public" name="publicBase" type="url" required defaultValue={publicBase} /></SettingRow>}
+    <SettingRow id={`${scope}-access`} label="访问密钥 ID" hint="指定用于连接存储桶的访问凭据。"><TextField.Root id={`${scope}-access`} name="accessKey" type="password" autoComplete="off"
       required={!hasKey} placeholder={hasKey ? "已保存" : undefined} /></SettingRow>
-    <SettingRow id={`${scope}-secret`} label="秘密访问密钥"><TextField.Root id={`${scope}-secret`} name="secretKey" type="password" autoComplete="off"
+    <SettingRow id={`${scope}-secret`} label="秘密访问密钥" hint="与访问密钥 ID 配对，用于签名存储请求。"><TextField.Root id={`${scope}-secret`} name="secretKey" type="password" autoComplete="off"
       required={!hasKey} placeholder={hasKey ? "已保存" : undefined} /></SettingRow>
   </>;
 }
@@ -145,35 +187,34 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   onExplorer(value: boolean): void;
 }) {
   if (page === "appearance") return <>
-    <div className="settings-group-title">外观</div>
     <div className="settings-card">
-      <SettingRow id="appearance-mode" label="应用主题"><Select.Root size="2" value={appearance} onValueChange={value => onAppearance(value as Appearance)}>
+      <SettingRow id="appearance-mode" label="应用主题" hint="设置工作台的浅色或深色外观，也可跟随系统。"><Select.Root size="2" value={appearance} onValueChange={value => onAppearance(value as Appearance)}>
         <Select.Trigger id="appearance-mode" />
         <Select.Content><Select.Item value="system">跟随系统</Select.Item><Select.Item value="light">浅色</Select.Item><Select.Item value="dark">深色</Select.Item></Select.Content>
       </Select.Root></SettingRow>
-      <SettingRow id="explorer-visibility" label="显示资源导航"><Switch id="explorer-visibility" radius="full" checked={explorer} onCheckedChange={onExplorer} /></SettingRow>
+      <SettingRow id="explorer-visibility" label="显示资源导航" hint="控制目录、搜索和素材库所在的左侧栏。"><Switch id="explorer-visibility" radius="full" checked={explorer} onCheckedChange={onExplorer} /></SettingRow>
     </div>
     <div className="settings-group-title">编辑与预览</div>
     <div className="settings-card">
-      <SettingRow id="preferred-view" label="编辑视图"><Select.Root size="2" value={preferredView}
+      <SettingRow id="preferred-view" label="编辑视图" hint="选择工作台默认使用编辑或公众号排版预览。"><Select.Root size="2" value={preferredView}
         onValueChange={value => onView(value as ViewMode)}>
         <Select.Trigger id="preferred-view" /><Select.Content>
           <Select.Item value="edit">编辑</Select.Item><Select.Item value="preview">排版预览</Select.Item>
         </Select.Content>
       </Select.Root></SettingRow>
-      <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="已配置图床中的图片保留原链接">
+      <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
         <Switch id="download-pasted-images" radius="full" checked={downloadPastedImages} onCheckedChange={onDownloadPastedImages} />
       </SettingRow>
     </div>
     <div className="settings-group-title">目录</div>
     <div className="settings-card">
-      <SettingRow id="folder-loading" label="加载方式">
+      <SettingRow id="folder-loading" label="加载方式" hint="展开目录时一次加载全部笔记，或随滚动分批加载。">
         <Select.Root size="2" value={folderLoading} onValueChange={value => onFolderLoading(value as typeof folderLoading)}>
           <Select.Trigger id="folder-loading" />
           <Select.Content><Select.Item value="all">一次性加载</Select.Item><Select.Item value="paged">滚动分页</Select.Item></Select.Content>
         </Select.Root>
       </SettingRow>
-      <SettingRow id="folder-page-size" label="每页笔记数">
+      <SettingRow id="folder-page-size" label="每页笔记数" hint="仅在滚动分页时生效，控制每批加载的数量。">
         <Select.Root size="2" value={String(folderPageSize)} disabled={folderLoading === "all"} onValueChange={value => onFolderPageSize(Number(value))}>
           <Select.Trigger id="folder-page-size" />
           <Select.Content>{[20, 40, 60, 100, 200].map(size => <Select.Item key={size} value={String(size)}>{size}</Select.Item>)}</Select.Content>
@@ -183,7 +224,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   </>;
   return <>
     <div className="settings-card">
-      <SettingRow id="view-shortcuts" label="切换编辑视图"><Select.Root size="2" value={shortcut} onValueChange={value => onShortcut(value as ViewShortcut)}>
+      <SettingRow id="view-shortcuts" label="切换编辑视图" hint="设置在编辑与排版预览之间切换的快捷键。"><Select.Root size="2" value={shortcut} onValueChange={value => onShortcut(value as ViewShortcut)}>
         <Select.Trigger id="view-shortcuts" />
         <Select.Content><Select.Item value="none">未设置</Select.Item><Select.Item value="shift-m">{commandKey}Shift+M</Select.Item><Select.Item value="alt-v">{commandKey}Alt+V</Select.Item></Select.Content>
       </Select.Root></SettingRow>
@@ -231,15 +272,15 @@ export function McpSettings() {
   const address = status && `http://127.0.0.1:${status.config.port}/mcp`;
   return <form className="settings-card" onSubmit={event => { event.preventDefault(); void apply(); }}>
         {status && <>
-          <SettingRow label="运行状态"><span className="settings-state" data-running={status.running} role="status">
+          <SettingRow label="运行状态" hint="查看本机 MCP 服务是否在运行及其当前权限。"><span className="settings-state" data-running={status.running} role="status">
             {status.running ? `运行中，${status.config.permission === "read" ? "只读" : "读写"}` : "已停止"}
           </span></SettingRow>
-          <SettingRow id="mcp-port" label="端口"><TextField.Root id="mcp-port" type="number" min="1" max="65535" required value={port} onChange={event => setPort(event.target.value)} /></SettingRow>
-          <SettingRow id="mcp-permission" label="令牌权限"><Select.Root value={permission} onValueChange={value => setPermission(value as McpConfig["permission"])}>
+          <SettingRow id="mcp-port" label="端口" hint="MCP 客户端连接本机服务时使用的端口。"><TextField.Root id="mcp-port" type="number" min="1" max="65535" required value={port} onChange={event => setPort(event.target.value)} /></SettingRow>
+          <SettingRow id="mcp-permission" label="令牌权限" hint="控制客户端能否修改工作区内容。"><Select.Root value={permission} onValueChange={value => setPermission(value as McpConfig["permission"])}>
             <Select.Trigger id="mcp-permission" /><Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
           </Select.Root></SettingRow>
-          {status.running && <SettingRow id="mcp-address" label="本机地址"><TextField.Root id="mcp-address" readOnly value={address} /></SettingRow>}
-          <SettingRow label="访问令牌"><div className="button-strip setting-actions">
+          {status.running && <SettingRow id="mcp-address" label="本机地址" hint="将此地址填入 MCP 客户端的服务配置。"><TextField.Root id="mcp-address" readOnly value={address} /></SettingRow>}
+          <SettingRow label="访问令牌" hint="供 MCP 客户端验证身份。"><div className="button-strip setting-actions">
             {status.running && <Button type="button" variant="soft" color="gray" disabled={busy} onClick={() => void perform(async () => {
               await desktop.copyText(address!); setFeedback("已复制本机地址");
             })}>复制地址</Button>}
@@ -303,14 +344,14 @@ export function ModelSettings() {
   if (!ready) return <div className="settings-card"><p className={`settings-feedback ${error ? "inline-error" : "muted-text"}`}
     role={error ? "alert" : "status"}>{error || "正在读取设置…"}</p></div>;
   return <form className="settings-card" onChange={() => setSaved(false)} onSubmit={event => void save(event)}>
-    <SettingRow id="ai-endpoint" label="接口地址" hint="兼容 OpenAI Chat Completions"><TextField.Root id="ai-endpoint" type="url" required value={config.endpoint}
+    <SettingRow id="ai-endpoint" label="接口地址" hint="填写兼容 OpenAI Chat Completions 的完整接口地址。"><TextField.Root id="ai-endpoint" type="url" required value={config.endpoint}
       placeholder="https://api.example.com/v1/chat/completions" onChange={event => { setConfig({ ...config, endpoint: event.target.value }); setClearKey(false); setKey(""); }} /></SettingRow>
-    <SettingRow id="ai-model" label="模型名"><TextField.Root id="ai-model" required value={config.model} onChange={event => setConfig({ ...config, model: event.target.value })} /></SettingRow>
-    <SettingRow id="ai-key" label="API 密钥"><TextField.Root id="ai-key" type="password" autoComplete="off" disabled={clearKey} value={key} placeholder={hasKey ? "已保存" : "按服务要求填写"}
+    <SettingRow id="ai-model" label="模型名" hint="填写供应商提供的模型标识，供 AI 助手调用。"><TextField.Root id="ai-model" required value={config.model} onChange={event => setConfig({ ...config, model: event.target.value })} /></SettingRow>
+    <SettingRow id="ai-key" label="API 密钥" hint="按供应商要求填写，用于验证模型请求。"><TextField.Root id="ai-key" type="password" autoComplete="off" disabled={clearKey} value={key} placeholder={hasKey ? "已保存" : undefined}
       onChange={event => setKey(event.target.value)} />
       {hasKey && <label className="settings-check"><Checkbox checked={clearKey} onCheckedChange={checked => { setClearKey(checked === true); setSaved(false); }} />清除已保存的密钥</label>}
     </SettingRow>
-    <SettingRow id="ai-timeout" label="超时（秒）"><TextField.Root id="ai-timeout" type="number" min="1" max="180" required value={config.timeoutSeconds || ""}
+    <SettingRow id="ai-timeout" label="超时（秒）" hint="模型请求超过此时间后结束等待。"><TextField.Root id="ai-timeout" type="number" min="1" max="180" required value={config.timeoutSeconds || ""}
       onChange={event => setConfig({ ...config, timeoutSeconds: Number(event.target.value) })} /></SettingRow>
     {error && <p className="settings-feedback inline-error" role="alert">{error}</p>}
     {saved && <p className="settings-feedback muted-text" role="status">设置已保存</p>}
