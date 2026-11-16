@@ -10,6 +10,7 @@
 | [实施计划与验收](./implementation-plan.md) | 分阶段执行任务、任务依赖、验收条件、测试样本及交付顺序 |
 | [桌面界面与交互设计规范](./ui-design-guidelines.md) | Radix UI Themes、工作区布局、设计令牌、交互与快捷键、平台适配及验收规则 |
 | [AI 写作助手技术方案](./ai-writing-assistant-technical-design.md) | assistant-ui 集成、Milkdown 上下文与改写、流式对话、SQLite 会话、实施步骤及验收矩阵 |
+| [Obsidian 成熟功能内置化技术方案](./obsidian-feature-integration-plan.md) | 长文大纲、格式规范化、素材增强、快捷采集、写作模板、选题看板、AI 体验与公众号发布的源码复用、任务分解及验收 |
 
 ## 已确定的技术决策
 
