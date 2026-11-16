@@ -1,8 +1,9 @@
 import { useRef, useState } from "react";
-import { Popover, Tooltip } from "@radix-ui/themes";
+import { Popover } from "@radix-ui/themes";
 import { Check } from "lucide-react";
 import type { Category, CategoryIcon } from "../../../../packages/shared-types";
 import { errorMessage } from "../desktop";
+import { Tooltip } from "../ui";
 import { folderIcons } from "./folder-icons";
 
 export function FolderInline({ target, defaultName, onSave, onError, onClose }: {

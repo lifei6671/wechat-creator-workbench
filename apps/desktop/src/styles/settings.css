@@ -1,10 +1,10 @@
 .rt-DialogOverlay:has(.settings-dialog) { --color-overlay: var(--gray-a2); }
 .rt-DialogOverlay:has(.settings-dialog) .rt-DialogScrollPadding { padding-block: 14px; }
 .rt-DialogContent.settings-dialog {
-  --panel-hover: var(--gray-4);
+  --panel-hover: var(--sand-4);
   display: flex; flex-direction: column; height: min(700px, 84dvh); min-height: 0;
   overflow: hidden; padding: 0; border: var(--hairline); border-radius: 12px;
-  background: var(--workspace-chrome-bg); box-shadow: var(--shadow-5); color: var(--text-main);
+  background: var(--sand-2); box-shadow: var(--shadow-5); color: var(--text-main);
   font-size: var(--workspace-font); animation: none;
 }
 .settings-window-header {
@@ -20,7 +20,7 @@
 .settings-sidebar { display: flex; flex-direction: column; min-height: 0; padding: 4px 8px 12px 12px; }
 .settings-search { padding: 0 3px 12px; }
 .settings-search .rt-TextFieldRoot {
-  background: var(--gray-4); border-radius: 8px; min-height: 34px; box-shadow: none;
+  background: var(--sand-4); border-radius: 8px; min-height: 34px; box-shadow: none;
   color: var(--text-muted); font-size: var(--workspace-font);
 }
 .settings-dialog .rt-TextFieldRoot:has(.rt-TextFieldInput:focus) {
@@ -35,7 +35,7 @@
   width: 100%; min-height: 34px; border-radius: 8px; padding-inline: 10px; gap: 9px; margin-bottom: 2px;
 }
 .settings-nav-item svg { color: var(--text-muted); }
-.settings-nav-item[aria-current="location"] { background: var(--gray-5); font-weight: 600; }
+.settings-nav-item[aria-current="location"] { background: var(--sand-5); font-weight: 600; }
 .settings-nav-item[aria-current="location"] svg { color: var(--text-main); }
 .settings-no-results { margin: 5px 10px; color: var(--text-muted); }
 .settings-pages {
@@ -51,7 +51,7 @@
 .settings-card {
   margin: 0; padding: 0 16px; background: var(--color-panel-solid); border-radius: 12px;
 }
-:where(.dark, .dark-theme) .settings-card { background: var(--gray-4); }
+:where(.dark, .dark-theme) .settings-card { background: var(--sand-3); }
 .setting-row {
   min-height: 56px; padding-block: 12px; display: flex; justify-content: space-between; align-items: center;
   gap: 12px min(20px, 4%);
@@ -77,6 +77,16 @@
 .settings-feedback { margin: 0; padding: 12px 0; }
 .settings-feedback + .settings-feedback { padding-top: 0; }
 .settings-check { display: flex; gap: 6px; align-items: center; font-size: var(--small-font); color: var(--text-muted); }
+.image-storage-enabled { padding-block: 14px 5px; color: var(--text-main); }
+.image-storage-footer { flex-wrap: nowrap; align-items: center; min-height: 55px; }
+.image-storage-footer .rt-Button { flex: none; }
+.image-storage-feedback { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.image-storage-feedback[data-error="false"] { color: var(--green-11); }
+.image-storage-feedback[data-error="true"] { color: var(--red-11); }
+.image-naming { display: grid; gap: 8px; padding-block: 12px; }
+.image-naming-header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
+.image-naming-variables { display: flex; flex-wrap: wrap; gap: 6px; }
+.image-naming-preview { padding: 8px; background: var(--sand-3); border-radius: 4px; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
 .shortcut-list > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 44px; }
 .shortcut-list dt { color: var(--text-main); font-weight: 600; }
 .shortcut-list dd { margin: 0; }

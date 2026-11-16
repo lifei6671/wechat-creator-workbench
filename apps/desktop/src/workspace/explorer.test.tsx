@@ -131,6 +131,10 @@ it("creates folders inline and sends the indicated folder reorder and entry move
   const onReorderEntry = vi.fn();
   const onRenameEntry = vi.fn().mockResolvedValue(undefined);
   const onMoveEntry = vi.fn();
+  const onOpen = vi.fn();
+  const onToggleAll = vi.fn();
+  const previousSort = localStorage.getItem("directory-sort");
+  localStorage.removeItem("directory-sort");
   const position = (name: string) => root.querySelector<HTMLElement>(`[data-tree-id=${name}]`)!;
   const point = vi.fn();
   const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
@@ -141,20 +145,20 @@ it("creates folders inline and sends the indicated folder reorder and entry move
       buttons: name === "pointerup" ? 0 : 1, isPrimary: true, pointerId: 1, pointerType: "mouse" });
     flushSync(() => target.dispatchEvent(event));
   }
-  function mount(loading: "all" | "paged", pageSize: number, revision = 0) {
-    flushSync(() => render.render(<Theme><Explorer section="folders" categoryId="one" active="nested-entry" readOnlyIds={[]} treeLocked={false}
+  function mount(loading: "all" | "paged", pageSize: number, revision = 0, expanded = ["one"]) {
+    flushSync(() => render.render(<Theme><Explorer section="folders" active="nested-entry" readOnlyIds={[]} treeLocked={false}
       library={{ workspaceId: "test", tags: [], tagSuggestions: [], categories: [
         { id: "one", parentId: null, sortOrder: 0, name: "一", icon: "folder" },
         { id: "two", parentId: null, sortOrder: 1, name: "二", icon: "archive" },
         { id: "untitled", parentId: null, sortOrder: 2, name: "未命名", icon: "folder" },
         { id: "child", parentId: "one", sortOrder: 0, name: "子", icon: "book" },
-      ] }} page={null} expanded={["one"]} revision={revision} loading={loading} pageSize={pageSize} caseSensitive={false} query=""
+      ] }} page={null} expanded={expanded} revision={revision} loading={loading} pageSize={pageSize} caseSensitive={false} query=""
       searchInputRef={null} listError="" onRetry={vi.fn()} onQuery={vi.fn()} onCaseSensitive={vi.fn()}
-      onFolder={vi.fn()} onRoot={vi.fn()} onCreate={onCreate} onRevealFolder={vi.fn()}
+      onFolder={vi.fn()} onCreate={onCreate} onRevealFolder={vi.fn()}
       onImportWechat={onImportWechat} onImportMarkdown={onImportMarkdown}
       onSaveFolder={onSaveFolder} onFolderError={vi.fn()} onReorderFolder={onReorderFolder} onMoveEntry={onMoveEntry}
       onReorderEntry={onReorderEntry} onRenameEntry={onRenameEntry}
-      onCategoryAction={vi.fn()} onOpen={vi.fn()} onRowAction={vi.fn()} onMore={vi.fn()} /></Theme>));
+      onCategoryAction={vi.fn()} onOpen={onOpen} onToggleAll={onToggleAll} onRowAction={vi.fn()} onMore={vi.fn()} /></Theme>));
   }
   try {
     mount("paged", 60);
@@ -162,6 +166,13 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     expect(root.querySelector(".folder-row[data-selected=true], .row-menu")).toBeNull();
     expect(position("nested-entry").getAttribute("aria-current")).toBe("true");
     expect(root.querySelector("#folder-row-one")!.hasAttribute("title")).toBe(false);
+    flushSync(() => root.querySelector<HTMLButtonElement>('[aria-label="全部折叠"]')!.click());
+    expect(onToggleAll).toHaveBeenLastCalledWith(false);
+    mount("paged", 60, 0, ["child"]);
+    flushSync(() => root.querySelector<HTMLButtonElement>('[aria-label="全部展开"]')!.click());
+    expect(onToggleAll).toHaveBeenLastCalledWith(true);
+    mount("paged", 60);
+    await vi.waitFor(() => expect(position("nested-entry")).not.toBeNull());
     const panel = root.querySelector<HTMLElement>(".explorer")!;
     panel.setPointerCapture = vi.fn();
     vi.spyOn(position("two"), "getBoundingClientRect").mockReturnValue(new DOMRect(10, 100, 200, 30));
@@ -193,13 +204,16 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     expect(onReorderEntry).toHaveBeenCalledExactlyOnceWith("nested-entry", "another-entry", "before");
 
     const menu = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    const open = (selector = ".tree-tools") => flushSync(() => {
+    const open = (selector = ".explorer-scroll") => flushSync(() => {
       const trigger = root.querySelector<HTMLElement>(selector)!;
       trigger.focus();
       trigger.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
     });
     open("#entry-row-nested-entry");
     expect(position("nested-entry").dataset.state).toBe("open");
+    flushSync(() => menu().find(item => item.textContent === "在新标签打开")!.click());
+    expect(onOpen).toHaveBeenLastCalledWith("nested-entry", true);
+    open("#entry-row-nested-entry");
     flushSync(() => menu().find(item => item.textContent === "重命名")!.click());
     await vi.waitFor(() => expect(root.querySelector(".tree-entry .entry-inline-name")).not.toBeNull());
     const title = root.querySelector<HTMLInputElement>(".entry-inline-name")!;
@@ -244,7 +258,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     flushSync(() => icon.click());
     expect(icon.getAttribute("aria-pressed")).toBe("true");
     expect(onSaveFolder).not.toHaveBeenCalled();
-    flushSync(() => root.querySelector<HTMLButtonElement>(".root-target")!.focus());
+    flushSync(() => root.querySelector<HTMLButtonElement>("#folder-row-one")!.focus());
     expect(onSaveFolder).toHaveBeenCalledExactlyOnceWith(null, null, "项目资料", "rocket");
     await vi.waitFor(() => expect(name.isConnected).toBe(false));
     await vi.waitFor(() => expect(document.querySelector(".folder-icon-picker")).toBeNull());
@@ -277,10 +291,42 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     mount("all", 1, 1);
     await vi.waitFor(() => expect(entries).toHaveBeenCalledWith(expect.objectContaining({ categoryId: "one", offset: 0, limit: 2_147_483_647 })));
     expect(root.querySelector("#folder-one .load-more")).toBeNull();
+
+    const sorter = root.querySelector<HTMLButtonElement>('[aria-label="排序"]')!;
+    flushSync(() => sorter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    const sorted = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitemradio"]'))
+      .find(item => item.textContent === "编辑时间（从新到旧）")!;
+    flushSync(() => sorted.click());
+    await vi.waitFor(() => {
+      expect(entries).toHaveBeenCalledWith(expect.objectContaining({ categoryId: "one", sort: "updated" }));
+      expect(position("another-entry")).not.toBeNull();
+    });
+    drag("pointerdown", position("nested-entry"), 120);
+    drag("pointermove", position("another-entry"), 172);
+    await vi.waitFor(() => expect(root.querySelector(".tree-drag-ghost")).not.toBeNull());
+    expect(position("another-entry").parentElement?.dataset.placement).toBeUndefined();
+    drag("pointerup", position("another-entry"), 172);
+    expect(onReorderEntry).toHaveBeenCalledTimes(1);
+
+    drag("pointerdown", position("entry"));
+    drag("pointermove", position("child"), 125);
+    await vi.waitFor(() => expect(position("child").parentElement?.dataset.placement).toBe("inside"));
+    drag("pointerup", position("child"), 125);
+    expect(onMoveEntry).toHaveBeenCalledTimes(2);
+    expect(onMoveEntry).toHaveBeenLastCalledWith("entry", "child");
+
+    const rootTree = root.querySelector<HTMLElement>(".folder-tree")!;
+    drag("pointerdown", position("nested-entry"), 120);
+    drag("pointermove", rootTree, 230);
+    await vi.waitFor(() => expect(root.querySelector(".explorer-scroll")?.getAttribute("data-root-drop")).toBe("true"));
+    drag("pointerup", rootTree, 230);
+    expect(onMoveEntry).toHaveBeenLastCalledWith("nested-entry", null);
   } finally {
     flushSync(() => render.unmount());
     root.remove();
     entries.mockRestore();
+    if (previousSort === null) localStorage.removeItem("directory-sort");
+    else localStorage.setItem("directory-sort", previousSort);
     if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
     else Reflect.deleteProperty(document, "elementFromPoint");
     vi.unstubAllGlobals();

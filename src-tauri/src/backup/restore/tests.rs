@@ -82,6 +82,7 @@ fn stage_migrates_old_schema_and_pauses_restored_jobs() {
     let pending = PendingRestore {
         workspace,
         name: "legacy.sqlite".into(),
+        migration: None,
     };
     prepare_file(&path, &pending).unwrap();
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
@@ -131,6 +132,7 @@ fn staging_rejects_unknown_schema_wrong_workspace_and_unscoped_assets() {
     let mut pending = PendingRestore {
         workspace: crate::db::id(),
         name: "fixture.sqlite".into(),
+        migration: None,
     };
     assert_eq!(
         prepare_file(&path, &pending).unwrap_err().code(),
@@ -177,6 +179,7 @@ fn fixture() -> (tempfile::TempDir, Files, Workspace, String, PendingRestore) {
     let pending = PendingRestore {
         workspace,
         name: "fixture.sqlite".into(),
+        migration: None,
     };
     prepare_file(&files.incoming, &pending).unwrap();
     (root, files, db, original, pending)
@@ -251,6 +254,7 @@ fn staging_rejects_missing_columns_and_broken_references_at_the_declared_version
     let pending = PendingRestore {
         workspace,
         name: "fixture.sqlite".into(),
+        migration: None,
     };
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", false).unwrap();

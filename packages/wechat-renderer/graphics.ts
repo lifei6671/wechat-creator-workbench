@@ -17,7 +17,7 @@ async function mathSvg(source: string, display: boolean) {
     RegisterHTMLHandler(adaptor);
     const doc = mathjax.document("", {
       InputJax: new TeX({ packages: ["base", "ams"] }),
-      OutputJax: new SVG({ fontCache: "local" }),
+      OutputJax: new SVG({ fontCache: "none" }),
     });
     return (source: string, display: boolean) => adaptor.innerHTML(doc.convert(source, { display, em: 16, ex: 8, containerWidth: 864 }));
   })();

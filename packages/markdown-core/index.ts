@@ -1,8 +1,10 @@
 import MarkdownIt from "markdown-it";
-import DOMPurify from "dompurify";
+import mark from "markdown-it-mark";
+import createDOMPurify from "dompurify";
+import { renderCallouts } from "./callouts";
 
 export function createMarkdownParser() {
-  const parser = new MarkdownIt({ html: true });
+  const parser = new MarkdownIt({ html: true }).use(mark).use(renderCallouts);
   parser.renderer.rules.heading_open = (tokens, index, options, _env, renderer) => {
     const token = tokens[index];
     if (token.map) token.attrSet("data-line", String(token.map[0] + 1));
@@ -11,9 +13,10 @@ export function createMarkdownParser() {
   return parser;
 }
 const markdown = createMarkdownParser();
+const DOMPurify = createDOMPurify(window);
 const tags = [
   "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
-  "strong", "b", "em", "i", "s", "del", "code", "pre", "ul", "ol", "li",
+  "strong", "b", "em", "i", "s", "del", "mark", "code", "pre", "ul", "ol", "li",
   "table", "thead", "tbody", "tr", "th", "td", "a", "div", "span", "section", "sub", "sup", "img",
 ];
 

@@ -9,7 +9,7 @@ function rowFolder(element: Element) {
   return element.closest<HTMLElement>("[data-tree-container]")?.dataset.treeContainer || null;
 }
 
-export function useExplorerDrag(categories: Category[],
+export function useExplorerDrag(categories: Category[], allowEntryReorder: boolean,
   onSortFolder: (id: string, anchor: string, placement: CategoryPlacement) => void,
   onSortEntry: (id: string, anchor: string, placement: CategoryPlacement) => void,
   onMove: (id: string, folder: string | null) => void,
@@ -31,6 +31,7 @@ export function useExplorerDrag(categories: Category[],
     if (item.kind === "entry") {
       const folder = header?.dataset.treeId ?? rowFolder(element);
       if (folder !== item.parent) return { id: folder, placement: "inside" };
+      if (!allowEntryReorder) return null;
     }
     if (!row) return null;
     const id = row.dataset.treeId!;

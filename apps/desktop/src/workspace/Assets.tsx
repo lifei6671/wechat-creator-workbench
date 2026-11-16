@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Button, ScrollArea, Tooltip } from "@radix-ui/themes";
-import { readS3Settings, S3Fields } from "./Settings";
+import { Button, Checkbox, ScrollArea, Select, TextField } from "@radix-ui/themes";
+import { readS3Settings, S3Fields, SettingRow } from "./Settings";
 import { CloudUpload, ImageOff, Plus, Settings2 } from "lucide-react";
-import { desktop, errorMessage, type AssetLibrary, type ImageTarget } from "../desktop";
-import { Tool } from "../ui";
+import { desktop, errorMessage, type AssetLibrary, type ImageTarget, type ImageUploadOptions } from "../desktop";
+import { Tool, Tooltip } from "../ui";
+
+export function canHostImage(target: ImageTarget | null, src: string) {
+  if (!target) return false;
+  if (src.startsWith("asset://")) return true;
+  if (!/^https?:\/\//i.test(src) || !URL.canParse(src)) return false;
+  const image = new URL(src);
+  const base = new URL(target.publicBase);
+  const prefix = [base.pathname.replace(/\/$/, ""), ...target.prefix.split("/").filter(Boolean).map(encodeURIComponent)].join("/");
+  return image.origin !== base.origin || !image.pathname.startsWith(`${prefix}/`) || image.pathname.length === prefix.length + 1;
+}
 
 export function imageMarkdown(id: string, label: string) {
   const alt = label.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]").replace(/[\r\n]/g, " ");
@@ -153,13 +163,21 @@ export function AssetThumb({ id, name, tile = false, available = true }: {
     : <div className="asset-thumbnail asset-placeholder">{result?.id === id ? "图片缺失" : "正在加载图片…"}</div>;
 }
 
+const uploadVariables = [["year", "年"], ["month", "月"], ["day", "日"], ["hour", "时"], ["minute", "分"], ["second", "秒"], ["timestamp", "时间戳"]] as const;
+
 export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Promise<T> }) {
-  const [initial, setInitial] = useState<ImageTarget | null>();
-  const [revision, setRevision] = useState(0);
-  const [busy, setBusy] = useState<"test" | "save" | "disable" | null>(null);
+  const [initial, setInitial] = useState<Awaited<ReturnType<typeof desktop.imageStorageSettings>>>();
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const [options, setOptions] = useState<ImageUploadOptions>({ filenameTemplate: "", quality: "original" });
+  const filename = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    void desktop.assetLibrary().then(value => setInitial(value.target), failure => setFeedback({ error: true, text: errorMessage(failure) }));
+    void desktop.imageStorageSettings().then(value => {
+      setInitial(value);
+      setEnabled(value.enabled || !value.target);
+      setOptions(value.options);
+    }, failure => setFeedback({ error: true, text: errorMessage(failure) }));
   }, []);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -174,34 +192,53 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
         await track(desktop.imageStorageTest(target, secret));
         setFeedback({ error: false, text: "上传、读取和删除均通过" });
       } else {
-        await track(desktop.imageStorageSave(target, secret));
-        setInitial((await desktop.assetLibrary()).target);
-        setRevision(value => value + 1);
-        setFeedback({ error: false, text: "图床设置已保存" });
+        await track(desktop.imageStorageSave(enabled ? target : null, enabled ? secret : undefined, enabled ? options : undefined));
+        setFeedback({ error: false, text: enabled ? "图床设置已保存" : "图床已停用" });
       }
     } catch (error) {
       setFeedback({ error: true, text: errorMessage(error) });
     } finally { setBusy(null); }
   }
-  async function disable() {
-    setBusy("disable");
-    try {
-      await track(desktop.imageStorageSave(null));
-      setInitial(null);
-      setRevision(value => value + 1);
-      setFeedback({ error: false, text: "图床已停用" });
-    }
-    catch (error) { setFeedback({ error: true, text: errorMessage(error) }); }
-    finally { setBusy(null); }
-  }
-  return <form key={revision} className="settings-card" autoComplete="off" onSubmit={submit}>
-      {initial === undefined && !feedback && <p className="settings-feedback muted-text" role="status">正在读取设置…</p>}
-      {initial !== undefined && <S3Fields scope="images" initial={initial} hasKey={Boolean(initial)} publicBase={initial?.publicBase} />}
-      {feedback && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`} role={feedback.error ? "alert" : "status"}>{feedback.text}</p>}
-      {initial !== undefined && <div className="settings-footer">
-          {initial && <Button type="button" variant="ghost" color="red" disabled={Boolean(busy)} onClick={() => void disable()}>停用图床</Button>}
-          <Button type="submit" value="test" variant="soft" disabled={Boolean(busy)} loading={busy === "test"}>测试连接</Button>
-          <Button type="submit" value="save" disabled={Boolean(busy)} loading={busy === "save"}>保存</Button>
-      </div>}
+  const sample = new Date();
+  const parts = sample.toISOString().slice(0, 19).split(/[-T:]/);
+  const prefix = uploadVariables.reduce((text, [key], index) => text.replaceAll(`{${key}}`, parts[index] ?? String(sample.getTime())), options.filenameTemplate.trim());
+  return <form className="settings-card" autoComplete="off" onSubmit={submit} aria-busy={Boolean(busy)}>
+    {initial && <>
+      <label className="settings-check image-storage-enabled"><Checkbox checked={enabled} disabled={Boolean(busy)}
+        onCheckedChange={value => setEnabled(value === true)} />启用图床</label>
+      <S3Fields scope="images" initial={initial.target} hasKey={Boolean(initial.secret)} publicBase={initial.target?.publicBase} credentials={initial.secret} />
+      <SettingRow id="image-upload-quality" label="上传清晰度" hint="高清、标清和省流转为 WebP。GIF 和动态 WebP 按原文件上传。">
+        <Select.Root value={options.quality} onValueChange={(quality: ImageUploadOptions["quality"]) => setOptions(current => ({ ...current, quality }))}>
+          <Select.Trigger id="image-upload-quality" /><Select.Content>
+            <Select.Item value="original">原图</Select.Item><Select.Item value="high">高清</Select.Item>
+            <Select.Item value="standard">标清</Select.Item><Select.Item value="economy">省流</Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </SettingRow>
+      <div className="image-naming">
+        <div className="image-naming-header"><label htmlFor="image-filename">文件命名规则</label>
+          <Button type="button" size="1" variant="ghost" onClick={() => setOptions(current => ({ ...current, filenameTemplate: "" }))}>恢复默认</Button></div>
+        <TextField.Root ref={filename} id="image-filename" placeholder="默认按内容哈希命名" value={options.filenameTemplate}
+          onChange={event => setOptions(current => ({ ...current, filenameTemplate: event.target.value }))} />
+        <div className="image-naming-variables" aria-label="插入命名变量">{uploadVariables.map(([key, label]) => <Button key={key} type="button" size="1" variant="soft" color="gray" onClick={() => {
+          const input = filename.current!;
+          const from = input.selectionStart ?? options.filenameTemplate.length;
+          const to = input.selectionEnd ?? from;
+          const token = `{${key}}`;
+          setOptions(current => ({ ...current, filenameTemplate: current.filenameTemplate.slice(0, from) + token + current.filenameTemplate.slice(to) }));
+          requestAnimationFrame(() => { input.focus(); input.setSelectionRange(from + token.length, from + token.length); });
+        }}>{label}</Button>)}</div>
+        <output htmlFor="image-filename" className="image-naming-preview">{prefix ? `${prefix}-` : ""}a8f3…72ce.{options.quality === "original" ? "jpg" : "webp"}</output>
+        <span className="setting-hint">日期和时间使用 UTC。文件名自动添加内容哈希和扩展名。</span>
+      </div>
+    </>}
+    <div className="settings-footer image-storage-footer">
+      <span className="image-storage-feedback" role={feedback?.error ? "alert" : "status"} data-error={feedback?.error}
+        title={feedback?.text}>{feedback?.text ?? (!initial ? "正在读取设置…" : busy === "test" ? "正在测试…" : busy ? "正在保存…" : "")}</span>
+      {initial && <>
+        <Button type="submit" value="test" variant="soft" disabled={Boolean(busy)}>测试连接</Button>
+        <Button type="submit" value="save" disabled={Boolean(busy)} formNoValidate={!enabled}>保存</Button>
+      </>}
+    </div>
   </form>;
 }

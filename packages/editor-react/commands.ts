@@ -21,22 +21,6 @@ export function textEditingScope(state: EditorState) {
   return kind && { kind, from: $from.start(), to: $from.end() };
 }
 
-function insertFootnote(view: EditorView) {
-  const { state } = view;
-  const { footnote_reference, footnote_definition, paragraph } = state.schema.nodes;
-  const labels = new Set<string>();
-  state.doc.descendants(node => {
-    if (node.type === footnote_reference || node.type === footnote_definition) labels.add(node.attrs.label);
-  });
-  let index = 1;
-  while (labels.has(String(index))) index++;
-  const attrs = { label: String(index) };
-  const tr = state.tr.insert(state.selection.to, footnote_reference.create(attrs));
-  const end = tr.doc.content.size;
-  tr.insert(end, footnote_definition.create(attrs, paragraph.create()));
-  view.dispatch(tr.setSelection(TextSelection.create(tr.doc, end + 2)).scrollIntoView());
-}
-
 const setTaskList: Command = (state, dispatch) => {
   const { bullet_list, ordered_list, list_item } = state.schema.nodes;
   const { $from } = state.selection;
@@ -93,16 +77,15 @@ export function runCommand(editor: Editor, view: EditorView, name: EditorCommand
     case "link": {
       const href = value?.trim();
       if (!href || !hrefPattern.test(href)) return;
-      if (state.selection.empty) dispatch(state.tr.replaceSelectionWith(state.schema.text(href, [marks.link.create({ href })]), false));
-      else dispatch(state.tr.removeMark(state.selection.from, state.selection.to, marks.link)
-        .addMark(state.selection.from, state.selection.to, marks.link.create({ href })));
+      const { from, to, empty } = state.selection;
+      const link = marks.link.create({ href });
+      const tr = empty ? state.tr.replaceSelectionWith(state.schema.text(href, [link]), false)
+        : state.tr.removeMark(from, to, marks.link).addMark(from, to, link);
+      dispatch(tr);
       break;
     }
     case "table":
       editor.action(ctx => ctx.get(commandsCtx).call(insertTableCommand.key));
-      break;
-    case "footnote":
-      insertFootnote(view);
       break;
     case "horizontalRule":
       dispatch(state.tr.replaceSelectionWith(nodes.hr.create()).scrollIntoView());

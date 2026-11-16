@@ -1,3 +1,4 @@
+mod migration;
 mod restore;
 mod store;
 
@@ -65,6 +66,25 @@ pub fn backup_configure(
 }
 
 #[tauri::command]
+pub fn backup_use_image_storage(db: State<'_, Workspace>) -> Result<()> {
+    let profile = db
+        .read(crate::assets::s3::Profile::active)?
+        .ok_or_else(|| AppError::invalid("请先启用 S3 图床"))?;
+    let secret = profile.secret()?;
+    let target = profile.target;
+    store::configure(
+        &db,
+        Target {
+            endpoint: target.endpoint,
+            region: target.region,
+            bucket: target.bucket,
+            prefix: target.prefix,
+        },
+        Some(secret),
+    )
+}
+
+#[tauri::command]
 pub async fn backup_workspaces(db: State<'_, Workspace>) -> Result<Vec<String>> {
     store::store(&db)?.workspaces().await
 }
@@ -127,7 +147,11 @@ pub async fn backup_prepare_restore(
     progress(&app, "validate");
     let incoming = backups.files.incoming.clone();
     let pending = tokio::task::spawn_blocking(move || {
-        let pending = PendingRestore { workspace, name };
+        let pending = PendingRestore {
+            workspace,
+            name,
+            migration: None,
+        };
         restore::prepare_file(&file, &pending)?;
         file.persist(&incoming)
             .map_err(|error| file_error(error.error))?;
@@ -136,21 +160,110 @@ pub async fn backup_prepare_restore(
     .await
     .map_err(|error| AppError::new("BACKUP_VALIDATE", error.to_string()))??;
     let ticket = id();
-    *prepared = Some((ticket.clone(), pending));
+    if let Some((_, previous)) = prepared.replace((ticket.clone(), pending)) {
+        backups.files.discard_migration(&previous);
+    }
     Ok(ticket)
 }
 
 #[tauri::command]
 pub async fn backup_discard_restore(backups: State<'_, Backups>, ticket: String) -> Result<()> {
     let mut prepared = backups.prepared.lock().await;
-    if prepared
-        .as_ref()
-        .is_some_and(|(current, _)| current == &ticket)
+    if let Some((current, pending)) = prepared.as_ref()
+        && current == &ticket
     {
         std::fs::remove_file(&backups.files.incoming).map_err(file_error)?;
+        backups.files.discard_migration(pending);
         *prepared = None;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn backup_export_workspace(
+    app: AppHandle,
+    db: State<'_, Workspace>,
+    backups: State<'_, Backups>,
+    preferences: std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<Option<String>> {
+    let _guard = backups.prepared.lock().await;
+    let workspace = db.read_running(workspace_id)?;
+    let Some(path) = crate::assets::publishing::destination(
+        &app,
+        "工作区迁移包",
+        "zip",
+        "微信创作工作台-迁移.zip",
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let database = backups.files.database.clone();
+    let stage = backups.files.stage.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        migration::export(&database, &stage, &workspace, &path, &preferences)?;
+        Ok::<_, AppError>(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| AppError::new("MIGRATION_EXPORT", error.to_string()))??;
+    Ok(Some(saved))
+}
+
+#[tauri::command]
+pub fn backup_take_preferences(
+    db: State<'_, Workspace>,
+) -> Result<Option<std::collections::BTreeMap<String, serde_json::Value>>> {
+    use rusqlite::OptionalExtension;
+    db.write(|tx| {
+        let value: Option<String> = tx
+            .query_row(
+                "SELECT value FROM app_settings WHERE key='migration_preferences'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        tx.execute(
+            "DELETE FROM app_settings WHERE key='migration_preferences'",
+            [],
+        )?;
+        serde_json::from_str(&value)
+            .map(Some)
+            .map_err(|_| AppError::invalid("迁移的界面设置无效"))
+    })
+}
+
+#[tauri::command]
+pub async fn backup_import_workspace(
+    app: AppHandle,
+    db: State<'_, Workspace>,
+    backups: State<'_, Backups>,
+) -> Result<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    db.read_running(|_| Ok(()))?;
+    let mut prepared = backups.prepared.lock().await;
+    let dialog = app.dialog().file().add_filter("工作区迁移包", &["zip"]);
+    let Some(path) = tokio::task::spawn_blocking(move || dialog.blocking_pick_file())
+        .await
+        .map_err(|error| AppError::new("MIGRATION_IMPORT", error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|error| AppError::new("MIGRATION_IMPORT", error.to_string()))?;
+    let stage = backups.files.stage.clone();
+    let incoming = backups.files.incoming.clone();
+    let pending = tokio::task::spawn_blocking(move || migration::prepare(&path, &stage, &incoming))
+        .await
+        .map_err(|error| AppError::new("MIGRATION_IMPORT", error.to_string()))??;
+    let ticket = id();
+    if let Some((_, old)) = prepared.replace((ticket.clone(), pending)) {
+        backups.files.discard_migration(&old);
+    }
+    Ok(Some(ticket))
 }
 
 #[tauri::command]

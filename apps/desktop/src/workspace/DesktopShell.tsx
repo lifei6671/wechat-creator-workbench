@@ -1,24 +1,27 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { Button, Theme } from "@radix-ui/themes";
-import { FilePenLine, FolderOpen, Images, ListFilter, Newspaper, Search, Settings, Sparkles, Trash2 } from "lucide-react";
+import { FilePenLine, FolderOpen, Images, Newspaper, Search } from "lucide-react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
-import type { ClipboardAction, ClipboardIO, MarkdownEditorHandle } from "../../../../packages/editor-react";
-import { desktop, errorMessage, windowsTitleBar, type AiOperation, type BackupSnapshot } from "../desktop";
+import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { desktop, errorMessage, windowsTitleBar, type AiOperation, type BackupSnapshot, type ImageTarget } from "../desktop";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
 import { commandKey, untitled } from "../labels";
 import { persist, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
+import { workspacePreferences } from "./preferences";
 import { Confirm, EntryLocationDialog, PropertiesDialog, RevisionsDialog } from "./Dialogs";
-import { DocumentEditor, DocumentStatus, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
+import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
+import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type Section } from "./Explorer";
 import { McpSettings, ModelSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { AiPanel, useAiAssistant } from "./AiPanel";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
-import { AssetPanel, ImageStorageSettings, imageMarkdown } from "./Assets";
+import { MigrationPanel } from "./Migration";
+import { AssetPanel, canHostImage, ImageStorageSettings, imageMarkdown } from "./Assets";
 import { WindowControls, WindowDragRegion } from "./WindowTitle";
 import { ImageViewer, PublishImagesDialog, WechatImportDialog, renderForPublication } from "./Publishing";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
@@ -68,6 +71,8 @@ export function DesktopShell() {
   const [listError, setListError] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [imageTarget, setImageTarget] = useState<ImageTarget | null>(null);
+  const [imageUpload, setImageUpload] = useState<{ sessionId: number; src?: string } | null>(null);
   const [sessions, setSessions] = useState<SaveQueue[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [readingIds, setReadingIds] = useState<string[]>([]);
@@ -77,9 +82,10 @@ export function DesktopShell() {
   const [preferredView, setPreferredView] = useState<ViewMode>(() => useStoredInitial<string>("view", "") === "preview" ? "preview" : "edit");
   const [shortcut, setShortcut] = useState(() => useStoredInitial<ViewShortcut>("view-shortcut", "none"));
   const [downloadPastedImages, setDownloadPastedImages] = useState(() => useStoredInitial("download-pasted-images", false));
+  const [convertLinks, setConvertLinks] = useState(() => useStoredInitial("links-to-footnotes", false));
   const [folderLoading, setFolderLoading] = useState(() => useStoredInitial<"all" | "paged">("folder-loading", "paged"));
   const [folderPageSize, setFolderPageSize] = useState(() => useStoredInitial("folder-page-size", 60));
-  const [editorDisplay, setEditorDisplay] = useState(() => useStoredInitial<EditorDisplay>("editor-display", {
+  const [editorDisplay, setEditorDisplay] = useState(() => useStoredInitial<Omit<EditorDisplay, "convertLinks">>("editor-display", {
     limitWidth: true, lineNumbers: false, showTitle: true,
   }));
   const [preferredExplorer, setExplorer] = useState(() => useStoredInitial<boolean | null>("explorer", null));
@@ -90,10 +96,12 @@ export function DesktopShell() {
   const [publishing, setPublishing] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [backupListRevision, setBackupListRevision] = useState(0);
-  const [preparedBackup, setPreparedBackup] = useState<PreparedBackup | null>(null);
+  const [preparedBackup, setPreparedBackup] = useState<PreparedBackup | { ticket: string; migration: true } | null>(null);
   const [confirmRestore, setConfirmRestore] = useState(false);
   const [backupFeedback, setBackupFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [backupWorking, setBackupWorking] = useState<string | null>(null);
+  const [migrationWorking, setMigrationWorking] = useState<"export" | "import" | null>(null);
+  const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const assistant = useAiAssistant();
@@ -105,6 +113,7 @@ export function DesktopShell() {
   const queues = useRef(new Map<string, SaveQueue>());
   const active = useRef<string | null>(null);
   const handles = useRef(new Map<string, MarkdownEditorHandle>());
+  const [, refreshEditorHandles] = useState(0);
   const pendingEditorFocus = useRef<string | null>(null);
   const selecting = useRef(0);
   const writing = useRef(new Set<Promise<unknown>>());
@@ -119,8 +128,14 @@ export function DesktopShell() {
   const focusOrigin = useRef<HTMLElement | null>(null);
   const refresh = () => setRefreshCount(count => count + 1);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
+  function updateConvertLinks(value: boolean) {
+    setConvertLinks(value);
+    persist("links-to-footnotes", value);
+  }
+
   function updateEditorDisplay(option: keyof EditorDisplay, checked: boolean) {
-    setEditorDisplay(display => ({ ...display, [option]: checked }));
+    if (option === "convertLinks") updateConvertLinks(checked);
+    else setEditorDisplay(display => ({ ...display, [option]: checked }));
   }
 
   const searchText = section === "search" ? query : "";
@@ -225,26 +240,45 @@ export function DesktopShell() {
     if (previous) void queues.current.get(previous)?.flush();
     active.current = id;
     setActiveId(id);
+    if (id === null) setFocusMode(false);
   }
 
-  function install(entry: Entry) {
+  function install(entry: Entry, replacing?: SaveQueue) {
     const queue = new SaveQueue(entry, desktop.save, refresh);
-    queues.current.set(entry.id, queue);
+    if (replacing) {
+      const order = [...queues.current.values()].map(tab => tab === replacing ? queue : tab);
+      forgetTab(replacing.entry.id);
+      queues.current = new Map(order.map(tab => [tab.entry.id, tab]));
+    } else queues.current.set(entry.id, queue);
     setSessions([...queues.current.values()]);
     return queue;
   }
 
-  async function open(id: string) {
+  async function open(id: string, replaceFirst = false) {
     const ticket = ++selecting.current;
-    const existing = queues.current.get(id);
-    if (existing) {
-      revealFolder(existing.snapshot().fields.categoryId);
-    } else {
+    if (!queues.current.has(id)) {
       const entry = await desktop.entry(id);
-      if (ticket !== selecting.current) return;
+      if (ticket !== selecting.current || exit.current) return;
+      while (replaceFirst && !queues.current.has(id)) {
+        const first = queues.current.values().next().value;
+        if (!first) break;
+        const firstId = first.entry.id;
+        if (locking.current.has(firstId)) throw new Error("第一个标签页正在处理，请稍后再试");
+        if (active.current === firstId) commitBreadcrumb();
+        const saved = await first.flush();
+        if (ticket !== selecting.current || exit.current) return;
+        if (first !== queues.current.values().next().value || queues.current.has(id)) continue;
+        if (!saved) { select(firstId); return; }
+        if (active.current === firstId) commitBreadcrumb();
+        if (locking.current.has(firstId)) throw new Error("第一个标签页正在处理，请稍后再试");
+        const { revision, savedRevision } = first.snapshot();
+        if (revision !== savedRevision) continue;
+        install(entry, first);
+      }
       if (!queues.current.has(id)) install(entry);
-      revealFolder(entry.categoryId);
     }
+    revealFolder(queues.current.get(id)!.snapshot().fields.categoryId);
+    if (active.current === id) document.getElementById(`tab-${id}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     select(id);
   }
 
@@ -264,13 +298,17 @@ export function DesktopShell() {
     setSessions(order);
   }
 
-  function remove(id: string) {
-    const next = [...queues.current.keys()];
-    const index = next.indexOf(id);
+  function forgetTab(id: string) {
     queues.current.get(id)!.dispose();
     queues.current.delete(id);
     setReadingIds(current => current.filter(item => item !== id));
     setSinglePaneIds(current => current.filter(item => item !== id));
+  }
+
+  function remove(id: string) {
+    const next = [...queues.current.keys()];
+    const index = next.indexOf(id);
+    forgetTab(id);
     setSessions([...queues.current.values()]);
     if (id === active.current) select(next[index + 1] ?? next[index - 1] ?? null);
   }
@@ -372,6 +410,7 @@ export function DesktopShell() {
   function registerEditor(id: string, handle: MarkdownEditorHandle | null) {
     if (!handle) { handles.current.delete(id); return; }
     handles.current.set(id, handle);
+    refreshEditorHandles(count => count + 1);
     if (pendingEditorFocus.current === id && active.current === id && !exit.current) {
       pendingEditorFocus.current = null;
       handle.focus();
@@ -437,7 +476,8 @@ export function DesktopShell() {
   async function exportMarkdown(id: string) {
     const queue = queues.current.get(id);
     if (queue && !await queue.flush()) { select(id); return; }
-    if (await desktop.exportMarkdown(id)) setNotice({ type: "info", text: "Markdown 已导出" });
+    const path = await desktop.exportMarkdown(id);
+    if (path) setNotice({ type: "info", text: "Markdown 已导出", path });
   }
 
   function entryAction(row: EntryRow, action: EntryRowAction, trigger = document.getElementById(`entry-row-${row.id}`)) {
@@ -586,6 +626,8 @@ export function DesktopShell() {
   const copy = desktop.copyText;
 
   const selected = activeId ? queues.current.get(activeId) : undefined;
+  const display = { ...editorDisplay, convertLinks };
+  const projectLinks = convertLinks ? (activeId ? handles.current.get(activeId)?.linkFootnoteMarkdown ?? null : null) : undefined;
   const showWechatImport = (parent: string | null = currentFolder) => showModal({ type: "wechatImport", categoryId: parent });
   const openSettings = (page: SettingsPage = "appearance", trigger?: HTMLElement) => {
     showModal({ type: "settings", page }, trigger ?? (modal?.type === "palette" ? focusOrigin.current : undefined));
@@ -627,6 +669,36 @@ export function DesktopShell() {
     finally { setBackupWorking(null); }
   }
 
+  async function transferWorkspace(action: "export" | "import") {
+    setMigrationWorking(action);
+    setMigrationFeedback(null);
+    try {
+      await trackAssetTask((async () => {
+        if (action === "export") {
+          const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
+          if (!saved.every(Boolean)) throw new Error("有稿件尚未保存，请处理后重新导出");
+          const path = await desktop.exportWorkspace(workspacePreferences());
+          if (path) setNotice({ type: "info", text: "工作区迁移包已导出" });
+        } else {
+          const ticket = await desktop.importWorkspace();
+          if (!ticket) return;
+          if (exit.current) await desktop.discardRestore(ticket);
+          else setPreparedBackup({ ticket, migration: true });
+        }
+      })());
+    } catch (error) { setMigrationFeedback({ error: true, text: errorMessage(error) }); }
+    finally { setMigrationWorking(null); }
+  }
+
+  function discardPreparedRestore() {
+    if (!preparedBackup) return;
+    const { ticket } = preparedBackup;
+    run(async () => {
+      await desktop.discardRestore(ticket);
+      setPreparedBackup(current => current?.ticket === ticket ? null : current);
+    });
+  }
+
   function toggleAi() {
     if (focusMode) { setFocusMode(false); setAiOpen(true); }
     else setAiOpen(value => !value);
@@ -634,17 +706,18 @@ export function DesktopShell() {
 
   function publication(output: "clipboard" | "html") {
     if (!selected || publishing || exit.current) return;
+    if (projectLinks === null) { setNotice({ type: "info", text: "编辑器正在加载，请稍后重试" }); return; }
     const { fields, revision } = selected.snapshot();
-    const input = { output, revision, markdown: fields.contentMd, themeId: fields.themeId };
     setPublishing(true);
     run(async () => {
       try {
-        const { result, hosting } = await renderForPublication(input);
+        const input = { output, revision, markdown: projectLinks?.(fields.contentMd) ?? fields.contentMd, themeId: fields.themeId };
+        const { result, hosting, exportImages } = await renderForPublication(input);
         try {
           if (exit.current) return;
           if (output === "html") {
             const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>公众号文章</title><body>${result.html}</body></html>`;
-            if (await desktop.exportWechatHtml(html, result.images.map(image => image.url))) {
+            if (await desktop.exportWechatHtml(html, exportImages)) {
               setNotice({ type: "info", text: "排版 HTML 已导出" });
             }
           } else {
@@ -654,6 +727,32 @@ export function DesktopShell() {
           }
         } finally { result.dispose(); }
       } finally { setPublishing(false); }
+    });
+  }
+
+  function hostDocumentImages(origin: SaveQueue, image?: ImageContext) {
+    const target = imageTarget;
+    if (!target || imageUpload || exit.current || locked.includes(origin.entry.id)) return;
+    const editor = handles.current.get(origin.entry.id);
+    if (!editor?.hostImages || (image && (!image.isCurrent() || !canHostImage(target, image.src)))) return;
+    const sessionId = origin.sessionId;
+    const upload = async (src: string) => {
+      setImageUpload({ sessionId, src });
+      try { return await desktop.hostImage(src, target); }
+      finally { setImageUpload({ sessionId }); }
+    };
+    setImageUpload({ sessionId });
+    run(async () => {
+      try {
+        const count = await trackAssetTask((async () => {
+          if (!image) return editor.hostImages!(upload, src => canHostImage(target, src));
+          image.setUploading(true);
+          try { return image.replaceSource(await upload(image.src)) ? 1 : 0; }
+          finally { image.setUploading(false); }
+        })());
+        if (count && !await origin.flush()) return;
+        setNotice({ type: "info", text: count ? `已替换 ${count} 张图片为图床链接` : "没有需要替换的图片" });
+      } finally { setImageUpload(null); }
     });
   }
   const actions: DocumentActions = {
@@ -684,6 +783,11 @@ export function DesktopShell() {
     },
     onExportWechat: () => publication("html"),
     onCopyWechat: () => publication("clipboard"),
+    onCopyMarkdown: () => {
+      if (selected) run(async () => { await copy(selected.snapshot().fields.contentMd); setNotice({ type: "info", text: "Markdown 已复制" }); });
+    },
+    onHostImages: selected && imageTarget ? () => hostDocumentImages(selected) : undefined,
+    hostingImages: Boolean(imageUpload),
     publishing,
     onDelete: () => { if (selected) run(() => changeDeleted(selected.entry.id, selected.entry.deletedAt === null)); },
     onDraft: () => { if (selected) run(() => saveConflictCopy(selected.entry.id)); },
@@ -794,7 +898,14 @@ export function DesktopShell() {
     const detachClipboard = attachClipboard((action, target, plainText) => clipboardEvent(action, target, plainText), showError);
     const listener = desktop.onExit(() => { void closingEvent(); });
     const workspaceChanged = desktop.onWorkspaceChanged(() => setRefreshCount(count => count + 1));
+    let targetRequest = 0;
+    function refreshImageTarget() {
+      const request = ++targetRequest;
+      void desktop.imageStorageTarget().then(target => { if (request === targetRequest) setImageTarget(target); }, showError);
+    }
+    refreshImageTarget();
     const assetsChanged = desktop.onAssetsChanged(() => {
+      refreshImageTarget();
       for (const handle of handles.current.values()) handle.retryMissingImages();
     });
     const backupChanged = desktop.onBackupProgress(stage => setBackupWorking(current => current ? backupProgress[stage] : current));
@@ -807,6 +918,7 @@ export function DesktopShell() {
     window.addEventListener("dragover", preventFileNavigation);
     window.addEventListener("drop", preventFileNavigation);
     return () => {
+      targetRequest++;
       detachClipboard();
       window.removeEventListener("keydown", shortcut);
       window.removeEventListener("blur", blur);
@@ -841,7 +953,7 @@ export function DesktopShell() {
   }
   function closeAi() {
     setAiOpen(false);
-    document.getElementById(queue ? "document-action-trigger" : "ai-panel-trigger")?.focus();
+    document.getElementById("ai-panel-trigger")?.focus();
   }
   const aiPanel = aiOpen && !focusMode && !reading && <AiPanel assistant={assistant} origin={origin}
     canGenerate={canGenerate} onGenerate={generateAi} onClose={closeAi} onSettings={showModel} onApply={candidate => {
@@ -849,6 +961,10 @@ export function DesktopShell() {
       const editor = handles.current.get(origin.entry.id);
       if (editor) assistant.apply(candidate, origin, editor);
     }} />;
+  const toast = notice && <WorkspaceToast notice={notice} onReveal={path => run(() => desktop.revealFile(path))}
+    onDismiss={target => setNotice(current => current === target ? null : current)} />;
+  const workspaceNotice = modal?.type !== "settings" && (backupWorking
+    ? <div className="notice" role="status">{backupWorking}</div> : toast);
   return <Theme appearance={appearance === "system" ? systemDark ? "dark" : "light" : appearance} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
     <div className="workspace-shell" inert={Boolean(exitMessage)}>
@@ -865,7 +981,11 @@ export function DesktopShell() {
               <nav className="sidebar-chrome chrome-band" aria-label="工作区导航">
                 <div className="button-strip">
                   {destinations.map(([target, Icon, label]) => <Tool key={target} label={label} className="chrome-icon"
-                    aria-current={target === section ? "page" : undefined} onClick={() => target === "search" ? openSearch() : navigate(target)}>
+                    aria-current={target === section ? "page" : undefined} onClick={() => {
+                      if (target === "search") { openSearch(); return; }
+                      if (target === "folders" && section === "folders") revealFolder(null);
+                      navigate(target);
+                    }}>
                     <Icon size={17} strokeWidth={1.65} />
                   </Tool>)}
                 </div>
@@ -888,26 +1008,21 @@ export function DesktopShell() {
                 }
               }} />
               : <Explorer section={section} library={library} page={page} active={activeId} readOnlyIds={[...readingIds, ...locked]}
-                treeLocked={globalLock} categoryId={categoryId}
+                activeFolder={queue?.entry.deletedAt === null ? queue.snapshot().fields.categoryId : undefined}
+                onCreateCurrent={() => create()}
+                onToggleAll={expand => setExpandedFolders(expand ? (library?.categories ?? []).map(folder => folder.id) : [])}
+                onLocateCurrent={() => { if (queue?.entry.deletedAt === null) revealFolder(queue.snapshot().fields.categoryId); }}
+                treeLocked={globalLock}
                 expanded={expandedFolders} revision={refreshCount} loading={folderLoading} pageSize={folderPageSize} caseSensitive={caseSensitive}
                 query={query} searchInputRef={searchInput} listError={listError} onRetry={refresh}
                 onQuery={value => { setQuery(value); setPage(null); }}
                 onCaseSensitive={value => { setCaseSensitive(value); setPage(null); }}
-                onFolder={toggleFolder} onRoot={() => revealFolder(null)}
+                onFolder={toggleFolder}
                 onImportWechat={showWechatImport} onImportMarkdown={importMarkdown}
                 onCreate={create} onRevealFolder={revealFolder} onSaveFolder={saveFolder} onFolderError={showError}
                 onReorderFolder={reorderFolder} onReorderEntry={reorderEntry} onRenameEntry={renameEntry} onMoveEntry={moveTreeEntry}
                 onCategoryAction={categoryAction}
-                onOpen={id => run(() => open(id))} onRowAction={entryAction} onMore={more} />}
-              <footer className="sidebar-footer">
-                <span>微信创作工作台</span>
-                <div className="button-strip">
-                  <Tool label="回收站" className="chrome-icon" aria-current={section === "trash" ? "page" : undefined}
-                    onClick={() => navigate(section === "trash" ? "folders" : "trash")}><Trash2 size={15} strokeWidth={1.65} /></Tool>
-                  <Tool label="设置" className="chrome-icon" aria-haspopup="dialog" aria-expanded={modal?.type === "settings"}
-                    onClick={event => openSettings("appearance", event.currentTarget)}><Settings size={16} strokeWidth={1.65} /></Tool>
-                </div>
-              </footer>
+                onOpen={(id, newTab) => run(() => open(id, !newTab))} onRowAction={entryAction} onMore={more} />}
             </div>
           </Panel>
           <Separator className="divider sidebar-divider" hidden={!showExplorer} disabled={!showExplorer}
@@ -927,42 +1042,45 @@ export function DesktopShell() {
             {queue ? <>
               <DocumentToolbar queue={queue} categories={library?.categories ?? []} actions={actions}
                 locked={globalLock || locked.includes(queue.entry.id)}
-                display={editorDisplay} onDisplayChange={updateEditorDisplay}
+                display={display} onDisplayChange={updateEditorDisplay}
                 onReveal={id => { navigate("folders"); revealFolder(id); }} />
               <div className="document-body" data-view={viewMode} id="document-body" role="tabpanel" aria-labelledby={`tab-${activeId}`}>
                 <div className="editor-stack" hidden={viewMode === "preview"}>
                   {sessions.map(session => <DocumentEditor key={session.sessionId}
                     queue={session} active={activeId === session.entry.id} reading={readingIds.includes(session.entry.id)}
-                    display={editorDisplay} onDisplayChange={updateEditorDisplay}
+                    display={display} onDisplayChange={updateEditorDisplay}
                     locked={Boolean(exitMessage) || globalLock || locked.includes(session.entry.id)} clipboard={editorClipboard}
                     handle={handle => registerEditor(session.entry.id, handle)}
                     onImages={importImages} onError={showError}
+                    canHost={src => canHostImage(imageTarget, src)} hostBusy={Boolean(imageUpload)}
+                    uploadingSource={imageUpload?.sessionId === session.sessionId ? imageUpload.src : undefined}
+                    onHostImage={image => hostDocumentImages(session, image)}
                     onImageZoom={(image, trigger) => showModal({ type: "imageViewer", ...image }, trigger)} />)}
                 </div>
-                {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={activeId} queue={queue} /></div>}
+                {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks} /></div>}
                 {aiPanel}
+                {workspaceNotice}
               </div>
-              <DocumentStatus key={activeId} queue={queue} actions={actions} />
-            </> : <>
-              <div className="section-bar empty-toolbar">
-                <Tool className="chrome-icon" label={`命令面板（${commandKey}K）`} onClick={actions.onPalette}><ListFilter size={16} /></Tool>
-                {!focusMode && <Tool className="chrome-icon" id="ai-panel-trigger" label="AI 助手" aria-expanded={actions.aiOpen} onClick={toggleAi}><Sparkles size={16} /></Tool>}
-              </div>
-              <div className="document-body"><div className="workbench-empty">
+              <DocumentSaveError key={queue.sessionId} queue={queue} actions={actions} />
+            </> : <div className="document-body">
+              <div className="workbench-empty">
                 <FilePenLine size={25} strokeWidth={1.4} />
                 <h2>还没有打开的内容</h2>
                 <div className="button-strip workbench-empty-actions">
                   <Button size="2" variant="soft" onClick={() => create()}>新建笔记</Button>
                   <Button size="2" variant="soft" color="gray" onClick={() => showWechatImport()}>导入公众号文章</Button>
                 </div>
-              </div>{aiPanel}</div>
-            </>}
-            {backupWorking && modal?.type !== "settings" && <div className="notice" role="status">{backupWorking}</div>}
-            {notice && !backupWorking && <WorkspaceToast notice={notice}
-              onDismiss={target => setNotice(current => current === target ? null : current)} />}
+              </div>
+              {aiPanel}
+              {workspaceNotice}
+            </div>}
           </main>
         </Panel>
       </Group>
+      <StatusBar queue={queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
+        onPalette={trigger => showModal({ type: "palette" }, trigger)}
+        onTrash={() => navigate("trash")}
+        onSettings={trigger => openSettings("appearance", trigger)} />
     </div>
     {exitMessage && <div className="exit-banner" role="status"><span>{exitMessage}</span>{!restoreRestarting && <Button size="1" variant="soft" onClick={() => {
       if (cleaning) {
@@ -975,29 +1093,35 @@ export function DesktopShell() {
     }}>{cleaning ? "停止清理并退出" : exit.current?.restoring ? "取消恢复" : "继续编辑"}</Button>}</div>}
     {!exitMessage && <>
       {modal?.type === "settings" && <>
-        <SettingsDialog initialPage={modal.page} status={backupWorking ?? undefined} onClose={closeModal} renderPage={page => {
+        <SettingsDialog initialPage={modal.page} status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
           if (page === "model") return <ModelSettings />;
           if (page === "mcp") return <McpSettings />;
           if (page === "images") return <ImageStorageSettings track={trackAssetTask} />;
-          if (page === "backups") return <BackupPanel busy={backupWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}
-            listRevision={backupListRevision} prepared={preparedBackup} onCreate={createBackup} onRestore={prepareBackup}
-            onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={() => { if (preparedBackup) run(async () => {
-              await desktop.discardRestore(preparedBackup.ticket);
-              setPreparedBackup(null);
-            }); }} />;
+          if (page === "backups") return <BackupPanel busy={backupWorking !== null || migrationWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}
+            listRevision={backupListRevision} prepared={preparedBackup?.migration ? null : preparedBackup} onCreate={createBackup} onRestore={prepareBackup}
+            onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
+          if (page === "migration") return <MigrationPanel busy={backupWorking !== null || migrationWorking !== null}
+            working={migrationWorking} feedback={migrationFeedback} prepared={preparedBackup?.migration === true}
+            onTransfer={action => void transferWorkspace(action)} onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
           return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} preferredView={preferredView} explorer={explorer}
-            downloadPastedImages={downloadPastedImages} folderLoading={folderLoading} folderPageSize={folderPageSize}
+            downloadPastedImages={downloadPastedImages} convertLinks={convertLinks} folderLoading={folderLoading} folderPageSize={folderPageSize}
             onAppearance={value => { setAppearance(value); persist("appearance", value); }}
             onView={value => { setPreferredView(value); persist("view", value); }}
             onDownloadPastedImages={value => { setDownloadPastedImages(value); persist("download-pasted-images", value); }}
+            onConvertLinks={updateConvertLinks}
             onFolderLoading={value => { setFolderLoading(value); persist("folder-loading", value); }}
             onFolderPageSize={value => { setFolderPageSize(value); persist("folder-page-size", value); }}
             onExplorer={value => { setExplorer(value); persist("explorer", value); }}
             onShortcut={value => { setShortcut(value); persist("view-shortcut", value); }} />;
         }} />
-        {confirmRestore && preparedBackup && <Confirm title="恢复数据库"
-          text={`将使用 ${preparedBackup.workspaceLabel} 在 ${backupDate(preparedBackup.snapshot.createdAt)} 的备份替换当前数据库并重启。恢复后仅保留快照中的内容。图片需从本地文件或图床读取。`}
-          action="恢复并重启" onClose={() => { setConfirmRestore(false); requestAnimationFrame(() => document.getElementById("backup-restore-trigger")?.focus()); }}
+        {confirmRestore && preparedBackup && <Confirm title={preparedBackup.migration ? "恢复工作区" : "恢复数据库"}
+          text={preparedBackup.migration ? "将使用迁移包里的数据库和素材恢复工作区并重启。当前数据库会被替换。"
+            : `将使用 ${preparedBackup.workspaceLabel} 在 ${backupDate(preparedBackup.snapshot.createdAt)} 的备份替换当前数据库并重启。恢复后仅保留快照中的内容。图片需从本地文件或图床读取。`}
+          action="恢复并重启" onClose={() => {
+            setConfirmRestore(false);
+            const trigger = preparedBackup.migration ? "migration-restore-trigger" : "backup-restore-trigger";
+            requestAnimationFrame(() => document.getElementById(trigger)?.focus());
+          }}
           onConfirm={() => finishWorkspace(preparedBackup.ticket)} />}
       </>}
       {modal?.type === "wechatImport" && <WechatImportDialog categoryId={modal.categoryId}
@@ -1028,7 +1152,7 @@ export function DesktopShell() {
   </Theme>;
 }
 
-function ActivePreview({ queue }: { queue: SaveQueue }) {
+function ActivePreview({ queue, projectLinks }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null }) {
   const { fields, revision } = useSyncExternalStore(queue.subscribe, queue.snapshot);
-  return <MarkdownPreview markdown={fields.contentMd} themeId={fields.themeId} revision={revision} />;
+  return <MarkdownPreview markdown={fields.contentMd} themeId={fields.themeId} revision={revision} projectLinks={projectLinks} />;
 }

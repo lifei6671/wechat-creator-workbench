@@ -185,7 +185,7 @@ pub async fn export_markdown(
     state: State<'_, Workspace>,
     assets: State<'_, crate::assets::Assets>,
     id: String,
-) -> Result<bool> {
+) -> Result<Option<String>> {
     let (title, markdown) = state.export_text(&id)?;
     let file_name: String = title
         .trim()
@@ -208,12 +208,12 @@ pub async fn export_markdown(
         crate::assets::publishing::destination(&app, "Markdown", "md", &format!("{file_name}.md"))
             .await?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     assets
         .export_markdown_file(&state, &markdown, &path)
         .await?;
-    Ok(true)
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]

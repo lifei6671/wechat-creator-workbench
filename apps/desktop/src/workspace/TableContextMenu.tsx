@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ContextMenu } from "@radix-ui/themes";
 import {
   AlignCenter, AlignLeft, AlignRight, ArrowDown, ArrowDownAZ, ArrowLeft, ArrowRight, ArrowUp, ArrowUpAZ,
@@ -5,11 +6,13 @@ import {
 } from "lucide-react";
 import type { ClipboardAction, TableAction, TableContext } from "../../../../packages/editor-react";
 
-export function TableContextMenu({ table, readOnly, onAction, onClipboard }: {
+export function TableContextMenu({ table, readOnly, onAction, onClipboard, convertLinkItem, onCloseAutoFocus }: {
   table: TableContext;
   readOnly: boolean;
   onAction(action: TableAction): void;
   onClipboard(action: ClipboardAction): void;
+  convertLinkItem?: ReactNode;
+  onCloseAutoFocus?(event: Event): void;
 }) {
   const { row, column, rows, columns } = table;
   if (table.selectedCells) return <ContextMenu.Content size="1" className="table-context-menu" aria-label="单元格选区操作">
@@ -25,8 +28,9 @@ export function TableContextMenu({ table, readOnly, onAction, onClipboard }: {
       <ContextMenu.Item onSelect={() => onAction("clearCells")}><Eraser size={15} />清空选中的单元格</ContextMenu.Item>
     </>}
   </ContextMenu.Content>;
-  return <ContextMenu.Content size="1" className="table-context-menu" aria-label="表格操作">
+  return <ContextMenu.Content size="1" className="table-context-menu" aria-label="表格操作" onCloseAutoFocus={onCloseAutoFocus}>
     {!readOnly && <>
+      {convertLinkItem}
       <ContextMenu.Sub>
         <ContextMenu.SubTrigger><Rows2 size={15} />行</ContextMenu.SubTrigger>
         <ContextMenu.SubContent>

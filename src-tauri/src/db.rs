@@ -88,6 +88,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008_entry_folder_order.sql"),
     include_str!("../migrations/0009_default_folders.sql"),
     include_str!("../migrations/0010_asset_retention.sql"),
+    include_str!("../migrations/0011_hosted_image_hash.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 

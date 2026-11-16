@@ -1,10 +1,11 @@
 use super::{
-    AssetFile, Assets, by_url, enqueue, image_header, local_error, publication_file, s3::Profile,
+    Assets, by_url, enqueue, image_header, local_error, publication_file,
+    s3::{Profile, Target},
 };
 use crate::db::{AppError, Result, Workspace};
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
-use std::{borrow::Cow, collections::BTreeMap, io::Write, path::Path, time::Duration};
+use serde::{Deserialize, Serialize};
+use std::{borrow::Cow, collections::BTreeMap, io::Write, time::Duration};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -20,17 +21,32 @@ pub struct ImageInfo {
     name: String,
 }
 
+#[derive(Deserialize)]
+pub struct ExportImage {
+    url: String,
+    name: String,
+}
+
 impl Assets {
     pub async fn public_image(&self, db: &Workspace, url: &str) -> Result<String> {
+        self.public_image_for(db, url, None).await
+    }
+
+    pub(super) async fn public_image_for(
+        &self,
+        db: &Workspace,
+        url: &str,
+        expected: Option<&Target>,
+    ) -> Result<String> {
         let upload = db.write(|tx| {
+            let active = Profile::active_for(tx, expected)?;
             let Some(file) = publication_file(tx, url)? else {
                 return Ok(None);
             };
             let hash = file
                 .hash
                 .ok_or_else(|| AppError::new("ASSET_MISSING", "图片尚未下载"))?;
-            let profile =
-                Profile::active(tx)?.ok_or_else(|| AppError::invalid("请先配置 S3 图床"))?;
+            let profile = active.ok_or_else(|| AppError::invalid("请先配置 S3 图床"))?;
             enqueue(tx, &file.id, &hash, &profile.id, true)?;
             Ok(Some((profile.id, hash)))
         })?;
@@ -39,15 +55,15 @@ impl Assets {
         };
         let mut status = self.activity.subscribe();
         self.kick();
-        let public = tokio::time::timeout(Duration::from_secs(90), async {
+        let (public, content_hash) = tokio::time::timeout(Duration::from_secs(90), async {
             loop {
                 let (public, failure) = db.read_running(|conn| {
-                    if Profile::active(conn)?.as_ref().map(|p| p.id.as_str()) != Some(profile.as_str()) {
+                    if Profile::active_for(conn, expected)?.as_ref().map(|p| p.id.as_str()) != Some(profile.as_str()) {
                         return Err(AppError::new("S3_CHANGED", "图床配置已变更，请重新复制"));
                     }
                     let public = conn.query_row(
-                        "SELECT public_url FROM asset_locations WHERE sha256=?1 AND storage_profile_id=?2 AND uploaded_at IS NOT NULL AND deleted_at IS NULL",
-                        params![hash,profile], |r| r.get::<_,String>(0),
+                        "SELECT public_url,COALESCE(content_sha256,sha256) FROM asset_locations WHERE sha256=?1 AND storage_profile_id=?2 AND uploaded_at IS NOT NULL AND deleted_at IS NULL",
+                        params![hash,profile], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)),
                     ).optional()?;
                     let failed = conn.query_row(
                         "SELECT error FROM jobs WHERE kind='upload' AND sha256=?1 AND storage_profile_id=?2 AND status='failed' ORDER BY updated_at DESC LIMIT 1",
@@ -62,20 +78,12 @@ impl Assets {
         }).await.map_err(|_| AppError::new("S3_TIMEOUT","图片仍在上传，请稍后重试"))??;
         let bytes = self.read_public(&public).await?;
         use sha2::{Digest, Sha256};
-        if format!("{:x}", Sha256::digest(bytes)) != hash {
+        if format!("{:x}", Sha256::digest(bytes)) != content_hash {
             return Err(AppError::new("S3_PUBLIC", "公开地址返回的图片与素材不一致"));
         }
+        db.read(|conn| Profile::active_for(conn, expected))?;
         Ok(public)
     }
-}
-
-fn image_name(file: &AssetFile) -> Result<String> {
-    file.path
-        .as_deref()
-        .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str())
-        .map(str::to_owned)
-        .ok_or_else(|| AppError::new("ASSET_MISSING", "图片尚未下载"))
 }
 
 pub async fn destination(
@@ -114,11 +122,15 @@ pub async fn asset_derive(
 }
 
 #[tauri::command]
-pub async fn asset_info(db: State<'_, Workspace>, url: String) -> Result<Option<ImageInfo>> {
+pub async fn asset_info(
+    db: State<'_, Workspace>,
+    assets: State<'_, Assets>,
+    url: String,
+) -> Result<Option<ImageInfo>> {
     db.read(|conn| {
         publication_file(conn, &url)?
             .map(|file| {
-                let name = image_name(&file)?;
+                let name = assets.export_name(conn, &file)?;
                 Ok(ImageInfo { id: file.id, name })
             })
             .transpose()
@@ -164,7 +176,12 @@ pub async fn asset_save_image(
     url: String,
 ) -> Result<bool> {
     let (name, bytes) = match db.read(|conn| by_url(conn, &url)) {
-        Ok(file) => (image_name(&file)?, assets.read_file(&db, &file).await?),
+        Ok(file) => {
+            let bytes = assets.read_file(&db, &file).await?;
+            let (format, ..) = image_header(&bytes)?;
+            let hash = file.hash.as_deref().expect("downloaded asset has a hash");
+            (format!("{hash}.{}", format.extensions_str()[0]), bytes)
+        }
         Err(error) if error.code() == "NOT_FOUND" => {
             let bytes = assets.read(&db, &url).await?;
             let (format, ..) = image_header(&bytes)?;
@@ -186,14 +203,19 @@ pub async fn wechat_export_html(
     db: State<'_, Workspace>,
     assets: State<'_, Assets>,
     html: String,
-    urls: Vec<String>,
+    images: Vec<ExportImage>,
 ) -> Result<bool> {
     let files = db.read(|conn| {
         let mut files = BTreeMap::new();
-        for url in urls {
-            if let Some(file) = publication_file(conn, &url)? {
-                files.insert(image_name(&file)?, file);
+        for image in images {
+            let source_changed =
+                || AppError::new("EXPORT_FAILED", "导出期间图片来源发生变化，请重新导出");
+            let file = publication_file(conn, &image.url)?.ok_or_else(source_changed)?;
+            let name = assets.export_name(conn, &file)?;
+            if name != image.name {
+                return Err(source_changed());
             }
+            files.insert(name, file);
         }
         Ok(files)
     })?;
@@ -216,7 +238,7 @@ pub async fn wechat_export_html(
     zip.start_file("article.html", options).map_err(zip_error)?;
     zip.write_all(html.as_bytes()).map_err(local_error)?;
     for (name, file) in files {
-        let bytes = assets.read_file(&db, &file).await?;
+        let bytes = assets.read_export_file(&db, &file, &name).await?;
         zip.start_file(format!("assets/{name}"), options)
             .map_err(zip_error)?;
         zip.write_all(&bytes).map_err(local_error)?;

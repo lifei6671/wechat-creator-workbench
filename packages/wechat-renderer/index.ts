@@ -47,6 +47,12 @@ export function parseWechat(markdown: string, sources: SourceFragment[]) {
     return `<span data-wechat-fragment="${markerPrefix}${index}"></span>`;
   };
   parser.use(footnote as unknown as PluginSimple);
+  parser.renderer.rules.footnote_block_open = () => '<section class="footnotes">\n<h2 class="plainly-reference-title">参考资料</h2>\n<ol class="footnotes-list">\n';
+  const openFootnote = parser.renderer.rules.footnote_open!;
+  parser.renderer.rules.footnote_open = (tokens, index, options, env, self) => {
+    const caption = self.rules.footnote_caption!(tokens, index, options, env, self);
+    return `${openFootnote(tokens, index, options, env, self)}<span class="plainly-reference-number">${caption}</span>`;
+  };
   parser.use(dollarmath, {
     allow_labels: false, allow_space: false, allow_digits: true, double_inline: true,
   });
@@ -155,7 +161,18 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
     const styleRules = Object.entries(theme.styles).map(([selector, styles]) =>
       `[class="plainly-article"]${selector === "container" ? "" : ` ${selector}`}{${styles}}`);
     const css = styleRules.join("\n")
+      + ".plainly-article mark{background-color:#fff7c2;color:inherit;}"
+      + ".plainly-article blockquote.workbench-callout{padding:8px 12px;border-left-width:0.5px;font-style:normal;}"
+      + ".plainly-article blockquote.workbench-callout-info{background-color:#e6f4fe !important;border-left-color:#8ec8f6;}"
+      + ".plainly-article blockquote.workbench-callout-warning{background-color:#fff7c2 !important;border-left-color:#e9c162;}"
+      + ".plainly-article .workbench-callout-info .workbench-callout-title{color:#0d74ce;}.plainly-article .workbench-callout-warning .workbench-callout-title{color:#ab6400;}"
       + ".plainly-article .plainly-inline-math{display:inline-block;margin:0 2px;vertical-align:middle;width:auto;max-width:100%;border-radius:0;}"
+      + ".plainly-article .plainly-reference-title{margin:28px 0 10px;padding:0;border:0;}"
+      + ".plainly-article .footnotes-list{list-style:none;margin:0;padding:0;}"
+      + ".plainly-article .footnote-item{list-style:none;margin:4px 0;overflow-wrap:anywhere;}"
+      + ".plainly-article .footnote-item>p:first-of-type{display:inline;margin:0 !important;}"
+      + ".plainly-article .plainly-reference-number{display:inline-block;min-width:2.5em;color:#60646c;}"
+      + ".plainly-article .footnotes-list a,.plainly-article .footnote-ref a{color:#60646c !important;border-bottom:0;text-decoration:none;}"
       + ".plainly-article table{width:100%;border-collapse:collapse;}.plainly-article .hljs-keyword,.plainly-article .hljs-title{color:#7047b8;}"
       + ".plainly-article .hljs-string{color:#367848;}.plainly-article .hljs-number{color:#a04e24;}.plainly-article .hljs-comment{color:#626a70;}";
     const template = document.createElement("template");

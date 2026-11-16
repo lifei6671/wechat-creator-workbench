@@ -24,18 +24,22 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
     current: {
       focus: vi.fn(), search: vi.fn(), target: vi.fn(), insert: vi.fn(), replaceTarget: vi.fn(),
       retryMissingImages: vi.fn(),
+      linkFootnoteMarkdown: vi.fn(),
       command: vi.fn(), tableAction: vi.fn(), prepareContext: vi.fn<MarkdownEditorHandle["prepareContext"]>().mockReturnValue(null),
       hasSelection: () => true, clipboard: vi.fn(), contextCaret: vi.fn(),
     } satisfies MarkdownEditorHandle,
   };
   const clipboard: ClipboardIO = { read: vi.fn(), write: vi.fn(), onError: vi.fn() };
-  const display = { limitWidth: true, lineNumbers: false, showTitle: true };
+  const display = { limitWidth: true, lineNumbers: false, showTitle: true, convertLinks: false };
   const onDisplayChange = vi.fn();
+  const onHostImage = vi.fn();
+  let hosting = false;
 
   const menuItems = () => [...document.querySelectorAll<HTMLElement>(".body-context-menu [role=menuitem]")];
   function openMenu(readOnly: boolean, selector = ".test-body", x = 150) {
     flushSync(() => root.render(<Theme>
-      <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={vi.fn()}>
+      <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={vi.fn()}
+        canHost={() => true} hostBusy={hosting} uploadingSource={hosting ? "asset://image" : undefined} onHostImage={onHostImage}>
         <Body />
       </EditorContextMenu>
     </Theme>));
@@ -66,11 +70,15 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
     openMenu(true, ".ProseMirror", 10);
     const options = [...document.querySelectorAll<HTMLElement>(".editor-display-menu [role=menuitemcheckbox]")];
     expect(options.map(item => [item.textContent, item.getAttribute("aria-checked")])).toEqual([
-      ["限制行宽", "true"], ["行号", "false"], ["页面内标题", "true"],
+      ["限制行宽", "true"], ["行号", "false"], ["页面内标题", "true"], ["链接转脚注", "false"],
     ]);
     expect(editor.current.prepareContext).toHaveBeenCalledTimes(3);
     flushSync(() => options[1].click());
     expect(onDisplayChange).toHaveBeenCalledWith("lineNumbers", true);
+    openMenu(false, ".ProseMirror", 10);
+    const convert = [...document.querySelectorAll<HTMLElement>(".editor-display-menu [role=menuitemcheckbox]")].find(item => item.textContent === "链接转脚注")!;
+    flushSync(() => convert.click());
+    expect(onDisplayChange).toHaveBeenCalledWith("convertLinks", true);
 
     editor.current.prepareContext.mockReturnValueOnce("cellText");
     openMenu(false);
@@ -94,7 +102,8 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
     flushSync(() => table[2].click());
     expect(editor.current.tableAction).toHaveBeenCalledWith("sortAscending");
 
-    const image = { kind: "image" as const, src: "asset://image", available: true, remove: vi.fn() };
+    const image = { kind: "image" as const, src: "asset://image", available: true, isCurrent: () => true,
+      isUploading: () => hosting, setUploading: vi.fn(), replaceSource: vi.fn(), remove: vi.fn() };
     const copy = vi.spyOn(desktop, "copyImage").mockResolvedValue(undefined);
     const save = vi.spyOn(desktop, "saveImage").mockResolvedValue(true);
     try {
@@ -105,7 +114,7 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
         return [...document.querySelectorAll<HTMLElement>('[aria-label="图片操作"] [role=menuitem]')];
       }
       let imageItems = openImage(false);
-      expect(imageItems.map(item => item.textContent)).toEqual(["复制图片", "另存为", "移除图片"]);
+      expect(imageItems.map(item => item.textContent)).toEqual(["复制图片", "另存为", "上传到图床", "移除图片"]);
       flushSync(() => imageItems[0].click());
       expect(copy).toHaveBeenCalledExactlyOnceWith("asset://image");
       imageItems = openImage(true);
@@ -114,6 +123,13 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
       expect(save).toHaveBeenCalledExactlyOnceWith("asset://image");
       imageItems = openImage(false);
       flushSync(() => imageItems[2].click());
+      expect(onHostImage).toHaveBeenCalledExactlyOnceWith(image);
+      hosting = true;
+      imageItems = openImage(false);
+      expect(imageItems[2].textContent).toBe("正在上传…");
+      expect(imageItems[2].getAttribute("aria-disabled")).toBe("true");
+      expect(imageItems[2].querySelector(".rich-progress")).not.toBeNull();
+      flushSync(() => imageItems[3].click());
       expect(image.remove).toHaveBeenCalledOnce();
     } finally { copy.mockRestore(); save.mockRestore(); }
   } finally {

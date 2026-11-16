@@ -336,7 +336,7 @@ mod tests {
         for id in ["a", "b"] {
             db.write(|tx| {
                 tx.execute("INSERT INTO storage_profiles VALUES (?1,'images','https://s3.example.test','test','bucket','','https://images.example.test',?1)", [id])?;
-                tx.execute("INSERT INTO asset_locations VALUES (?1,?2,?2,NULL,NULL,NULL)", params![hash, id])?;
+                tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key) VALUES (?1,?2,?2)", params![hash, id])?;
                 Ok(())
             }).unwrap();
         }
@@ -381,7 +381,7 @@ mod tests {
         let hash = file.hash.unwrap();
         db.write(|tx| {
             tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
-            tx.execute("INSERT INTO asset_locations VALUES (?1,'s','key',NULL,1,2)", [&hash])?;
+            tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,uploaded_at,deleted_at) VALUES (?1,'s','key',1,2)", [&hash])?;
             tx.execute("INSERT INTO asset_urls VALUES ('https://images.example.test/old',?1,'s')", [&hash])?;
             tx.execute("INSERT INTO entries (id,kind,title,content_md,status,created_at,updated_at,cover_asset_id,deleted_at)
                 VALUES ('draft','article','','','draft',0,0,?1,1)", [&asset])?;
@@ -406,7 +406,7 @@ mod tests {
         db.write(|tx| {
             tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
             tx.execute("INSERT INTO app_settings VALUES ('image_storage_profile','s')", [])?;
-            tx.execute("INSERT INTO asset_locations VALUES (?1,'s','key','https://images.example.test/key',1,NULL)", [&hash])?;
+            tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at) VALUES (?1,'s','key','https://images.example.test/key',1)", [&hash])?;
             Ok(())
         }).unwrap();
         let group = db

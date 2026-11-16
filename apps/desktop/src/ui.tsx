@@ -1,5 +1,8 @@
-import { IconButton, Tooltip } from "@radix-ui/themes";
+import { IconButton } from "@radix-ui/themes";
 import type { ComponentProps, ReactNode } from "react";
+import { Tooltip } from "../../../packages/ui-react/Tooltip";
+
+export { Tooltip } from "../../../packages/ui-react/Tooltip";
 
 export function Tool({ label, children, ...props }: ComponentProps<typeof IconButton> & { label: string; children: ReactNode }) {
   return <Tooltip content={label}>

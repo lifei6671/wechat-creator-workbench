@@ -15,7 +15,9 @@ use ai::{AiService, ai_cancel, ai_generate, ai_jobs, ai_save_settings, ai_settin
 use assets::{Assets, commands::*, publishing::*};
 use backup::{
     Backups, backup_commit_restore, backup_configure, backup_create, backup_discard_restore,
-    backup_list, backup_prepare_restore, backup_restore_notice, backup_settings, backup_workspaces,
+    backup_export_workspace, backup_import_workspace, backup_list, backup_prepare_restore,
+    backup_restore_notice, backup_settings, backup_take_preferences, backup_use_image_storage,
+    backup_workspaces,
 };
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
@@ -91,6 +93,9 @@ fn main() {
             asset_upload,
             image_storage_save,
             image_storage_test,
+            image_storage_settings,
+            image_storage_target,
+            asset_host_image,
             asset_export,
             cancel_asset_cleanup,
             clipboard_read,
@@ -116,6 +121,10 @@ fn main() {
             ai_jobs,
             backup_settings,
             backup_configure,
+            backup_use_image_storage,
+            backup_export_workspace,
+            backup_import_workspace,
+            backup_take_preferences,
             backup_workspaces,
             backup_list,
             backup_create,
@@ -141,6 +150,37 @@ fn main() {
             request_exit(app);
         }
     });
+}
+
+#[cfg(test)]
+#[test]
+fn registered_commands_are_available_to_the_desktop_window() {
+    let source = include_str!("main.rs");
+    let (_, handler) = source
+        .split_once(".invoke_handler(tauri::generate_handler![")
+        .unwrap();
+    let commands = handler.split_once("])").unwrap().0;
+    let permissions: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/desktop.json")).unwrap();
+    for command in commands
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        assert!(
+            include_str!("../build.rs").contains(&format!("\"{command}\"")),
+            "missing build command {command}"
+        );
+        let permission = format!("allow-{}", command.replace('_', "-"));
+        assert!(
+            permissions["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == permission.as_str()),
+            "missing {permission}"
+        );
+    }
 }
 
 fn request_exit(app: &tauri::AppHandle) {

@@ -10,7 +10,7 @@ export const backupProgress: Record<BackupStage, string> = {
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "medium" });
 const sizeFormat = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
 export const backupDate = (timestamp: number) => dateFormat.format(timestamp);
-export interface PreparedBackup { ticket: string; snapshot: BackupSnapshot; workspaceLabel: string }
+export type PreparedBackup = { ticket: string; snapshot: BackupSnapshot; workspaceLabel: string; migration?: false };
 
 export function BackupPanel({ busy, progress, feedback, listRevision, prepared, onCreate, onRestore, onConfirmRestore, onDiscardRestore }: {
   busy: boolean;
@@ -92,7 +92,8 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
         <p className="inline-error" role="alert">{error}</p>
         <Button size="1" variant="ghost" onClick={() => setRefresh(value => value + 1)}>重试读取</Button>
       </div>}
-      {prepared && <SettingRow label="已校验的备份" hint={`${prepared.workspaceLabel} ${backupDate(prepared.snapshot.createdAt)}`}>
+      {prepared && <SettingRow label="已校验的备份"
+        hint={`${prepared.workspaceLabel} ${backupDate(prepared.snapshot.createdAt)}`}>
         <div className="button-strip setting-actions">
           <Button id="backup-restore-trigger" size="1" variant="soft" disabled={busy} onClick={onConfirmRestore}>确认恢复</Button>
           <Button size="1" variant="ghost" color="gray" disabled={busy} onClick={onDiscardRestore}>取消</Button>
@@ -131,6 +132,13 @@ function BackupStorageSettings({ initial, onCancel, onSaved }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  async function reuse() {
+    setBusy(true);
+    setError("");
+    try { await desktop.backupUseImageStorage(); onSaved(); }
+    catch (failure) { setError(errorMessage(failure)); }
+    finally { setBusy(false); }
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const { target, secret } = readS3Settings(new FormData(event.currentTarget));
@@ -146,6 +154,7 @@ function BackupStorageSettings({ initial, onCancel, onSaved }: {
     <S3Fields scope="backup" initial={initial.target} hasKey={initial.hasKey} />
     {error && <p role="alert" className="settings-feedback inline-error">{error}</p>}
     <div className="settings-footer">
+      <Button type="button" variant="soft" disabled={busy} onClick={() => void reuse()}>复用 S3 图床配置</Button>
       <Button type="button" variant="soft" color="gray" disabled={busy} onClick={onCancel}>取消</Button>
       <Button type="submit" loading={busy}>保存</Button>
     </div>

@@ -40,7 +40,9 @@ export interface Entry extends EntryRow, EntryFields {
   version: number;
   links: EntryRow[];
 }
+export const entrySortOrders = ["name", "nameDesc", "updated", "updatedAsc", "created", "createdAsc"] as const;
 export interface EntryFilter {
+  sort?: typeof entrySortOrders[number];
   kind?: EntryKind;
   categoryId?: string;
   exactCategory?: boolean;

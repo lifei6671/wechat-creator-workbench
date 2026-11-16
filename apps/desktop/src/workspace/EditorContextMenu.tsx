@@ -1,10 +1,10 @@
 import { useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { Button, ContextMenu, Dialog, TextField } from "@radix-ui/themes";
 import {
-  Bold, CaseSensitive, Clipboard, ClipboardType, Code2, Copy, FileCode2, FileDown, Heading, ImageMinus, Italic, Link2, List, ListOrdered,
+  Bold, CaseSensitive, Clipboard, ClipboardType, CloudUpload, Code2, Copy, FileCode2, FileDown, Heading, ImageMinus, Italic, Link2, List, ListOrdered,
   ListPlus, Minus, Pilcrow, Quote, Redo2, Ruler, Scan, Scissors, Sigma, Strikethrough, Table2, Undo2,
 } from "lucide-react";
-import type { ClipboardIO, EditorCommand, ImageContext, MarkdownEditorHandle, TableContext } from "../../../../packages/editor-react";
+import type { ClipboardIO, EditorCommand, ImageContext, LinkContext, MarkdownEditorHandle, TableContext } from "../../../../packages/editor-react";
 import { desktop } from "../desktop";
 import { TableContextMenu } from "./TableContextMenu";
 
@@ -12,33 +12,54 @@ export interface EditorDisplay {
   limitWidth: boolean;
   lineNumbers: boolean;
   showTitle: boolean;
+  convertLinks: boolean;
 }
 
 export const editorDisplayItems = [
   ["limitWidth", "限制行宽", Ruler],
   ["lineNumbers", "行号", ListOrdered],
   ["showTitle", "页面内标题", CaseSensitive],
+  ["convertLinks", "链接转脚注", FileCode2],
 ] as const;
 
-export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, children }: {
+export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, canHost, hostBusy, uploadingSource, onHostImage, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
   readOnly: boolean;
   display: EditorDisplay;
   onDisplayChange(option: keyof EditorDisplay, checked: boolean): void;
   onError(error: unknown): void;
+  canHost?(src: string): boolean;
+  hostBusy?: boolean;
+  uploadingSource?: string;
+  onHostImage?(image: ImageContext): void;
   children: ReactNode;
 }) {
   const [selected, setSelected] = useState(false);
   const [ready, setReady] = useState(false);
   const [menu, setMenu] = useState<"display" | "body" | "code" | "cellText" | "object" | TableContext | ImageContext>("body");
+  const [linkContext, setLinkContext] = useState<LinkContext | null>(null);
   const [addLink, setAddLink] = useState(false);
   const [invalid, setInvalid] = useState(false);
   const linkOrigin = useRef<MarkdownEditorHandle | null>(null);
+  const afterMenuClose = useRef<(() => void) | null>(null);
+  const uploadingImage = typeof menu === "object" && "kind" in menu && menu.src === uploadingSource && menu.isUploading();
 
   function command(action: EditorCommand, value?: string) {
     editor.current?.command(action, value);
   }
+
+  function finishContextAction(event: Event) {
+    const action = afterMenuClose.current;
+    afterMenuClose.current = null;
+    if (!action) return;
+    event.preventDefault();
+    action();
+  }
+
+  const convertLinkItem = !readOnly && linkContext && <ContextMenu.Item onSelect={() => { afterMenuClose.current = linkContext.convert; }}>
+    <FileCode2 size={15} />将链接转为脚注
+  </ContextMenu.Item>;
 
   function link(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,6 +76,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
     <ContextMenu.Root onOpenChange={open => { if (!open) editor.current?.contextCaret?.(false); }}>
       <ContextMenu.Trigger onContextMenu={event => {
         const target = event.target as Element;
+        setLinkContext(null);
         if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
           event.preventDefault();
           return;
@@ -69,7 +91,11 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
           }
         }
         const handle = editor.current;
-        const context = handle?.prepareContext(event.nativeEvent) ?? "body";
+        let context: NonNullable<ReturnType<MarkdownEditorHandle["prepareContext"]>> | "body" = handle?.prepareContext(event.nativeEvent) ?? "body";
+        if (typeof context === "object" && "kind" in context && context.kind === "link") {
+          setLinkContext(context);
+          context = context.scope;
+        }
         if (context === "body" || context === "code" || context === "cellText") handle?.contextCaret?.(true);
         setMenu(context);
         setReady(Boolean(handle));
@@ -80,8 +106,13 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
       {typeof menu === "object" ? ("kind" in menu ? <ContextMenu.Content size="1" aria-label="图片操作">
         <ContextMenu.Item disabled={!menu.available} onSelect={() => { void desktop.copyImage(menu.src).catch(onError); }}><Copy size={15} />复制图片</ContextMenu.Item>
         <ContextMenu.Item disabled={!menu.available} onSelect={() => { void desktop.saveImage(menu.src).catch(onError); }}><FileDown size={15} />另存为</ContextMenu.Item>
+        {!readOnly && (uploadingImage || (menu.isCurrent() && canHost?.(menu.src))) && <ContextMenu.Item disabled={uploadingImage || hostBusy}
+          onSelect={() => onHostImage?.(menu)}>
+          {uploadingImage ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={15} />}
+          {uploadingImage ? "正在上传…" : "上传到图床"}
+        </ContextMenu.Item>}
         {!readOnly && <ContextMenu.Item onSelect={menu.remove}><ImageMinus size={15} />移除图片</ContextMenu.Item>}
-      </ContextMenu.Content> : <TableContextMenu table={menu} readOnly={readOnly}
+      </ContextMenu.Content> : <TableContextMenu table={menu} readOnly={readOnly} convertLinkItem={convertLinkItem} onCloseAutoFocus={finishContextAction}
         onAction={action => editor.current?.tableAction(action)} onClipboard={action => editor.current?.clipboard(action, clipboard)} />)
       : menu === "object" ? <ContextMenu.Content size="1" aria-label="内容块操作">
         {!readOnly && <ContextMenu.Item onSelect={() => editor.current?.clipboard("cut", clipboard)}><Scissors size={15} />剪切</ContextMenu.Item>}
@@ -91,8 +122,10 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         {editorDisplayItems.map(([option, label, Icon]) => <ContextMenu.CheckboxItem key={option} checked={display[option]}
           onCheckedChange={checked => onDisplayChange(option, checked)}><Icon size={15} />{label}</ContextMenu.CheckboxItem>)}
       </ContextMenu.Content> : <ContextMenu.Content size="1" className="body-context-menu"
+        onCloseAutoFocus={finishContextAction}
         aria-label={menu === "code" ? "代码块操作" : menu === "cellText" ? "单元格文字操作" : "正文编辑操作"}>
         {!readOnly && menu !== "code" && <>
+          {convertLinkItem}
           <ContextMenu.Item disabled={!ready} onSelect={() => {
             linkOrigin.current = editor.current;
             setInvalid(false);
@@ -125,7 +158,10 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
           <ContextMenu.Sub>
             <ContextMenu.SubTrigger disabled={!ready}><ListPlus size={15} />插入</ContextMenu.SubTrigger>
             <ContextMenu.SubContent>
-              <ContextMenu.Item onSelect={() => command("footnote")}><FileCode2 size={15} />脚注</ContextMenu.Item>
+              <ContextMenu.Item onSelect={() => {
+                const origin = editor.current;
+                afterMenuClose.current = () => { if (origin && origin === editor.current) origin.command("footnote"); };
+              }}><FileCode2 size={15} />脚注</ContextMenu.Item>
               <ContextMenu.Item onSelect={() => command("table")}><Table2 size={15} />表格</ContextMenu.Item>
               <ContextMenu.Item onSelect={() => command("horizontalRule")}><Minus size={15} />分隔线</ContextMenu.Item>
               <ContextMenu.Separator />

@@ -129,7 +129,7 @@ fn folder_entry_order_survives_saves_and_restart_without_leaking_between_folders
         let entry = db.create_entry(Kind::Article, Some(fields), None).unwrap();
         db.write(|tx| {
             tx.execute(
-                "UPDATE entries SET updated_at=?2 WHERE id=?1",
+                "UPDATE entries SET updated_at=?2,created_at=100-?2 WHERE id=?1",
                 params![entry.row.id, rank],
             )?;
             Ok(())
@@ -161,6 +161,39 @@ fn folder_entry_order_survives_saves_and_restart_without_leaking_between_folders
             first.row.id.clone()
         ]
     );
+    let sorted = db
+        .entries(Filter {
+            sort: Some(EntrySort::Name),
+            exact_category: true,
+            limit: std::num::NonZeroU32::new(2),
+            ..Filter::default()
+        })
+        .unwrap();
+    assert_eq!(sorted.next_offset, Some(2));
+    assert_eq!(sorted.items[0].id, first.row.id);
+    assert_eq!(sorted.items[1].id, third.row.id);
+    for (sort, expected) in [
+        (EntrySort::NameDesc, [&second, &third, &first]),
+        (EntrySort::Updated, [&third, &second, &first]),
+        (EntrySort::UpdatedAsc, [&first, &second, &third]),
+        (EntrySort::Created, [&first, &second, &third]),
+        (EntrySort::CreatedAsc, [&third, &second, &first]),
+    ] {
+        let page = db
+            .entries(Filter {
+                sort: Some(sort),
+                exact_category: true,
+                ..Filter::default()
+            })
+            .unwrap();
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            expected.map(|entry| entry.row.id.as_str())
+        );
+    }
     db.reorder_entry(&first.row.id, &third.row.id, Before)
         .unwrap();
     db.reorder_entry(&second.row.id, &first.row.id, After)

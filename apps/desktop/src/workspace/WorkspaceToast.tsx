@@ -1,10 +1,10 @@
 import { useEffect, useEffectEvent, useState } from "react";
-import { CircleAlert, CircleCheck, X } from "lucide-react";
+import { CircleAlert, CircleCheck, FolderOpen, X } from "lucide-react";
 import { Tool } from "../ui";
 
-export type Notice = { type: "error" | "info"; text: string };
+export type Notice = { type: "error" | "info"; text: string; path?: string };
 
-export function WorkspaceToast({ notice, onDismiss }: { notice: Notice; onDismiss(notice: Notice): void }) {
+export function WorkspaceToast({ notice, onDismiss, onReveal }: { notice: Notice; onDismiss(notice: Notice): void; onReveal?(path: string): void }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const [leaving, setLeaving] = useState<Notice | null>(null);
@@ -31,6 +31,8 @@ export function WorkspaceToast({ notice, onDismiss }: { notice: Notice; onDismis
     }}>
     <Icon className="toast-icon" size={16} aria-hidden="true" />
     <span role={notice.type === "error" ? "alert" : "status"}>{notice.text}</span>
+    {notice.path && onReveal && <Tool className="chrome-icon toast-close" label="在文件管理器中显示"
+      onClick={() => onReveal(notice.path!)}><FolderOpen size={15} /></Tool>}
     <Tool className="chrome-icon toast-close" label="关闭通知" onClick={() => setLeaving(notice)}><X size={14} /></Tool>
   </div>;
 }

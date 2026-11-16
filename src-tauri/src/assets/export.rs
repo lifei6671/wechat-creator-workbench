@@ -12,12 +12,12 @@ impl Assets {
         markdown: &str,
         path: &Path,
     ) -> Result<()> {
-        let (rewritten, files) = db.read(|conn| prepare(conn, markdown))?;
+        let (rewritten, files) = db.read(|conn| prepare(self, conn, markdown))?;
         let parent = path.parent().expect("save dialog returns an absolute path");
         if !files.is_empty() {
             std::fs::create_dir_all(parent.join("assets")).map_err(local_error)?;
             for (name, file) in files {
-                let bytes = self.read_file(db, &file).await?;
+                let bytes = self.read_export_file(db, &file, &name).await?;
                 std::fs::write(parent.join(name), bytes).map_err(local_error)?;
             }
         }
@@ -37,8 +37,8 @@ impl Assets {
                 "SELECT title,content_md,kind,status,version,updated_at,cover_asset_id FROM entries WHERE id=?1", [entry],
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
             )?;
-            let (markdown, mut assets) = prepare(conn, &body)?;
-            let cover = cover.map(|id| add_file(&mut assets, by_id(conn, &id)?)).transpose()?;
+            let (markdown, mut assets) = prepare(self, conn, &body)?;
+            let cover = cover.map(|id| add_file(self, conn, &mut assets, by_id(conn, &id)?)).transpose()?;
             let metadata = json!({"entryId": entry, "title": title, "kind": kind, "status": status,
                 "version": version, "updatedAt": updated, "cover": cover});
             Ok((markdown, assets, metadata))
@@ -57,7 +57,7 @@ impl Assets {
         )
         .map_err(local_error)?;
         for (name, asset) in assets {
-            let bytes = self.read_file(db, &asset).await?;
+            let bytes = self.read_export_file(db, &asset, &name).await?;
             zip.start_file(name, options).map_err(zip_error)?;
             zip.write_all(&bytes).map_err(local_error)?;
         }
@@ -67,7 +67,11 @@ impl Assets {
     }
 }
 
-fn prepare(conn: &Connection, markdown: &str) -> Result<(String, BTreeMap<String, AssetFile>)> {
+fn prepare(
+    media: &Assets,
+    conn: &Connection,
+    markdown: &str,
+) -> Result<(String, BTreeMap<String, AssetFile>)> {
     let mut assets = BTreeMap::new();
     let mut resolved = BTreeMap::new();
     let mut resolve = |url: &str| -> Result<Option<String>> {
@@ -84,7 +88,7 @@ fn prepare(conn: &Connection, markdown: &str) -> Result<(String, BTreeMap<String
         let Some(file) = file else {
             return Ok(None);
         };
-        let name = add_file(&mut assets, file)?;
+        let name = add_file(media, conn, &mut assets, file)?;
         resolved.insert(url.to_owned(), name.clone());
         Ok(Some(name))
     };
@@ -136,20 +140,13 @@ fn prepare(conn: &Connection, markdown: &str) -> Result<(String, BTreeMap<String
     Ok((output, assets))
 }
 
-fn add_file(assets: &mut BTreeMap<String, AssetFile>, file: AssetFile) -> Result<String> {
-    let (hash, mime) = file
-        .hash
-        .as_deref()
-        .zip(file.mime.as_deref())
-        .ok_or_else(|| AppError::new("ASSET_MISSING", format!("素材文件尚未就绪：{}", file.id)))?;
-    let extension = match mime {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => return Err(AppError::new("IMAGE_FORMAT", "无法导出此图片格式")),
-    };
-    let name = format!("assets/{hash}.{extension}");
+fn add_file(
+    media: &Assets,
+    conn: &Connection,
+    assets: &mut BTreeMap<String, AssetFile>,
+    file: AssetFile,
+) -> Result<String> {
+    let name = format!("assets/{}", media.export_name(conn, &file)?);
     assets.entry(name.clone()).or_insert(file);
     Ok(name)
 }

@@ -101,6 +101,7 @@ pub struct Entry {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
+    pub sort: Option<EntrySort>,
     pub kind: Option<Kind>,
     pub status: Option<String>,
     pub category_id: Option<String>,
@@ -114,6 +115,17 @@ pub struct Filter {
     pub wechat_imported: bool,
     pub offset: i64,
     pub limit: Option<NonZeroU32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EntrySort {
+    Name,
+    NameDesc,
+    Updated,
+    UpdatedAsc,
+    Created,
+    CreatedAsc,
 }
 
 #[derive(Serialize)]
@@ -240,10 +252,14 @@ impl Workspace {
             if let Some(search) = filter.workspace_search {
                 search.apply(conn, &mut sql, &mut values)?;
             }
-            sql.push_str(if filter.exact_category && !filter.deleted {
-                " ORDER BY e.folder_sort_order ASC NULLS LAST, e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?"
-            } else {
-                " ORDER BY e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?"
+            sql.push_str(match filter.sort {
+                Some(EntrySort::Name) => " ORDER BY e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?",
+                Some(EntrySort::NameDesc) => " ORDER BY e.title COLLATE NOCASE DESC, e.id DESC LIMIT ? OFFSET ?",
+                Some(EntrySort::UpdatedAsc) => " ORDER BY e.updated_at ASC, e.id DESC LIMIT ? OFFSET ?",
+                Some(EntrySort::Created) => " ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
+                Some(EntrySort::CreatedAsc) => " ORDER BY e.created_at ASC, e.id DESC LIMIT ? OFFSET ?",
+                None if filter.exact_category && !filter.deleted => " ORDER BY e.folder_sort_order ASC NULLS LAST, e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
+                Some(EntrySort::Updated) | None => " ORDER BY e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
             });
             let limit = filter.limit.map_or(PAGE_SIZE, |limit| i64::from(limit.get()));
             values.push((limit + 1).into());

@@ -30,6 +30,8 @@ pub(super) struct Files {
 pub(super) struct PendingRestore {
     pub workspace: String,
     pub name: String,
+    #[serde(default)]
+    pub migration: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -84,7 +86,12 @@ impl Files {
                 db,
                 RestoreNotice {
                     failed: false,
-                    message: "数据库已恢复".into(),
+                    message: if pending.migration.is_some() {
+                        "工作区已恢复"
+                    } else {
+                        "数据库已恢复"
+                    }
+                    .into(),
                 },
             ),
             Err(error) => {
@@ -101,10 +108,14 @@ impl Files {
         remove_if_present(&self.incoming)?;
         fs::remove_file(&self.marker).map_err(file_error)?;
         remove_if_present(&self.previous)?;
+        self.discard_migration(&pending);
         Ok((db, Some(notice)))
     }
 
     fn install(&self, pending: &PendingRestore) -> Result<Workspace> {
+        if let Some(stage) = self.migration_path(pending)? {
+            super::migration::install_assets(&stage, &self.database.with_file_name("assets"))?;
+        }
         if self.incoming.try_exists().map_err(file_error)? {
             validate_file(&self.incoming, &pending.workspace)?;
             if !self.previous.try_exists().map_err(file_error)? {
@@ -149,6 +160,35 @@ impl Files {
 
     pub(super) fn discard_marker(&self) -> Result<()> {
         fs::remove_file(&self.marker).map_err(file_error)
+    }
+
+    pub(super) fn migration_path(&self, pending: &PendingRestore) -> Result<Option<PathBuf>> {
+        pending
+            .migration
+            .as_ref()
+            .map(|name| {
+                if !name.starts_with("migration-")
+                    || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return Err(AppError::invalid("迁移暂存目录无效"));
+                }
+                Ok(self.stage.join(name))
+            })
+            .transpose()
+    }
+
+    pub(super) fn discard_migration(&self, pending: &PendingRestore) {
+        match self.migration_path(pending) {
+            Ok(Some(path)) => {
+                if let Err(error) = fs::remove_dir_all(path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    eprintln!("无法清理迁移暂存目录：{error}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("无法清理迁移暂存目录：{error}"),
+        }
     }
 }
 
@@ -287,7 +327,7 @@ fn validate_asset_paths(conn: &Connection, workspace: &str) -> Result<()> {
         let Some((parent, name)) = key.rsplit_once('/') else {
             return Err(invalid());
         };
-        if parent != expected || !qualified(&hash, name) {
+        if parent != expected || !crate::assets::upload_format::original_name(name, &hash) {
             return Err(invalid());
         }
     }

@@ -10,7 +10,7 @@ import { DocumentEditor, DocumentTabs, DocumentToolbar, type DocumentActions } f
 import { WechatImportDialog } from "./Publishing";
 import { PropertiesDialog } from "./Dialogs";
 
-const display = { limitWidth: true, lineNumbers: false, showTitle: true };
+const display = { limitWidth: true, lineNumbers: false, showTitle: true, convertLinks: false };
 const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
 const entry = (id: string, title: string): Entry => ({
   id, kind: "article", title, contentMd: "# 示例正文", status: "draft", categoryId: null, tags: [], summary: "",

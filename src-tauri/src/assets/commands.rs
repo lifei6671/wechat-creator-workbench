@@ -1,9 +1,11 @@
 use super::{
     AssetLibrary, Assets,
     s3::{Secret, Target},
+    upload_format::UploadOptions,
 };
 use crate::db::{AppError, Result, Workspace};
 use crate::wechat_import::Imports;
+use serde::Serialize;
 use tauri::{
     AppHandle, Emitter, State,
     ipc::{InvokeBody, Request, Response},
@@ -110,8 +112,9 @@ pub async fn image_storage_save(
     assets: State<'_, Assets>,
     target: Option<Target>,
     secret: Option<Secret>,
+    options: Option<UploadOptions>,
 ) -> Result<()> {
-    assets.configure(&db, target, secret)?;
+    assets.configure(&db, target, secret, options)?;
     assets.kick();
     let _ = app.emit("assets-changed", ());
     Ok(())
@@ -125,6 +128,64 @@ pub async fn image_storage_test(
     secret: Option<Secret>,
 ) -> Result<()> {
     assets.test(&db, target, secret).await
+}
+
+#[derive(Serialize)]
+pub struct ImageStorageSettings {
+    target: Option<Target>,
+    enabled: bool,
+    secret: Option<Secret>,
+    options: UploadOptions,
+}
+
+#[tauri::command]
+pub fn image_storage_target(db: State<'_, Workspace>) -> Result<Option<Target>> {
+    Ok(db
+        .read(super::s3::Profile::active)?
+        .map(|profile| profile.target))
+}
+
+#[tauri::command]
+pub fn image_storage_settings(
+    window: tauri::WebviewWindow,
+    db: State<'_, Workspace>,
+) -> Result<ImageStorageSettings> {
+    if window.label() != "main" {
+        return Err(AppError::invalid("请在主窗口打开图床设置"));
+    }
+    let (profile, enabled) = Assets::settings_profile(&db)?;
+    let secret = profile.as_ref().and_then(|profile| profile.secret().ok());
+    let options = match &profile {
+        Some(profile) => db.read(|conn| profile.upload_options(conn))?,
+        None => UploadOptions::default(),
+    };
+    Ok(ImageStorageSettings {
+        target: profile.map(|profile| profile.target),
+        enabled,
+        secret,
+        options,
+    })
+}
+
+#[tauri::command]
+pub async fn asset_host_image(
+    app: AppHandle,
+    db: State<'_, Workspace>,
+    assets: State<'_, Assets>,
+    url: String,
+    target: Target,
+) -> Result<String> {
+    db.read(|conn| super::s3::Profile::active_for(conn, Some(&target)))?;
+    let localized = if url.starts_with("asset://") {
+        url
+    } else {
+        assets.localize_for(&db, &url, Some(&target)).await?
+    };
+    let hosted = assets
+        .public_image_for(&db, &localized, Some(&target))
+        .await?;
+    let _ = app.emit("assets-changed", ());
+    Ok(hosted)
 }
 
 #[tauri::command]

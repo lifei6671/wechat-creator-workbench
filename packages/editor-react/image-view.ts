@@ -8,17 +8,25 @@ export interface ImageContext {
   kind: "image";
   src: string;
   available: boolean;
+  isCurrent(): boolean;
+  isUploading(): boolean;
+  setUploading(uploading: boolean): void;
+  replaceSource(url: string): boolean;
   remove(): void;
 }
 
 const imageContexts = new WeakMap<Element, () => ImageContext>();
 
+export function imageContext(target: Node | null) {
+  return target instanceof Element ? imageContexts.get(target)?.() ?? null : null;
+}
+
 export function prepareImageContext(view: EditorView, event: MouseEvent): ImageContext | null {
   const { selection } = view.state;
-  const target = event.button === 2 || event.ctrlKey
-    ? event.target instanceof Element && event.target.closest(".rich-image-frame")?.parentElement
-    : selection instanceof NodeSelection ? view.nodeDOM(selection.from) : null;
-  return target instanceof Element ? imageContexts.get(target)?.() ?? null : null;
+  if (event.button === 2 || event.ctrlKey) {
+    return event.target instanceof Element ? imageContext(event.target.closest(".rich-image-frame")?.parentElement ?? null) : null;
+  }
+  return selection instanceof NodeSelection ? imageContext(view.nodeDOM(selection.from)) : null;
 }
 
 export interface EditorImages {
@@ -33,7 +41,7 @@ const iconPaths = {
   source: "m18 16 4-4-4-4M6 8l-4 4 4 4M14.5 4l-5 16",
 };
 
-function iconButton(label: string, icon: keyof typeof iconPaths) {
+export function editorIconButton(label: string, icon: keyof typeof iconPaths) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "plain-button chrome-icon";
@@ -74,8 +82,27 @@ export function imageView(
   frame.className = "rich-image-frame";
   const media = document.createElement("span");
   media.className = "rich-image-media";
+  const uploadStatus = document.createElement("span");
+  uploadStatus.className = "rich-image-upload rich-progress";
+  uploadStatus.setAttribute("role", "status");
+  uploadStatus.setAttribute("aria-label", "正在上传到图床");
+  uploadStatus.hidden = true;
+  function currentPosition() {
+    if (view.isDestroyed || !view.editable) return;
+    const pos = getPos();
+    if (pos !== undefined && view.state.doc.nodeAt(pos) === node) return pos;
+  }
   imageContexts.set(dom, () => ({
     kind: "image", src: node.attrs.src, available: media.firstElementChild instanceof HTMLImageElement,
+    isCurrent: () => currentPosition() !== undefined,
+    isUploading: () => !uploadStatus.hidden,
+    setUploading: uploading => { uploadStatus.hidden = !uploading; },
+    replaceSource(url) {
+      const pos = currentPosition();
+      if (pos === undefined || url === node.attrs.src) return false;
+      view.dispatch(view.state.tr.setNodeAttribute(pos, "src", url));
+      return true;
+    },
     remove() {
       const pos = getPos();
       if (pos === undefined || !view.editable) return;
@@ -99,13 +126,13 @@ export function imageView(
 
   const controls = document.createElement("span");
   controls.className = "rich-image-controls";
-  const zoom = iconButton("放大图片", "zoom");
+  const zoom = editorIconButton("放大图片", "zoom");
   zoom.disabled = true;
-  const source = iconButton("图片源码", "source");
+  const source = editorIconButton("图片源码", "source");
   source.classList.add("rich-image-source-toggle");
   source.setAttribute("aria-expanded", "false");
   controls.append(zoom, source);
-  frame.append(media, controls);
+  frame.append(media, uploadStatus, controls);
   dom.append(frame);
 
   const sourcePanel = document.createElement("span");
@@ -182,6 +209,7 @@ export function imageView(
       failedImages.delete(load);
       retryButton.setAttribute("aria-disabled", "true");
       message.textContent = "正在加载图片…";
+      status.classList.add("rich-progress");
       const request = manual ? resolveImage(node.attrs.src, true) : resolveImage(node.attrs.src);
       void request.then(image => {
         if (destroyed) { image.dispose(); return; }
@@ -202,6 +230,7 @@ export function imageView(
         }
       }).catch(failure => {
         if (destroyed) return;
+        status.classList.remove("rich-progress");
         if (node.attrs.src.startsWith("asset://")) failedImages.add(load);
         message.textContent = [alt, getOptions().imageErrorMessage?.(failure) ?? "图片无法显示"].filter(Boolean).join(" — ");
         retryButton.hidden = false;

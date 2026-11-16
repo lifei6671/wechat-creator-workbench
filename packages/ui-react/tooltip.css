@@ -1,0 +1,15 @@
+.workspace-tooltip {
+  z-index: 10;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 4px 8px;
+  color: var(--gray-1);
+  background: var(--gray-12);
+  border-radius: 4px;
+  font: 12px/1.4 var(--default-font-family);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+}
+
+.workspace-tooltip[data-placement="top"] > svg { translate: 0 -1px; }
+.workspace-tooltip[data-placement="bottom"] > svg { translate: 0 1px; }

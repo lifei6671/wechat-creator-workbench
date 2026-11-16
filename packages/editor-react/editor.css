@@ -44,26 +44,49 @@
 .rich-editor :is(ul, ol) { padding-inline-start: 24px; }
 .rich-editor li > p { margin: 0; }
 .rich-editor blockquote { margin-inline: 0; padding-inline: 12px; border-inline-start: var(--hairline); color: var(--text-muted); }
-.rich-editor code { font-size: inherit; background: var(--gray-3); }
+.rich-editor blockquote[data-callout] {
+  padding-block: 6px; border-inline-start-color: var(--callout-border); background: var(--callout-bg); color: var(--text-main);
+}
+.rich-editor blockquote[data-callout] > :last-child { margin-block-end: 0; }
+.rich-editor blockquote[data-callout="info"] { --callout-bg: var(--blue-a3); --callout-border: var(--blue-a7); --callout-title: var(--blue-11); }
+.rich-editor blockquote[data-callout="warning"] { --callout-bg: var(--amber-a3); --callout-border: var(--amber-a7); --callout-title: var(--amber-11); }
+.rich-callout-title { color: var(--callout-title); font-weight: 600; }
+.rich-callout-marker { font-size: 0; }
+.rich-callout-marker[data-callout-label]::before { content: attr(data-callout-label); font-size: var(--workspace-font); }
+.rich-callout-break { display: block; height: 0; }
+.rich-callout-source .rich-callout-marker { font-size: inherit; }
+.rich-callout-source .rich-callout-marker::before { content: none; }
+.rich-editor :not(pre) > code { font-size: .9em; padding: .12em .3em; border-radius: 3px; background: var(--gray-3); }
+.rich-editor mark { color: inherit; background: var(--amber-a5); }
 .rich-editor pre { padding: 12px; background: var(--gray-3); white-space: pre-wrap; }
 .rich-code-block { position: relative; margin-block: .85em; }
 .rich-code-block pre { margin: 0; border-radius: 6px; font-size: var(--workspace-font); padding: 12px 16px; }
+.rich-code-block.rich-code-active pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+.rich-code-block.rich-code-active code { font-family: inherit; }
 .rich-code-block code { display: block; background: transparent; }
 .rich-code-language {
   float: inline-end; margin-block-start: -6px; margin-inline: 8px -8px; max-width: 45%;
+  padding: 2px 4px; border: 0; border-radius: 4px; background: transparent;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none;
   font: var(--small-font)/1.5 var(--writing-font); color: var(--text-muted);
 }
-.rich-code-block:is(.rich-code-active, :focus-within) .rich-code-language { display: none; }
+button.rich-code-language:hover { background: var(--gray-a4); }
+.rich-code-language-passive { display: none; }
+.rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-language { display: none; }
 .rich-code-fence { display: none; color: var(--gray-11); user-select: none; }
 .rich-code-fence::before { content: attr(data-markdown); }
-.rich-code-block:is(.rich-code-active, :focus-within) .rich-code-fence { display: block; }
+.rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-fence { display: block; }
 .rich-code-fence-open input {
   width: auto; min-width: 4ch; max-width: calc(100% - 4ch); field-sizing: content;
   background: transparent; color: var(--text-main); padding: 0; border: 0; font: inherit;
 }
 .rich-code-fence-open input:focus { outline: none; box-shadow: inset 0 -0.5px var(--accent-8); }
-.rich-editor .ProseMirror[contenteditable="false"] .rich-code-fence-open input { display: none; }
+.rich-editor .ProseMirror[contenteditable="false"] :is(.rich-code-fence-open input, .rich-graphic-edit, button.rich-code-language) { display: none; }
+.rich-editor .ProseMirror[contenteditable="false"] .rich-code-language-passive { display: block; }
+.rich-mermaid img { display: block; max-width: 100%; margin-inline: auto; }
+.rich-code-block:has(.rich-mermaid:not([hidden])):not(.rich-code-active, .rich-code-language-editing) > pre { display: none; }
+.rich-editor .ProseMirror[contenteditable="false"] .rich-code-block:has(.rich-mermaid[data-failed]) > pre { display: block; }
+.rich-code-block:is(.rich-code-active, .rich-code-language-editing) > .rich-mermaid { display: none; }
 .rich-code-block:not(.rich-code-active, :focus-within) :is(.hljs-keyword, .hljs-selector-tag, .hljs-literal) { color: var(--violet-11); }
 .rich-code-block:not(.rich-code-active, :focus-within) :is(.hljs-string, .hljs-regexp, .hljs-addition) { color: var(--green-11); }
 .rich-code-block:not(.rich-code-active, :focus-within) :is(.hljs-number, .hljs-attr, .hljs-property) { color: var(--amber-11); }
@@ -105,6 +128,7 @@
 .rich-editor .ProseMirror[contenteditable="false"] :is(.rich-table-add, .rich-table-column-track) { display: none; }
 .rich-editor :is([data-type="html"], [data-type="html-block"], .rich-formula, .rich-image) { color: var(--text-muted); }
 .rich-editor :is(.rich-formula, .rich-image) img { max-width: 100%; vertical-align: middle; }
+.dark .rich-editor .rich-formula img { filter: invert(1); }
 .rich-image { display: inline-flex; flex-direction: column; max-width: 100%; vertical-align: middle; }
 .rich-image:has(.rich-image-source-editor:not([hidden])) { display: flex; }
 .rich-editor .rich-image.ProseMirror-selectednode { outline: none; }
@@ -112,12 +136,31 @@
   border-radius: 8px; box-shadow: 0 0 0 2px var(--accent-a9), var(--shadow-3);
 }
 .rich-image-frame { position: relative; display: block; max-width: fit-content; }
+.rich-image-upload:not([hidden]) {
+  position: absolute; inset: 6px auto auto 6px; display: inline-flex; padding: 5px;
+  border: var(--hairline); border-radius: 6px; background: var(--color-panel-solid); pointer-events: none;
+}
 .rich-image-media { display: block; min-width: 0; }
 .rich-image-media img { display: block; max-width: 100%; max-height: none; border-radius: 8px; }
 .rich-image-status {
   display: flex; align-items: center; gap: 10px; padding: 8px 54px 8px 10px; border: var(--hairline); border-radius: 6px;
   background: var(--gray-2); font-size: var(--workspace-font);
 }
+.rich-paste-progress {
+  display: inline-flex; align-items: center; gap: 8px; min-width: min(128px, 100%);
+  padding: 6px 10px; border: var(--hairline); border-radius: 6px;
+  background: var(--gray-2); color: var(--text-muted); font-size: var(--workspace-font); user-select: none;
+}
+.rich-progress::before {
+  content: ""; display: inline-block; flex: 0 0 14px; width: 14px; height: 14px;
+  border: 1px solid var(--gray-a6); border-top-color: var(--accent-9); border-radius: 50%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rich-progress::before { animation: rich-progress-spin .8s linear infinite; }
+}
+@keyframes rich-progress-spin { to { transform: rotate(1turn); } }
+.rich-editor a.rich-link-footnoted, .rich-editor a:has(.rich-link-footnoted) { color: inherit; text-decoration: none; }
+.rich-editor .rich-link-citation { margin-inline-start: 2px; color: var(--accent-11); font-size: .8em; }
 .rich-image-retry { color: var(--accent-11); padding: 1px 5px; border-radius: 4px; font-size: var(--small-font); }
 .rich-image-retry:hover { background: var(--accent-a4); }
 .rich-image-controls {
@@ -149,10 +192,41 @@
 .rich-image-source-editor .inline-error:empty { display: none; }
 .radix-themes.dark .rich-editor .rich-formula img { filter: invert(1); }
 .rich-editor span.rich-formula img { max-height: 1.75em; }
-.rich-editor div.rich-formula { display: grid; justify-content: center; margin: 12px 0; }
-.rich-editor .rich-formula input { color: var(--text-main); background: var(--gray-2); font: inherit; }
+.rich-editor div.rich-formula { margin: 12px 0; }
+.rich-formula { position: relative; }
+.rich-graphic-preview {
+  position: relative; display: grid; justify-items: center; padding: 8px 32px; border: 0.5px solid transparent; border-radius: 4px;
+}
+.ProseMirror[contenteditable="true"] .rich-graphic-preview { cursor: text; }
+.ProseMirror[contenteditable="true"] .rich-graphic-preview:is(:hover, :focus-within),
+.rich-formula-source:not([hidden]) + .rich-graphic-preview {
+  border-color: var(--gray-a7); box-shadow: 0 0 3px 1px var(--gray-a5);
+}
+.rich-formula-trigger:not(.rich-graphic-edit) { position: absolute; inset: 0; cursor: text; border: 0; background: transparent; }
+.rich-graphic-preview .rich-graphic-edit {
+  position: absolute; inset: 4px 4px auto auto; display: grid; place-items: center;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 4px;
+  color: var(--text-muted); background: var(--gray-a4); opacity: 0; cursor: pointer;
+}
+.rich-graphic-preview:is(:hover, :focus-within) .rich-graphic-edit,
+.rich-formula-source:not([hidden]) + .rich-graphic-preview .rich-graphic-edit { opacity: 1; }
+.rich-graphic-edit:hover { background: var(--gray-a6); color: var(--text-main); }
+.rich-editor .ProseMirror[contenteditable="false"] .rich-formula-trigger { display: none; }
+.rich-formula-source {
+  field-sizing: content; min-width: 12ch; max-width: 100%; padding: 2px 4px; border: var(--hairline);
+  border-radius: 4px; color: var(--text-main); background: var(--gray-2); font: .9em/1.5 ui-monospace, monospace;
+}
+textarea.rich-formula-source { display: block; width: 100%; min-height: 5em; margin-block-end: 4px; padding: 8px 12px; resize: vertical; }
+textarea.rich-formula-source:focus { outline: none; border-color: var(--gray-a8); }
 .rich-editor dl[data-type="footnote_definition"] { display: flex; gap: 10px; font-size: 12px; color: var(--text-muted); margin-block: 8px; }
 .rich-editor dl[data-type="footnote_definition"] dd { min-width: 0; margin: 0; }
+.rich-editor sup[data-type="footnote_reference"], .rich-editor dl[data-type="footnote_definition"] dt { color: var(--accent-11); }
+.rich-editor .ProseMirror[contenteditable="true"] sup[data-type="footnote_reference"] { cursor: pointer; }
+.rich-footnote-anchor { position: fixed; width: 1px; pointer-events: none; }
+.rich-footnote-popover { width: min(320px, calc(100vw - 24px)); }
+.rich-footnote-popover form { display: grid; gap: 8px; }
+.rich-footnote-popover code { color: var(--accent-11); font-size: var(--small-font); }
+.rich-footnote-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .rich-editor li[data-item-type="task"] { list-style-type: none; position: relative; }
 .rich-editor li[data-item-type="task"]::before {
   content: "☐";
@@ -161,6 +235,9 @@
   color: var(--text-muted);
 }
 .rich-editor li[data-checked="true"]::before { content: "☑"; color: var(--accent-11); }
+.rich-editor li.rich-list-source { list-style-type: none; }
+.rich-editor li.rich-list-source[data-item-type="task"]::before { content: none; }
+.rich-editor [data-markdown-task] { cursor: pointer; }
 .rich-editor .ProseMirror-search-match { background: var(--accent-4); }
 .rich-editor .ProseMirror-active-search-match { background: var(--accent-6); }
 

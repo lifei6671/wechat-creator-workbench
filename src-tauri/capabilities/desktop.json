@@ -5,6 +5,7 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "opener:allow-reveal-item-in-dir",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }]
@@ -32,6 +33,10 @@
     "allow-ai-jobs",
     "allow-backup-settings",
     "allow-backup-configure",
+    "allow-backup-use-image-storage",
+    "allow-backup-export-workspace",
+    "allow-backup-import-workspace",
+    "allow-backup-take-preferences",
     "allow-backup-workspaces",
     "allow-backup-list",
     "allow-backup-create",
@@ -64,6 +69,9 @@
     "allow-asset-upload",
     "allow-image-storage-save",
     "allow-image-storage-test",
+    "allow-image-storage-settings",
+    "allow-image-storage-target",
+    "allow-asset-host-image",
     "allow-asset-export",
     "allow-cancel-asset-cleanup",
     "core:window:allow-start-dragging",

@@ -6,6 +6,7 @@ import { EditorView } from "@milkdown/kit/prose/view";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { MarkdownEditor, type EditorCommand, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
+import { parseWechat } from "../../../../packages/wechat-renderer";
 import { attachClipboard } from "./clipboard";
 import { SaveQueue } from "./save-queue";
 import { captureAiTask, matchesAiTarget } from "../workspace/AiPanel";
@@ -26,7 +27,7 @@ afterAll(() => {
 });
 
 async function select(element: HTMLElement, from: number, to: number, handle: MarkdownEditorHandle) {
-  const text = element.querySelector("p")!.firstChild!;
+  const text = [...element.querySelector("p")!.childNodes].find(node => node.nodeType === Node.TEXT_NODE)!;
   handle.focus();
   document.getSelection()!.setBaseAndExtent(text, from, text, to);
   document.dispatchEvent(new Event("selectionchange"));
@@ -132,9 +133,12 @@ it("routes clipboard shortcuts to native callbacks and keeps async paste bound t
     await mount("first");
     shortcut("v");
     expect(clipboard.read).toHaveBeenCalledOnce();
+    expect(container.querySelector('.rich-paste-progress[role="status"]')?.textContent).toBe("正在粘贴…");
+    expect(onChange).not.toHaveBeenCalled();
     handle!.insert("新文字");
     finish("![图](asset://asset)");
     await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith("first", 2, "新文字![图](asset://asset)原稿"));
+    await vi.waitFor(() => expect(container.querySelector(".rich-paste-progress")).toBeNull());
 
     shortcut("c");
     expect(clipboard.write).toHaveBeenCalledWith("新文字图原稿", expect.stringContaining("data-workbench-src"));
@@ -154,6 +158,13 @@ it("routes clipboard shortcuts to native callbacks and keeps async paste bound t
     finish("![迟到的图](asset://late)");
     await Promise.resolve();
     expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector(".rich-paste-progress")).toBeNull();
+    const unavailable = new Error("剪贴板暂不可用");
+    clipboard.read.mockRejectedValueOnce(unavailable);
+    shortcut("v");
+    await vi.waitFor(() => expect(clipboard.onError).toHaveBeenCalledWith(unavailable));
+    await vi.waitFor(() => expect(container.querySelector(".rich-paste-progress")).toBeNull());
+    expect(onChange).not.toHaveBeenCalled();
   } finally {
     detach();
     flushSync(() => root.unmount());
@@ -171,6 +182,7 @@ it("shows rich structure and round-trips Markdown after editing an unrelated blo
     "引言", "# 标题", "**粗体** ~~删除~~", "- [ ] 待处理\n- [x] 已完成", "| 左 | 右 |\n| --- | ---: |\n| 一 | 二 |",
     "正文[^n] 和 <em>内嵌</em>。", "[^n]: 脚注", '<div onclick="alert(1)">保留 HTML</div>',
     ...formatFixtures.slice(0, 5).map(fixture => fixture.markdown),
+    "另见[^q]。", "> [^q]: 引用内脚注", "脚注后正文",
   ].join("\n\n");
   let handle: MarkdownEditorHandle | null = null;
   try {
@@ -185,10 +197,12 @@ it("shows rich structure and round-trips Markdown after editing an unrelated blo
     expect(editor.querySelector("strong")?.textContent).toBe("粗体");
     expect(editor.querySelectorAll('li[data-item-type="task"]').length).toBe(2);
     expect(editor.querySelector("table tr:nth-child(2)")?.textContent).toBe("一二");
-    expect(editor.querySelector("sup")?.textContent).toBe("n");
+    expect(editor.querySelector("sup")?.textContent).toBe("[^n]");
+    expect(editor.querySelector("blockquote dl")).toBeNull();
+    expect(editor.lastElementChild?.textContent).toBe("[^q]:引用内脚注");
     expect(editor.querySelector('[data-type="html-block"]')?.textContent).toBe("嵌入的 HTML");
     expect(editor.querySelector("[onclick], script")).toBeNull();
-    expect(editor.textContent).not.toMatch(/\*\*粗体|\[\^n\]|<em>|# 标题/);
+    expect(editor.textContent).not.toMatch(/\*\*粗体|<em>|# 标题/);
     expect(onChange).not.toHaveBeenCalled();
     handle!.insert("甲");
     const saved: string = onChange.mock.lastCall![2];
@@ -198,6 +212,7 @@ it("shows rich structure and round-trips Markdown after editing an unrelated blo
     expect(saved).toMatch(/\|\s+一\s+\|\s+二\s+\|/);
     expect(saved).toContain("正文[^n] 和 <em>内嵌</em>。");
     expect(saved).toContain("[^n]: 脚注");
+    expect(saved).toMatch(/脚注后正文[\s\S]+\[\^q\]: 引用内脚注$/);
     expect(saved).toContain('<div onclick="alert(1)">保留 HTML</div>');
     expect(saved).toContain("$x^2$");
     expect(saved).toContain("$$\n\\frac{a}{b}\n$$");
@@ -366,7 +381,9 @@ it("expands replace from the find overlay and returns focus to the editor on Esc
     flushSync(() => button("全部替换").click());
     expect(onChange).toHaveBeenLastCalledWith("find", 1, "段落 新词\n\n再次出现 新词");
     expect(count()).toBe("无匹配");
-    flushSync(() => input("查找").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })));
+    flushSync(() => button("关闭查找").focus());
+    await vi.waitFor(() => expect(document.querySelector('[role="tooltip"]')?.textContent).toBe("关闭查找"));
+    flushSync(() => button("关闭查找").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })));
     expect(container.querySelector('[role="search"]')).toBeNull();
     expect(document.activeElement).toBe(container.querySelector(".ProseMirror"));
   } finally {
@@ -376,7 +393,7 @@ it("expands replace from the find overlay and returns focus to the editor on Esc
   }
 });
 
-it("round-trips formula, task and footnote metadata through native rich clipboard HTML", async () => {
+it("round-trips formula, task, callout and footnote metadata through native rich clipboard HTML", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -393,11 +410,22 @@ it("round-trips formula, task and footnote metadata through native rich clipboar
     await vi.waitFor(() => expect(handle).not.toBeNull());
   }
   try {
-    await mount("source", "- [x] 已完成\n\n公式 $x^2$，详见[^1]。\n\n[^1]: 说明");
+    const source = "- [x] 已完成\n\n==高亮== 与公式 $x^2$，详见[^1]。\n\n[^1]: 说明\n\n> \\[!INFO]\n\n末段正文";
+    await mount("source", source);
+    expect(container.querySelector(".ProseMirror")?.lastElementChild?.getAttribute("data-type")).toBe("footnote_definition");
     handle!.command("selectAll");
     handle!.clipboard("copy", clipboard);
-    const html = clipboard.write.mock.calls[0][1];
-    await mount("target", "");
+    expect(clipboard.write).toHaveBeenLastCalledWith(source);
+    const editor = container.querySelector(".ProseMirror")!;
+    const first = editor.querySelector("li p")!.firstChild!;
+    const last = editor.querySelector("dl dd p")!.lastChild!;
+    document.getSelection()!.setBaseAndExtent(first, 0, last, last.textContent!.length);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.target().from).toBeGreaterThan(0));
+    handle!.clipboard("copy", clipboard);
+    const html = clipboard.write.mock.lastCall![1];
+    expect(html).toContain('data-math="math_inline"');
+    await mount("target", "目标原稿");
     clipboard.read.mockResolvedValue({ html: html +
       '<div data-type="html-block" data-value="&lt;script&gt;alert(1)&lt;/script&gt;">嵌入的 HTML</div>' +
       '<p><span data-math="math_inline" data-display="true" data-value="a$$&#10;&#10;&lt;img src=x onerror=1&gt;&#10;&#10;$$b">行内公式</span></p>' +
@@ -406,12 +434,50 @@ it("round-trips formula, task and footnote metadata through native rich clipboar
     await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
     const markdown = onChange.mock.lastCall![2] as string;
     expect(markdown).toContain("[x] 已完成");
+    expect(markdown).toContain("==高亮==");
     expect(markdown).toContain("$x^2$，详见[^1]");
-    expect(markdown).toContain("[^1]: 说明");
+    expect(markdown).toContain("> \\[!INFO]");
+    expect(markdown.trimEnd().endsWith("[^1]: 说明")).toBe(true);
     expect(markdown).not.toContain("<script>");
     expect(markdown).not.toContain("onerror");
     expect(markdown).not.toContain("http://example.com");
     expect(clipboard.onError).not.toHaveBeenCalled();
+    handle!.command("undo");
+    expect(onChange.mock.lastCall![2]).toBe("目标原稿");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("replaces only the original document images after all hosting URLs have resolved", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const onChange = vi.fn();
+  const original = "正文\n\n![一](asset://same)\n\n![二](asset://same)\n\n![三](asset://other)\n\n![已托管](https://cdn.example.test/photos/existing.png)";
+  const choose = (src: string) => src.startsWith("asset://");
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="hosting" value={original} ref={value => { handle = value; }}
+      readOnly={false} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const uploading = () => container.querySelectorAll(".rich-image-upload:not([hidden])").length;
+    const fail = vi.fn().mockResolvedValueOnce("https://cdn.example.test/photos/same.png").mockRejectedValueOnce(new Error("上传失败"));
+    const failedTask = handle!.hostImages!(fail, choose);
+    expect(uploading()).toBe(2);
+    await expect(failedTask).rejects.toThrow("上传失败");
+    expect(uploading()).toBe(0);
+    expect(onChange).not.toHaveBeenCalled();
+    const upload = vi.fn(async (src: string) => `https://cdn.example.test/photos/${src.slice(8)}.png`);
+    const task = handle!.hostImages!(upload, choose);
+    handle!.insert("新写的");
+    expect(await task).toBe(3);
+    expect(uploading()).toBe(0);
+    expect(upload.mock.calls).toEqual([["asset://same"], ["asset://other"]]);
+    expect(onChange.mock.lastCall![2]).toBe(`新写的${original.replaceAll("asset://same", "https://cdn.example.test/photos/same.png").replace("asset://other", "https://cdn.example.test/photos/other.png")}`);
+    handle!.command("undo");
+    expect(onChange.mock.lastCall![2]).toBe(`新写的${original}`);
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -451,7 +517,6 @@ it("runs body format and insert commands while retaining the selected text on ri
       ["bulletList", "ul > li", /^[-*+] 正文$/],
       ["orderedList", "ol > li", /^1\. 正文$/],
       ["quote", "blockquote", /^> 正文$/],
-      ["footnote", 'sup[data-type="footnote_reference"]', /\[\^1\]/],
       ["table", "table", /\|\s+\|/],
       ["horizontalRule", "hr", /(?:^|\n)(?:---|\*\*\*)(?:\n|$)/],
       ["codeBlock", "pre > code", /\x60\x60\x60\n正文\n\x60\x60\x60/],
@@ -463,6 +528,244 @@ it("runs body format and insert commands while retaining the selected text on ri
       expect(body.querySelector(selector), command).not.toBeNull();
       expect(onChange.mock.lastCall![2], command).toMatch(pattern);
     }
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("edits footnotes at their reference and writes the definition at the bottom on submit", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onChange = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  const input = () => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="脚注内容"]')!;
+  const button = (label: string) => Array.from(document.querySelectorAll<HTMLButtonElement>(".rich-footnote-actions button"))
+    .find(node => node.textContent === label)!;
+  function fill(text: string) {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input(), text);
+    flushSync(() => input().dispatchEvent(new Event("input", { bubbles: true })));
+  }
+  try {
+    flushSync(() => root.render(<Theme><MarkdownEditor ref={value => { handle = value; }} entryId="footnotes"
+      value={"正文[^N]\n\n末段\n\n[^n]: 旧来源"} readOnly={false} onChange={onChange} onBlur={() => {}} /></Theme>));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const editor = container.querySelector<HTMLElement>(".ProseMirror")!;
+    await select(editor, 2, 2, handle!);
+    flushSync(() => handle!.command("footnote"));
+    expect(document.querySelector(".rich-footnote-popover code")?.textContent).toBe("[^1]:");
+    expect(container.querySelector(".rich-footnote-anchor")).not.toBeNull();
+    expect(editor.querySelectorAll("sup")).toHaveLength(1);
+    fill("取消的内容");
+    flushSync(() => button("取消").click());
+    expect(onChange).not.toHaveBeenCalled();
+
+    flushSync(() => handle!.command("footnote"));
+    fill("**新来源**");
+    expect(onChange).not.toHaveBeenCalled();
+    flushSync(() => button("插入").click());
+    expect(editor.querySelector("p sup")?.textContent).toBe("[^1]");
+    expect(editor.lastElementChild?.textContent).toBe("[^1]:新来源");
+    expect(onChange.mock.lastCall![2]).toBe("正文[^1][^N]\n\n末段\n\n[^n]: 旧来源\n\n[^1]: **新来源**");
+    expect(editor.querySelector("p")?.contains(document.getSelection()?.anchorNode ?? null)).toBe(true);
+
+    flushSync(() => editor.querySelector<HTMLElement>('sup[data-label="N"]')!.click());
+    expect(input().value).toBe("旧来源");
+    expect(document.querySelector(".rich-footnote-popover code")?.textContent).toBe("[^n]:");
+    fill("补充来源");
+    flushSync(() => button("保存").click());
+    expect(editor.querySelectorAll("sup")).toHaveLength(2);
+    expect(onChange.mock.lastCall![2]).toContain("[^n]: 补充来源");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("preserves callout markers and displays the complete Markdown source on formula focus", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onChange = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  const markdown = "开头 $E = mc^2$\n\n> [!INFO]\n> 说明内容\n\n> [!warning] **注意**\n> 警告内容\n\n> \\[!INFO]\n\n$$\nx^2\n$$";
+  try {
+    flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="callouts-and-math"
+      value={markdown} readOnly={false} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const editor = container.querySelector<HTMLElement>(".ProseMirror")!;
+    expect(editor.querySelector('[data-callout="info"] [data-callout-label]')?.getAttribute("data-callout-label")).toBe("信息");
+    expect(editor.querySelector('[data-callout="warning"] strong')?.textContent).toBe("注意");
+    expect(editor.querySelector("blockquote[data-literal-callout]:not([data-callout])")?.textContent).toBe("[!INFO]");
+    const [inline, block] = editor.querySelectorAll<HTMLButtonElement>(".rich-formula-trigger");
+    inline.focus();
+    const field = editor.querySelector<HTMLInputElement>("input.rich-formula-source")!;
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("$E = mc^2$");
+    field.value = "$$不完整$";
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(field.hidden).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    field.value = "$E = mc^3$";
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(onChange.mock.lastCall![2]).toBe(markdown.replace("mc^2", "mc^3"));
+    block.focus();
+    const area = editor.querySelector<HTMLTextAreaElement>("textarea.rich-formula-source")!;
+    expect(document.activeElement).toBe(area);
+    expect(block.tabIndex).toBe(-1);
+    expect(area.value).toBe("$$\nx^2\n$$");
+    expect(area.nextElementSibling?.className).toBe("rich-graphic-preview");
+    area.value = "$$\nx^3\n$$";
+    area.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(area.hidden).toBe(true);
+    expect(block.tabIndex).toBe(0);
+    expect(onChange.mock.calls).toHaveLength(1);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("converts a clicked link permanently and presents current and pasted links reversibly", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onChange = vi.fn();
+  const clipboard = { read: vi.fn(), write: vi.fn(), onError: vi.fn() };
+  let handle: MarkdownEditorHandle | null = null;
+  const markdown = "[另一篇](https://example.com/other) [**重点**内容](https://example.com/source) [文内](#heading)\n\n正文[^1]\n\n[^1]: 原脚注";
+  const original = markdown.replace("[**重点**内容](https://example.com/source)", "**[重点](https://example.com/source)**[内容](https://example.com/source)");
+  const render = (convertLinks: boolean) => flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }}
+    entryId="link-footnotes" value={markdown} readOnly={false} convertLinks={convertLinks} onChange={onChange} onBlur={() => {}} />));
+  try {
+    render(false);
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const editor = container.querySelector<HTMLElement>(".ProseMirror")!;
+    const target = editor.querySelector('a[href$="/source"]')!;
+    const click = new MouseEvent("contextmenu", { button: 2, bubbles: true });
+    target.dispatchEvent(click);
+    const action = handle!.prepareContext(click);
+    if (!action || typeof action !== "object" || !("kind" in action) || action.kind !== "link") throw new Error("expected link context");
+    action.convert();
+    const saved = () => onChange.mock.lastCall![2] as string;
+    expect(saved()).toContain("[另一篇](https://example.com/other) **重点**内容[^2] [文内](#heading)");
+    expect(saved()).toMatch(/\[\^2\]: .*https:\/\/example\.com\/source/);
+    expect(editor.lastElementChild?.querySelector("a")?.getAttribute("href")).toBe("https://example.com/source");
+    handle!.command("undo");
+    expect(saved()).toBe(original);
+
+    const preview = handle!.linkFootnoteMarkdown(original);
+    expect(preview).toContain("另一篇[^2] **重点**内容[^3] [文内](#heading)");
+    expect(preview).toContain("[^1]: 原脚注");
+    expect(preview).toContain("[^2]: 另一篇：<https://example.com/other>");
+    expect(preview).toContain("[^3]: 重点内容：<https://example.com/source>");
+    expect(handle!.linkFootnoteMarkdown(preview)).toBe(preview);
+    expect(saved()).toBe(original);
+
+    const changes = onChange.mock.calls.length;
+    render(true);
+    expect(editor.querySelectorAll(".rich-link-citation")).toHaveLength(2);
+    expect(onChange).toHaveBeenCalledTimes(changes);
+    await select(editor, 0, 0, handle!);
+    clipboard.read.mockResolvedValueOnce("[来源](https://example.com/md) [另一份](https://example.com/second)\n\n已有[^2]\n\n[^2]: [旧地址](https://example.com/existing)");
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(saved()).toContain("[来源](https://example.com/md)"));
+    const projected = () => handle!.linkFootnoteMarkdown(saved());
+    expect(projected()).toMatch(/来源\[\^\d+\] 另一份\[\^\d+\]/);
+    expect(saved()).toContain("[^2]: [旧地址](https://example.com/existing)");
+    handle!.command("undo");
+    expect(saved()).toBe(original);
+
+    handle!.command("link", "https://example.com/inserted");
+    expect(saved()).toContain("<https://example.com/inserted>");
+    expect(projected()).toMatch(/\[\^\d+\]: <https:\/\/example\.com\/inserted>/);
+    clipboard.read.mockResolvedValueOnce({ html: '<a href="https://example.com/rich">富文本链接</a>' });
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(projected()).toMatch(/富文本链接\[\^\d+\]/));
+    clipboard.read.mockResolvedValueOnce("https://example.com/bare");
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/bare"]')).not.toBeNull());
+    expect(editor.querySelector(':scope > p a[href$="/bare"]')?.textContent).toContain("https://example.com/bare");
+    clipboard.read.mockResolvedValueOnce("https://example.com/plain");
+    handle!.clipboard("paste", clipboard, undefined, true);
+    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/plain"]')).not.toBeNull());
+    clipboard.read.mockResolvedValueOnce({ html: "<p><strong>来源 https://example.com/中文，下一句富文本。</strong> <code>https://example.com/code</code></p>" });
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/中文"]')).not.toBeNull());
+    expect(Array.from(editor.querySelectorAll(":scope > p")).some(node => /\[\^\d+\]，下一句富文本。/.test(node.textContent))).toBe(true);
+    expect(editor.querySelector('code')?.textContent).toBe("https://example.com/code");
+    clipboard.read.mockResolvedValueOnce("参考 https://example.com/plain-paragraph，下一句普通文本。");
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/plain-paragraph"]')).not.toBeNull());
+    expect(projected()).toMatch(/\[\^\d+\]，下一句普通文本。/);
+    const standalone = "https://example.com/资料，甲。";
+    clipboard.read.mockResolvedValueOnce(standalone);
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(editor.querySelector(`.rich-link-notes a[href="${standalone}"]`)).not.toBeNull());
+    const listUrl = "https://example.com/列表，甲。";
+    const quoteUrl = "https://example.com/引文，甲。";
+    clipboard.read.mockResolvedValueOnce(`- ${listUrl}\n\n> ${quoteUrl}`);
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => {
+      expect(editor.querySelector(`.rich-link-notes a[href="${listUrl}"]`)).not.toBeNull();
+      expect(editor.querySelector(`.rich-link-notes a[href="${quoteUrl}"]`)).not.toBeNull();
+    });
+    render(false);
+    expect(editor.querySelector(".rich-link-notes")).toBeNull();
+    expect(editor.querySelector(".rich-link-footnoted")).toBeNull();
+    expect(clipboard.onError).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("keeps exact destinations and URL-shaped link names across article conversion and reopening", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onChange = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  const markdown = "显式链接 <https://example.com/a，b>。\n\n网址名称 [https://mirror.example/form](https://redirect.example/form)。\n\n行内代码 `https://example.com/ignored`。\n\n[^7]\n\n[^7]: <https://example.com/legacy>";
+  async function mount(id: string, value: string, convertLinks = true) {
+    flushSync(() => root.render(<MarkdownEditor key={id} ref={instance => { handle = instance; }} entryId={id}
+      value={value} readOnly={false} convertLinks={convertLinks} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle?.target().entryId).toBe(id));
+    return container.querySelector<HTMLElement>(".ProseMirror")!;
+  }
+  try {
+    const editor = await mount("exact-link-target", markdown);
+    await select(editor, 0, 4, handle!);
+    const converted = handle!.linkFootnoteMarkdown(markdown);
+    expect(handle!.target().original).toBe("显式链接");
+    expect(editor.querySelector(":scope > p a")?.textContent).toContain("https://example.com/a，b");
+    expect(converted).toContain("行内代码 `https://example.com/ignored`。");
+    expect(converted).toContain("[^1]: <https://example.com/a，b>");
+    expect(editor.querySelector(":scope > p:nth-child(2)")?.textContent).toContain("https://mirror.example/form[^2]");
+    expect(editor.querySelector(":scope > p:nth-child(4)")?.textContent).toContain("https://example.com/legacy[^7]");
+    const addressText = document.createTreeWalker(editor.querySelector(":scope > p a")!, NodeFilter.SHOW_TEXT).nextNode()!;
+    document.getSelection()!.setBaseAndExtent(addressText, 10, addressText, 10);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(Array.from(editor.querySelectorAll(":scope > p .rich-markdown-syntax"),
+      marker => marker.getAttribute("data-markdown"))).toEqual(["<", ">"]));
+    expect(onChange).not.toHaveBeenCalled();
+    const reopened = await mount("reopened-link-target", converted, false);
+    expect(reopened.querySelector(":scope > p")?.textContent).toBe("显式链接 https://example.com/a，b[^1]。");
+    expect(reopened.querySelector(":scope > p:nth-child(2)")?.textContent).toContain("https://mirror.example/form[^2]");
+    expect(reopened.querySelector(":scope > p:nth-child(2) a")).toBeNull();
+    expect(reopened.querySelector('dl a[href="https://redirect.example/form"]')).not.toBeNull();
+    expect(handle!.linkFootnoteMarkdown(converted)).toBe(converted);
+    const titled = await mount("titled-link-target", '[https://example.com](https://example.com "原有标题")[^cite]\n\n[^cite]: https://example.com：<https://example.com/source>');
+    expect(titled.querySelector(":scope > p a")?.getAttribute("title")).toBe("原有标题");
+    const rawDestination = "https://example.test/资料，甲";
+    const original = await mount("implicit-link-target", rawDestination, false);
+    expect(original.querySelector("a")?.getAttribute("href")).toBe(rawDestination);
+    const repeated = "<https://example.test/a>[^1]\n\n[^1]: <https://example.test/a>";
+    const projected = handle!.linkFootnoteMarkdown(repeated);
+    const { body } = parseWechat(projected, []);
+    expect(body.querySelector("p")?.querySelector('a[href^="http"]')).toBeNull();
+    expect(body.querySelector("p")?.textContent).toBe("https://example.test/a[1]");
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -525,9 +828,9 @@ it("preserves dragged table selections and keeps newlines in table cells after r
   const root = createRoot(container);
   let handle: MarkdownEditorHandle | null = null;
   const onChange = vi.fn();
-  async function mount(entryId: string, markdown: string) {
+  async function mount(entryId: string, markdown: string, convertLinks = false) {
     flushSync(() => root.render(<MarkdownEditor key={entryId} ref={value => { handle = value; }} entryId={entryId}
-      value={markdown} readOnly={false} onChange={onChange} onBlur={() => {}} />));
+      value={markdown} readOnly={false} convertLinks={convertLinks} onChange={onChange} onBlur={() => {}} />));
     await vi.waitFor(() => expect(handle?.target().entryId).toBe(entryId));
     return container.querySelector("table")!;
   }
@@ -611,6 +914,34 @@ it("preserves dragged table selections and keeps newlines in table cells after r
     handle!.insert("表格之后的文字");
     expect(trailing.textContent).toBe("表格之后的文字");
     expect(onChange.mock.lastCall![2]).toMatch(/\|\n\n表格之后的文字$/);
+
+    const sources = await mount("table-links", "| 项目 | 数量 |\n| --- | --- |\n| 前 [甲](https://example.com/original) | 乙 |", true);
+    const [first, second] = Array.from(sources.rows[1].cells);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: (x: number) => x < 50 ? first : second });
+    handle!.focus();
+    const tableAnchor = () => first.querySelector('a[href$="/original"]')!;
+    function linkContext() {
+      const event = new MouseEvent("contextmenu", { button: 2, bubbles: true });
+      tableAnchor().dispatchEvent(event);
+      return handle!.prepareContext(event);
+    }
+    expect(linkContext()).toMatchObject({ kind: "link", scope: { row: 1, column: 0 } });
+    const precedingText = first.querySelector("p")!.firstChild!;
+    document.getSelection()!.setBaseAndExtent(precedingText, 0, precedingText, 1);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.hasSelection()).toBe(true));
+    expect(linkContext()).toMatchObject({ kind: "link", scope: "cellText" });
+    fire("mousedown", first, 10);
+    fire("mousemove", second, 60);
+    fire("mouseup", second, 60);
+    clipboard.read.mockResolvedValueOnce("[出处](https://example.com/table)");
+    handle!.clipboard("paste", clipboard);
+    await vi.waitFor(() => expect(sources.querySelectorAll('sup.rich-link-citation')).toHaveLength(2));
+    expect(container.querySelector('.rich-link-notes dl a')?.getAttribute("href")).toBe("https://example.com/table");
+    expect(onChange.mock.lastCall![2]).not.toContain("[^1]:");
+    handle!.command("undo");
+    expect(sources.querySelectorAll("sup.rich-link-citation")).toHaveLength(1);
+    expect(container.querySelector(".rich-link-notes dl a")?.getAttribute("href")).toBe("https://example.com/original");
   } finally {
     if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
     else Reflect.deleteProperty(document, "elementFromPoint");
@@ -747,7 +1078,9 @@ it("inserts pasted images with their document, then localizes external URLs in p
   const importImage = vi.fn(async (_file: File) => "asset://embedded-graph");
   const io = {
     read: async () => ({
-      html: `<h2>资料</h2><p><img src="${external}" alt="示意图" title="原注释"><img src="${owned}" alt="封面"><img src="data:image/png;base64,AAEC" alt="内嵌图"></p>`,
+      html: `<h2>资料</h2><p>出处<sup data-type="footnote_reference" data-label="media">media</sup></p>`
+        + '<dl data-type="footnote_definition" data-label="media"><dt>media</dt><dd><p>脚注来源</p></dd></dl>'
+        + `<p><img src="${external}" alt="示意图" title="原注释"><img src="${owned}" alt="封面"><img src="data:image/png;base64,AAEC" alt="内嵌图"></p>`,
     }),
     write: vi.fn(), onError: vi.fn(), localizeImage, importImage,
   };
@@ -761,6 +1094,7 @@ it("inserts pasted images with their document, then localizes external URLs in p
     expect(container.querySelector("h2")?.textContent).toBe("资料");
     expect(onChange.mock.lastCall![2]).toContain(external);
     expect(onChange.mock.lastCall![2]).toContain("![内嵌图](asset://embedded-graph)");
+    expect(onChange.mock.lastCall![2]).toMatch(/\[\^media\]: 脚注来源$/);
     const editor = container.querySelector(".ProseMirror")!;
     editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
     finishDownload!("asset://local-graph");
@@ -785,7 +1119,8 @@ it("shows Markdown at the caret and folds only the selected heading section with
   const root = createRoot(container);
   const onChange = vi.fn();
   let handle: MarkdownEditorHandle | null = null;
-  const markdown = "开头 **粗体** [**链接** 文本](https://example.com)\n\n## 第一节\n\n第一节正文\n\n#### 子标题\n\n子节正文\n\n## 第二节\n\n第二节正文\n\n> ~~~text\n> 首行代码\n> 次行代码\n> ~~~";
+  const markdown = "开头 **粗体** [**链接** 文本](https://example.com)\n\n## 第一节\n\n第一节正文\n\n#### 子标题\n\n子节正文\n\n## 第二节\n\n第二节正文\n\n> ~~~text\n> 首行代码\n> 次行代码\n> ~~~"
+    + "\n\n> **第一段引用**\n>\n> 第二段引用  \n> 手动换行\n>\n> > ### 嵌套引用";
   const render = (lineNumbers: boolean, readOnly = false) => {
     flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="presentation" value={markdown}
       lineNumbers={lineNumbers} readOnly={readOnly} onChange={onChange} onBlur={() => {}} />));
@@ -809,6 +1144,19 @@ it("shows Markdown at the caret and folds only the selected heading section with
     await vi.waitFor(() => expect(markers()).toEqual(["[", "**", "**", "](https://example.com)"]));
     setCaret(firstHeading.lastChild!, 1);
     await vi.waitFor(() => expect(markers()).toEqual(["## "]));
+    const quote = editor.querySelectorAll(":scope > blockquote")[1];
+    const [firstQuote, secondQuote] = quote.querySelectorAll(":scope > p");
+    const nestedHeading = quote.querySelector("blockquote h3")!;
+    setCaret(firstQuote.querySelector("strong")!.firstChild!, 1);
+    await vi.waitFor(() => expect(markers()).toEqual(["> ", "**", "**"]));
+    setCaret(secondQuote.lastChild!, 1);
+    await vi.waitFor(() => expect(markers()).toEqual(["> ", "> "]));
+    setCaret(nestedHeading.lastChild!, 1);
+    await vi.waitFor(() => expect(markers()).toEqual(["> > ", "### "]));
+    setCaret(editor.querySelector("p")!.firstChild!, 1);
+    await vi.waitFor(() => expect(markers()).toEqual([]));
+    setCaret(nestedHeading.lastChild!, 1);
+    await vi.waitFor(() => expect(markers()).toEqual(["> > ", "### "]));
     outside.focus();
     expect(markers()).toEqual([]);
 
@@ -833,12 +1181,48 @@ it("shows Markdown at the caret and folds only the selected heading section with
 
     render(false, true);
     expect(editor.querySelector("[data-editor-line]")).toBeNull();
-    setCaret(firstHeading.lastChild!, 1);
+    setCaret(nestedHeading.lastChild!, 1);
     expect(markers()).toEqual([]);
   } finally {
     flushSync(() => root.unmount());
     container.remove();
     outside.remove();
+  }
+});
+
+it("shows the active list item's Markdown marker and keeps its task state clickable", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const onChange = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  const markdown = "普通正文\n\n- 父项\n  - 子项\n\n4. 第一项\n5. 第二项\n\n- [ ] 待办";
+  try {
+    flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="list-source"
+      value={markdown} readOnly={false} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const editor = container.querySelector(".ProseMirror")!;
+    const marker = () => editor.querySelector<HTMLElement>(".rich-markdown-syntax");
+    for (const [selector, prefix] of [["ul ul li > p", "- "], ["ol li + li > p", "5. "], ['li[data-checked="false"] > p', "- [ ] "]]) {
+      const paragraph = editor.querySelector(selector)!;
+      handle!.focus();
+      document.getSelection()!.collapse(paragraph.lastChild!, 1);
+      document.dispatchEvent(new Event("selectionchange"));
+      await vi.waitFor(() => expect(marker()?.dataset.markdown).toBe(prefix));
+      expect(editor.querySelectorAll("li.rich-list-source")).toHaveLength(1);
+      expect(marker()?.parentElement).toBe(paragraph);
+    }
+    expect(onChange).not.toHaveBeenCalled();
+    marker()!.click();
+    expect(onChange.mock.lastCall![2]).toMatch(/[-*+] \[x\] 待办/);
+    expect(marker()?.dataset.markdown).toBe("- [x] ");
+
+    document.getSelection()!.collapse(editor.querySelector(":scope > p")!.firstChild!, 1);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(marker()).toBeNull());
+    expect(editor.querySelector("li.rich-list-source")).toBeNull();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
   }
 });
 
@@ -990,7 +1374,7 @@ it("zooms the selected image and commits valid Markdown when its line loses focu
     second.dispatchEvent(contextEvent);
     const image = handle!.prepareContext(contextEvent);
     expect(image).toMatchObject({ kind: "image", src: "asset://other", available: true });
-    if (typeof image !== "object" || !image || !("kind" in image)) throw new Error("expected image context");
+    if (typeof image !== "object" || !image || !("kind" in image) || image.kind !== "image") throw new Error("expected image context");
     image.remove();
     expect(onChange).toHaveBeenCalledTimes(1);
     render(false);

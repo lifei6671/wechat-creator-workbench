@@ -1,5 +1,6 @@
 use super::Assets;
-use crate::db::{AppError, Result, Workspace, id, workspace_id};
+use super::upload_format::UploadOptions;
+use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region, retry::RetryConfig, timeout::TimeoutConfig},
@@ -13,7 +14,7 @@ use url::Url;
 
 const SERVICE: &str = "io.github.lifei6671.wechat-creator-workbench.s3";
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Target {
     pub endpoint: String,
@@ -155,7 +156,19 @@ impl Profile {
         id.map(|id| Self::read(conn, &id)).transpose()
     }
 
-    fn secret(&self) -> Result<Secret> {
+    pub(super) fn active_for(conn: &Connection, expected: Option<&Target>) -> Result<Option<Self>> {
+        let active = Self::active(conn)?;
+        if expected.is_some_and(|target| {
+            active
+                .as_ref()
+                .is_none_or(|profile| &profile.target != target)
+        }) {
+            return Err(AppError::new("S3_CHANGED", "图床配置已变更，请重新上传"));
+        }
+        Ok(active)
+    }
+
+    pub(crate) fn secret(&self) -> Result<Secret> {
         let value = keychain(&self.credential_ref)?
             .get_password()
             .map_err(credential_error)?;
@@ -165,17 +178,55 @@ impl Profile {
     pub fn provider(&self) -> Result<S3Storage> {
         Ok(S3Storage::new(&self.target, self.secret()?))
     }
+
+    pub(super) fn upload_options(&self, conn: &Connection) -> Result<UploadOptions> {
+        let saved: Option<String> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key=?1",
+                [format!("image_upload:{}", self.id)],
+                |r| r.get(0),
+            )
+            .optional()?;
+        saved
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|_| AppError::invalid("图床上传设置无法读取"))
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
 }
 
 impl Assets {
+    pub(super) fn settings_profile(db: &Workspace) -> Result<(Option<Profile>, bool)> {
+        db.read(|conn| {
+            if let Some(profile) = Profile::active(conn)? {
+                return Ok((Some(profile), true));
+            }
+            let last: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key='image_storage_last_profile'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok((last.map(|id| Profile::read(conn, &id)).transpose()?, false))
+        })
+    }
+
     pub fn configure(
         &self,
         db: &Workspace,
         target: Option<Target>,
         secret: Option<Secret>,
+        options: Option<UploadOptions>,
     ) -> Result<()> {
         let Some(target) = target.map(Target::validated).transpose()? else {
             return db.write(|tx| {
+                tx.execute(
+                    "INSERT INTO app_settings SELECT 'image_storage_last_profile', value FROM app_settings
+                     WHERE key='image_storage_profile' ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    [],
+                )?;
                 tx.execute(
                     "DELETE FROM app_settings WHERE key='image_storage_profile'",
                     [],
@@ -184,6 +235,9 @@ impl Assets {
                 Ok(())
             });
         };
+        if let Some(options) = &options {
+            options.filename("example.jpg", now())?;
+        }
         db.write(|tx| {
             let existing = Profile::matching(tx, &target)?;
             let profile_id = existing.as_ref().map_or_else(id, |p| p.id.clone());
@@ -221,6 +275,10 @@ impl Assets {
                 [&profile_id],
             )?;
             db_register_public_urls(tx, &profile_id, &target)?;
+            if let Some(options) = options {
+                tx.execute("INSERT INTO app_settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![format!("image_upload:{profile_id}"), serde_json::to_string(&options).expect("upload options are serializable")])?;
+            }
             pause_uploads(tx, Some(&profile_id))?;
             Ok(())
         })

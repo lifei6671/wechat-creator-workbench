@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import { Button, ContextMenu, DropdownMenu, Spinner, Tooltip } from "@radix-ui/themes";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
-  ArchiveRestore, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, FileDown, FilePenLine, FileUp, Files, FileText,
-  FolderInput, FolderOpen, FolderPlus, History, Link, PencilLine, Plus, Trash2,
+  ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
+  FolderInput, FolderOpen, FolderPlus, History, Link, PencilLine, Plus, SquareArrowOutUpRight, Trash2,
 } from "lucide-react";
-import type { Category, CategoryIcon, CategoryPlacement, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
+import type { Category, CategoryIcon, CategoryPlacement, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, statusLabels, untitled } from "../labels";
-import { Tool } from "../ui";
+import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 import { folderIcons } from "./folder-icons";
 import { FolderInline } from "./FolderInline";
 import { InlineEntryTitle } from "./InlineEntryTitle";
@@ -48,14 +48,22 @@ export function CreateMenu(actions: CreateActions) {
   </DropdownMenu.Root>;
 }
 
+export interface ExplorerHandle {
+  addRootFolder(): void;
+}
+
 interface ExplorerProps {
+  ref?: Ref<ExplorerHandle>;
   section: Exclude<Section, "assets">;
   library: Library | null;
   page: EntryPage | null;
   active: string | null;
+  activeFolder?: string | null;
+  onCreateCurrent?(): void;
+  onToggleAll?(expand: boolean): void;
+  onLocateCurrent?(): void;
   readOnlyIds: string[];
   treeLocked: boolean;
-  categoryId: string | undefined;
   expanded: string[];
   revision: number;
   loading: "all" | "paged";
@@ -68,7 +76,6 @@ interface ExplorerProps {
   onQuery(query: string): void;
   onCaseSensitive(value: boolean): void;
   onFolder(id: string): void;
-  onRoot(): void;
   onCreate(categoryId: string | null): void;
   onImportWechat(categoryId: string | null): void;
   onImportMarkdown(categoryId: string | null): void;
@@ -80,7 +87,7 @@ interface ExplorerProps {
   onRenameEntry(id: string, title: string): Promise<void>;
   onMoveEntry(id: string, categoryId: string | null): void;
   onCategoryAction(category: Category, action: CategoryAction): void;
-  onOpen(id: string): void;
+  onOpen(id: string, newTab?: boolean): void;
   onRowAction(row: EntryRow, action: EntryRowAction): void;
   onMore(): void;
 }
@@ -88,26 +95,38 @@ interface ExplorerProps {
 type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError">;
 
 export function Explorer(props: ExplorerProps) {
-  const { section, library, page, categoryId, expanded, revision, loading, pageSize, query } = props;
+  const { section, library, page, expanded, revision, loading, pageSize, query } = props;
   const [editing, setEditing] = useState<{ target?: Category; parent: string | null } | null>(null);
   const [contextFolder, setContextFolder] = useState<string | null>(null);
   const [loadingFolders, setLoadingFolders] = useState<string[]>([]);
+  const [sort, setSort] = useState(() => useStoredInitial<"manual" | NonNullable<EntryFilter["sort"]>>("directory-sort", "manual"));
+  const [autoLocate, setAutoLocate] = useState(() => useStoredInitial("directory-auto-locate", false));
   const markLoading = useCallback((id: string, pending: boolean) => {
     setLoadingFolders(current => pending ? [...current, id] : current.filter(folder => folder !== id));
   }, []);
   const limit = loading === "all" ? 2_147_483_647 : pageSize;
   const editAfterMenu = useRef<(() => void) | null>(null);
   const categories = library?.categories ?? [];
+  const foldersExpanded = categories.some(category => category.parentId === null && expanded.includes(category.id));
   const isTree = section === "folders";
+  const locatedEntry = useRef<string | null>(null);
+  useEffect(() => {
+    const requested = isTree && autoLocate ? props.active : null;
+    if (locatedEntry.current === requested) return;
+    locatedEntry.current = requested;
+    if (requested) props.onLocateCurrent?.();
+  }, [autoLocate, isTree, props.active, props.onLocateCurrent]);
   const isSearch = section === "search";
   const listLabel = isSearch ? "全文搜索" : section === "imports" ? "公众号导入" : "回收站";
-  const drag = useExplorerDrag(categories, props.onReorderFolder, props.onReorderEntry, props.onMoveEntry);
+  const drag = useExplorerDrag(categories, sort === "manual", props.onReorderFolder, props.onReorderEntry, props.onMoveEntry);
   const DragIcon = drag.ghost?.kind === "folder" ? FolderOpen : FileText;
 
   function addFolder(parent: string | null) {
     if (parent) props.onRevealFolder(parent);
     setEditing(current => current && !current.target && current.parent === parent ? current : { parent });
   }
+
+  useImperativeHandle(props.ref, () => ({ addRootFolder: () => addFolder(null) }));
 
   function finishMenu(event: Event) {
     const edit = editAfterMenu.current;
@@ -173,7 +192,8 @@ export function Explorer(props: ExplorerProps) {
         </div>}
         {open && <ul className="folder-children" id={`folder-${category.id}`} data-tree-container={category.id} aria-label={category.name}>
           {branch(category.id)}
-          <FolderEntries categoryId={category.id} revision={revision} limit={limit} markLoading={markLoading} actions={props} drag={drag} />
+          <FolderEntries key={sort} categoryId={category.id} revision={revision} limit={limit} markLoading={markLoading} actions={props} drag={drag}
+            sort={sort === "manual" ? undefined : sort} locate={autoLocate && props.activeFolder === category.id ? props.active : null} />
           {editing && !editing.target && editing.parent === category.id && <li>{folderEditor(editing)}</li>}
         </ul>}
       </li>;
@@ -181,22 +201,40 @@ export function Explorer(props: ExplorerProps) {
   }
 
   const content = <aside className="explorer" aria-label={isTree ? "内容目录" : listLabel} {...(isTree ? drag.events : {})}>
-    {isTree && <div className="section-bar tree-tools" data-placement={drag.hint?.id === null ? "inside" : undefined}>
-      <button type="button" className="plain-button root-target" onClick={props.onRoot} aria-current={categoryId === undefined ? "location" : undefined}
-        data-selected={categoryId === undefined} title="将新内容放在根目录">
-        目录
-      </button>
-      <Tool id="add-root-folder" label="新建目录" className="chrome-icon" disabled={props.treeLocked || !library}
-        onClick={() => addFolder(null)}><FolderPlus size={16} /></Tool>
+    {isTree && <div className="directory-tools" role="group" aria-label="目录快捷操作">
+      <Tool label="新建笔记" className="chrome-icon" disabled={props.treeLocked || !library} onClick={() => props.onCreateCurrent ? props.onCreateCurrent() : props.onCreate(null)}><FilePenLine size={16} /></Tool>
+      <Tool id="add-root-folder" label="新建目录" className="chrome-icon" disabled={props.treeLocked || !library} onClick={() => addFolder(null)}><FolderPlus size={16} /></Tool>
+      <DropdownMenu.Root><Tooltip content="排序"><DropdownMenu.Trigger>
+        <button type="button" aria-label="排序" className="plain-button chrome-icon"><ArrowDownNarrowWide size={16} /></button>
+      </DropdownMenu.Trigger></Tooltip><DropdownMenu.Content size="1">
+        <DropdownMenu.RadioGroup value={sort} onValueChange={value => { setSort(value as typeof sort); persist("directory-sort", value); }}>
+          <DropdownMenu.RadioItem value="name">文件名（A-Z）</DropdownMenu.RadioItem>
+          <DropdownMenu.RadioItem value="nameDesc">文件名（Z-A）</DropdownMenu.RadioItem>
+          <DropdownMenu.Separator />
+          <DropdownMenu.RadioItem value="updated">编辑时间（从新到旧）</DropdownMenu.RadioItem>
+          <DropdownMenu.RadioItem value="updatedAsc">编辑时间（从旧到新）</DropdownMenu.RadioItem>
+          <DropdownMenu.Separator />
+          <DropdownMenu.RadioItem value="created">创建时间（从新到旧）</DropdownMenu.RadioItem>
+          <DropdownMenu.RadioItem value="createdAsc">创建时间（从旧到新）</DropdownMenu.RadioItem>
+          <DropdownMenu.Separator />
+          <DropdownMenu.RadioItem value="manual">手动排序</DropdownMenu.RadioItem>
+        </DropdownMenu.RadioGroup>
+      </DropdownMenu.Content></DropdownMenu.Root>
+      <Tool label="自动定位当前文件" className="chrome-icon" aria-pressed={autoLocate} onClick={() => {
+        setAutoLocate(!autoLocate); persist("directory-auto-locate", !autoLocate);
+      }}><Crosshair size={16} /></Tool>
+      <Tool label={foldersExpanded ? "全部折叠" : "全部展开"} className="chrome-icon" disabled={!categories.length}
+        onClick={() => props.onToggleAll?.(!foldersExpanded)}>{foldersExpanded ? <ChevronsDownUp size={16} /> : <ChevronsUpDown size={16} />}</Tool>
     </div>}
     {isSearch && <WorkspaceSearch inputRef={props.searchInputRef} query={query} caseSensitive={props.caseSensitive}
       onQuery={props.onQuery} onCaseSensitive={props.onCaseSensitive} />}
     {!isTree && !isSearch && <div className="section-bar explorer-title"><h1>{listLabel}</h1></div>}
 
-    <div className="explorer-scroll explorer-list-scroll">
+    <div className="explorer-scroll explorer-list-scroll" data-root-drop={drag.hint?.id === null || undefined}>
       {isTree ? <ul className="explorer-content folder-tree" data-tree-container="" aria-label="目录和内容">
         {branch(null)}
-        <FolderEntries revision={revision} limit={limit} markLoading={markLoading} actions={props} drag={drag}
+        <FolderEntries key={sort} revision={revision} limit={limit} markLoading={markLoading} actions={props} drag={drag}
+          sort={sort === "manual" ? undefined : sort} locate={autoLocate && props.activeFolder === null ? props.active : null}
           empty={library?.categories.length === 0 && !editing ? "暂无内容" : undefined} />
         {editing && !editing.target && editing.parent === null && <li>{folderEditor(editing)}</li>}
       </ul> : <ul className={`explorer-content entry-list${isSearch ? " search-results" : ""}`} aria-label={isSearch ? "搜索结果" : listLabel}>
@@ -227,10 +265,11 @@ function ListError({ message, onRetry }: { message: string; onRetry(): void }) {
   </li>;
 }
 
-function FolderEntries({ categoryId, revision, limit, markLoading, actions, drag, empty }: {
+function FolderEntries({ categoryId, revision, limit, markLoading, actions, drag, empty, sort, locate }: {
   categoryId?: string; revision: number; limit: number; markLoading(id: string, pending: boolean): void;
   actions: RowActions & Pick<ExplorerProps, "treeLocked">;
   drag: ReturnType<typeof useExplorerDrag>; empty?: string;
+  sort?: EntryFilter["sort"]; locate: string | null;
 }) {
   const [page, setPage] = useState<EntryPage | null>(null);
   const [failure, setFailure] = useState<{ message: string; offset: number; count: number } | null>(null);
@@ -247,7 +286,7 @@ function FolderEntries({ categoryId, revision, limit, markLoading, actions, drag
     setPending(true);
     setFailure(null);
     if (categoryId) markLoading(categoryId, true);
-    void desktop.entries({ categoryId, exactCategory: true, deleted: false, offset, limit: count }).then(result => {
+    void desktop.entries({ categoryId, exactCategory: true, deleted: false, offset, limit: count, ...(sort ? { sort } : {}) }).then(result => {
       if (controller.signal.aborted) return;
       const next = offset ? { ...result, items: [...currentPage.current!.items, ...result.items] } : result;
       currentPage.current = next;
@@ -260,7 +299,7 @@ function FolderEntries({ categoryId, revision, limit, markLoading, actions, drag
       setPending(false);
       if (categoryId) markLoading(categoryId, false);
     });
-  }, [categoryId, markLoading]);
+  }, [categoryId, markLoading, sort]);
 
   useEffect(() => {
     const count = limit === currentLimit.current ? Math.max(limit, currentPage.current?.items.length ?? 0) : limit;
@@ -275,6 +314,11 @@ function FolderEntries({ categoryId, revision, limit, markLoading, actions, drag
   }, [categoryId, revision, limit, load, markLoading]);
 
   const nextOffset = page?.nextOffset;
+  const located = Boolean(locate && page?.items.some(row => row.id === locate));
+  useEffect(() => {
+    if (located) document.getElementById(`entry-row-${locate}`)?.scrollIntoView({ block: "nearest" });
+    else if (locate && nextOffset != null && !pending && !failure) load(nextOffset, limit);
+  }, [locate, located, nextOffset, pending, failure, load, limit]);
   useEffect(() => {
     const target = sentinel.current;
     if (!target || nextOffset == null || pending || failure) return;
@@ -332,6 +376,7 @@ function ContentRow({ row, actions, detail = false, draggable, dragging, placeme
         setRenaming(true);
       }}>
         <ContextMenu.Item onSelect={() => actions.onOpen(row.id)}><FileText size={14} />打开</ContextMenu.Item>
+        <ContextMenu.Item onSelect={() => actions.onOpen(row.id, true)}><SquareArrowOutUpRight size={14} />在新标签打开</ContextMenu.Item>
         {!deleted && <>
           <ContextMenu.Separator />
           <ContextMenu.Item disabled={reading} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={14} />重命名</ContextMenu.Item>

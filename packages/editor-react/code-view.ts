@@ -1,6 +1,8 @@
 import type { Node as ProseNode } from "@milkdown/kit/prose/model";
+import { TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, type EditorView, type NodeView } from "@milkdown/kit/prose/view";
 import highlighter from "highlight.js/lib/common";
+import { editorIconButton } from "./image-view";
 import powershell from "highlight.js/lib/languages/powershell";
 
 highlighter.registerLanguage("powershell", powershell);
@@ -52,9 +54,13 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
     fence.className = "rich-code-fence";
     fence.setAttribute("aria-hidden", "true");
   }
-  const label = document.createElement("span");
+  const label = document.createElement("button");
+  label.type = "button";
   label.className = "rich-code-language";
   label.contentEditable = "false";
+  const passiveLabel = document.createElement("span");
+  passiveLabel.className = "rich-code-language rich-code-language-passive";
+  passiveLabel.contentEditable = "false";
   const input = document.createElement("input");
   input.setAttribute("aria-label", "代码块语言");
   input.placeholder = "语言";
@@ -63,8 +69,70 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
   open.classList.add("rich-code-fence-open");
   open.removeAttribute("aria-hidden");
   open.append(input);
-  pre.append(label, open, contentDOM, close);
-  dom.append(pre);
+  pre.append(label, passiveLabel, open, contentDOM, close);
+  const diagram = document.createElement("div");
+  diagram.className = "rich-mermaid rich-graphic-preview";
+  diagram.contentEditable = "false";
+  const diagramContent = document.createElement("span");
+  const editDiagram = editorIconButton("编辑 Mermaid 源码", "source");
+  editDiagram.classList.add("rich-graphic-edit");
+  diagram.append(diagramContent, editDiagram);
+  dom.append(pre, diagram);
+  let diagramUrl: string | undefined;
+  let source: string | null | undefined;
+  let drawing: number | undefined;
+  let diagramVersion = 0;
+  let editing = false;
+
+  function focusCode() {
+    const pos = getPos();
+    if (pos === undefined || !view.editable) return;
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 1)));
+    view.focus();
+  }
+  diagram.onclick = focusCode;
+  diagram.onmousedown = event => { if (event.button === 0) event.preventDefault(); };
+  label.onclick = () => {
+    if (!view.editable) return;
+    dom.classList.add("rich-code-language-editing");
+    focusCode();
+    input.focus();
+    input.select();
+  };
+
+  function clearDiagram() {
+    if (diagramUrl) URL.revokeObjectURL(diagramUrl);
+    diagramUrl = undefined;
+  }
+
+  function renderDiagram(next: string | null) {
+    if (next === source) return;
+    source = next;
+    const ticket = ++diagramVersion;
+    window.clearTimeout(drawing);
+    diagram.hidden = !next;
+    diagram.removeAttribute("data-failed");
+    if (!next) { clearDiagram(); return; }
+    if (!diagramUrl) diagramContent.textContent = "正在渲染 Mermaid…";
+    drawing = window.setTimeout(() => {
+      void import("../wechat-renderer/graphics").then(({ graphic }) => graphic("mermaid", next)).then(({ blob }) => {
+        if (ticket !== diagramVersion) return;
+        drawing = undefined;
+        clearDiagram();
+        diagramUrl = URL.createObjectURL(blob);
+        const image = document.createElement("img");
+        image.alt = "Mermaid 图表";
+        image.src = diagramUrl;
+        diagramContent.replaceChildren(image);
+      }).catch(() => {
+        if (ticket !== diagramVersion) return;
+        drawing = undefined;
+        clearDiagram();
+        diagram.dataset.failed = "";
+        diagramContent.textContent = "Mermaid 图表无法显示";
+      });
+    }, 180);
+  }
 
   function render() {
     const language = node.attrs.language;
@@ -75,12 +143,18 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
     open.dataset.markdown = fence;
     close.dataset.markdown = fence;
     label.textContent = language || "纯文本";
+    passiveLabel.textContent = label.textContent;
+    label.setAttribute("aria-label", `修改代码块语言（${label.textContent}）`);
     input.value = language;
+    if (language.toLowerCase() !== "mermaid") renderDiagram(null);
+    else if (!editing) renderDiagram(node.textContent);
   }
   render();
 
   input.oninput = () => input.setCustomValidity("");
+  input.onpointerdown = input.onfocus = () => dom.classList.add("rich-code-language-editing");
   input.onblur = () => {
+    dom.classList.remove("rich-code-language-editing");
     const language = input.value.trim();
     input.setCustomValidity("");
     const pos = getPos();
@@ -107,12 +181,23 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
 
   return {
     dom, contentDOM,
-    update(next) {
+    update(next, decorations) {
       if (node.type !== next.type) return false;
-      if (!node.eq(next)) { node = next; render(); }
+      const openSource = decorations.some(decoration => decoration.spec.codeSource === true);
+      if (openSource && !editing && drawing !== undefined) {
+        window.clearTimeout(drawing);
+        drawing = undefined;
+        diagramVersion++;
+        source = undefined;
+      }
+      const refresh = editing !== openSource || !node.eq(next);
+      editing = openSource;
+      node = next;
+      if (refresh) render();
       return true;
     },
-    stopEvent: event => event.target === input,
+    stopEvent: event => event.target === input || event.target === label || (event.target instanceof Node && diagram.contains(event.target)),
     ignoreMutation: mutation => mutation.type !== "selection" && !contentDOM.contains(mutation.target),
+    destroy() { diagramVersion++; window.clearTimeout(drawing); clearDiagram(); },
   };
 }

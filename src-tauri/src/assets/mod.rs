@@ -4,6 +4,7 @@ mod export;
 pub mod publishing;
 pub mod references;
 pub(crate) mod s3;
+pub(crate) mod upload_format;
 
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use image::{ImageDecoder, ImageFormat, ImageReader};
@@ -13,6 +14,7 @@ use s3::{Profile, Target};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     io::Cursor,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -45,6 +47,7 @@ const IMAGE_TIMEOUT: Duration = Duration::from_secs(25);
 
 enum ImageOrigin<'a> {
     Attachment,
+    Hosting(&'a Target),
     Library,
     ImportPlaceholder(&'a str),
     Derived(&'a str),
@@ -120,7 +123,6 @@ pub(super) struct AssetFile {
     pub id: String,
     pub hash: Option<String>,
     pub path: Option<String>,
-    pub mime: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +151,15 @@ struct Upload {
     file: AssetFile,
     profile: Profile,
     key: String,
+    registered: bool,
+    options: upload_format::UploadOptions,
+}
+
+struct HostedLocation {
+    profile_id: String,
+    key: String,
+    url: String,
+    content_hash: String,
 }
 
 impl Assets {
@@ -240,8 +251,12 @@ impl Assets {
         bytes: &[u8],
         origin: ImageOrigin<'_>,
     ) -> Result<String> {
+        let expected = match origin {
+            ImageOrigin::Hosting(target) => Some(target),
+            _ => None,
+        };
         let (kind, source, placeholder, retained) = match origin {
-            ImageOrigin::Attachment => ("original", None, None, false),
+            ImageOrigin::Attachment | ImageOrigin::Hosting(_) => ("original", None, None, false),
             ImageOrigin::Library => ("original", None, None, true),
             ImageOrigin::ImportPlaceholder(id) => ("original", None, Some(id), false),
             ImageOrigin::Derived(key) => ("derived", Some(key), None, false),
@@ -256,6 +271,7 @@ impl Assets {
             format.extensions_str()[0]
         );
         let asset_id = db.write(|tx| {
+            let active = Profile::active_for(tx, expected)?;
             if let Some(placeholder) = placeholder
                 && !cleanup::referenced(tx)?.0.contains(placeholder) {
                 return Err(AppError::new("ASSET_UNUSED", "图片已不再被引用"));
@@ -298,7 +314,7 @@ impl Assets {
                     [&hash],
                 )?;
             }
-            if let Some(profile) = Profile::active(tx)? { enqueue(tx, &asset_id, &hash, &profile.id, false)?; }
+            if let Some(profile) = active { enqueue(tx, &asset_id, &hash, &profile.id, false)?; }
             Ok(asset_id)
         })?;
         self.kick();
@@ -398,8 +414,20 @@ impl Assets {
     }
 
     pub async fn localize(&self, db: &Workspace, url: &str) -> Result<String> {
+        self.localize_for(db, url, None).await
+    }
+
+    pub(super) async fn localize_for(
+        &self,
+        db: &Workspace,
+        url: &str,
+        expected: Option<&Target>,
+    ) -> Result<String> {
         let address = remote_image_url(url)?;
-        if db.read(|conn| configured_image(conn, &address))? {
+        if db.read(|conn| {
+            Ok(Profile::active_for(conn, expected)?
+                .is_some_and(|profile| profile.target.contains_public_url(&address)))
+        })? {
             return Ok(url.to_owned());
         }
         match db.read(|conn| by_url(conn, url)) {
@@ -414,7 +442,8 @@ impl Assets {
             .next()
             .filter(|name| !name.is_empty())
             .unwrap_or("粘贴图片");
-        let id = self.import(db, name, &bytes)?;
+        let origin = expected.map_or(ImageOrigin::Attachment, ImageOrigin::Hosting);
+        let id = self.store_image(db, name, &bytes, origin)?;
         Ok(format!("asset://{id}"))
     }
 
@@ -440,33 +469,67 @@ impl Assets {
                 Err(error) => return Err(local_error(error)),
             }
         }
-        let target = db.read(|conn| {
-            conn.query_row(
-                "SELECT storage_profile_id,object_key,public_url FROM asset_locations WHERE sha256=?1
-                 AND uploaded_at IS NOT NULL AND deleted_at IS NULL
-                 ORDER BY (storage_profile_id=(SELECT value FROM app_settings WHERE key='image_storage_profile')) DESC, uploaded_at DESC LIMIT 1",
-                [file.hash.as_deref()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-            ).optional()?.map(|(profile, key, public_url)| Ok((Profile::read(conn, &profile)?, key, public_url))).transpose()
+        let (profile, location) = db.read(|conn| {
+            let location = hosted_location(conn, file)?
+                .ok_or_else(|| AppError::new("ASSET_MISSING", "找不到本地图片或可用的图床副本"))?;
+            Ok((Profile::read(conn, &location.profile_id)?, location))
         })?;
-        let (profile, key, public_url) = target
-            .ok_or_else(|| AppError::new("ASSET_MISSING", "找不到本地图片或可用的图床副本"))?;
         let result = match profile.provider() {
-            Ok(store) => store.get(&key).await,
+            Ok(store) => store.get(&location.key).await,
             Err(error) => Err(error),
         };
         let bytes = match result {
             Err(error) if matches!(error.code(), "S3_CREDENTIALS" | "S3_PERMISSION") => {
-                self.read_public(&public_url).await?
+                self.read_public(&location.url).await?
             }
             result => result?,
         };
         image_header(&bytes)?;
-        if file
-            .hash
-            .as_ref()
-            .is_some_and(|hash| format!("{:x}", Sha256::digest(&bytes)) != *hash)
-        {
+        if format!("{:x}", Sha256::digest(&bytes)) != location.content_hash {
             return Err(AppError::new("ASSET_CHANGED", "图床图片与素材记录不一致"));
+        }
+        Ok(bytes)
+    }
+
+    fn export_name(&self, conn: &Connection, file: &AssetFile) -> Result<String> {
+        let relative = file
+            .path
+            .as_deref()
+            .ok_or_else(|| AppError::new("ASSET_MISSING", "图片尚未下载"))?;
+        let name = Path::new(relative)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("asset has a generated file name");
+        if !self.root.join(relative).try_exists().map_err(local_error)?
+            && let Some(location) = hosted_location(conn, file)?
+            && let Some(format) = Path::new(&location.key)
+                .extension()
+                .and_then(ImageFormat::from_extension)
+        {
+            return Ok(name_for_format(name, format).into_owned());
+        }
+        Ok(name.to_owned())
+    }
+
+    async fn read_export_file(
+        &self,
+        db: &Workspace,
+        file: &AssetFile,
+        name: &str,
+    ) -> Result<Vec<u8>> {
+        let expected = Path::new(name)
+            .extension()
+            .and_then(ImageFormat::from_extension);
+        let bytes = self.read_file(db, file).await?;
+        if Some(
+            image::guess_format(&bytes)
+                .map_err(|err| AppError::new("IMAGE_FORMAT", err.to_string()))?,
+        ) != expected
+        {
+            return Err(AppError::new(
+                "EXPORT_FAILED",
+                "导出期间图片格式发生变化，请重新导出",
+            ));
         }
         Ok(bytes)
     }
@@ -553,6 +616,12 @@ impl Assets {
 
     async fn perform_upload(&self, db: &Workspace, upload: &Upload) -> Result<()> {
         let bytes = self.read_file(db, &upload.file).await?;
+        let options = upload.options.clone();
+        let (format, bytes) = tokio::task::spawn_blocking(move || options.encode(bytes))
+            .await
+            .map_err(|error| AppError::new("IMAGE_FORMAT", error.to_string()))??;
+        let key = name_for_format(&upload.key, format);
+        let content_hash = format!("{:x}", Sha256::digest(&bytes));
         let store = upload.profile.provider()?;
         if self.uploads_stopped.is_cancelled() {
             return Err(AppError::new(
@@ -560,10 +629,15 @@ impl Assets {
                 "退出时取消上传，可手动重试",
             ));
         }
-        register_target(db, upload)?;
         tokio::select! {
             biased;
-            result = store.put(&upload.key, upload.file.mime.as_deref().expect("stored file has MIME"), bytes) => result,
+            result = async {
+                if upload.registered && key != upload.key {
+                    store.delete(&upload.key).await?;
+                }
+                register_target(db, upload, &key, &content_hash)?;
+                store.put(&key, format.to_mime_type(), bytes).await
+            } => result,
             () = self.uploads_stopped.cancelled() => Err(AppError::new("UPLOAD_UNCERTAIN", "退出前上传未结束，可手动重试")),
         }
     }
@@ -598,6 +672,24 @@ fn publication_file(conn: &Connection, url: &str) -> Result<Option<AssetFile>> {
 
 fn local_error(error: std::io::Error) -> AppError {
     AppError::new("ASSET_FILE", format!("无法处理素材文件：{error}"))
+}
+
+fn name_for_format(name: &str, format: ImageFormat) -> Cow<'_, str> {
+    let (stem, extension) = name.rsplit_once('.').expect("asset name has an extension");
+    if ImageFormat::from_extension(extension) == Some(format) {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("{stem}.{}", format.extensions_str()[0]))
+    }
+}
+
+fn hosted_location(conn: &Connection, file: &AssetFile) -> Result<Option<HostedLocation>> {
+    Ok(conn.query_row(
+        "SELECT storage_profile_id,object_key,public_url,COALESCE(content_sha256,sha256) FROM asset_locations WHERE sha256=?1
+         AND uploaded_at IS NOT NULL AND deleted_at IS NULL
+         ORDER BY (storage_profile_id=(SELECT value FROM app_settings WHERE key='image_storage_profile')) DESC, uploaded_at DESC LIMIT 1",
+        [file.hash.as_deref()], |row| Ok(HostedLocation { profile_id: row.get(0)?, key: row.get(1)?, url: row.get(2)?, content_hash: row.get(3)? }),
+    ).optional()?)
 }
 
 fn image_header(bytes: &[u8]) -> Result<(ImageFormat, u32, u32)> {
@@ -643,13 +735,12 @@ fn file_row(r: &Row<'_>) -> rusqlite::Result<AssetFile> {
         id: r.get(0)?,
         hash: r.get(1)?,
         path: r.get(2)?,
-        mime: r.get(3)?,
     })
 }
 
 fn by_id(conn: &Connection, id: &str) -> Result<AssetFile> {
     Ok(conn.query_row(
-        "SELECT id,sha256,relative_path,mime_type FROM assets WHERE id=?1",
+        "SELECT id,sha256,relative_path FROM assets WHERE id=?1",
         [id],
         file_row,
     )?)
@@ -660,7 +751,7 @@ fn by_url(conn: &Connection, url: &str) -> Result<AssetFile> {
         return by_id(conn, id);
     }
     Ok(conn.query_row(
-        "SELECT id,sha256,relative_path,mime_type FROM assets
+        "SELECT id,sha256,relative_path FROM assets
          WHERE sha256 IN (SELECT sha256 FROM asset_urls WHERE url=?1) ORDER BY relative_path IS NULL LIMIT 1",
         [references::canonical_url(url)], file_row,
     )?)
@@ -708,21 +799,29 @@ fn claim(db: &Workspace) -> Result<Option<Upload>> {
         let profile = Profile::read(tx, &profile_id)?;
         let name = file.path.as_deref().and_then(|p| Path::new(p).file_name()).and_then(|v| v.to_str())
             .expect("queued asset has a generated file name");
-        let key = profile.target.key(&workspace_id(tx)?, name);
+        let options = profile.upload_options(tx)?;
+        let previous = tx.query_row(
+            "SELECT object_key FROM asset_locations WHERE sha256=?1 AND storage_profile_id=?2 AND uploaded_at IS NULL AND deleted_at IS NULL",
+            params![file.hash, profile.id], |row| row.get::<_, String>(0),
+        ).optional()?;
+        let (key, registered) = match previous {
+            Some(key) => (key, true),
+            None => (profile.target.key(&workspace_id(tx)?, &options.filename(name, now())?), false),
+        };
         tx.execute("UPDATE jobs SET status='running',updated_at=?2 WHERE id=?1", params![job, now()])?;
-        Ok(Some(Upload { job, file, profile, key }))
+        Ok(Some(Upload { job, file, profile, key, registered, options }))
     })
 }
 
-fn register_target(db: &Workspace, upload: &Upload) -> Result<()> {
+fn register_target(db: &Workspace, upload: &Upload, key: &str, content_hash: &str) -> Result<()> {
     db.maintenance(|tx| {
         let profile = Profile::read(tx, &upload.profile.id)?;
         let hash = upload.file.hash.as_deref().expect("queued asset has hash");
-        let url = profile.target.public_url(&upload.key);
+        let url = profile.target.public_url(key);
         tx.execute(
-            "INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url) VALUES (?1,?2,?3,?4)
-             ON CONFLICT(sha256,storage_profile_id) DO UPDATE SET uploaded_at=NULL,deleted_at=NULL,public_url=excluded.public_url",
-            params![hash, profile.id, upload.key, url],
+            "INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,content_sha256) VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(sha256,storage_profile_id) DO UPDATE SET uploaded_at=NULL,deleted_at=NULL,object_key=excluded.object_key,public_url=excluded.public_url,content_sha256=excluded.content_sha256",
+            params![hash, profile.id, key, url, content_hash],
         )?;
         tx.execute("INSERT OR IGNORE INTO asset_urls VALUES (?1,?2,?3)", params![url, hash, profile.id])?;
         Ok(())

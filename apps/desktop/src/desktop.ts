@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { SourceFragment } from "../../../packages/wechat-renderer";
 import type {
   Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult,
@@ -9,6 +9,8 @@ import type {
 
 export interface ImageTarget { endpoint: string; region: string; bucket: string; prefix: string; publicBase: string }
 export interface ImageSecret { accessKey: string; secretKey: string }
+export interface ImageUploadOptions { filenameTemplate: string; quality: "original" | "high" | "standard" | "economy" }
+export interface ExportImage { url: string; name: string }
 export type BackupTarget = Omit<ImageTarget, "publicBase">;
 export interface BackupSettings { target: BackupTarget | null; hasKey: boolean; currentWorkspace: string }
 export interface BackupSnapshot { name: string; createdAt: number; bytes: number }
@@ -59,7 +61,8 @@ export const desktop = {
   reorderEntry: (id: string, anchor: string, placement: CategoryPlacement) =>
     invoke<void>("reorder_entry", { id, anchor, placement }),
   revisions: (id: string) => invoke<Revision[]>("revisions", { id }),
-  exportMarkdown: (id: string) => invoke<boolean>("export_markdown", { id }),
+  exportMarkdown: (id: string) => invoke<string | null>("export_markdown", { id }),
+  revealFile: (path: string) => revealItemInDir(path),
   copyText: (text: string) => invoke<void>("clipboard_write", { text }),
   readClipboard: (acceptImages: boolean, acceptHtml = false) =>
     invoke<ClipboardContents | null>("clipboard_read", { acceptImages, acceptHtml }),
@@ -81,6 +84,10 @@ export const desktop = {
   onAiStarted: (callback: (id: string) => void) => listen<string>("ai-job-started", event => callback(event.payload)),
   backupSettings: () => invoke<BackupSettings>("backup_settings"),
   configureBackup: (target: BackupTarget, secret?: ImageSecret) => invoke<void>("backup_configure", { target, secret }),
+  backupUseImageStorage: () => invoke<void>("backup_use_image_storage"),
+  exportWorkspace: (preferences: Record<string, unknown>) => invoke<string | null>("backup_export_workspace", { preferences }),
+  importWorkspace: () => invoke<string | null>("backup_import_workspace"),
+  takeMigratedPreferences: () => invoke<Record<string, unknown> | null>("backup_take_preferences"),
   backupWorkspaces: () => invoke<string[]>("backup_workspaces"),
   backupList: (workspace: string) => invoke<BackupSnapshot[]>("backup_list", { workspace }),
   createBackup: () => invoke<{ backup: BackupSnapshot; warning: string | null }>("backup_create"),
@@ -92,9 +99,10 @@ export const desktop = {
   deriveImage: (kind: string, source: string, bytes: Uint8Array) => invoke<string>("asset_derive", { kind, source, png: Array.from(bytes) }),
   assetInfo: (url: string) => invoke<{ id: string; name: string } | null>("asset_info", { url }),
   publicImage: (url: string) => invoke<string>("asset_public", { url }),
+  hostImage: (url: string, target: ImageTarget) => invoke<string>("asset_host_image", { url, target }),
   copyImage: (url: string) => invoke<void>("asset_copy_image", { url }),
   saveImage: (url: string) => invoke<boolean>("asset_save_image", { url }),
-  exportWechatHtml: (html: string, urls: string[]) => invoke<boolean>("wechat_export_html", { html, urls }),
+  exportWechatHtml: (html: string, images: ExportImage[]) => invoke<boolean>("wechat_export_html", { html, images }),
   onExit: (callback: () => void) => listen("workspace-exit-requested", callback),
   beginExit: () => invoke<void>("begin_exit"),
   cancelExit: () => invoke<void>("cancel_exit"),
@@ -113,7 +121,9 @@ export const desktop = {
   localizeImage: (url: string) => invoke<string>("asset_localize_image", { url }),
   assetUpload: (id: string) => invoke<void>("asset_upload", { id }),
   assetExport: (id: string) => invoke<boolean>("asset_export", { id }),
-  imageStorageSave: (target: ImageTarget | null, secret?: ImageSecret) => invoke<void>("image_storage_save", { target, secret }),
+  imageStorageSave: (target: ImageTarget | null, secret?: ImageSecret, options?: ImageUploadOptions) => invoke<void>("image_storage_save", { target, secret, options }),
+  imageStorageSettings: () => invoke<{ target: ImageTarget | null; enabled: boolean; secret: ImageSecret | null; options: ImageUploadOptions }>("image_storage_settings"),
+  imageStorageTarget: () => invoke<ImageTarget | null>("image_storage_target"),
   imageStorageTest: (target: ImageTarget, secret?: ImageSecret) => invoke<void>("image_storage_test", { target, secret }),
 };
 

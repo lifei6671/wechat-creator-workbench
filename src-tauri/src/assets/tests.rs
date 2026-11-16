@@ -49,6 +49,80 @@ async fn public_image_previews_do_not_create_assets() {
 }
 
 #[tokio::test]
+async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
+    let (folder, db, media) = setup();
+    let original = png();
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 3)
+        .write_to(&mut encoded, ImageFormat::WebP)
+        .unwrap();
+    let hosted = encoded.into_inner();
+    let checksum = format!("{:x}", Sha256::digest(&hosted));
+    let id = media.import(&db, "原图.png", &original).unwrap();
+    let file = db.read(|conn| by_id(conn, &id)).unwrap();
+    let original_name = db.read(|conn| media.export_name(conn, &file)).unwrap();
+    assert!(original_name.ends_with(".png"));
+    std::fs::remove_file(media.root.join(file.path.as_deref().unwrap())).unwrap();
+    db.write(|tx| {
+        tx.execute("INSERT INTO storage_profiles VALUES ('fallback','images','http://127.0.0.1','auto','images','','http://127.0.0.1',?1)", [crate::db::id()])?;
+        Ok(())
+    }).unwrap();
+    for (bytes, export) in [
+        (hosted.clone(), false),
+        (original, false),
+        (hosted.clone(), true),
+    ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let url = format!("http://{}/image.webp", listener.local_addr().unwrap());
+        db.write(|tx| {
+            tx.execute("INSERT OR REPLACE INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at,content_sha256) VALUES (?1,'fallback','image.webp',?2,1,?3)", params![file.hash,url,checksum])?;
+            Ok(())
+        }).unwrap();
+        let matches = bytes == hosted;
+        let server = tokio::spawn(serve_image(listener, bytes));
+        if export {
+            let path = folder.path().join("hosted.md");
+            media
+                .export_markdown_file(&db, &format!("![图片](asset://{id})"), &path)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            let name = format!("assets/{}.webp", file.hash.as_deref().unwrap());
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                format!("![图片]({name})")
+            );
+            assert_eq!(std::fs::read(folder.path().join(name)).unwrap(), hosted);
+            continue;
+        }
+        let downloaded = media.read_file(&db, &file).await;
+        server.await.unwrap();
+        if matches {
+            assert_eq!(downloaded.unwrap(), hosted);
+        } else {
+            assert_eq!(downloaded.unwrap_err().code(), "ASSET_CHANGED");
+        }
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let url = format!("http://{}/image.webp", listener.local_addr().unwrap());
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE asset_locations SET public_url=?1 WHERE storage_profile_id='fallback'",
+            [url],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let server = tokio::spawn(serve_image(listener, hosted));
+    let stale_name = media
+        .read_export_file(&db, &file, &original_name)
+        .await
+        .unwrap_err();
+    server.await.unwrap();
+    assert_eq!(stale_name.code(), "EXPORT_FAILED");
+}
+
+#[tokio::test]
 async fn configured_public_images_keep_their_url_and_are_not_stored_locally() {
     let (folder, db, assets) = setup();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -86,6 +160,39 @@ async fn configured_public_images_keep_their_url_and_are_not_stored_locally() {
         .unwrap();
     assert_eq!(std::fs::read_to_string(output).unwrap(), markdown);
     assert!(!folder.path().join("assets").exists());
+    let pinned = db.read(s3::Profile::active).unwrap().unwrap().target;
+    let changed = s3::Target {
+        bucket: "different-bucket".into(),
+        ..pinned.clone()
+    };
+    assert_eq!(
+        assets
+            .public_image_for(&db, &url, Some(&changed))
+            .await
+            .unwrap_err()
+            .code(),
+        "S3_CHANGED"
+    );
+    assert_eq!(
+        assets
+            .store_image(&db, "外链.png", &png(), ImageOrigin::Hosting(&changed))
+            .unwrap_err()
+            .code(),
+        "S3_CHANGED"
+    );
+    assert!(!folder.path().join("assets").exists());
+    assets.configure(&db, None, None, None).unwrap();
+    assert_eq!(
+        assets
+            .public_image_for(&db, &url, Some(&pinned))
+            .await
+            .unwrap_err()
+            .code(),
+        "S3_CHANGED"
+    );
+    let (saved, enabled) = Assets::settings_profile(&db).unwrap();
+    assert!(!enabled);
+    assert_eq!(saved.unwrap().target.public_base, base);
     assert!(!public_ip("::ffff:127.0.0.1".parse().unwrap()));
     assert!(!public_ip("169.254.169.254".parse().unwrap()));
     assert!(!public_ip("198.18.0.1".parse().unwrap()));
@@ -255,7 +362,7 @@ async fn exit_keeps_library_imports_and_cleans_unreferenced_attachments() {
         .unwrap();
     db.write(|tx| {
         tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
-        tx.execute("INSERT INTO asset_locations VALUES (?1,'s','key','https://images.example.test/key',1,NULL)", [&hash])?;
+        tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at,deleted_at) VALUES (?1,'s','key','https://images.example.test/key',1,NULL)", [&hash])?;
         tx.execute("INSERT INTO jobs(id,kind,status,sha256,error,created_at,updated_at) VALUES ('cleanup','cleanup','failed',?1,'远程删除失败',1,1)", [&hash])?;
         Ok(())
     }).unwrap();

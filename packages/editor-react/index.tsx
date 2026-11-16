@@ -5,20 +5,23 @@ import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
 import { gfm, tableSchema } from "@milkdown/kit/preset/gfm";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import { DOMParser, DOMSerializer, Fragment, Slice, type Node as ProseNode } from "@milkdown/kit/prose/model";
-import { NodeSelection, Plugin, PluginKey, Selection, TextSelection, type Transaction } from "@milkdown/kit/prose/state";
+import { AllSelection, NodeSelection, Plugin, PluginKey, Selection, TextSelection, type Transaction } from "@milkdown/kit/prose/state";
 import { cellAround, CellSelection, isInTable } from "@milkdown/kit/prose/tables";
-import type { EditorView } from "@milkdown/kit/prose/view";
+import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
+import { Transform } from "@milkdown/kit/prose/transform";
 import { $prose, $view } from "@milkdown/kit/utils";
-import { Tooltip } from "@radix-ui/themes";
+import { Tooltip } from "../ui-react/Tooltip";
 import DOMPurify from "dompurify";
 import { CaseSensitive, ChevronDown, ChevronRight, ChevronUp, Regex, Replace, ReplaceAll, WholeWord, X } from "lucide-react";
 import { getSearchState, replaceAll, replaceNext, search, SearchQuery, setSearchState } from "prosemirror-search";
 import { runCommand, textEditingScope, type EditorCommand } from "./commands";
-import { hrefPattern, richCommonmark, richSchema } from "./schema";
-import { imagePattern, prepareImageContext, type EditorImages, type ImageContext } from "./image-view";
+import { clipboardMarkdownCtx, hrefPattern, richCommonmark, richSchema } from "./schema";
+import { imageContext, imagePattern, prepareImageContext, type EditorImages, type ImageContext } from "./image-view";
 import { editorPresentation, showContextCaret } from "./presentation";
 import { cellParagraph, isTableSlice, prepareTableContext, preservesTableSelection, replaceSelectedCells, runTableAction, tableView, type TableAction, type TableContext } from "./table-view";
 import { codeView } from "./code-view";
+import { footnoteDraft, FootnotePopover } from "./footnotes";
+import { footnotedLinkNames, linkRangeAt, linksToFootnotes } from "./link-footnotes";
 import "@milkdown/kit/prose/view/style/prosemirror.css";
 import "@milkdown/kit/prose/tables/style/tables.css";
 import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
@@ -27,6 +30,8 @@ import "./editor.css";
 export type { EditorCommand } from "./commands";
 export type { ImageContext } from "./image-view";
 export type { TableAction, TableContext } from "./table-view";
+
+export interface LinkContext { kind: "link"; scope: "body" | "cellText" | TableContext; convert(): void }
 
 export interface EditorTarget {
   entryId: string;
@@ -42,11 +47,13 @@ export interface MarkdownEditorHandle {
   search(): void;
   target(): EditorTarget;
   insert(text: string): void;
+  linkFootnoteMarkdown(source: string): string;
+  hostImages?(upload: (src: string) => Promise<string>, eligible: (src: string) => boolean): Promise<number>;
   replaceTarget(target: EditorTarget, text: string): boolean;
   retryMissingImages(): void;
   hasSelection(): boolean;
   command(command: EditorCommand, value?: string): void;
-  prepareContext(event: MouseEvent): ImageContext | TableContext | "code" | "cellText" | "object" | null;
+  prepareContext(event: MouseEvent): LinkContext | ImageContext | TableContext | "code" | "cellText" | "object" | null;
   contextCaret?(visible: boolean): void;
   tableAction(action: TableAction): void;
   clipboard(action: ClipboardAction, io: ClipboardIO, target?: EventTarget | null, plainText?: boolean): boolean;
@@ -67,7 +74,9 @@ interface Props extends EditorImages {
   entryId: string;
   value: string;
   readOnly: boolean;
+  active?: boolean;
   lineNumbers?: boolean;
+  convertLinks?: boolean;
   title?: ReactNode;
   onChange(entryId: string, localRevision: number, markdown: string): void;
   onBlur(): void;
@@ -76,9 +85,10 @@ interface Props extends EditorImages {
 }
 
 type Range = { from: number; to: number };
-type PastedImage = Range & { src: string };
+type PastedImage = Range & { node: ProseNode; src: string };
 const revision = new PluginKey<number>("workbenchRevision");
-const trailingParagraph = new PluginKey("workbenchTrailingParagraph");
+const documentLayout = new PluginKey("workbenchDocumentLayout");
+const pasteProgress = new PluginKey("workbenchPasteProgress");
 const embeddedImage = /^data:(image\/(?:png|jpeg|gif|webp));base64,/i;
 
 async function readPaste(io: ClipboardIO, plainText?: boolean): Promise<ClipboardContent> {
@@ -121,9 +131,28 @@ function mapRange(range: Range, tr: Transaction): Range | undefined {
   return { from, to };
 }
 
-function markdownSlice(editor: Editor, text: string) {
+function markdownSlice(editor: Editor, text: string, clipboard = false) {
   if (!text) return Slice.empty;
-  return editor.action(ctx => Slice.maxOpen(ctx.get(parserCtx)(text).content, false));
+  return editor.action(ctx => {
+    const parse = ctx.get(parserCtx);
+    if (!clipboard) return Slice.maxOpen(parse(text).content, false);
+    ctx.set(clipboardMarkdownCtx, true);
+    try { return Slice.maxOpen(parse(text).content, false); }
+    finally { ctx.set(clipboardMarkdownCtx, false); }
+  });
+}
+
+function unlinkFootnoteNames(tr: Transform, ranges: { from: number; to: number }[]) {
+  const { doc } = tr;
+  const linkType = doc.type.schema.marks.link;
+  for (const { from, to } of ranges) {
+    doc.nodesBetween(from, to, (node, pos) => {
+      const link = linkType.isInSet(node.marks);
+      if (link && !link.attrs.title && node.text === link.attrs.href) {
+        tr.removeMark(Math.max(from, pos), Math.min(to, pos + node.nodeSize), link);
+      }
+    });
+  }
 }
 
 function plainSlice(view: EditorView, text: string) {
@@ -136,11 +165,11 @@ function plainSlice(view: EditorView, text: string) {
 function htmlSlice(view: EditorView, html: string) {
   const richMetadata = [
     "data-type", "data-value", "data-label", "data-math", "data-display", "data-language",
-    "data-item-type", "data-list-type", "data-spread", "data-checked", "data-workbench-src", "data-workbench-alt",
+    "data-item-type", "data-list-type", "data-spread", "data-checked", "data-workbench-src", "data-workbench-alt", "data-literal-callout",
   ];
   const fragment = DOMPurify.sanitize(html, {
     ALLOWED_TAGS: [
-      "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "strong", "b", "em", "i", "s", "del", "strike",
+      "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "strong", "b", "em", "i", "s", "del", "strike", "mark",
       "code", "pre", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td", "a", "div", "span", "sup", "img",
       "dl", "dt", "dd",
     ],
@@ -183,7 +212,7 @@ function htmlSlice(view: EditorView, html: string) {
 }
 
 function clipboardSlice(editor: Editor, view: EditorView, payload: ClipboardContent, plainText?: boolean) {
-  if (typeof payload === "string") return plainText ? plainSlice(view, payload) : markdownSlice(editor, payload);
+  if (typeof payload === "string") return plainText ? plainSlice(view, payload) : markdownSlice(editor, payload, true);
   const rich = htmlSlice(view, payload.html);
   if (!payload.text) return rich;
   if (plainText) return plainSlice(view, payload.text);
@@ -194,7 +223,7 @@ function clipboardSlice(editor: Editor, view: EditorView, payload: ClipboardCont
   const block = rich.content.firstChild;
   const code = rich.content.childCount === 1 && block?.type.name === "code_block";
   const codeLanguage = code ? String(block.attrs.language ?? "").toLowerCase() : "";
-  if (codeLanguage === "md" || codeLanguage === "markdown") return markdownSlice(editor, payload.text);
+  if (codeLanguage === "md" || codeLanguage === "markdown") return markdownSlice(editor, payload.text, true);
   if (codeLanguage) return rich;
   let htmlParagraphs = true;
   rich.content.forEach(node => { htmlParagraphs &&= node.type.name === "paragraph"; });
@@ -207,7 +236,7 @@ function clipboardSlice(editor: Editor, view: EditorView, payload: ClipboardCont
       || node.marks.some(mark => mark.type.name === "link" || mark.type.name === "inlineCode");
   });
   if (semanticHtml) return rich;
-  const markdown = markdownSlice(editor, payload.text);
+  const markdown = markdownSlice(editor, payload.text, true);
   if (styled && !code) {
     let hasHeading = false;
     let sourceBlocks = 0;
@@ -241,11 +270,21 @@ function cellRange(selection: CellSelection) {
   };
 }
 
+function lastBodyBlock(doc: ProseNode) {
+  let end = doc.content.size;
+  for (let index = doc.childCount - 1; index >= 0; index--) {
+    const node = doc.child(index);
+    if (node.type.name !== "footnote_definition") return { node, end };
+    end -= node.nodeSize;
+  }
+  return { node: null, end };
+}
+
 function pastedImages(doc: ProseNode, from: number, to: number): PastedImage[] {
   const images: PastedImage[] = [];
   doc.nodesBetween(from, to, (node, pos) => {
     if (node.type.name === "image" && pos >= from && pos + node.nodeSize <= to && /^https?:\/\//i.test(node.attrs.src)) {
-      images.push({ from: pos, to: pos + node.nodeSize, src: node.attrs.src });
+      images.push({ node, from: pos, to: pos + node.nodeSize, src: node.attrs.src });
     }
   });
   return images;
@@ -403,46 +442,96 @@ export function MarkdownEditor(props: Props) {
   }, []);
   const latest = useRef(props);
   const [searchView, setSearchView] = useState<EditorView | null>(null);
+  const [footnote, setFootnote] = useState<ReturnType<typeof footnoteDraft>>(null);
+  useEffect(() => { if (props.active === false || props.readOnly) setFootnote(null); }, [props.active, props.readOnly]);
   useLayoutEffect(() => { latest.current = props; }, [props]);
-  useLayoutEffect(() => viewRef.current?.setProps({ editable: () => !props.readOnly }), [props.readOnly, props.lineNumbers]);
+  useLayoutEffect(() => viewRef.current?.setProps({ editable: () => !props.readOnly }), [props.readOnly, props.lineNumbers, props.convertLinks]);
 
   useEffect(() => {
     const { entryId, value, ref } = latest.current;
+    let markdown = value;
     const element = host.current!;
     const session = Symbol(entryId);
     const pending = new Map<symbol, Range>();
+    const pastes = new Map<symbol, { offset: number; key: string }>();
+    let pasteSequence = 0;
     const failedImages = new Set<() => void>();
     let disposed = false;
     let detachRef: (() => void) | undefined;
     const publish = (doc: ProseNode) => {
-      const last = doc.lastChild;
-      if (last?.type.name === "paragraph" && !last.content.size) {
-        if (doc.childCount === 1) return "";
-        doc = doc.copy(doc.content.cut(0, doc.content.size - last.nodeSize));
+      const { node, end } = lastBodyBlock(doc);
+      if (node?.type.name === "paragraph" && !node.content.size) {
+        const content = doc.content.cut(0, end - node.nodeSize).append(doc.content.cut(end));
+        if (!content.size) return "";
+        doc = doc.copy(content);
       }
       return editor.action(ctx => ctx.get(serializerCtx)(doc).replace(/\n$/, ""));
     };
-    function appendTail(viewState: EditorView["state"]) {
-      const last = viewState.doc.lastChild;
-      if (last?.isTextblock && last.type.name !== "code_block") return null;
-      const paragraph = viewState.schema.nodes.paragraph.create();
-      return viewState.tr.insert(viewState.doc.content.size, paragraph)
-        .setMeta(trailingParagraph, true).setMeta("addToHistory", false);
+    function normalizeDocument(viewState: EditorView["state"], initializing = false) {
+      const { doc, selection } = viewState;
+      const { node, end } = lastBodyBlock(doc);
+      const moved: { node: ProseNode; pos: number }[] = [];
+      const tail = !node?.isTextblock || node.type.name === "code_block" ? viewState.schema.nodes.paragraph.create() : null;
+      doc.forEach((child, pos) => {
+        if (pos < end && child.type.name === "footnote_definition") moved.push({ node: child, pos });
+      });
+      if (!tail && !moved.length) return null;
+      const tr = viewState.tr;
+      for (const footnote of moved.slice().reverse()) tr.delete(footnote.pos, footnote.pos + footnote.node.nodeSize);
+      const at = tr.mapping.map(end, -1);
+      const blocks = moved.map(footnote => footnote.node);
+      if (tail) blocks.unshift(tail);
+      tr.insert(at, Fragment.fromArray(blocks));
+      if (selection instanceof TextSelection) {
+        let pos = at + (tail?.nodeSize ?? 0);
+        for (const footnote of moved) {
+          if (selection.from > footnote.pos && selection.to < footnote.pos + footnote.node.nodeSize) {
+            tr.setSelection(TextSelection.create(tr.doc, pos + selection.anchor - footnote.pos, pos + selection.head - footnote.pos));
+            break;
+          }
+          pos += footnote.node.nodeSize;
+        }
+      }
+      if (initializing || !moved.length) tr.setMeta("addToHistory", false);
+      return tr.setMeta(documentLayout, true);
     }
     const isWritable = (view: EditorView) => !disposed && view.editable;
+    function showFootnote(view: EditorView, pos: number, label?: string) {
+      if (isWritable(view)) {
+        const draft = editor.action(ctx => footnoteDraft(view, pos, ctx.get(parserCtx), ctx.get(serializerCtx), label));
+        if (draft) setFootnote(draft);
+      }
+    }
 
     function track<T>(view: EditorView, range: Range, operation: () => Promise<T>, consume: (range: Range, value: T) => void,
-      onError?: (error: unknown) => void, { duringComposition = false } = {}) {
+      onError?: (error: unknown) => void, { duringComposition = false, pasteOffset }: { duringComposition?: boolean; pasteOffset?: number } = {}) {
       if (!isWritable(view) || (view.composing && !duringComposition)) return;
       const id = Symbol();
       pending.set(id, range);
+      if (pasteOffset !== undefined) {
+        pastes.set(id, { offset: pasteOffset, key: `paste-${++pasteSequence}` });
+        view.dispatch(view.state.tr.setMeta(pasteProgress, true));
+      }
       void operation().then(value => {
         const mapped = pending.get(id);
         if (mapped && isWritable(view) && (!view.composing || duringComposition)) consume(mapped, value);
-      }).catch(error => { if (!disposed) onError?.(error); }).finally(() => pending.delete(id));
+      }).catch(error => { if (!disposed) onError?.(error); }).finally(() => {
+        pending.delete(id);
+        if (pastes.delete(id) && !disposed) view.dispatch(view.state.tr.setMeta(pasteProgress, true));
+      });
     }
 
-    function localizePastedImages(view: EditorView, images: PastedImage[], io: ClipboardIO) {
+    function localizePastedImages(view: EditorView, images: PastedImage[], io: ClipboardIO, beforeLayout = view.state.doc) {
+      if (!images.length) return;
+      if (view.state.doc !== beforeLayout) {
+        // Moving footnotes preserves node identity but can shift images to new positions.
+        const inserted = new Map(images.map(image => [image.node, image.src]));
+        images = [];
+        view.state.doc.descendants((node, pos) => {
+          const src = inserted.get(node);
+          if (src) images.push({ node, from: pos, to: pos + node.nodeSize, src });
+        });
+      }
       const downloads = new Map<string, Promise<string>>();
       for (const { from, to, src } of images) {
         const task = downloads.get(src) ?? io.localizeImage!(src).catch(error => {
@@ -452,13 +541,17 @@ export function MarkdownEditor(props: Props) {
         downloads.set(src, task);
         track(view, { from, to }, () => task, ({ from }, url) => {
           if (url === src) return;
-          view.dispatch(view.state.tr.setNodeAttribute(from, "src", url).setMeta("addToHistory", false));
+          const current = view.state.doc.nodeAt(from);
+          if (current?.type.name === "image" && current.attrs.src === src) {
+            view.dispatch(view.state.tr.setNodeAttribute(from, "src", url).setMeta("addToHistory", false));
+          }
         }, io.onError, { duringComposition: true });
       }
     }
 
     const editor = Editor.make()
       .config(ctx => {
+        ctx.inject(clipboardMarkdownCtx);
         ctx.set(rootCtx, element);
         ctx.set(defaultValueCtx, value);
         ctx.update(editorViewOptionsCtx, options => ({
@@ -476,8 +569,14 @@ export function MarkdownEditor(props: Props) {
             },
             keydown: (view, event) => {
               if (view.composing || event.isComposing || event.keyCode === 229) return false;
+              const selection = view.state.selection;
+              if (view.editable && event.key === "Enter" && selection instanceof NodeSelection && selection.node.type.name === "footnote_reference") {
+                event.preventDefault();
+                showFootnote(view, selection.from, selection.node.attrs.label);
+                return true;
+              }
               if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a"
-                && textEditingScope(view.state)?.kind === "code") {
+                && !(selection instanceof CellSelection) && (view.editable || textEditingScope(view.state)?.kind === "code")) {
                 event.preventDefault();
                 runCommand(editor, view, "selectAll");
                 return true;
@@ -490,9 +589,15 @@ export function MarkdownEditor(props: Props) {
             },
             click: (view, event) => {
               const target = event.target as HTMLElement;
+              const note = target.closest<HTMLElement>('sup[data-type="footnote_reference"]');
+              if (note && note.dataset.label && view.editable) {
+                showFootnote(view, view.posAtDOM(note, 0), note.dataset.label);
+                return true;
+              }
               const link = target.closest<HTMLAnchorElement>("a[href]");
               if (link) {
                 event.preventDefault();
+                if (target.closest(".rich-link-footnoted") || link.querySelector(".rich-link-footnoted")) return true;
                 const { onOpenLink, onError } = latest.current;
                 const shortcut = /Mac/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
                 if (shortcut && !event.altKey && onOpenLink && /^https?:\/\//i.test(link.getAttribute("href")!)) {
@@ -501,7 +606,7 @@ export function MarkdownEditor(props: Props) {
                 return true;
               }
               const task = target.closest<HTMLElement>('li[data-item-type="task"]');
-              if (view.editable && target === task && event.offsetX <= 16) {
+              if (view.editable && task && (target.hasAttribute("data-markdown-task") || (target === task && event.offsetX <= 16))) {
                 const pos = view.posAtDOM(task, 0) - 1;
                 const node = view.state.doc.nodeAt(pos)!;
                 view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked: !node.attrs.checked }));
@@ -533,10 +638,32 @@ export function MarkdownEditor(props: Props) {
       .use($view(tableSchema.node, ctx => (_node, view, getPos) => tableView(ctx, view, getPos)))
       .use($prose(() => search()))
       .use($prose(() => new Plugin({
-        key: trailingParagraph,
-        appendTransaction: (transactions, _old, state) => transactions.some(tr => tr.docChanged) ? appendTail(state) : null,
+        key: documentLayout,
+        appendTransaction(transactions, _old, state) {
+          if (!transactions.some(tr => tr.docChanged)) return null;
+          return normalizeDocument(state);
+        },
       })))
       .use($prose(() => editorPresentation(() => latest.current)))
+      .use($prose(() => new Plugin({
+        key: pasteProgress,
+        props: { decorations(state) {
+          if (latest.current.readOnly || !pastes.size) return null;
+          const widgets = [];
+          for (const [id, { offset, key }] of pastes) {
+            const range = pending.get(id);
+            if (!range) continue;
+            widgets.push(Decoration.widget(range.from + offset, () => {
+              const marker = document.createElement("span");
+              marker.className = "rich-paste-progress rich-progress";
+              marker.setAttribute("role", "status");
+              marker.textContent = "正在粘贴…";
+              return marker;
+            }, { key, side: -1, ignoreSelection: true }));
+          }
+          return DecorationSet.create(state.doc, widgets);
+        } },
+      })))
       .use($prose(() => new Plugin<number>({
         key: revision,
         state: {
@@ -548,16 +675,16 @@ export function MarkdownEditor(props: Props) {
               if (mapped) pending.set(id, mapped);
               else pending.delete(id);
             }
-            return tr.getMeta(trailingParagraph) ? value : value + 1;
+            return tr.getMeta(documentLayout) ? value : value + 1;
           },
         },
-        filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(trailingParagraph)),
+        filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(documentLayout)),
         view: () => ({
           update(view, previous) {
             for (const listener of searchListeners.current) listener();
             const localRevision = revision.getState(view.state)!;
             if (localRevision === revision.getState(previous)) return;
-            const markdown = publish(view.state.doc);
+            markdown = publish(view.state.doc);
             latest.current.onChange(entryId, localRevision, markdown);
           },
         }),
@@ -569,8 +696,11 @@ export function MarkdownEditor(props: Props) {
     void editor.create().then(() => {
       if (disposed) { void editor.destroy(); return; }
       const view = editor.action(ctx => ctx.get(editorViewCtx));
-      const tail = appendTail(view.state);
-      if (tail) view.dispatch(tail);
+      const unlink = view.state.tr;
+      unlinkFootnoteNames(unlink, footnotedLinkNames(view.state.doc));
+      if (unlink.docChanged) view.dispatch(unlink.setMeta(documentLayout, true).setMeta("addToHistory", false));
+      const normalized = normalizeDocument(view.state, true);
+      if (normalized) view.dispatch(normalized);
       viewRef.current = view;
       const handle: MarkdownEditorHandle = {
         focus: () => view.focus(),
@@ -585,6 +715,55 @@ export function MarkdownEditor(props: Props) {
         insert: text => {
           if (isWritable(view)) view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, text)));
         },
+        linkFootnoteMarkdown(source) {
+          if (disposed) return source;
+          const doc = source === markdown ? view.state.doc : editor.action(ctx => ctx.get(parserCtx)(source));
+          const { edits, definitions, missing, existingNames, definitionNames } = linksToFootnotes(new Slice(doc.content, 0, 0), doc, "document");
+          const tr = new Transform(doc);
+          unlinkFootnoteNames(tr, [...existingNames, ...definitionNames]);
+          for (const { from, to, content } of edits) {
+            tr.replaceWith(tr.mapping.map(from), tr.mapping.map(to), content);
+          }
+          for (const { position, text } of missing) tr.insert(tr.mapping.map(position), doc.type.schema.text(text));
+          if (definitions.length) tr.insert(tr.doc.content.size, definitions);
+          return tr.docChanged ? publish(tr.doc) : source;
+        },
+        async hostImages(upload, eligible) {
+          if (!isWritable(view)) return 0;
+          const original = new Set<ProseNode>();
+          const uploads = new Map<string, { url: string; frames: ImageContext[] }>();
+          view.state.doc.descendants((node, pos) => {
+            if (node.type.name !== "image") return;
+            const src: string = node.attrs.src;
+            if (!eligible(src)) return;
+            original.add(node);
+            let group = uploads.get(src);
+            if (!group) {
+              group = { url: src, frames: [] };
+              uploads.set(src, group);
+            }
+            const frame = imageContext(view.nodeDOM(pos));
+            if (frame) group.frames.push(frame);
+          });
+          for (const [src, group] of uploads) {
+            if (!isWritable(view)) return 0;
+            for (const frame of group.frames) frame.setUploading(true);
+            try { group.url = await upload(src); }
+            finally { for (const frame of group.frames) frame.setUploading(false); }
+          }
+          if (!isWritable(view)) return 0;
+          const tr = closeHistory(view.state.tr);
+          let count = 0;
+          view.state.doc.descendants((node, pos) => {
+            if (!original.has(node)) return;
+            const { url } = uploads.get(node.attrs.src)!;
+            if (url === node.attrs.src) return;
+            tr.setNodeAttribute(pos, "src", url);
+            count++;
+          });
+          if (count) view.dispatch(tr);
+          return count;
+        },
         replaceTarget: (target, text) => {
           if (!isWritable(view) || target.entryId !== entryId || target.session !== session
             || target.localRevision !== revision.getState(view.state)) return false;
@@ -595,7 +774,11 @@ export function MarkdownEditor(props: Props) {
         },
         hasSelection: () => !view.state.selection.empty,
         retryMissingImages: () => { for (const retry of failedImages) retry(); },
-        command: (name, value) => { if (!disposed) runCommand(editor, view, name, value); },
+        command: (name, value) => {
+          if (disposed) return;
+          if (name === "footnote") showFootnote(view, view.state.selection.to);
+          else runCommand(editor, view, name, value);
+        },
         tableAction: action => { if (!disposed) editor.action(ctx => runTableAction(ctx, view, action)); },
         prepareContext: event => {
           if (view.state.selection instanceof CellSelection
@@ -607,6 +790,28 @@ export function MarkdownEditor(props: Props) {
           const { selection } = view.state;
           const target = event.button === 2 || event.ctrlKey ? event.target
             : selection instanceof NodeSelection ? view.nodeDOM(selection.from) : null;
+          const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+          if (anchor && isWritable(view) && view.dom.contains(anchor)) {
+            const { doc } = view.state;
+            const range = linkRangeAt(doc.resolve(view.posAtDOM(anchor, 0)), anchor.getAttribute("href")!);
+            if (range) {
+              const { from, to } = range;
+              if (!preservesTableSelection(view, anchor) && (selection.empty || selection.to <= from || selection.from >= to)) {
+                view.dispatch(view.state.tr.setSelection(TextSelection.create(doc, from)));
+              }
+              const scope = prepareTableContext(view, event) ?? (textEditingScope(view.state)?.kind === "cellText" ? "cellText" : "body");
+              return { kind: "link", scope, convert() {
+                if (!isWritable(view) || latest.current.active === false || view.state.doc !== doc) return;
+                const result = linksToFootnotes(doc.slice(from, to), doc);
+                if (!result.definitions.length) return;
+                const tr = closeHistory(view.state.tr).replace(from, to, result.slice);
+                const caret = tr.mapping.map(to);
+                tr.insert(tr.doc.content.size, result.definitions);
+                view.dispatch(tr.setSelection(Selection.near(tr.doc.resolve(caret))));
+                view.focus();
+              } };
+            }
+          }
           const element = target instanceof Element ? target.closest(".rich-formula, hr") : null;
           if (element && view.dom.contains(element)) {
             const pos = view.posAtDOM(element, 0);
@@ -630,7 +835,21 @@ export function MarkdownEditor(props: Props) {
             !(source instanceof Node) || !view.dom.contains(source) || source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement
           ))) return false;
           if (view.composing) return true;
+          if (source !== undefined && view.hasFocus() && view.state.selection instanceof TextSelection) {
+            const selection = view.dom.ownerDocument.getSelection();
+            if (selection?.anchorNode && selection.focusNode && view.dom.contains(selection.anchorNode) && view.dom.contains(selection.focusNode)) {
+              const { doc } = view.state;
+              const anchor = doc.resolve(view.posAtDOM(selection.anchorNode, selection.anchorOffset));
+              const head = doc.resolve(view.posAtDOM(selection.focusNode, selection.focusOffset));
+              const domSelection = TextSelection.between(anchor, head);
+              if (!view.state.selection.eq(domSelection)) view.dispatch(view.state.tr.setSelection(domSelection));
+            }
+          }
           const selected = view.state.selection;
+          if (action === "copy" && view.editable && selected instanceof AllSelection) {
+            void io.write(markdown).catch(io.onError);
+            return true;
+          }
           if (selected instanceof CellSelection) {
             const range = cellRange(selected);
             const mapped = (from: number) => CellSelection.create(view.state.doc,
@@ -639,22 +858,19 @@ export function MarkdownEditor(props: Props) {
               track(view, range, () => readPaste(io, plainText), ({ from }, payload) => {
                 const slice = clipboardSlice(editor, view, payload, plainText);
                 if (!slice.size) return;
+                const pasteTable = isTableSlice(slice);
+                const paragraph = pasteTable ? null : cellParagraph(view.state.schema, slice);
+                if (!pasteTable && !paragraph) return;
                 const selection = mapped(from);
-                if (isTableSlice(slice)) {
-                  if (!view.state.selection.eq(selection)) view.dispatch(view.state.tr.setSelection(selection));
-                  view.someProp("handlePaste", handle => handle(view, new ClipboardEvent("paste"), slice));
-                } else {
-                  const paragraph = cellParagraph(view.state.schema, slice);
-                  if (!paragraph) return;
-                  if (!view.state.selection.eq(selection)) view.dispatch(view.state.tr.setSelection(selection));
-                  replaceSelectedCells(view, selection, paragraph);
-                }
+                if (!view.state.selection.eq(selection)) view.dispatch(view.state.tr.setSelection(selection));
+                if (paragraph) replaceSelectedCells(view, selection, paragraph);
+                else view.someProp("handlePaste", handle => handle(view, new ClipboardEvent("paste"), slice));
                 const result = view.state.selection;
                 if (!plainText && io.localizeImage && result instanceof CellSelection) {
                   const images = result.ranges.flatMap(({ $from, $to }) => pastedImages(view.state.doc, $from.pos, $to.pos));
                   localizePastedImages(view, images, io);
                 }
-              }, io.onError);
+              }, io.onError, { pasteOffset: plainText ? undefined : 2 });
             } else {
               const { dom, text } = view.serializeForClipboard(selected.content());
               const write = () => io.write(text, dom.innerHTML);
@@ -688,8 +904,8 @@ export function MarkdownEditor(props: Props) {
                 if (start < end) images.push(...pastedImages(tr.doc, start, end));
               });
               view.dispatch(tr);
-              localizePastedImages(view, images, io);
-            }, io.onError);
+              localizePastedImages(view, images, io, tr.doc);
+            }, io.onError, { pasteOffset: asText ? undefined : 0 });
             return true;
           }
           if (action === "cut" && !isWritable(view)) return true;
@@ -725,6 +941,7 @@ export function MarkdownEditor(props: Props) {
     return () => {
       disposed = true;
       pending.clear();
+      pastes.clear();
       detachRef?.();
       if (viewRef.current) { viewRef.current = null; void editor.destroy(); }
     };
@@ -732,6 +949,7 @@ export function MarkdownEditor(props: Props) {
 
   return <div className="editor-host">
     {searchView && <SearchBar view={searchView} readOnly={props.readOnly} inputRef={searchInput} subscribe={subscribeToSearch} onClose={() => setSearchView(null)} />}
+    {footnote && props.active !== false && !props.readOnly && <FootnotePopover draft={footnote} onClose={() => setFootnote(null)} />}
     <div className="editor-scroll">{props.title}<div className="rich-editor" ref={host} /></div>
   </div>;
 }

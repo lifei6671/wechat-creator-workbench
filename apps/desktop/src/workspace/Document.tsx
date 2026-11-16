@@ -1,18 +1,18 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { Button, ContextMenu, DropdownMenu, Spinner, Tooltip } from "@radix-ui/themes";
+import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
-  ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
+  ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
   FolderInput, FolderOpen, ListFilter, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement } from "../../../../packages/shared-types";
-import { MarkdownEditor, type ClipboardIO, type MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { footnoteId } from "../../../../packages/markdown-core";
 import { renderWechat, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
 import previewCss from "../styles/preview.css?inline";
 import { desktop, errorMessage } from "../desktop";
 import { isConflict, SaveQueue } from "../editor/save-queue";
 import { commandKey, untitled } from "../labels";
-import { Tool } from "../ui";
+import { Tool, Tooltip } from "../ui";
 import { loadLocalImage } from "./Publishing";
 import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./EditorContextMenu";
 import { InlineEntryTitle } from "./InlineEntryTitle";
@@ -232,7 +232,7 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
   </ContextMenu.Root>;
 }
 
-export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, onImageZoom, onError }: {
+export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage }: {
   queue: SaveQueue;
   active: boolean;
   locked: boolean;
@@ -244,14 +244,19 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   onImages(files: File[]): Promise<string>;
   onImageZoom(image: { src: string; alt: string }, trigger: HTMLButtonElement): void;
   onError(error: unknown): void;
+  canHost?(src: string): boolean;
+  hostBusy?: boolean;
+  uploadingSource?: string;
+  onHostImage?(image: ImageContext): void;
 }) {
   const { fields } = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const editor = useRef<MarkdownEditorHandle>(null);
   const readOnly = reading || locked || queue.entry.deletedAt !== null;
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
     data-wechat-theme={wechatThemeId(fields.themeId)} hidden={!active}>
-    <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}>
-      <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} lineNumbers={display.lineNumbers}
+    <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
+      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage}>
+      <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
         title={display.showTitle && <div className="writing-title">
         {reading ? <h1>{fields.title || untitled}</h1> : <textarea aria-label="标题" rows={1}
           value={fields.title} readOnly={readOnly} placeholder={untitled}
@@ -271,7 +276,9 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   </div>;
 }
 
-export function MarkdownPreview({ markdown, themeId, revision }: { markdown: string; themeId?: string | null; revision: number }) {
+export function MarkdownPreview({ markdown, themeId, revision, projectLinks }: {
+  markdown: string; themeId?: string | null; revision: number; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null;
+}) {
   const snapshot = useMemo(() => ({ markdown, themeId, revision }), [markdown, themeId, revision]);
   const deferred = useDeferredValue(snapshot);
   const host = useRef<HTMLDivElement>(null);
@@ -307,9 +314,10 @@ export function MarkdownPreview({ markdown, themeId, revision }: { markdown: str
   }, []);
 
   useEffect(() => {
+    if (projectLinks === null) return;
     let alive = true;
     const controller = new AbortController();
-    void renderWechat({ ...deferred, output: "preview" }, {
+    void Promise.resolve().then(() => renderWechat({ ...deferred, markdown: projectLinks?.(deferred.markdown) ?? deferred.markdown, output: "preview" }, {
       signal: controller.signal,
       sources: desktop.wechatGraphics,
       derive: desktop.deriveImage,
@@ -323,7 +331,7 @@ export function MarkdownPreview({ markdown, themeId, revision }: { markdown: str
         }
         return item.image;
       },
-    }).then(result => {
+    })).then(result => {
       if (!alive) { result.dispose(); return; }
       displayed.current?.dispose();
       displayed.current = result;
@@ -354,7 +362,7 @@ export function MarkdownPreview({ markdown, themeId, revision }: { markdown: str
       body.current!.textContent = errorMessage(error);
     });
     return () => { alive = false; controller.abort(); };
-  }, [deferred.markdown, deferred.themeId, deferred.revision, assetRevision]);
+  }, [deferred.markdown, deferred.themeId, deferred.revision, assetRevision, projectLinks]);
 
   return <div className="markdown-preview" ref={host} aria-label="公众号排版预览" />;
 }
@@ -377,6 +385,9 @@ export interface DocumentActions {
   onExportAssets(): void;
   onExportWechat(): void;
   onCopyWechat(): void;
+  onCopyMarkdown?(): void;
+  onHostImages?(): void;
+  hostingImages?: boolean;
   publishing: boolean;
   onDelete(): void;
   onDraft(): void;
@@ -457,7 +468,13 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
         <DropdownMenu.Content align="end" size="1">
           <DropdownMenu.Item onSelect={actions.onProperties}><FilePenLine size={14} />内容属性</DropdownMenu.Item>
           <DropdownMenu.Item onSelect={actions.onSearch}><Search size={14} />{deleted || actions.reading ? "查找" : "查找与替换"}</DropdownMenu.Item>
+          {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
           {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
+          {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages}
+            onSelect={actions.onHostImages}>
+            {actions.hostingImages ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={14} />}
+            {actions.hostingImages ? "正在上传图片…" : "批量上传到图床"}
+          </DropdownMenu.Item>}
           <DropdownMenu.Item onSelect={actions.onSavedVersions}><History size={14} />历史版本</DropdownMenu.Item>
           <DropdownMenu.Separator />
           {!actions.reading && <DropdownMenu.Item onSelect={() => actions.setMode(actions.mode === "edit" ? "preview" : "edit")}>
@@ -493,28 +510,26 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
   </div>;
 }
 
-export function DocumentStatus({ queue, actions }: { queue: SaveQueue; actions: DocumentActions }) {
-  const { fields, error, revision, savedRevision, saving } = useSyncExternalStore(queue.subscribe, queue.snapshot);
-  const wordSource = useDeferredValue(fields.contentMd);
-  const conflict = isConflict(error);
-  const reason = conflict ? `内容已更新至版本 ${error.currentVersion}，当前稿仍在编辑器中` : error && errorMessage(error);
+export function DocumentSaveError({ queue, actions }: {
+  queue: SaveQueue;
+  actions: Pick<DocumentActions, "onCopy" | "onDraft" | "onReload" | "onRetry">;
+}) {
+  const error = useSyncExternalStore(queue.subscribe, () => queue.snapshot().error);
   const [expanded, setExpanded] = useState(false);
-  return <>
-    {Boolean(error) && <div className="save-error" role="alert">
-      <span title={String(reason)} className={expanded ? "" : "error-ellipsis"}>{String(reason)}</span>
-      <div className="button-strip">
-        {conflict ? <>
-          <Button size="1" variant="soft" onClick={actions.onCopy}>复制当前稿</Button>
-          <Button size="1" variant="soft" onClick={actions.onDraft}>另存为副本</Button>
-          <Button size="1" variant="soft" onClick={actions.onReload}>重新加载</Button>
-        </> : <>
-          <Button size="1" variant="ghost" onClick={() => setExpanded(value => !value)}>{expanded ? "收起详情" : "详情"}</Button>
-          <Button size="1" variant="soft" onClick={actions.onRetry}>重试保存</Button>
-        </>}
-      </div>
-    </div>}
-    <footer className="document-status" aria-label="文章状态">{actions.reading && <span>只读</span>}<span role="status">
-      {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving ? "保存中…" : revision === savedRevision ? "已保存" : "未保存"}
-    </span><span>{Array.from(wordSource.replace(/\s/g, "")).length.toLocaleString("zh-CN")} 字</span></footer>
-  </>;
+  if (!error) return null;
+  const conflict = isConflict(error);
+  const reason = conflict ? `内容已更新至版本 ${error.currentVersion}，当前稿仍在编辑器中` : errorMessage(error);
+  return <div className="save-error" role="alert">
+    <span title={reason} className={expanded ? "" : "error-ellipsis"}>{reason}</span>
+    <div className="button-strip">
+      {conflict ? <>
+        <Button size="1" variant="soft" onClick={actions.onCopy}>复制当前稿</Button>
+        <Button size="1" variant="soft" onClick={actions.onDraft}>另存为副本</Button>
+        <Button size="1" variant="soft" onClick={actions.onReload}>重新加载</Button>
+      </> : <>
+        <Button size="1" variant="ghost" onClick={() => setExpanded(value => !value)}>{expanded ? "收起详情" : "详情"}</Button>
+        <Button size="1" variant="soft" onClick={actions.onRetry}>重试保存</Button>
+      </>}
+    </div>
+  </div>;
 }

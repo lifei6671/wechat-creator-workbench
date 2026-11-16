@@ -1,19 +1,28 @@
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
-import { blockContainerTypes, commonmark, htmlSchema, imageSchema, remarkHtmlTransformer } from "@milkdown/kit/preset/commonmark";
-import { tableCellSchema, tableHeaderSchema } from "@milkdown/kit/preset/gfm";
+import { createSlice } from "@milkdown/kit/ctx";
+import { blockContainerTypes, blockquoteSchema, commonmark, htmlSchema, imageSchema, remarkHtmlTransformer } from "@milkdown/kit/preset/commonmark";
+import { footnoteDefinitionSchema, footnoteReferenceSchema, tableCellSchema, tableHeaderSchema } from "@milkdown/kit/preset/gfm";
+import { markRule } from "@milkdown/kit/prose";
 import type { Node as ProseNode, TagParseRule } from "@milkdown/kit/prose/model";
+import { Selection } from "@milkdown/kit/prose/state";
 import type { EditorView, NodeView } from "@milkdown/kit/prose/view";
-import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
+import { $inputRule, $markSchema, $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
+import { remarkMarkHighlight } from "@ai-markdown/remark-mark-highlight";
 import remarkMath from "remark-math";
-import { imageView, type EditorImages } from "./image-view";
+import { readCalloutMarker } from "../markdown-core/callouts";
+import { editorIconButton, imageView, type EditorImages } from "./image-view";
+import { sentencePunctuation } from "./link-footnotes";
 
 export const hrefPattern = /^(?:https?:\/\/|mailto:|#)/i;
 export const richCommonmark = commonmark.filter(plugin => !remarkHtmlTransformer.includes(plugin));
+export const clipboardMarkdownCtx = createSlice(false, "clipboardMarkdown");
 
 type Tree = {
   type: string;
   value?: unknown;
+  url?: string;
   children?: Tree[];
+  literalCallout?: boolean;
   position?: { start: { offset?: number }; end: { offset?: number } };
 };
 
@@ -22,9 +31,25 @@ type Tree = {
 const richNodes = $remark("workbenchRichNodes", ctx =>
   () => (tree: Tree, file: { value: unknown }) => {
     const source = String(file.value);
+    const isClipboard = ctx.get(clipboardMarkdownCtx);
     const containers = ctx.get(blockContainerTypes.key);
+    const nestedFootnotes: Tree[] = [];
     const visit = (parent: Tree) => {
-      for (const child of parent.children ?? []) {
+      if (!parent.children) return;
+      if (isClipboard) parent.children = parent.children.flatMap((child, index, siblings) => {
+        const start = child.position?.start.offset;
+        const end = child.position?.end.offset;
+        const url = child.url;
+        if (child.type !== "link" || !url || start === undefined || end === undefined || source.slice(start, end) !== url) return [child];
+        const boundary = url.search(sentencePunctuation);
+        // An implicit URL in pasted prose can absorb the rest of a Chinese sentence. Keep explicit and standalone URLs intact.
+        const previous = siblings[index - 1];
+        const prose = previous?.type === "text" && typeof previous.value === "string" && previous.value.split(/\r?\n/).at(-1)?.trim();
+        if (boundary < 0 || !/[。！？；]$/.test(url) || !prose) return [child];
+        const address = url.slice(0, boundary);
+        return [{ ...child, url: address, children: [{ type: "text", value: address }] }, { type: "text", value: url.slice(boundary) }];
+      });
+      parent.children = parent.children.filter(child => {
         if (parent.type === "tableCell" && child.type === "html" && /^<br\s*\/?>$/i.test(String(child.value))) {
           child.type = "tableLineBreak";
         } else if (child.type === "html" && containers.includes(parent.type)) {
@@ -32,6 +57,13 @@ const richNodes = $remark("workbenchRichNodes", ctx =>
         }
         const start = child.position?.start.offset;
         const end = child.position?.end.offset;
+        if (child.type === "blockquote" && child.children?.[0]?.type === "paragraph") {
+          const first = child.children[0].children?.[0];
+          const from = first?.position?.start.offset;
+          if (first?.type === "text" && from !== undefined && readCalloutMarker(String(first.value))) {
+            child.literalCallout = !readCalloutMarker(source.slice(from));
+          }
+        }
         if (child.type === "inlineMath" && start !== undefined && end !== undefined) {
           const expression = source.slice(start, end);
           if (/^\$+\s|\s\$+$/.test(expression)) {
@@ -41,10 +73,18 @@ const richNodes = $remark("workbenchRichNodes", ctx =>
             child.type = "inlineDisplayMath";
           }
         }
+        if (child.type === "footnoteDefinition" && parent !== tree) {
+          nestedFootnotes.push(child);
+          visit(child);
+          return false;
+        }
+        const count = nestedFootnotes.length;
         visit(child);
-      }
+        return nestedFootnotes.length === count || child.children?.length !== 0;
+      });
     };
     visit(tree);
+    tree.children?.push(...nestedFootnotes);
   });
 
 const htmlInline = htmlSchema.extendSchema(base => ctx => ({
@@ -136,6 +176,54 @@ function mathNode(name: string, inline: boolean) {
 const mathInline = mathNode("math_inline", true);
 const mathBlock = mathNode("math_block", false);
 const math = $remark("workbenchMath", () => remarkMath);
+const blockquote = blockquoteSchema.extendSchema(base => ctx => {
+  const original = base(ctx);
+  return {
+    ...original,
+    attrs: { literalCallout: { default: false } },
+    parseDOM: [{ tag: "blockquote", getAttrs: dom => ({ literalCallout: dom.hasAttribute("data-literal-callout") }) }],
+    toDOM: node => ["blockquote", node.attrs.literalCallout ? { "data-literal-callout": "" } : {}, 0],
+    parseMarkdown: {
+      ...original.parseMarkdown,
+      runner: (state, node, type) => state.openNode(type, { literalCallout: Boolean(node.literalCallout) }).next(node.children).closeNode(),
+    },
+    toMarkdown: {
+      ...original.toMarkdown,
+      runner: (state, node) => {
+        const paragraph = node.firstChild;
+        const first = paragraph?.type.name === "paragraph" && paragraph.firstChild;
+        const callout = first && first.isText && !first.marks.length && readCalloutMarker(first.text!);
+        if (!callout) return original.toMarkdown.runner(state, node);
+        // Emit the marker literally so remark does not escape a callout as a shortcut reference link.
+        state.openNode("blockquote").openNode("paragraph")
+          .addNode("html", undefined, (node.attrs.literalCallout ? "\\" : "") + callout.marker)
+          .next(paragraph!.content.cut(callout.marker.length)).closeNode()
+          .next(node.content.cut(paragraph!.nodeSize)).closeNode();
+      },
+    },
+  };
+});
+const footnoteReference = footnoteReferenceSchema.extendSchema(base => ctx => ({
+  ...base(ctx), toDOM: node => ["sup", { "data-type": "footnote_reference", "data-label": node.attrs.label }, `[^${node.attrs.label}]`],
+}));
+const footnoteDefinition = footnoteDefinitionSchema.extendSchema(base => ctx => ({
+  ...base(ctx), toDOM: node => ["dl", { "data-type": "footnote_definition", "data-label": node.attrs.label },
+    ["dt", `[^${node.attrs.label}]:`], ["dd", 0]],
+}));
+const highlightSyntax = $remark("workbenchHighlight", () => remarkMarkHighlight);
+const highlight = $markSchema("highlight", () => ({
+  parseDOM: [{ tag: "mark" }],
+  toDOM: () => ["mark", 0],
+  parseMarkdown: {
+    match: node => node.type === "mark",
+    runner: (state, node, type) => { state.openMark(type).next(node.children).closeMark(type); },
+  },
+  toMarkdown: {
+    match: mark => mark.type.name === "highlight",
+    runner: (state, mark) => { state.withMark(mark, "mark"); },
+  },
+}));
+const highlightInput = $inputRule(ctx => markRule(/(?<![\\=])==(?![=\s])([^\r\n]+?)(?<![=\s])==$/, highlight.type(ctx)));
 
 // Markdown tables have one slot per cell. Apply that contract to pasted or dropped HTML as well.
 const tableCellRule = (tag: "td" | "th"): TagParseRule => ({
@@ -160,13 +248,31 @@ const tableLineBreak = $nodeSchema("table_line_break", () => ({
   },
 }));
 
-function formulaView(node: ProseNode, view: EditorView, getPos: () => number | undefined): NodeView {
+function formulaView(node: ProseNode, view: EditorView, getPos: () => number | undefined, parse: (source: string) => ProseNode): NodeView {
   const dom = document.createElement(node.isInline ? "span" : "div");
   dom.className = "rich-formula";
   dom.contentEditable = "false";
   const rendered = document.createElement("span");
   rendered.textContent = "公式";
-  dom.append(rendered);
+  const trigger = node.isInline ? document.createElement("button") : editorIconButton("编辑公式源码", "source");
+  trigger.type = "button";
+  trigger.classList.add("rich-formula-trigger");
+  trigger.setAttribute("aria-label", "编辑公式源码");
+  const field = document.createElement(node.isInline ? "input" : "textarea");
+  field.className = "rich-formula-source";
+  field.setAttribute("aria-label", "公式 Markdown 源码");
+  field.spellcheck = false;
+  field.hidden = true;
+  if (node.isInline) dom.append(rendered, trigger, field);
+  else {
+    const preview = document.createElement("div");
+    preview.className = "rich-graphic-preview";
+    trigger.classList.add("rich-graphic-edit");
+    preview.onmousedown = event => { if (event.button === 0) event.preventDefault(); };
+    preview.onclick = openSource;
+    preview.append(rendered, trigger);
+    dom.append(field, preview);
+  }
   let imageUrl: string | undefined;
   let destroyed = false;
   void import("../wechat-renderer/graphics")
@@ -181,38 +287,60 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
     })
     .catch(() => { if (!destroyed) rendered.textContent = "公式无法显示"; });
 
-  dom.ondblclick = () => {
-    if (!view.editable || dom.querySelector("input")) return;
-    const input = document.createElement("input");
-    input.setAttribute("aria-label", "公式");
-    input.value = node.attrs.value;
-    rendered.hidden = true;
-    dom.append(input);
-    input.focus();
-    input.select();
-    input.oninput = () => input.setCustomValidity("");
-    input.onblur = () => { input.remove(); rendered.hidden = false; };
-    input.onkeydown = event => {
-      if (event.isComposing || event.keyCode === 229) return;
-      if (event.key === "Escape") { view.focus(); return; }
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      const value = input.value.trim();
-      if (!validMath(value, node.isInline)) {
-        input.setCustomValidity("请输入公式内容，不含美元符号分隔线");
-        input.reportValidity();
-        return;
-      }
-      const pos = getPos();
-      if (pos !== undefined && view.editable) {
-        view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, value }));
-      }
-      view.focus();
-    };
+  function openSource() {
+    if (!view.editable || !field.hidden) return;
+    const delimiter = node.attrs.display ? "$$" : "$";
+    const fence = node.isInline ? delimiter : "$$\n";
+    field.value = fence + node.attrs.value + (node.isInline ? delimiter : "\n$$");
+    field.setCustomValidity("");
+    rendered.hidden = node.isInline;
+    trigger.hidden = node.isInline;
+    trigger.tabIndex = -1;
+    field.hidden = false;
+    field.focus();
+    field.setSelectionRange(fence.length, fence.length + node.attrs.value.length);
+  }
+
+  function finishSource(save: boolean, restoreFocus: boolean) {
+    if (field.hidden) return;
+    const source = field.value.trim();
+    const complete = node.isInline || /^\$\$[ \t]*\n[\s\S]+\n\$\$$/.test(source);
+    const doc = save && complete ? parse(source) : null;
+    const block = doc?.childCount === 1 ? doc.firstChild : null;
+    const expression = node.isInline && block?.type.name === "paragraph" && block.childCount === 1 ? block.firstChild : block;
+    const formula = expression?.type === node.type && validMath(expression.attrs.value, node.isInline) ? expression : null;
+    if (save && !formula && restoreFocus) {
+      field.setCustomValidity(node.isInline ? "请用 $ 包住行内公式" : "请在块公式前后各写一行 $$");
+      field.reportValidity();
+      return;
+    }
+    field.hidden = true;
+    rendered.hidden = false;
+    trigger.hidden = false;
+    trigger.tabIndex = 0;
+    const pos = getPos();
+    if (pos === undefined || !view.editable) return;
+    const tr = view.state.tr;
+    if (formula && !formula.sameMarkup(node)) tr.setNodeMarkup(pos, undefined, formula.attrs);
+    if (restoreFocus) tr.setSelection(Selection.near(tr.doc.resolve(pos + node.nodeSize)));
+    if (tr.docChanged || restoreFocus) view.dispatch(tr);
+    if (restoreFocus) view.focus();
+  }
+
+  trigger.onfocus = trigger.onclick = openSource;
+  field.oninput = () => field.setCustomValidity("");
+  field.onblur = () => finishSource(true, false);
+  field.onkeydown = event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    const confirm = event.key === "Enter" && (node.isInline || event.ctrlKey || event.metaKey);
+    if (!confirm && event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    finishSource(confirm, true);
   };
   return {
     dom,
-    stopEvent: event => event.target instanceof HTMLInputElement,
+    stopEvent: event => event.target === field || event.target === trigger,
     ignoreMutation: () => true,
     destroy() { destroyed = true; if (imageUrl) URL.revokeObjectURL(imageUrl); },
   };
@@ -220,10 +348,11 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
 
 export function richSchema(getOptions: () => EditorImages, failedImages: Set<() => void>) {
   return [
-    math, richNodes, htmlInline, htmlBlock, safeImage, mathInline, mathBlock, markdownTableCell, markdownTableHeader, tableLineBreak,
+    math, highlightSyntax, highlight, highlightInput, richNodes, htmlInline, htmlBlock, safeImage, mathInline, mathBlock,
+    markdownTableCell, markdownTableHeader, tableLineBreak, blockquote, footnoteReference, footnoteDefinition,
     $view(imageSchema.node, ctx => (node, view, getPos) =>
       imageView(node, view, getPos, ctx.get(parserCtx), ctx.get(serializerCtx), getOptions, failedImages)),
-    $view(mathInline.node, () => formulaView),
-    $view(mathBlock.node, () => formulaView),
+    $view(mathInline.node, ctx => (node, view, getPos) => formulaView(node, view, getPos, ctx.get(parserCtx))),
+    $view(mathBlock.node, ctx => (node, view, getPos) => formulaView(node, view, getPos, ctx.get(parserCtx))),
   ].flat(2);
 }

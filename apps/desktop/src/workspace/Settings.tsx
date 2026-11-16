@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, Checkbox, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
-import { Cloud, DatabaseBackup, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import { desktop, errorMessage, type AiConfig, type BackupTarget, type McpConfig, type McpStatus } from "../desktop";
+import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { desktop, errorMessage, type AiConfig, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import type { ViewMode } from "./Document";
 
@@ -10,8 +10,9 @@ export type ViewShortcut = "none" | "shift-m" | "alt-v";
 
 const groups = [
   { label: "工作区", items: [
-    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: "外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 下载粘贴内容中的外链图片 目录 加载方式 一次性加载 滚动分页 每页笔记数" },
+    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: "外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 下载粘贴内容中的外链图片 链接 脚注 目录 加载方式 一次性加载 滚动分页 每页笔记数" },
     { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 查找与替换 全文搜索 保存版本 新建笔记" },
+    { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
   { label: "服务", items: [
     { id: "model", label: "AI 模型", icon: Sparkles, keywords: "供应商 接口地址 模型名 API 密钥 超时 摘要 标题 改写 OpenAI" },
@@ -31,10 +32,11 @@ function settingsSection(viewport: HTMLElement, page: SettingsPage) {
   return viewport.querySelector<HTMLElement>(`#settings-section-${page}`)!;
 }
 
-export function SettingsDialog({ initialPage, renderPage, status, onClose }: {
+export function SettingsDialog({ initialPage, renderPage, status, toast, onClose }: {
   initialPage: SettingsPage;
   renderPage(page: SettingsPage): ReactNode;
   status?: string;
+  toast?: ReactNode;
   onClose(): void;
 }) {
   const [page, setPage] = useState(initialPage);
@@ -128,6 +130,7 @@ export function SettingsDialog({ initialPage, renderPage, status, onClose }: {
           </section>)}
         </div>
       </div>
+      {toast}
     </Dialog.Content>
   </Dialog.Root>;
 }
@@ -149,32 +152,38 @@ export function readS3Settings(data: FormData) {
   };
 }
 
-export function S3Fields({ scope, initial, hasKey, publicBase }: {
+export function S3Fields({ scope, initial, hasKey, publicBase, credentials }: {
   scope: "images" | "backup";
   initial: BackupTarget | null;
   hasKey: boolean;
   publicBase?: string;
+  credentials?: ImageSecret | null;
 }) {
+  const [showSecret, setShowSecret] = useState(false);
   return <>
     <SettingRow id={`${scope}-endpoint`} label="S3 端点" hint="用于连接存储服务的 API 地址。"><TextField.Root id={`${scope}-endpoint`} name="endpoint" type="url" required defaultValue={initial?.endpoint} /></SettingRow>
     <SettingRow id={`${scope}-region`} label="区域" hint="使用服务商指定的区域代码。"><TextField.Root id={`${scope}-region`} name="region" required defaultValue={initial?.region} /></SettingRow>
     <SettingRow id={`${scope}-bucket`} label="桶名" hint={scope === "images" ? "存放图床图片的存储桶。" : "存放数据库快照的存储桶。"}><TextField.Root id={`${scope}-bucket`} name="bucket" required defaultValue={initial?.bucket} /></SettingRow>
     <SettingRow id={`${scope}-prefix`} label="对象前缀" hint="给桶内的对象添加路径前缀，可留空。"><TextField.Root id={`${scope}-prefix`} name="prefix" defaultValue={initial?.prefix} /></SettingRow>
     {scope === "images" && <SettingRow id="images-public" label="公开访问地址" hint="生成可在公众号等外部页面访问的图片链接。"><TextField.Root id="images-public" name="publicBase" type="url" required defaultValue={publicBase} /></SettingRow>}
-    <SettingRow id={`${scope}-access`} label="访问密钥 ID" hint="指定用于连接存储桶的访问凭据。"><TextField.Root id={`${scope}-access`} name="accessKey" type="password" autoComplete="off"
-      required={!hasKey} placeholder={hasKey ? "已保存" : undefined} /></SettingRow>
-    <SettingRow id={`${scope}-secret`} label="秘密访问密钥" hint="与访问密钥 ID 配对，用于签名存储请求。"><TextField.Root id={`${scope}-secret`} name="secretKey" type="password" autoComplete="off"
-      required={!hasKey} placeholder={hasKey ? "已保存" : undefined} /></SettingRow>
+    <SettingRow id={`${scope}-access`} label="访问密钥 ID" hint="指定用于连接存储桶的访问凭据。"><TextField.Root id={`${scope}-access`} name="accessKey" type={scope === "images" ? "text" : "password"} autoComplete="off"
+      required={!hasKey} defaultValue={credentials?.accessKey} placeholder={hasKey ? "已保存" : undefined} /></SettingRow>
+    <SettingRow id={`${scope}-secret`} label="秘密访问密钥" hint="与访问密钥 ID 配对，用于签名存储请求。"><TextField.Root id={`${scope}-secret`} name="secretKey" type={showSecret ? "text" : "password"} autoComplete="off"
+      required={!hasKey} defaultValue={credentials?.secretKey} placeholder={hasKey ? "已保存" : undefined}>
+      {scope === "images" && <TextField.Slot><button type="button" className="plain-button" aria-label={showSecret ? "隐藏秘密访问密钥" : "显示秘密访问密钥"}
+        onClick={() => setShowSecret(value => !value)}>{showSecret ? <EyeOff size={15} /> : <Eye size={15} />}</button></TextField.Slot>}
+    </TextField.Root></SettingRow>
   </>;
 }
 
-export function WorkspaceSettings({ page, appearance, shortcut, preferredView, explorer, downloadPastedImages, folderLoading, folderPageSize,
-  onAppearance, onShortcut, onView, onExplorer, onDownloadPastedImages, onFolderLoading, onFolderPageSize }: {
+export function WorkspaceSettings({ page, appearance, shortcut, preferredView, explorer, downloadPastedImages, convertLinks, folderLoading, folderPageSize,
+  onAppearance, onShortcut, onView, onExplorer, onDownloadPastedImages, onConvertLinks, onFolderLoading, onFolderPageSize }: {
   page: "appearance" | "shortcuts";
   appearance: Appearance;
   shortcut: ViewShortcut;
   preferredView: ViewMode;
   downloadPastedImages: boolean;
+  convertLinks: boolean;
   folderLoading: "all" | "paged";
   folderPageSize: number;
   explorer: boolean;
@@ -182,6 +191,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   onShortcut(value: ViewShortcut): void;
   onView(value: ViewMode): void;
   onDownloadPastedImages(value: boolean): void;
+  onConvertLinks(value: boolean): void;
   onFolderLoading(value: "all" | "paged"): void;
   onFolderPageSize(value: number): void;
   onExplorer(value: boolean): void;
@@ -204,6 +214,9 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
       </Select.Root></SettingRow>
       <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
         <Switch id="download-pasted-images" radius="full" checked={downloadPastedImages} onCheckedChange={onDownloadPastedImages} />
+      </SettingRow>
+      <SettingRow id="links-to-footnotes" label="链接转脚注" hint="在编辑、预览和公众号排版中显示链接脚注，可随时关闭。">
+        <Switch id="links-to-footnotes" radius="full" checked={convertLinks} onCheckedChange={onConvertLinks} />
       </SettingRow>
     </div>
     <div className="settings-group-title">目录</div>

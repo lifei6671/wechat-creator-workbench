@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Button, Dialog, TextField } from "@radix-ui/themes";
 import { X } from "lucide-react";
-import { desktop, errorMessage, type WechatImportJob } from "../desktop";
+import { desktop, errorMessage, type ExportImage, type WechatImportJob } from "../desktop";
 import { renderWechat, type ImageResult, type RenderInput, type RenderedWechat } from "../../../../packages/wechat-renderer";
 
 export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose(): void }) {
@@ -33,6 +33,7 @@ export async function loadLocalImage(url: string, retry = false) {
 export async function renderForPublication(input: RenderInput) {
   const hosting = input.output === "clipboard" && Boolean((await desktop.assetLibrary()).target);
   const resolved = new Map<string, Promise<ImageResult>>();
+  const exportImages: ExportImage[] = [];
   const result = await renderWechat(input, {
     sources: desktop.wechatGraphics,
     derive: desktop.deriveImage,
@@ -43,6 +44,7 @@ export async function renderForPublication(input: RenderInput) {
           const image = await loadLocalImage(url);
           image.dispose();
           const file = input.output === "html" ? await desktop.assetInfo(url) : null;
+          if (file) exportImages.push({ url, name: file.name });
           const src = input.output === "html" ? (file ? `assets/${file.name}` : url)
             : hosting ? await desktop.publicImage(url) : null;
           return { src, width: image.width, height: image.height };
@@ -52,7 +54,7 @@ export async function renderForPublication(input: RenderInput) {
       return value;
     },
   });
-  return { result, hosting };
+  return { result, hosting, exportImages };
 }
 
 type Track = <T>(job: Promise<T>) => Promise<T>;
