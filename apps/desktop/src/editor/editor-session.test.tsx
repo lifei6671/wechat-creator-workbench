@@ -11,13 +11,16 @@ import { parseWechat } from "../../../../packages/wechat-renderer";
 import { desktop, type AiHistoryItem, type AiStreamEvent, type AiThread } from "../desktop";
 import { attachClipboard } from "./clipboard";
 import { SaveQueue } from "./save-queue";
-import { captureAiIntent, matchesAiTarget } from "../ai/context";
+import { captureAiIntent, matchesAiTarget, type ChatSelection } from "../ai/context";
 import { messageTimeLabel } from "../labels";
 import { AiPanel } from "../workspace/AiPanel";
 import formatFixtures from "../../../../fixtures/wechat-format.json";
 
+const nativeHitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  // The installed Milkdown block provider uses browser hit testing on pointer movement.
+  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => null });
   // jsdom lacks the Range geometry used by ProseMirror when undo and commands scroll.
   Object.defineProperties(Range.prototype, {
     getClientRects: { configurable: true, value: () => [new DOMRect()] },
@@ -26,6 +29,8 @@ beforeAll(() => {
 });
 afterAll(() => {
   vi.unstubAllGlobals();
+  if (nativeHitTest) Object.defineProperty(document, "elementFromPoint", nativeHitTest);
+  else Reflect.deleteProperty(document, "elementFromPoint");
   Reflect.deleteProperty(Range.prototype, "getClientRects");
   Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
 });
@@ -37,6 +42,93 @@ async function select(element: HTMLElement, from: number, to: number, handle: Ma
   document.dispatchEvent(new Event("selectionchange"));
   await vi.waitFor(() => expect(handle.target().original).toBe(text.textContent!.slice(from, to)));
 }
+
+it("keeps unhandled Tab in editable body text while leaving reverse navigation available", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const onChange = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  const render = (readOnly: boolean) => flushSync(() => root.render(<MarkdownEditor
+    entryId="body-tab" value="普通正文" readOnly={readOnly} onChange={onChange} onBlur={() => {}}
+    ref={value => { handle = value; }} />));
+  try {
+    render(false);
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const body = container.querySelector<HTMLElement>(".ProseMirror")!;
+    handle!.focus();
+    const pressTab = (shiftKey = false) => body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Tab", shiftKey, bubbles: true, cancelable: true,
+    }));
+    expect(pressTab()).toBe(false);
+    expect(document.activeElement).toBe(body);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(pressTab(true)).toBe(true);
+    render(true);
+    expect(pressTab()).toBe(true);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("filters and runs editor slash commands without consuming IME confirmation", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let editor: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="slash" value="" active readOnly={false}
+      ref={handle => { editor = handle; }} onChange={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(editor).not.toBeNull());
+    editor!.focus();
+    editor!.insert("/h2");
+    const menu = container.querySelector<HTMLElement>(".rich-slash-menu")!;
+    const editorDom = container.querySelector(".ProseMirror")!;
+    await vi.waitFor(() => expect(menu.hidden).toBe(false));
+    expect([...menu.querySelectorAll("button")].map(button => button.textContent)).toEqual([
+      expect.stringContaining("标题 2"),
+    ]);
+    const key = (event: KeyboardEventInit) => editorDom.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...event }));
+    key({ key: "Enter", isComposing: true });
+    expect(editorDom.textContent).toContain("/h2");
+    expect(menu.hidden).toBe(false);
+    expect(key({ key: "Enter" })).toBe(false);
+    editor!.insert("小标题");
+    expect(editorDom.querySelector("h2")?.textContent).toContain("小标题");
+    expect(menu.hidden).toBe(true);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("routes an image link inserted from the slash menu through the configured image storage", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const source = "https://example.com/image.png";
+  const localizeImageLink = vi.fn().mockResolvedValue("asset://uploaded");
+  const onChange = vi.fn();
+  let editor: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="slash-image" value="" active readOnly={false}
+      ref={handle => { editor = handle; }} localizeImageLink={localizeImageLink} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(editor).not.toBeNull());
+    editor!.focus();
+    editor!.insert("/图片");
+    const menu = container.querySelector<HTMLElement>(".rich-slash-menu")!;
+    await vi.waitFor(() => expect(menu.hidden).toBe(false));
+    const item = menu.querySelector<HTMLButtonElement>(".rich-slash-item")!;
+    expect(item.textContent).toContain("图片");
+    item.click();
+    menu.querySelector<HTMLInputElement>("input[type=url]")!.value = source;
+    menu.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(onChange.mock.lastCall?.[2]).toContain("asset://uploaded"));
+    expect(localizeImageLink).toHaveBeenCalledExactlyOnceWith(source);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
 
 it("formats chat timestamps by local calendar days", () => {
   const now = new Date(2026, 10, 16, 20);
@@ -92,7 +184,7 @@ it("binds an AI rewrite to the original session and range and gives it a separat
   }
 });
 
-it("streams chat across article switches and restores chat and selected-range proposals", async () => {
+it("streams chat across article switches and restores chat and selected-range proposals", { timeout: 10_000 }, async () => {
   const entry: Entry = { id: "chat-draft", kind: "article", title: "标题", contentMd: "开头\n\n## 一\n\n这段正文\n\n## 二\n\n其他段落",
     status: "draft", categoryId: null, tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "",
     version: 1, updatedAt: 0, deletedAt: null, links: [] };
@@ -183,14 +275,21 @@ it("streams chat across article switches and restores chat and selected-range pr
       "发送 " + text + " 时：" + field.value + " / " + activePanel().textContent).toBe(false));
     click("发送消息");
   };
-  const render = (current: SaveQueue, key: number, rewriteRequest?: number) => flushSync(() => root.render(<Theme>
+  const render = (current: SaveQueue, key: number, selectionRequest?: ChatSelection) => flushSync(() => root.render(<Theme>
     {[queue, other].map(origin => <MarkdownEditor key={origin.sessionId}
       ref={value => { if (value) editors.set(origin.entry.id, value); }} entryId={origin.entry.id} value={origin.entry.contentMd}
       active={current === origin} readOnly={false} onChange={(_id, _revision, contentMd) => origin.edit({ contentMd })} onBlur={() => {}} />)}
     <AiPanel key={key} open queue={current} editor={editors.get(current.entry.id)} target={{ label: "测试模型" }} targetPicker={null}
-      canChat canEdit rewriteRequest={rewriteRequest} canWrite={target => target === current} onClose={() => {}} onSettings={() => {}} />
+      canChat canEdit selectionRequest={selectionRequest} canWrite={target => target === current} onClose={() => {}} onSettings={() => {}} />
   </Theme>));
   const activePanel = () => container.querySelector(".ai-session:not([hidden])")!;
+  const chooseRewrite = () => {
+    const tools = activePanel().querySelector('[aria-label="写作工具"]')!;
+    flushSync(() => tools.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "自定义改写");
+    expect(item).toBeDefined();
+    flushSync(() => item!.click());
+  };
   try {
     render(queue, 1);
     await vi.waitFor(() => expect(editors.size).toBe(2));
@@ -228,7 +327,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     await vi.waitFor(() => expect(activePanel().textContent).toContain("已停止生成"));
 
     await selectRange(0, 4);
-    render(queue, 1, 1);
+    chooseRewrite();
     const rewriteChip = () => activePanel().querySelector('button[aria-label^="退出改写选区"]');
     await vi.waitFor(() => expect(rewriteChip()?.textContent).toBe("这段正文×"));
     await selectRange(0, 2);
@@ -237,6 +336,10 @@ it("streams chat across article switches and restores chat and selected-range pr
     await send("只改选区");
     await vi.waitFor(() => expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", text: "这段正文" }));
     await vi.waitFor(() => expect(activePanel().textContent).toContain("精简措辞"));
+    const rewriteQuote = activePanel().querySelector('blockquote[aria-label="所选内容"]');
+    expect(rewriteQuote?.textContent).toBe("这段正文");
+    expect(rewriteQuote?.nextElementSibling?.textContent).toBe("只改选区");
+    expect(rewriteQuote?.parentElement?.querySelector(".ai-user-actions")?.textContent).not.toContain("选区");
     expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
     commit.mockRejectedValueOnce(new Error("磁盘写入失败"));
     await vi.waitFor(() => expect([...activePanel().querySelectorAll("button")].find(node => node.textContent === "接受修改")?.disabled).toBe(false));
@@ -253,7 +356,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
 
     await selectRange(0, 4);
-    render(queue, 1, 2);
+    chooseRewrite();
     await send("再拟一稿");
     await vi.waitFor(() => expect(messages.get("thread-" + entry.id)).toHaveLength(8));
     const undoneProposal = generate.mock.calls.at(-1)![1].id;
@@ -309,7 +412,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     blockedThreadWrites = undefined;
     click("怎么改？");
     await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加一条例子。"));
-    expect(activePanel().textContent).toContain("已接受");
+    expect(activePanel().querySelector('.ai-proposal-title [aria-label="已接受"] svg.lucide-check')).not.toBeNull();
     expect(updateThread).toHaveBeenCalledWith(firstThread, { archived: false });
     expect(threads.get(savedThread)?.archived).toBe(true);
     expect(messages.get(savedThread)).toHaveLength(2);
@@ -330,13 +433,34 @@ it("streams chat across article switches and restores chat and selected-range pr
       { type: "text", text: "这是旧会话的续聊回复。" },
     ]));
 
-    const count = generate.mock.calls.length;
+    const restoredCount = generate.mock.calls.length;
     render(queue, 2);
     await vi.waitFor(() => expect(activePanel().textContent).toContain("这是旧会话的续聊回复。"));
     expect(activePanel().textContent).toContain("精简措辞");
     expect(activePanel().textContent).toContain("原选区已失效");
-    expect(generate).toHaveBeenCalledTimes(count);
+    expect(generate).toHaveBeenCalledTimes(restoredCount);
     expect(scope).toHaveBeenCalledWith(other.entry.id);
+
+    const accepted = activePanel().querySelector('[aria-label="已接受"]')!.closest(".ai-suggestion")!;
+    const regenerate = [...accepted.querySelectorAll("button")].find(button => button.textContent === "重新生成")!;
+    await selectRange(2, 4);
+    expect(regenerate.disabled).toBe(false);
+    flushSync(() => regenerate.click());
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(restoredCount + 1));
+    expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", prompt: "只改选区", text: "这段正文" });
+    const regenerated = () => [...activePanel().querySelectorAll(".ai-suggestion")].at(-1)!;
+    const discard = await vi.waitFor(() => {
+      const button = [...regenerated().querySelectorAll("button")].find(item => item.textContent === "放弃");
+      expect(button?.disabled).toBe(false);
+      return button!;
+    });
+    expect([...regenerated().querySelectorAll("button")].find(button => button.textContent === "接受修改")?.disabled).toBe(true);
+    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    flushSync(() => discard.click());
+    await vi.waitFor(() => expect(regenerated().querySelector('.ai-proposal-title [aria-label="已放弃"] svg.lucide-x')).not.toBeNull());
+    expect(regenerated().textContent).not.toContain("已放弃");
+    expect([...regenerated().querySelectorAll("button")].find(button => button.textContent === "重新生成")?.disabled).toBe(false);
+    const count = generate.mock.calls.length;
 
     click("新对话");
     await vi.waitFor(() => expect(threads.get(firstThread)?.archived).toBe(true));
@@ -349,6 +473,60 @@ it("streams chat across article switches and restores chat and selected-range pr
     click("删除对话：怎么改？");
     await vi.waitFor(() => expect(activePanel().textContent).toContain("暂无对话"));
     expect(removeThread).toHaveBeenLastCalledWith("thread-" + entry.id);
+
+    await selectRange(0, 2);
+    const { original, headingPath } = editor.captureContext("selection")!;
+    render(queue, 3, { original, headingPath });
+    const removeSelection = "移除选区引用：这段";
+    await vi.waitFor(() => expect(activePanel().querySelector(`[aria-label="${removeSelection}"]`)?.textContent).toBe("这段×"));
+    expect(generate).toHaveBeenCalledTimes(count);
+    expect(activePanel().querySelector('[aria-label="对话记录"]')?.getAttribute("aria-pressed")).toBe("false");
+    click(removeSelection);
+    expect(activePanel().textContent).toContain("不引用正文");
+
+    render(queue, 3, { original, headingPath });
+    await selectRange(3, 3);
+    await send("解释这段");
+    const attachedRequest = { operation: "chat", text: "这段", prompt: "解释这段", context: { scope: "selection", headingPath: ["一"] } };
+    await vi.waitFor(() => expect(generate.mock.calls.at(-1)?.[1]).toMatchObject(attachedRequest));
+    expect(activePanel().querySelector('blockquote[aria-label="所选内容"]')?.textContent).toBe("这段");
+    expect(activePanel().querySelector(`[aria-label="${removeSelection}"]`)).toBeNull();
+    fail(new Error("模型暂时不可用"));
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("模型暂时不可用"));
+    click("重试");
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(count + 2));
+    expect(generate.mock.calls.at(-1)?.[1]).toMatchObject(attachedRequest);
+    finish({ reply: "解释完成" });
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("解释完成"));
+
+    const update = updateThread.getMockImplementation()!;
+    let completeArchive: () => void;
+    updateThread.mockImplementationOnce(async (id, change) => {
+      await new Promise<void>(resolve => { completeArchive = resolve; });
+      await update(id, change);
+    });
+    click("新对话");
+    await vi.waitFor(() => expect(completeArchive).toBeTypeOf("function"));
+    await selectRange(0, 2);
+    render(queue, 3, { original, headingPath });
+    completeArchive!();
+    await vi.waitFor(() => {
+      expect(activePanel().querySelector<HTMLTextAreaElement>('textarea[aria-label="消息"]')?.disabled).toBe(false);
+      expect(activePanel().textContent).not.toContain("解释完成");
+      expect(activePanel().querySelector(`[aria-label="${removeSelection}"]`)).not.toBeNull();
+    });
+
+    chooseRewrite();
+    await send("精简这一处");
+    const latestProposalAction = (label: string) => [...regenerated().querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === label);
+    await vi.waitFor(() => expect(latestProposalAction("放弃")?.disabled).toBe(false));
+    flushSync(() => latestProposalAction("放弃")!.click());
+    await vi.waitFor(() => expect(regenerated().querySelector('[aria-label="已放弃"]')).not.toBeNull());
+    await selectRange(2, 4);
+    flushSync(() => latestProposalAction("重新生成")!.click());
+    await vi.waitFor(() => expect(latestProposalAction("接受修改")?.disabled).toBe(false));
+    expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", prompt: "精简这一处", text: "这段" });
   } finally {
     if (digest) Object.defineProperty(crypto, "subtle", digest); else Reflect.deleteProperty(crypto, "subtle");
     vi.restoreAllMocks();
@@ -868,6 +1046,40 @@ it("edits footnotes at their reference and writes the definition at the bottom o
   }
 });
 
+it("opens the footnote editor after pasting syntax-highlighted Markdown without a heading", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const onChange = vi.fn();
+  const url = "https://example.com/source";
+  const source = `出处[^资料]。\n\n[^资料]: ${url}`;
+  const clipboard = {
+    read: vi.fn().mockResolvedValue({
+      text: source,
+      html: `<p>出处<strong>[^资料]</strong>。</p><p><strong>[^资料]:</strong> <a href="${url}">${url}</a></p>`,
+    }),
+    write: vi.fn(),
+    onError: vi.fn(),
+  };
+  try {
+    flushSync(() => root.render(<Theme><MarkdownEditor ref={value => { handle = value; }} entryId="pasted-footnote"
+      value="" readOnly={false} onChange={onChange} onBlur={() => {}} /></Theme>));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.clipboard("paste", clipboard);
+    const reference = () => container.querySelector<HTMLElement>('sup[data-type="footnote_reference"][data-label="资料"]');
+    await vi.waitFor(() => expect(reference()).not.toBeNull());
+    expect(container.querySelector('dl[data-label="资料"] a')?.getAttribute("href")).toBe(url);
+    expect(onChange.mock.lastCall![2]).toContain("[^资料]:");
+    flushSync(() => reference()!.click());
+    expect(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="脚注内容"]')?.value).toContain(url);
+    expect(clipboard.onError).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
 it("preserves callout markers and displays the complete Markdown source on formula focus", async () => {
   const container = document.createElement("div");
   document.body.append(container);
@@ -1070,7 +1282,20 @@ it("adds rows and columns to the clicked table and persists column formatting an
     await vi.waitFor(() => expect(handle).not.toBeNull());
     const table = () => container.querySelector("table")!;
     const rowTexts = () => [...table().rows].map(row => [...row.cells].map(cell => cell.textContent));
+    const hoverCell = (row: number, column: number, x = 50, y = 15) => {
+      const width = table().rows[0].cells.length * 100;
+      table().getBoundingClientRect = () => new DOMRect(20, 40, width, table().rows.length * 30);
+      [...table().rows].forEach((line, r) => {
+        line.getBoundingClientRect = () => new DOMRect(20, 40 + r * 30, width, 30);
+        [...line.cells].forEach((cell, c) => { cell.getBoundingClientRect = () => new DOMRect(20 + c * 100, 40 + r * 30, 100, 30); });
+      });
+      table().rows[row].cells[column].dispatchEvent(new MouseEvent("pointermove", {
+        bubbles: true, clientX: 20 + column * 100 + x, clientY: 40 + row * 30 + y,
+      }));
+    };
+    hoverCell(2, 1, 99);
     container.querySelector<HTMLButtonElement>(".rich-table-add-column")!.click();
+    hoverCell(2, 0, 50, 29);
     container.querySelector<HTMLButtonElement>(".rich-table-add-row")!.click();
     expect(rowTexts()).toEqual([["名称", "数量", ""], ["项目 10", "10", ""], ["项目 2", "2", ""], ["", "", ""]]);
 
@@ -1091,6 +1316,52 @@ it("adds rows and columns to the clicked table and persists column formatting an
     handle!.tableAction("columnLeft");
     expect(rowTexts()[0]).toEqual(["数量", "名称", ""]);
     expect(rowTexts()[2]).toEqual(["2", "项目 2", ""]);
+
+    function dragGrip(axis: "row" | "column", row: number, column: number, x = 20, y = 5) {
+      const grip = container.querySelector(`.rich-table-grip-${axis}`)!;
+      expect(grip.querySelector("svg")).not.toBeNull();
+      expect(grip.hasAttribute("hidden")).toBe(false);
+      const transfer = { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: "", dropEffect: "" };
+      for (const [type, target] of [["dragstart", grip], ["dragover", table().rows[row].cells[column]], ["drop", table().rows[row].cells[column]]] as const) {
+        const event = new MouseEvent(type, {
+          bubbles: true, cancelable: true, clientX: 20 + column * 100 + x, clientY: 40 + row * 30 + y,
+        });
+        Object.defineProperty(event, "dataTransfer", { value: transfer });
+        target.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(type !== "dragstart");
+        if (type === "dragover") {
+          const preview = container.querySelector<HTMLDivElement>(".rich-table-preview")!;
+          const line = container.querySelector<HTMLDivElement>(`.rich-table-line-${axis}`)!;
+          const offset = preview.style.cssText;
+          expect(preview.hidden || line.hidden).toBe(false);
+          table().parentElement!.dispatchEvent(new MouseEvent("dragleave", { bubbles: true, relatedTarget: container }));
+          container.dispatchEvent(new MouseEvent("dragover", { bubbles: true, clientX: 1000, clientY: 1000 }));
+          expect(line.hidden).toBe(true);
+          expect(preview.hidden).toBe(false);
+          expect(preview.style.cssText).not.toBe(offset);
+        }
+      }
+      expect(container.querySelector(".rich-table-preview")?.hasAttribute("hidden")).toBe(true);
+    }
+    handle!.command("selectAll");
+    hoverCell(2, 1);
+    dragGrip("row", 1, 1);
+    expect(rowTexts().slice(0, 3)).toEqual([["数量", "名称", ""], ["2", "项目 2", ""], ["", "", ""]]);
+    hoverCell(1, 1);
+    dragGrip("column", 1, 0);
+    expect(rowTexts().slice(0, 2)).toEqual([["名称", "数量", ""], ["项目 2", "2", ""]]);
+    hoverCell(0, 0, 99);
+    expect(container.querySelector(".rich-table-grip-column")?.hasAttribute("hidden")).toBe(true);
+    container.querySelector<HTMLButtonElement>(".rich-table-add-column")!.click();
+    expect(rowTexts()[0]).toEqual(["名称", "", "数量", ""]);
+    hoverCell(1, 0, 50, 1);
+    container.querySelector<HTMLButtonElement>(".rich-table-add-row")!.click();
+    expect(rowTexts().slice(0, 3)).toEqual([["名称", "", "数量", ""], ["", "", "", ""], ["项目 2", "", "2", ""]]);
+    hoverCell(0, 0);
+    dragGrip("row", 2, 0, 50, 25);
+    expect(rowTexts().slice(0, 3)).toEqual([["", "", "", ""], ["项目 2", "", "2", ""], ["名称", "", "数量", ""]]);
+    expect(table().rows[0].cells[0].tagName).toBe("TH");
+    expect(table().rows[2].cells[0].tagName).toBe("TD");
 
     const pasteTable = (html: string) => {
       handle!.command("selectAll");

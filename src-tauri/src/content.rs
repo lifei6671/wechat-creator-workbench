@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use url::Url;
 
 const PAGE_SIZE: i64 = 60;
-const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at";
+const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id, e.pinned_order IS NOT NULL AS pinned";
 
 #[derive(Clone, Copy, Deserialize, PartialEq, rmcp::schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -65,6 +65,7 @@ pub struct Fields {
     content_md: String,
     #[serde(skip_serializing)]
     status: String,
+    #[serde(skip_serializing)]
     category_id: Option<String>,
     #[serde(default)]
     cover_asset_id: Option<String>,
@@ -84,8 +85,11 @@ pub struct EntryRow {
     kind: String,
     title: String,
     status: String,
+    created_at: i64,
     updated_at: i64,
     deleted_at: Option<i64>,
+    category_id: Option<String>,
+    pinned: bool,
 }
 
 #[derive(Serialize)]
@@ -102,6 +106,7 @@ pub struct Entry {
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
     pub sort: Option<EntrySort>,
+    pub pinned: Option<bool>,
     pub kind: Option<Kind>,
     pub status: Option<String>,
     pub category_id: Option<String>,
@@ -218,6 +223,9 @@ impl Workspace {
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
             }
+            if let Some(pinned) = filter.pinned {
+                sql.push_str(if pinned { " AND e.pinned_order IS NOT NULL" } else { " AND e.pinned_order IS NULL" });
+            }
             if let Some(kind) = filter.kind {
                 sql.push_str(" AND e.kind = ?");
                 values.push(kind.key().to_owned().into());
@@ -252,7 +260,10 @@ impl Workspace {
             if let Some(search) = filter.workspace_search {
                 search.apply(conn, &mut sql, &mut values)?;
             }
-            sql.push_str(match filter.sort {
+            if filter.pinned == Some(true) {
+                sql.push_str(" ORDER BY e.pinned_order, e.id LIMIT ? OFFSET ?");
+            } else {
+                sql.push_str(match filter.sort {
                 Some(EntrySort::Name) => " ORDER BY e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?",
                 Some(EntrySort::NameDesc) => " ORDER BY e.title COLLATE NOCASE DESC, e.id DESC LIMIT ? OFFSET ?",
                 Some(EntrySort::UpdatedAsc) => " ORDER BY e.updated_at ASC, e.id DESC LIMIT ? OFFSET ?",
@@ -260,7 +271,8 @@ impl Workspace {
                 Some(EntrySort::CreatedAsc) => " ORDER BY e.created_at ASC, e.id DESC LIMIT ? OFFSET ?",
                 None if filter.exact_category && !filter.deleted => " ORDER BY e.folder_sort_order ASC NULLS LAST, e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
                 Some(EntrySort::Updated) | None => " ORDER BY e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
-            });
+                });
+            }
             let limit = filter.limit.map_or(PAGE_SIZE, |limit| i64::from(limit.get()));
             values.push((limit + 1).into());
             let offset = filter.offset.max(0);
@@ -380,6 +392,21 @@ impl Workspace {
         }
     }
 
+    pub fn set_entry_pinned(&self, id: &str, pinned: bool) -> Result<()> {
+        self.write(|tx| {
+            let changed = tx.execute(
+                "UPDATE entries SET pinned_order = CASE WHEN ?2 THEN
+                    COALESCE(pinned_order, (SELECT COALESCE(MIN(pinned_order), 0) - 1 FROM entries))
+                    ELSE NULL END WHERE id = ?1 AND deleted_at IS NULL",
+                params![id, pinned],
+            )?;
+            if changed == 0 {
+                return Err(AppError::new("NOT_FOUND", "找不到可置顶的文档"));
+            }
+            Ok(())
+        })
+    }
+
     pub fn reorder_entry(
         &self,
         id: &str,
@@ -387,23 +414,26 @@ impl Workspace {
         placement: taxonomy::CategoryPlacement,
     ) -> Result<()> {
         self.write(|tx| {
-            let folder: Option<String> = tx.query_row(
-                "SELECT category_id FROM entries WHERE id=?1 AND deleted_at IS NULL",
-                [id], |row| row.get(0),
+            let (folder, pinned): (Option<String>, bool) = tx.query_row(
+                "SELECT category_id, pinned_order IS NOT NULL FROM entries WHERE id=?1 AND deleted_at IS NULL",
+                [id], |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             if id == anchor { return Ok(()); }
-            let mut statement = tx.prepare(
-                "SELECT id, deleted_at IS NULL FROM entries WHERE category_id IS ?1 AND id<>?2
-                 ORDER BY folder_sort_order ASC NULLS LAST, updated_at DESC, id DESC",
-            )?;
-            let mut siblings = statement.query_map(params![folder, id], |row| {
+            let column = if pinned { "pinned_order" } else { "folder_sort_order" };
+            let mut statement = tx.prepare(&format!(
+                "SELECT id, deleted_at IS NULL AND (pinned_order IS NOT NULL) = ?3
+                 FROM entries WHERE id <> ?1
+                 AND CASE WHEN ?3 THEN pinned_order IS NOT NULL ELSE category_id IS ?2 END
+                 ORDER BY {column} ASC NULLS LAST, updated_at DESC, id DESC",
+            ))?;
+            let mut siblings = statement.query_map(params![id, folder, pinned], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
             })?.collect::<rusqlite::Result<Vec<_>>>()?;
             let index = siblings.iter().position(|(other, active)| *active && other == anchor)
-                .ok_or_else(|| AppError::invalid("只能在同一目录中排序有效文档"))?;
+                .ok_or_else(|| AppError::invalid(if pinned { "只能在置顶区排序置顶文档" } else { "只能在同一目录中排序未置顶文档" }))?;
             let index = index + usize::from(matches!(placement, taxonomy::CategoryPlacement::After));
             siblings.insert(index, (id.to_owned(), true));
-            let mut update = tx.prepare("UPDATE entries SET folder_sort_order=?1 WHERE id=?2 AND folder_sort_order IS NOT ?1")?;
+            let mut update = tx.prepare(&format!("UPDATE entries SET {column}=?1 WHERE id=?2 AND {column} IS NOT ?1"))?;
             for (rank, (entry, _)) in (0i64..).zip(siblings) {
                 update.execute(params![rank, entry])?;
             }
@@ -473,46 +503,49 @@ fn entry_row(row: &Row<'_>) -> rusqlite::Result<EntryRow> {
         kind: row.get(1)?,
         title: row.get(2)?,
         status: row.get(3)?,
+        created_at: row.get("created_at")?,
         updated_at: row.get(4)?,
         deleted_at: row.get(5)?,
+        category_id: row.get("category_id")?,
+        pinned: row.get("pinned")?,
     })
 }
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
-    let sql = format!("SELECT {HEAD}, e.content_md, e.category_id, e.summary, e.published_at, e.published_url, e.version,
+    let sql = format!("SELECT {HEAD}, e.content_md, e.summary, e.published_at, e.published_url, e.version,
            s.source_url, s.author, s.account_name, s.original_published_at, s.imported_at, e.cover_asset_id, e.theme_id
         FROM entries e LEFT JOIN sources s ON s.id=e.source_id WHERE e.id=?1");
     let mut entry = conn.query_row(&sql, [id], |r| {
         let row = entry_row(r)?;
         let source = r
-            .get::<_, Option<String>>(12)?
+            .get::<_, Option<String>>("source_url")?
             .map(|url| -> rusqlite::Result<_> {
                 Ok(Source {
                     url,
-                    author: r.get(13)?,
-                    account_name: r.get(14)?,
-                    original_published_at: r.get(15)?,
-                    imported_at: r.get(16)?,
+                    author: r.get("author")?,
+                    account_name: r.get("account_name")?,
+                    original_published_at: r.get("original_published_at")?,
+                    imported_at: r.get("imported_at")?,
                 })
             })
             .transpose()?;
         let fields = Fields {
             title: row.title.clone(),
-            content_md: r.get(6)?,
+            content_md: r.get("content_md")?,
             status: row.status.clone(),
-            category_id: r.get(7)?,
-            cover_asset_id: r.get(17)?,
-            theme_id: r.get(18)?,
+            category_id: row.category_id.clone(),
+            cover_asset_id: r.get("cover_asset_id")?,
+            theme_id: r.get("theme_id")?,
             tags: vec![],
-            summary: r.get(8)?,
+            summary: r.get("summary")?,
             source,
-            published_at: r.get(9)?,
-            published_url: r.get(10)?,
+            published_at: r.get("published_at")?,
+            published_url: r.get("published_url")?,
         };
         Ok(Entry {
             row,
             fields,
-            version: r.get(11)?,
+            version: r.get("version")?,
             links: vec![],
         })
     })?;

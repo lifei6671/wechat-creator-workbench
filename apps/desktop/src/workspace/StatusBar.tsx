@@ -1,16 +1,26 @@
-import { useDeferredValue, useMemo, useRef, useSyncExternalStore } from "react";
+import { useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Spinner } from "@radix-ui/themes";
-import { Copy, Eye, Focus, ListFilter, PencilLine, Settings, Sparkles, Trash2 } from "lucide-react";
+import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Sparkles, Trash2 } from "lucide-react";
+import { desktop, type UploadProgress } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import { commandKey } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
 
-export function StatusBar({ queue, actions, trashActive, settingsOpen, onPalette, onTrash, onSettings }: {
+export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, backupProgress, migrationProgress,
+  imageStorageEnabled, assetRevision, imageUpload, onError, onMcp, onPalette, onTrash, onSettings }: {
   queue?: SaveQueue;
   actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "aiOpen" | "onAi" | "publishing" | "onCopyWechat">;
   trashActive: boolean;
   settingsOpen: boolean;
+  mcpRunning?: boolean;
+  backupProgress: string | null;
+  migrationProgress: "export" | "import" | null;
+  imageStorageEnabled: boolean;
+  assetRevision: number;
+  imageUpload: UploadProgress | null;
+  onError(error: unknown): void;
+  onMcp(trigger: HTMLButtonElement): void;
   onPalette: (trigger: HTMLButtonElement) => void;
   onTrash: () => void;
   onSettings: (trigger: HTMLButtonElement) => void;
@@ -18,6 +28,8 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, onPalette
   const commandButton = useRef<HTMLButtonElement>(null);
   const previewing = actions.mode === "preview";
   const canCopy = queue?.entry.deletedAt === null;
+  const backup = backupProgress ?? (migrationProgress === "export" ? "正在导出工作区…" : migrationProgress === "import" ? "正在导入工作区…" : null);
+  const mcpLabel = mcpRunning === undefined ? "MCP 设置" : mcpRunning ? "MCP（运行中）" : "MCP（未运行）";
 
   return <footer className="status-bar" aria-label="工作区状态栏">
     {!actions.focusMode && <div className="button-strip">
@@ -30,10 +42,19 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, onPalette
       <Tool label="回收站" className="chrome-icon" aria-current={trashActive ? "page" : undefined} onClick={onTrash}>
         <Trash2 size={15} strokeWidth={1.65} />
       </Tool>
+      <Tooltip content="MCP 设置"><button type="button" className="plain-button status-button status-mcp"
+        aria-label={mcpLabel} aria-haspopup="dialog" data-running={mcpRunning} onClick={event => onMcp(event.currentTarget)}>
+        <Plug size={15} aria-hidden="true" /><span>MCP</span>
+      </button></Tooltip>
     </div>}
+    {backup && <Tooltip content={backup}><span className="background-status" role="status" aria-label={backup}>
+      <span className="background-status-icon" aria-hidden="true"><DatabaseBackup size={15} /></span>
+      <span className="background-status-label">{backup}</span>
+    </span></Tooltip>}
 
     <div className="status-bar-right">
-      {queue && <DocumentStatus key={queue.sessionId} queue={queue} reading={actions.reading} />}
+      {queue && <DocumentStatus key={queue.sessionId} queue={queue} reading={actions.reading} imageStorageEnabled={imageStorageEnabled}
+        assetRevision={assetRevision} imageUpload={imageUpload} onError={onError} />}
       {actions.focusMode ? <div className="button-strip">
         <button className="plain-button status-button" type="button" onClick={() => {
           actions.onFocusMode();
@@ -47,7 +68,9 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, onPalette
           </button>}
           {canCopy && <button className="plain-button status-button" type="button" aria-disabled={actions.publishing}
             onClick={actions.onCopyWechat}>
-            {actions.publishing ? <Spinner size="1" /> : <Copy size={15} />}
+            <span className="status-copy-icon" aria-hidden="true">
+              {actions.publishing ? <Spinner size="1" /> : <Copy size={15} />}
+            </span>
             复制公众号格式
           </button>}
         </div>}
@@ -62,11 +85,38 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, onPalette
   </footer>;
 }
 
-function DocumentStatus({ queue, reading }: { queue: SaveQueue; reading: boolean }) {
+function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, imageUpload, onError }: {
+  queue: SaveQueue; reading: boolean; imageStorageEnabled: boolean; assetRevision: number; imageUpload: UploadProgress | null;
+  onError(error: unknown): void;
+}) {
   const { fields, error, revision, savedRevision, saving } = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const wordSource = useDeferredValue(fields.contentMd);
   const count = useMemo(() => Array.from(wordSource.replace(/\s/g, "")).length.toLocaleString("zh-CN"), [wordSource]);
+  const [backgroundUpload, setBackgroundUpload] = useState<UploadProgress | null>(null);
+  const report = useEffectEvent(onError);
+  const canTrack = imageStorageEnabled && queue.entry.deletedAt === null;
+  useEffect(() => {
+    if (!canTrack) return;
+    let current = true;
+    const timer = setTimeout(() => {
+      void desktop.imageUploadProgress(wordSource).then(progress => {
+        if (current) setBackgroundUpload(progress);
+      }, error => {
+        if (!current) return;
+        setBackgroundUpload(null);
+        report(error);
+      });
+    }, 120);
+    return () => { current = false; clearTimeout(timer); };
+  }, [canTrack, wordSource, assetRevision]);
+  const upload = imageUpload ?? (canTrack ? backgroundUpload : null);
   return <div className="document-status" role="group" aria-label="文章状态">
+    {upload && upload.total > 0 && <Tooltip content={`图片上传 ${upload.completed}/${upload.total}`}>
+      <span className="background-status" role="status" aria-label={`图片上传 ${upload.completed}/${upload.total}`}>
+        <span className="background-status-icon" aria-hidden="true"><CloudUpload size={15} /></span>
+        {upload.completed}/{upload.total}
+      </span>
+    </Tooltip>}
     {reading && <span>只读</span>}
     <span role="status" className={error ? "status-error" : undefined}>
       {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving ? "保存中…" : revision === savedRevision ? "已保存" : "未保存"}

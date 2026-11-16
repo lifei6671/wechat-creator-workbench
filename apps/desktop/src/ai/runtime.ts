@@ -8,10 +8,12 @@ import { desktop, errorMessage, type AiHistoryItem, type AiResult, type AiThread
 import { chatHistory, messageText, type AiIntent, type CapturedTarget } from "./context";
 import type { AiProposal } from "./proposals";
 
-export function proposalOf(message: AiHistoryItem["message"]): AiProposal | undefined {
-  return message.metadata.custom.proposal as AiProposal | undefined;
+export function proposalOf(message: AiHistoryItem["message"] | undefined): AiProposal | undefined {
+  return message?.metadata.custom.proposal as AiProposal | undefined;
 }
 
+// The sidebar remounts when the document changes. Keep visibility for the lifetime of this app window.
+const currentRunThreads = new Set<string>();
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
 export async function* streamAiRun(
@@ -98,7 +100,7 @@ function useHistoryAdapters(
 
 export function useWritingRuntime(
   entryId: string | null, report: (failure: unknown) => void, markStored: (id: string) => void,
-  setUnavailable: (id: string, failed: boolean) => void, targets: Map<string, CapturedTarget>,
+  setUnavailable: (id: string, failed: boolean) => void, targets: Map<string, CapturedTarget | null>,
 ) {
   const adapter = useMemo<RemoteThreadListAdapter>(() => {
     const unsaved = new Map<string, Map<string, AiHistoryItem>>();
@@ -128,9 +130,19 @@ export function useWritingRuntime(
       catch (failure) { report(failure); throw failure; }
     }
     return {
-      async list() { return { threads: (await tracked(desktop.aiThreads(entryId))).map(threadMetadata) }; },
-      async fetch(id) { return threadMetadata(await tracked(desktop.aiThread(entryId, id))); },
-      async initialize() { return { remoteId: await tracked(desktop.aiCreateThread(entryId)) }; },
+      async list() {
+        const threads = await tracked(desktop.aiThreads(entryId));
+        return { threads: threads.filter(thread => currentRunThreads.has(thread.id)).map(threadMetadata) };
+      },
+      async fetch(id) {
+        if (!currentRunThreads.has(id)) throw new Error("找不到该对话");
+        return threadMetadata(await tracked(desktop.aiThread(entryId, id)));
+      },
+      async initialize() {
+        const remoteId = await tracked(desktop.aiCreateThread(entryId));
+        currentRunThreads.add(remoteId);
+        return { remoteId };
+      },
       rename: (id, title) => tracked(desktop.aiUpdateThread(id, { title })),
       async archive(id) {
         await write(id);
@@ -143,6 +155,7 @@ export function useWritingRuntime(
       },
       async delete(id) {
         await tracked(desktop.aiDeleteThread(id));
+        currentRunThreads.delete(id);
         unsaved.delete(id);
       },
       async generateTitle(id, messages) {
@@ -181,13 +194,18 @@ export function useWritingRuntime(
             if (!result || abortSignal.aborted) return;
             if ("reply" in result) {
               yield reply(result.reply);
-            } else if (request.operation === "rewrite" && target?.context) {
-              const context = target.context;
-              const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(context.originalSlice));
+            } else if (request.operation === "rewrite") {
+              const context = target?.context;
+              const source = context ? {
+                baseVersion: intent.baseVersion, localRevision: context.localRevision, from: context.from, to: context.to,
+                originalSliceHash: [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(context.originalSlice)))].
+                  map(byte => byte.toString(16).padStart(2, "0")).join(""),
+              } : intent.previousProposal;
+              if (!source) throw new Error("请在正文中选中文字");
+              const { baseVersion, localRevision, from, to, originalSliceHash } = source;
               const proposal: AiProposal = {
-                id: request.id, entryId: request.entryId, baseVersion: intent.baseVersion,
-                localRevision: context.localRevision, from: context.from, to: context.to,
-                originalMarkdown: context.original, originalSliceHash: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join(""),
+                id: request.id, entryId: request.entryId, baseVersion, localRevision, from, to,
+                originalMarkdown: request.text, originalSliceHash,
                 replacementMarkdown: result.candidates[0], description: result.description || "选区改写", status: "pending",
               };
               targets.set(request.id, target);

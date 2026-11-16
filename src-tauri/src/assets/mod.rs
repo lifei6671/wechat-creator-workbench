@@ -1,6 +1,8 @@
 mod cleanup;
 pub mod commands;
 mod export;
+mod image_cache;
+mod import_markdown;
 pub mod publishing;
 pub mod references;
 pub(crate) mod s3;
@@ -8,6 +10,7 @@ pub(crate) mod upload_format;
 
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use image::{ImageDecoder, ImageFormat, ImageReader};
+use image_cache::ImageCache;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use s3::{Profile, Target};
@@ -41,6 +44,7 @@ pub struct Assets {
     uncertain_upload: AtomicBool,
     public_http: reqwest::Client,
     external_http: reqwest::Client,
+    image_cache: Option<ImageCache>,
 }
 
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -144,6 +148,8 @@ pub struct AssetRow {
 pub struct AssetLibrary {
     items: Vec<AssetRow>,
     target: Option<Target>,
+    page: u32,
+    has_next: bool,
 }
 
 struct Upload {
@@ -202,7 +208,16 @@ impl Assets {
                 .timeout(IMAGE_TIMEOUT)
                 .build()
                 .map_err(|error| AppError::new("IMAGE_NETWORK", error.to_string()))?,
+            image_cache: None,
         })
+    }
+
+    pub fn with_image_cache(mut self, directory: &Path) -> Self {
+        match ImageCache::open(directory) {
+            Ok(cache) => self.image_cache = Some(cache),
+            Err(error) => eprintln!("Could not open the remote image cache: {error}"),
+        }
+        self
     }
 
     pub fn kick(&self) {
@@ -271,7 +286,7 @@ impl Assets {
             format.extensions_str()[0]
         );
         let asset_id = db.write(|tx| {
-            let active = Profile::active_for(tx, expected)?;
+            let active = if kind == "original" { Profile::for_incoming_image(tx, expected)? } else { None };
             if let Some(placeholder) = placeholder
                 && !cleanup::referenced(tx)?.0.contains(placeholder) {
                 return Err(AppError::new("ASSET_UNUSED", "图片已不再被引用"));
@@ -325,10 +340,14 @@ impl Assets {
         db.read(|conn| Ok(cleanup::referenced(conn)?.0.contains(asset_id)))
     }
 
-    pub fn library(&self, db: &Workspace) -> Result<AssetLibrary> {
+    pub fn library(&self, db: &Workspace, page: u32) -> Result<AssetLibrary> {
+        const PAGE_SIZE: u32 = 48;
         db.read(|conn| {
             let active = Profile::active(conn)?;
             let active_id = active.as_ref().map(|p| p.id.as_str());
+            let count: u32 = conn.query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))?;
+            let last_page = count.saturating_sub(1) / PAGE_SIZE;
+            let page = page.min(last_page);
             let mut query = conn.prepare(
                 "SELECT a.id,a.name,a.width,a.height,a.bytes,
                         CASE WHEN j.status<>'completed' THEN j.status END,j.error,c.error,
@@ -337,14 +356,15 @@ impl Assets {
                  LEFT JOIN asset_locations l ON l.sha256=a.sha256 AND l.storage_profile_id=?1
                  LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE kind='upload' AND sha256=a.sha256
                     AND storage_profile_id=?1 ORDER BY created_at DESC, id DESC LIMIT 1)
-                 LEFT JOIN jobs c ON c.kind='cleanup' AND c.sha256=a.sha256 AND c.status='failed'
-                 ORDER BY a.created_at DESC, a.id DESC",
+                 LEFT JOIN jobs c ON c.id=(SELECT id FROM jobs WHERE kind='cleanup' AND sha256=a.sha256
+                    AND status='failed' ORDER BY updated_at DESC, id DESC LIMIT 1)
+                 ORDER BY a.created_at DESC, a.id DESC LIMIT ?2 OFFSET ?3",
             )?;
-            let items = query.query_map([active_id], |r| Ok(AssetRow {
+            let items = query.query_map(params![active_id, PAGE_SIZE, page * PAGE_SIZE], |r| Ok(AssetRow {
                 id: r.get(0)?, name: r.get(1)?, width: r.get(2)?, height: r.get(3)?, bytes: r.get(4)?,
                 upload_status: r.get(5)?, upload_error: r.get(6)?, cleanup_error: r.get(7)?, public_url: r.get(8)?,
             }))?.collect::<rusqlite::Result<_>>()?;
-            Ok(AssetLibrary { items, target: active.map(|p| p.target) })
+            Ok(AssetLibrary { items, target: active.map(|p| p.target), page, has_next: page < last_page })
         })
     }
 
@@ -394,6 +414,15 @@ impl Assets {
     }
 
     pub async fn read(&self, db: &Workspace, url: &str) -> Result<Vec<u8>> {
+        self.read_image(db, url, false).await
+    }
+
+    pub(super) async fn read_image(
+        &self,
+        db: &Workspace,
+        url: &str,
+        retry: bool,
+    ) -> Result<Vec<u8>> {
         match db.read(|conn| by_url(conn, url)) {
             Ok(file) => self.read_file(db, &file).await,
             Err(error) if error.code() != "NOT_FOUND" => Err(error),
@@ -402,11 +431,10 @@ impl Assets {
             }
             Err(_) => {
                 let address = remote_image_url(url)?;
-                let bytes = if db.read(|conn| configured_image(conn, &address))? {
-                    self.read_public(address.as_str()).await?
-                } else {
-                    self.read_external(&address).await?
-                };
+                if !db.read(|conn| configured_image(conn, &address))? {
+                    return self.read_external(&address, retry).await;
+                }
+                let bytes = self.read_public(address.as_str()).await?;
                 image_header(&bytes)?;
                 Ok(bytes)
             }
@@ -424,18 +452,34 @@ impl Assets {
         expected: Option<&Target>,
     ) -> Result<String> {
         let address = remote_image_url(url)?;
-        if db.read(|conn| {
+        if db.read_running(|conn| {
             Ok(Profile::active_for(conn, expected)?
                 .is_some_and(|profile| profile.target.contains_public_url(&address)))
         })? {
             return Ok(url.to_owned());
         }
-        match db.read(|conn| by_url(conn, url)) {
-            Ok(file) => return Ok(format!("asset://{}", file.id)),
+        match db.read_running(|conn| by_url(conn, url)) {
+            Ok(file) => {
+                let hash = file
+                    .hash
+                    .as_deref()
+                    .expect("a public alias has an image hash");
+                let queued = db.write(|tx| {
+                    let Some(profile) = Profile::for_incoming_image(tx, expected)? else {
+                        return Ok(false);
+                    };
+                    enqueue(tx, &file.id, hash, &profile.id, expected.is_some())?;
+                    Ok(true)
+                })?;
+                if queued {
+                    self.kick();
+                }
+                return Ok(format!("asset://{}", file.id));
+            }
             Err(error) if error.code() != "NOT_FOUND" => return Err(error),
             Err(_) => {}
         }
-        let bytes = self.read_external(&address).await?;
+        let bytes = self.read_external(&address, false).await?;
         let name = address
             .path()
             .rsplit('/')
@@ -447,18 +491,23 @@ impl Assets {
         Ok(format!("asset://{id}"))
     }
 
-    async fn read_external(&self, address: &url::Url) -> Result<Vec<u8>> {
+    async fn read_external(&self, address: &url::Url, retry: bool) -> Result<Vec<u8>> {
         if !has_public_image_host(address) {
             return Err(AppError::invalid("外链图片必须使用公网地址"));
         }
-        Self::read_remote(
+        if let Some(cache) = &self.image_cache {
+            return cache.read(&self.external_http, address, retry).await;
+        }
+        let bytes = Self::read_remote(
             &self.external_http,
             address.as_str(),
             "外链图片",
             "IMAGE_NETWORK",
             "IMAGE_TIMEOUT",
         )
-        .await
+        .await?;
+        image_header(&bytes)?;
+        Ok(bytes)
     }
 
     pub(super) async fn read_file(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {
@@ -552,15 +601,33 @@ impl Assets {
         network_code: &'static str,
         timeout_code: &'static str,
     ) -> Result<Vec<u8>> {
-        let network = |error: reqwest::Error| {
-            let code = if error.is_timeout() {
-                timeout_code
-            } else {
-                network_code
-            };
-            AppError::new(code, format!("无法读取{label}：{}", error.without_url()))
+        let response =
+            client.get(url).send().await.map_err(|error| {
+                Self::image_network_error(error, label, network_code, timeout_code)
+            })?;
+        Self::read_image_body(response, label, network_code, timeout_code).await
+    }
+
+    fn image_network_error(
+        error: reqwest::Error,
+        label: &str,
+        network_code: &'static str,
+        timeout_code: &'static str,
+    ) -> AppError {
+        let code = if error.is_timeout() {
+            timeout_code
+        } else {
+            network_code
         };
-        let mut response = client.get(url).send().await.map_err(network)?;
+        AppError::new(code, format!("无法读取{label}：{}", error.without_url()))
+    }
+
+    async fn read_image_body(
+        mut response: reqwest::Response,
+        label: &str,
+        network_code: &'static str,
+        timeout_code: &'static str,
+    ) -> Result<Vec<u8>> {
         if !response.status().is_success() {
             return Err(AppError::new(
                 "ASSET_MISSING",
@@ -568,7 +635,11 @@ impl Assets {
             ));
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(network)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| Self::image_network_error(error, label, network_code, timeout_code))?
+        {
             if bytes.len() + chunk.len() > MAX_BYTES {
                 return Err(AppError::new("IMAGE_SIZE", "远程图片超过 20 MB"));
             }
@@ -668,6 +739,72 @@ fn publication_file(conn: &Connection, url: &str) -> Result<Option<AssetFile>> {
             Err(error)
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct UploadProgress {
+    completed: usize,
+    total: usize,
+}
+
+fn upload_progress(db: &Workspace, markdown: &str) -> Result<Option<UploadProgress>> {
+    let urls = references::urls(markdown)?;
+    if urls.is_empty() {
+        return Ok(None);
+    }
+    db.read(|conn| {
+        let Some(profile) = Profile::active(conn)? else {
+            return Ok(None);
+        };
+        let active: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE kind='upload' AND storage_profile_id=?1
+                AND status IN ('queued','running','retrying'))",
+            [&profile.id],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Ok(None);
+        }
+        let mut hashes = std::collections::HashSet::new();
+        let mut progress = UploadProgress { completed: 0, total: 0 };
+        let mut pending = false;
+        let mut query = conn.prepare(
+            "SELECT CASE
+                WHEN EXISTS(SELECT 1 FROM asset_locations WHERE sha256=?1 AND storage_profile_id=?2
+                    AND uploaded_at IS NOT NULL AND deleted_at IS NULL) THEN 'uploaded'
+                WHEN EXISTS(SELECT 1 FROM jobs WHERE kind='upload' AND sha256=?1 AND storage_profile_id=?2
+                    AND status IN ('queued','running','retrying')) THEN 'pending'
+                WHEN EXISTS(SELECT 1 FROM jobs WHERE kind='upload' AND sha256=?1 AND storage_profile_id=?2
+                    AND status='failed') THEN 'failed'
+             END",
+        )?;
+        for url in urls {
+            let file = match by_url(conn, &url) {
+                Ok(file) => file,
+                Err(error) if error.code() == "NOT_FOUND" => continue,
+                Err(error) => return Err(error),
+            };
+            let Some(hash) = file.hash else { continue };
+            if !hashes.insert(hash.clone()) {
+                continue;
+            }
+            let status: Option<String> =
+                query.query_row(params![hash, profile.id], |row| row.get(0))?;
+            match status.as_deref() {
+                Some("uploaded") => {
+                    progress.completed += 1;
+                    progress.total += 1;
+                }
+                Some("pending") => {
+                    pending = true;
+                    progress.total += 1;
+                }
+                Some("failed") => progress.total += 1,
+                _ => {}
+            }
+        }
+        Ok(pending.then_some(progress))
+    })
 }
 
 fn local_error(error: std::io::Error) -> AppError {

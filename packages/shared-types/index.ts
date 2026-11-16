@@ -33,8 +33,11 @@ export interface EntryRow {
   kind: EntryKind;
   title: string;
   status: EntryStatus;
+  createdAt?: number;
   updatedAt: number;
   deletedAt: number | null;
+  categoryId: string | null;
+  pinned?: boolean;
 }
 export interface Entry extends EntryRow, EntryFields {
   version: number;
@@ -43,6 +46,7 @@ export interface Entry extends EntryRow, EntryFields {
 export const entrySortOrders = ["name", "nameDesc", "updated", "updatedAsc", "created", "createdAsc"] as const;
 export interface EntryFilter {
   sort?: typeof entrySortOrders[number];
+  pinned?: boolean;
   kind?: EntryKind;
   categoryId?: string;
   exactCategory?: boolean;

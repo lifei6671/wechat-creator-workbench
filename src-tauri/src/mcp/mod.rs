@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex, task::JoinHandle};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -84,6 +84,7 @@ impl McpServer {
         let mut state = self.0.lock().await;
         if !state.suspended {
             state.try_start_saved(app, db).await;
+            let _ = app.emit_to("main", "mcp-status-changed", ());
         }
     }
 
@@ -97,6 +98,7 @@ impl McpServer {
         let mut state = self.0.lock().await;
         state.suspended = false;
         state.try_start_saved(app, db).await;
+        let _ = app.emit_to("main", "mcp-status-changed", ());
     }
 }
 

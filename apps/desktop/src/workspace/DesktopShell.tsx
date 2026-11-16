@@ -4,19 +4,20 @@ import { FilePenLine, FolderOpen, Images, Newspaper, Search } from "lucide-react
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
-import { desktop, errorMessage, windowsTitleBar, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type ImageTarget } from "../desktop";
+import type { ChatSelection } from "../ai/context";
+import { desktop, errorMessage, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type UploadProgress } from "../desktop";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
 import { commandKey, untitled } from "../labels";
 import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
-import { workspacePreferences } from "./preferences";
-import { Confirm, EntryLocationDialog, PropertiesDialog, RevisionsDialog } from "./Dialogs";
+import { readDocumentTabs, saveDocumentTabs, workspacePreferences, type DocumentOpenMode } from "./preferences";
+import { Confirm, PropertiesDialog, RevisionsDialog } from "./Dialogs";
 import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
-import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type Section } from "./Explorer";
+import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type Section } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
@@ -29,10 +30,11 @@ import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 
 const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
 
+type DocumentOptions = { view?: ViewMode; convertLinks?: boolean };
+
 type Modal =
   | { type: "palette" | "properties" | "reload" }
   | { type: "revisions"; id: string }
-  | { type: "move"; entry: Entry }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
   | { type: "wechatImport"; categoryId: string | null }
@@ -66,24 +68,32 @@ export function DesktopShell() {
   const [listError, setListError] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [imageTarget, setImageTarget] = useState<ImageTarget | null>(null);
-  const [imageUpload, setImageUpload] = useState<{ sessionId: number; src?: string } | null>(null);
-  const [sessions, setSessions] = useState<SaveQueue[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [imageTarget, setImageTarget] = useState<ActiveImageStorage | null>(null);
+  const [imageUpload, setImageUpload] = useState<(UploadProgress & { sessionId: number; src?: string }) | null>(null);
+  const [assetsRevision, setAssetsRevision] = useState(0);
+  const [mcpStatus, setMcpStatus] = useState<McpStatus>();
+  const [mcpLoadError, setMcpLoadError] = useState("");
+  const [tabSessions, setSessions] = useState<SaveQueue[] | null>(null);
+  const [tabSelection, setTabSelection] = useState<{ id: string; restored: boolean } | null>(null);
+  const sessions = tabSessions ?? [];
+  const activeId = tabSelection?.id ?? null;
   const [readingIds, setReadingIds] = useState<string[]>([]);
-  const [singlePaneIds, setSinglePaneIds] = useState<string[]>([]);
+  const [documentOptions, setDocumentOptions] = useState(() => new Map<string, DocumentOptions>());
   const [modal, setModal] = useState<Modal | null>(null);
   const [appearance, setAppearance] = useState(() => useStoredInitial<Appearance>("appearance", "system"));
   const [preferredView, setPreferredView] = useState<ViewMode>(() => useStoredInitial<string>("view", "") === "preview" ? "preview" : "edit");
   const [shortcut, setShortcut] = useState(() => useStoredInitial<ViewShortcut>("view-shortcut", "none"));
   const [downloadPastedImages, setDownloadPastedImages] = useState(() => useStoredInitial("download-pasted-images", false));
-  const [convertLinks, setConvertLinks] = useState(() => useStoredInitial("links-to-footnotes", false));
+  const [defaultConvertLinks, setDefaultConvertLinks] = useState(() => useStoredInitial("links-to-footnotes", false));
+  const [documentOpenMode, setDocumentOpenMode] = useState<DocumentOpenMode>(() =>
+    useStoredInitial<string>("document-open-mode", "") === "new-tab" ? "new-tab" : "current");
   const [folderLoading, setFolderLoading] = useState(() => useStoredInitial<"all" | "paged">("folder-loading", "paged"));
   const [folderPageSize, setFolderPageSize] = useState(() => useStoredInitial("folder-page-size", 60));
   const [editorDisplay, setEditorDisplay] = useState(() => useStoredInitial<Omit<EditorDisplay, "convertLinks">>("editor-display", {
     limitWidth: true, lineNumbers: false, showTitle: true,
   }));
-  const [preferredExplorer, setExplorer] = useState(() => useStoredInitial<boolean | null>("explorer", null));
+  const [preferredExplorer, setPreferredExplorer] = useState(() => useStoredInitial<boolean | null>("explorer", null));
+  const [explorerOverride, setExplorerOverride] = useState<boolean | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [locked, setLocked] = useState<string[]>([]);
   const [globalLock, setGlobalLock] = useState(false);
@@ -117,10 +127,11 @@ export function DesktopShell() {
     });
     return () => { current = false; };
   }, [showAiConfiguration, savingAiSettings]);
-  const [aiRewrite, setAiRewrite] = useState<{ sessionId: number; count: number }>();
+  const [aiChatSelection, setAiChatSelection] = useState<{ sessionId: number; selection: ChatSelection }>();
   const systemDark = useMedia("(prefers-color-scheme: dark)");
   const compact = useMedia("(width < 820px)");
-  const explorer = preferredExplorer ?? !compact;
+  const defaultExplorer = preferredExplorer ?? !compact;
+  const explorer = explorerOverride ?? defaultExplorer;
   const reading = activeId !== null && readingIds.includes(activeId);
   const showAiPanel = aiOpen && !focusMode && !reading;
   const loadAgentModels = showAiPanel && aiSettings?.preferences.enabled === true && aiSettings.agents.some(agent => agent.installed);
@@ -132,7 +143,7 @@ export function DesktopShell() {
     }, () => { if (current) setAgentCatalog({}); });
     return () => { current = false; };
   }, [loadAgentModels]);
-  const viewMode = reading || focusMode || (activeId !== null && singlePaneIds.includes(activeId)) ? "edit" : preferredView;
+  const viewMode = reading || focusMode ? "edit" : (activeId ? documentOptions.get(activeId)?.view : undefined) ?? preferredView;
   const queues = useRef(new Map<string, SaveQueue>());
   const active = useRef<string | null>(null);
   const handles = useRef(new Map<string, MarkdownEditorHandle>());
@@ -146,6 +157,7 @@ export function DesktopShell() {
   const [initialSidebarSize] = useState(() => explorer ? `${initialSidebarWidth}px` : "0px");
   const sidebarWidth = useRef(initialSidebarWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
+  const explorerTree = useRef<ExplorerHandle>(null);
   const sidebarPanel = usePanelRef();
   const aiSidebarPanel = usePanelRef();
   const [initialAiWidth] = useState(() => useStoredInitial("ai-sidebar-width", 350));
@@ -154,13 +166,12 @@ export function DesktopShell() {
   const focusOrigin = useRef<HTMLElement | null>(null);
   const refresh = () => setRefreshCount(count => count + 1);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
-  function updateConvertLinks(value: boolean) {
-    setConvertLinks(value);
-    persist("links-to-footnotes", value);
+  function updateDocumentOptions(id: string, patch: DocumentOptions) {
+    setDocumentOptions(current => new Map(current).set(id, { ...current.get(id), ...patch }));
   }
 
-  function updateEditorDisplay(option: keyof EditorDisplay, checked: boolean) {
-    if (option === "convertLinks") updateConvertLinks(checked);
+  function updateEditorDisplay(id: string, option: keyof EditorDisplay, checked: boolean) {
+    if (option === "convertLinks") updateDocumentOptions(id, { convertLinks: checked });
     else setEditorDisplay(display => ({ ...display, [option]: checked }));
   }
 
@@ -195,6 +206,38 @@ export function DesktopShell() {
     });
     return () => { current = false; };
   }, [refreshCount]);
+
+  const restoreTabs = useEffectEvent(async (workspaceId: string, isCurrent: () => boolean) => {
+    const saved = readDocumentTabs(workspaceId);
+    if (!saved?.ids.length || selecting.current || exit.current) return;
+    try {
+      const entries = await Promise.all(saved.ids.map(id => desktop.entry(id).catch((failure: unknown) => {
+        if (typeof failure === "object" && failure !== null && "code" in failure && failure.code === "NOT_FOUND") return null;
+        throw failure;
+      })));
+      if (!isCurrent() || selecting.current || exit.current) return;
+      for (const entry of entries) {
+        if (entry && entry.deletedAt === null) queues.current.set(entry.id, new SaveQueue(entry, desktop.save, refresh));
+      }
+      setSessions([...queues.current.values()]);
+      const first = queues.current.keys().next().value;
+      select(saved.activeId && queues.current.has(saved.activeId) ? saved.activeId : first ?? null, true);
+    } catch (error) {
+      if (isCurrent() && !selecting.current && !exit.current) showError(error);
+    }
+  });
+  const workspaceId = library?.workspaceId;
+  useEffect(() => {
+    if (!workspaceId) return;
+    let current = true;
+    void restoreTabs(workspaceId, () => current);
+    return () => { current = false; };
+  }, [workspaceId]);
+  useEffect(() => {
+    if (workspaceId && tabSessions) {
+      saveDocumentTabs(workspaceId, { ids: tabSessions.map(tab => tab.entry.id), activeId });
+    }
+  }, [workspaceId, tabSessions, activeId]);
 
   function more() {
     const offset = page?.nextOffset;
@@ -236,9 +279,10 @@ export function DesktopShell() {
     return job.finally(() => writing.current.delete(job));
   }
 
+  const localizeImage = (url: string) => trackAssetTask(desktop.localizeImage(url));
   const editorClipboard: ClipboardIO = {
     write: (text, html) => html ? desktop.copyHtml(html, text) : desktop.copyText(text),
-    localizeImage: downloadPastedImages ? url => trackAssetTask(desktop.localizeImage(url)) : undefined,
+    localizeImage: downloadPastedImages || imageTarget?.autoUpload ? localizeImage : undefined,
     importImage: async file => `asset://${await trackAssetTask(desktop.assetImport(file))}`,
     onError: showError,
     async read(plainText = false) {
@@ -258,14 +302,14 @@ export function DesktopShell() {
     if (field instanceof HTMLInputElement && field.classList.contains("path-title-input")) field.blur();
   }
 
-  function select(id: string | null) {
+  function select(id: string | null, restored = false) {
     const previous = active.current;
     if (id === previous) return;
     commitBreadcrumb();
     if (pendingEditorFocus.current !== id) pendingEditorFocus.current = null;
     if (previous) void queues.current.get(previous)?.flush();
     active.current = id;
-    setActiveId(id);
+    setTabSelection(id === null ? null : { id, restored });
     if (id === null) setFocusMode(false);
   }
 
@@ -280,26 +324,25 @@ export function DesktopShell() {
     return queue;
   }
 
-  async function open(id: string, replaceFirst = false) {
+  async function open(id: string, mode = documentOpenMode) {
     const ticket = ++selecting.current;
+    const replacing = mode === "current" && active.current ? queues.current.get(active.current) : undefined;
     if (!queues.current.has(id)) {
       const entry = await desktop.entry(id);
       if (ticket !== selecting.current || exit.current) return;
-      while (replaceFirst && !queues.current.has(id)) {
-        const first = queues.current.values().next().value;
-        if (!first) break;
-        const firstId = first.entry.id;
-        if (locking.current.has(firstId)) throw new Error("第一个标签页正在处理，请稍后再试");
-        if (active.current === firstId) commitBreadcrumb();
-        const saved = await first.flush();
+      while (replacing && queues.current.get(replacing.entry.id) === replacing && !queues.current.has(id)) {
+        const currentId = replacing.entry.id;
+        if (locking.current.has(currentId)) throw new Error("当前标签页正在处理，请稍后再试");
+        if (active.current === currentId) commitBreadcrumb();
+        const saved = await replacing.flush();
         if (ticket !== selecting.current || exit.current) return;
-        if (first !== queues.current.values().next().value || queues.current.has(id)) continue;
-        if (!saved) { select(firstId); return; }
-        if (active.current === firstId) commitBreadcrumb();
-        if (locking.current.has(firstId)) throw new Error("第一个标签页正在处理，请稍后再试");
-        const { revision, savedRevision } = first.snapshot();
+        if (queues.current.get(currentId) !== replacing || queues.current.has(id)) break;
+        if (!saved) { select(currentId); return; }
+        if (active.current === currentId) commitBreadcrumb();
+        if (locking.current.has(currentId)) throw new Error("当前标签页正在处理，请稍后再试");
+        const { revision, savedRevision } = replacing.snapshot();
         if (revision !== savedRevision) continue;
-        install(entry, first);
+        install(entry, replacing);
       }
       if (!queues.current.has(id)) install(entry);
     }
@@ -328,7 +371,12 @@ export function DesktopShell() {
     queues.current.get(id)!.dispose();
     queues.current.delete(id);
     setReadingIds(current => current.filter(item => item !== id));
-    setSinglePaneIds(current => current.filter(item => item !== id));
+    setDocumentOptions(current => {
+      if (!current.has(id)) return current;
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
   }
 
   function remove(id: string) {
@@ -376,7 +424,7 @@ export function DesktopShell() {
     }
     setSection(next);
     setFocusMode(false);
-    if (!explorer) { setExplorer(true); persist("explorer", true); }
+    if (!explorer) setExplorerOverride(true);
     if (next !== section) {
       setPage(null); setListError("");
     }
@@ -385,9 +433,7 @@ export function DesktopShell() {
   function view(mode: ViewMode) {
     if (reading) setReadingIds(current => current.filter(id => id !== activeId));
     if (focusMode && mode !== "edit") setFocusMode(false);
-    if (activeId !== null) setSinglePaneIds(current => current.filter(id => id !== activeId));
-    setPreferredView(mode);
-    persist("view", mode);
+    if (activeId !== null) updateDocumentOptions(activeId, { view: mode });
   }
 
   function toggleReading() {
@@ -402,11 +448,15 @@ export function DesktopShell() {
   }
 
   function toggleExplorer(event: MouseEvent<HTMLButtonElement>) {
-    setExplorer(!explorer);
-    persist("explorer", !explorer);
+    setExplorerOverride(!explorer);
     if (event.detail === 0) requestAnimationFrame(() => {
       document.getElementById(explorer ? "show-sidebar" : "hide-sidebar")?.focus({ preventScroll: true });
     });
+  }
+
+  function revealDirectory() {
+    if (explorerTree.current) explorerTree.current.revealDirectory();
+    else persist("directory-collapsed", false);
   }
 
   function revealFolder(id: string | null, parentId = library?.categories.find(category => category.id === id)?.parentId) {
@@ -425,10 +475,11 @@ export function DesktopShell() {
   function activateCreated(entry: Entry) {
     ++selecting.current;
     navigate("folders");
+    revealDirectory();
     revealFolder(entry.categoryId);
     pendingEditorFocus.current = entry.id;
     install(entry);
-    if (preferredView !== "edit") setSinglePaneIds(current => [...current, entry.id]);
+    if (preferredView !== "edit") updateDocumentOptions(entry.id, { view: "edit" });
     select(entry.id);
     refresh();
   }
@@ -457,8 +508,10 @@ export function DesktopShell() {
 
   function importMarkdown(parent: string | null = currentFolder) {
     run(async () => {
-      const entry = await trackAssetTask(desktop.importMarkdown(parent));
-      if (entry && !exit.current) activateCreated(entry);
+      const result = await trackAssetTask(desktop.importMarkdown(parent));
+      if (!result || exit.current) return;
+      activateCreated(result.entry);
+      if (result.unavailableImages) showError(`已导入文档，${result.unavailableImages} 张图片未能加入上传队列。`);
     });
   }
 
@@ -510,9 +563,9 @@ export function DesktopShell() {
     run(async () => {
       switch (action) {
         case "delete": case "restore": return changeDeleted(row.id, action === "delete");
+        case "pin": case "unpin": await desktop.setEntryPinned(row.id, action === "pin"); refresh(); return;
         case "export": return exportMarkdown(row.id);
         case "history": showModal({ type: "revisions", id: row.id }, trigger); return;
-        case "move": showModal({ type: action, entry: await currentEntry(row.id) }, trigger); return;
         case "duplicate": {
           const entry = await currentEntry(row.id);
           activateCreated(await desktop.create("article", {
@@ -554,15 +607,15 @@ export function DesktopShell() {
         break;
       case "search":
         switchTab(id);
-        if (!focusMode && !readingIds.includes(id) && !singlePaneIds.includes(id) && preferredView === "preview") {
-          setPreferredView("edit");
-          persist("view", "edit");
+        if (!focusMode && !readingIds.includes(id) && (documentOptions.get(id)?.view ?? preferredView) === "preview") {
+          updateDocumentOptions(id, { view: "edit" });
         }
         requestAnimationFrame(() => handles.current.get(id)?.search());
         break;
       case "folder":
         switchTab(id);
         navigate("folders");
+        revealDirectory();
         revealFolder(queue.snapshot().fields.categoryId);
         break;
       default:
@@ -622,10 +675,10 @@ export function DesktopShell() {
   }
 
   function moveTreeEntry(id: string, folder: string | null) {
-    run(() => withEntryLock(id, async () => {
+    run(() => trackAssetTask(withEntryLock(id, async () => {
       await changeEntryLocation(await currentEntry(id), { categoryId: folder });
       if (active.current !== id) revealFolder(folder);
-    }));
+    })));
   }
 
   async function deleteCategory(target: Category) {
@@ -652,8 +705,11 @@ export function DesktopShell() {
   const copy = desktop.copyText;
 
   const selected = activeId ? queues.current.get(activeId) : undefined;
-  const display = { ...editorDisplay, convertLinks };
-  const projectLinks = convertLinks ? (activeId ? handles.current.get(activeId)?.linkFootnoteMarkdown ?? null : null) : undefined;
+  const displayFor = (id: string | null): EditorDisplay => ({
+    ...editorDisplay, convertLinks: (id ? documentOptions.get(id)?.convertLinks : undefined) ?? defaultConvertLinks,
+  });
+  const display = displayFor(activeId);
+  const projectLinks = display.convertLinks ? (activeId ? handles.current.get(activeId)?.linkFootnoteMarkdown ?? null : null) : undefined;
   const showWechatImport = (parent: string | null = currentFolder) => showModal({ type: "wechatImport", categoryId: parent });
   const openSettings = (page: SettingsPage = "appearance", trigger?: HTMLElement) => {
     showModal({ type: "settings", page }, trigger ?? (modal?.type === "palette" ? focusOrigin.current : undefined));
@@ -762,16 +818,20 @@ export function DesktopShell() {
     const editor = handles.current.get(origin.entry.id);
     if (!editor?.hostImages || (image && (!image.isCurrent() || !canHostImage(target, image.src)))) return;
     const sessionId = origin.sessionId;
-    const upload = async (src: string) => {
-      setImageUpload({ sessionId, src });
-      try { return await desktop.hostImage(src, target); }
-      finally { setImageUpload({ sessionId }); }
+    const update = (change: Partial<UploadProgress & { src?: string }>) => {
+      setImageUpload(previous => previous?.sessionId === sessionId ? { ...previous, ...change } : previous);
     };
-    setImageUpload({ sessionId });
+    const upload = async (src: string) => {
+      update({ src });
+      const url = await desktop.hostImage(src, target);
+      setImageUpload(previous => previous?.sessionId === sessionId ? { ...previous, src: undefined, completed: previous.completed + 1 } : previous);
+      return url;
+    };
+    setImageUpload({ sessionId, total: image ? 1 : 0, completed: 0 });
     run(async () => {
       try {
         const count = await trackAssetTask((async () => {
-          if (!image) return editor.hostImages!(upload, src => canHostImage(target, src));
+          if (!image) return editor.hostImages!(upload, src => canHostImage(target, src), total => update({ total }));
           image.setUploading(true);
           try { return image.replaceSource(await upload(image.src)) ? 1 : 0; }
           finally { image.setUploading(false); }
@@ -926,6 +986,20 @@ export function DesktopShell() {
     const detachClipboard = attachClipboard((action, target, plainText) => clipboardEvent(action, target, plainText), showError);
     const listener = desktop.onExit(() => { void closingEvent(); });
     const workspaceChanged = desktop.onWorkspaceChanged(() => setRefreshCount(count => count + 1));
+    let mcpRequest = 0;
+    function refreshMcp() {
+      const request = ++mcpRequest;
+      void desktop.mcpStatus().then(status => {
+        if (request !== mcpRequest) return;
+        setMcpStatus(status);
+        setMcpLoadError("");
+      }, error => {
+        if (request === mcpRequest) setMcpLoadError(errorMessage(error));
+      });
+    }
+    let live = true;
+    const mcpChanged = desktop.onMcpStatusChanged(refreshMcp);
+    void mcpChanged.then(() => { if (live) refreshMcp(); }, showError);
     let targetRequest = 0;
     function refreshImageTarget() {
       const request = ++targetRequest;
@@ -933,6 +1007,7 @@ export function DesktopShell() {
     }
     refreshImageTarget();
     const assetsChanged = desktop.onAssetsChanged(() => {
+      setAssetsRevision(revision => revision + 1);
       refreshImageTarget();
       for (const handle of handles.current.values()) handle.retryMissingImages();
     });
@@ -946,6 +1021,8 @@ export function DesktopShell() {
     window.addEventListener("dragover", preventFileNavigation);
     window.addEventListener("drop", preventFileNavigation);
     return () => {
+      live = false;
+      mcpRequest++;
       targetRequest++;
       detachClipboard();
       window.removeEventListener("keydown", shortcut);
@@ -956,6 +1033,7 @@ export function DesktopShell() {
       void workspaceChanged.then(unlisten => unlisten(), () => {});
       void assetsChanged.then(unlisten => unlisten(), () => {});
       void backupChanged.then(unlisten => unlisten(), () => {});
+      void mcpChanged.then(unlisten => unlisten(), () => {});
     };
   }, []);
 
@@ -1008,11 +1086,11 @@ export function DesktopShell() {
       ...aiSettings.preferences, defaultTarget: target, defaultAgentModel: agentModel,
     })).catch(showError);
   }
-  function openAiRewrite(session: SaveQueue) {
+  function addSelectionToChat(session: SaveQueue, selection: ChatSelection) {
     if (exit.current || active.current !== session.entry.id || locking.current.has(session.entry.id)) return;
     setFocusMode(false);
     setAiOpen(true);
-    setAiRewrite(previous => ({ sessionId: session.sessionId, count: (previous?.count ?? 0) + 1 }));
+    setAiChatSelection({ sessionId: session.sessionId, selection });
   }
   function closeAi() {
     setAiOpen(false);
@@ -1026,13 +1104,12 @@ export function DesktopShell() {
     canChat={canChat} canEdit={canEditWithAi} onClose={closeAi} onSettings={showModel}
     canSend={() => !exit.current}
     trackWrite={trackAssetTask}
-    rewriteRequest={aiRewrite?.sessionId === queue?.sessionId ? aiRewrite?.count : undefined}
+    selectionRequest={aiChatSelection?.sessionId === queue?.sessionId ? aiChatSelection?.selection : undefined}
     canWrite={(origin, editor) => !exit.current && !reading && active.current === origin.entry.id
       && queues.current.get(origin.entry.id) === origin && handles.current.get(origin.entry.id) === editor && !locking.current.has(origin.entry.id)} />;
   const toast = notice && <WorkspaceToast notice={notice} onReveal={path => run(() => desktop.revealFile(path))}
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
-  const workspaceNotice = modal?.type !== "settings" && (backupWorking
-    ? <div className="notice" role="status">{backupWorking}</div> : toast);
+  const workspaceNotice = modal?.type !== "settings" && toast;
   return <Theme appearance={appearance === "system" ? systemDark ? "dark" : "light" : appearance} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
     <div className="workspace-shell" inert={Boolean(exitMessage)}>
@@ -1046,7 +1123,7 @@ export function DesktopShell() {
             onResize={size => {
               if (!showExplorer) return;
               if (size.inPixels > 0) sidebarWidth.current = size.inPixels;
-              else if (!sidebarGroup.current?.dataset.sidebarMoving) { setExplorer(false); persist("explorer", false); }
+              else if (!sidebarGroup.current?.dataset.sidebarMoving) setExplorerOverride(false);
             }}>
             <div className="sidebar-workspace" inert={!showExplorer}>
               <nav className="sidebar-chrome chrome-band" aria-label="工作区导航">
@@ -1078,11 +1155,20 @@ export function DesktopShell() {
                   });
                 }
               }} />
-              : <Explorer section={section} library={library} page={page} active={activeId} readOnlyIds={[...readingIds, ...locked]}
+              : <Explorer ref={explorerTree} section={section} library={library} page={page} active={activeId} readOnlyIds={[...readingIds, ...locked]}
                 activeFolder={queue?.entry.deletedAt === null ? queue.snapshot().fields.categoryId : undefined}
+                preserveActiveFolder={tabSelection?.restored}
                 onCreateCurrent={() => create()}
                 onToggleAll={expand => setExpandedFolders(expand ? (library?.categories ?? []).map(folder => folder.id) : [])}
-                onLocateCurrent={() => { if (queue?.entry.deletedAt === null) revealFolder(queue.snapshot().fields.categoryId); }}
+                onLocateCurrent={() => {
+                  if (queue?.entry.deletedAt !== null) return;
+                  const pinned = document.getElementById(`entry-row-${queue.entry.id}`);
+                  if (pinned?.hasAttribute("data-tree-pinned")) pinned.scrollIntoView({ block: "nearest" });
+                  else {
+                    revealDirectory();
+                    revealFolder(queue.snapshot().fields.categoryId);
+                  }
+                }}
                 treeLocked={globalLock}
                 expanded={expandedFolders} revision={refreshCount} loading={folderLoading} pageSize={folderPageSize} caseSensitive={caseSensitive}
                 query={query} searchInputRef={searchInput} listError={listError} onRetry={refresh}
@@ -1093,7 +1179,8 @@ export function DesktopShell() {
                 onCreate={create} onRevealFolder={revealFolder} onSaveFolder={saveFolder} onFolderError={showError}
                 onReorderFolder={reorderFolder} onReorderEntry={reorderEntry} onRenameEntry={renameEntry} onMoveEntry={moveTreeEntry}
                 onCategoryAction={categoryAction}
-                onOpen={(id, newTab) => run(() => open(id, !newTab))} onRowAction={entryAction} onMore={more} />}
+                openMode={documentOpenMode} onOpen={(id, mode) => run(() => open(id, mode))}
+                onRowAction={entryAction} onMore={more} />}
             </div>
           </Panel>
           <Separator className="divider sidebar-divider" hidden={!showExplorer} disabled={!showExplorer}
@@ -1104,7 +1191,8 @@ export function DesktopShell() {
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
               {sessions.length > 0 && <DocumentTabs sessions={sessions} activeId={activeId} readingIds={readingIds} lockedIds={locked}
-                onSwitch={switchTab} onClose={closeTab} onAction={tabAction} onReorder={reorderTab} onRename={renameEntry} onError={showError} />}
+                categories={library?.categories ?? []} onMove={moveTreeEntry} onSwitch={switchTab} onClose={closeTab} onAction={tabAction}
+                onReorder={reorderTab} onRename={renameEntry} onError={showError} />}
               {!focusMode && <CreateMenu onCreate={() => create()} onImportWechat={() => showWechatImport()}
                 onImportMarkdown={() => importMarkdown()} disabled={globalLock} />}
               <WindowDragRegion onError={showError} />
@@ -1113,17 +1201,17 @@ export function DesktopShell() {
             {queue ? <>
               <DocumentToolbar queue={queue} categories={library?.categories ?? []} actions={actions}
                 locked={globalLock || locked.includes(queue.entry.id)}
-                display={display} onDisplayChange={updateEditorDisplay}
-                onReveal={id => { navigate("folders"); revealFolder(id); }} />
+                display={display} onDisplayChange={(option, checked) => updateEditorDisplay(queue.entry.id, option, checked)}
+                onReveal={id => { navigate("folders"); revealDirectory(); revealFolder(id); }} />
               <div className="document-body" data-view={viewMode} id="document-body" role="tabpanel" aria-labelledby={`tab-${activeId}`}>
                 <div className="editor-stack" hidden={viewMode === "preview"}>
                   {sessions.map(session => <DocumentEditor key={session.sessionId}
                     queue={session} active={activeId === session.entry.id} reading={readingIds.includes(session.entry.id)}
-                    display={display} onDisplayChange={updateEditorDisplay}
+                    display={displayFor(session.entry.id)} onDisplayChange={(option, checked) => updateEditorDisplay(session.entry.id, option, checked)}
                     locked={Boolean(exitMessage) || globalLock || locked.includes(session.entry.id)} clipboard={editorClipboard}
                     handle={handle => registerEditor(session.entry.id, handle)}
-                    onImages={importImages} onError={showError}
-                    onAiRewrite={() => openAiRewrite(session)}
+                    onImages={importImages} onError={showError} localizeImageLink={imageTarget?.autoUpload ? localizeImage : undefined}
+                    onAddSelectionToChat={selection => addSelectionToChat(session, selection)}
                     canHost={src => canHostImage(imageTarget, src)} hostBusy={Boolean(imageUpload)}
                     uploadingSource={imageUpload?.sessionId === session.sessionId ? imageUpload.src : undefined}
                     onHostImage={image => hostDocumentImages(session, image)}
@@ -1160,6 +1248,9 @@ export function DesktopShell() {
         </Panel>
       </Group>
       <StatusBar queue={queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
+        mcpRunning={mcpStatus?.running} onMcp={trigger => openSettings("mcp", trigger)} backupProgress={backupWorking}
+        migrationProgress={migrationWorking} assetRevision={assetsRevision} imageStorageEnabled={Boolean(imageTarget)}
+        imageUpload={imageUpload?.sessionId === queue?.sessionId ? imageUpload : null} onError={showError}
         onPalette={trigger => showModal({ type: "palette" }, trigger)}
         onTrash={() => navigate("trash")}
         onSettings={trigger => openSettings("appearance", trigger)} />
@@ -1178,7 +1269,7 @@ export function DesktopShell() {
         <SettingsDialog initialPage={modal.page} status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
-          if (page === "mcp") return <McpSettings />;
+          if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
           if (page === "images") return <ImageStorageSettings track={trackAssetTask} />;
           if (page === "backups") return <BackupPanel busy={backupWorking !== null || migrationWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}
             listRevision={backupListRevision} prepared={preparedBackup?.migration ? null : preparedBackup} onCreate={createBackup} onRestore={prepareBackup}
@@ -1186,15 +1277,17 @@ export function DesktopShell() {
           if (page === "migration") return <MigrationPanel busy={backupWorking !== null || migrationWorking !== null}
             working={migrationWorking} feedback={migrationFeedback} prepared={preparedBackup?.migration === true}
             onTransfer={action => void transferWorkspace(action)} onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
-          return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} preferredView={preferredView} explorer={explorer}
-            downloadPastedImages={downloadPastedImages} convertLinks={convertLinks} folderLoading={folderLoading} folderPageSize={folderPageSize}
+          return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} preferredView={preferredView} explorer={defaultExplorer}
+            downloadPastedImages={downloadPastedImages} convertLinks={defaultConvertLinks} documentOpenMode={documentOpenMode}
+            folderLoading={folderLoading} folderPageSize={folderPageSize}
             onAppearance={value => { setAppearance(value); persist("appearance", value); }}
             onView={value => { setPreferredView(value); persist("view", value); }}
             onDownloadPastedImages={value => { setDownloadPastedImages(value); persist("download-pasted-images", value); }}
-            onConvertLinks={updateConvertLinks}
+            onConvertLinks={value => { setDefaultConvertLinks(value); persist("links-to-footnotes", value); }}
+            onDocumentOpenMode={value => { setDocumentOpenMode(value); persist("document-open-mode", value); }}
             onFolderLoading={value => { setFolderLoading(value); persist("folder-loading", value); }}
             onFolderPageSize={value => { setFolderPageSize(value); persist("folder-page-size", value); }}
-            onExplorer={value => { setExplorer(value); persist("explorer", value); }}
+            onExplorer={value => { setPreferredExplorer(value); setExplorerOverride(null); persist("explorer", value); }}
             onShortcut={value => { setShortcut(value); persist("view-shortcut", value); }} />;
         }} />
         {confirmRestore && preparedBackup && <Confirm title={preparedBackup.migration ? "恢复工作区" : "恢复数据库"}
@@ -1220,9 +1313,6 @@ export function DesktopShell() {
       {modal?.type === "properties" && queue && <PropertiesDialog queue={queue} categories={library?.categories ?? []}
         tagSuggestions={library?.tagSuggestions ?? []} locked={reading || globalLock || locked.includes(queue.entry.id)} onClose={closeModal} onOpen={id => run(() => open(id))} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
-      {modal?.type === "move" && <EntryLocationDialog entry={modal.entry}
-        categories={library?.categories ?? []} onClose={closeModal}
-        onSave={categoryId => trackAssetTask(changeEntryLocation(modal.entry, { categoryId }))} />}
       {modal?.type === "deleteCategory" && <Confirm title="删除文件夹" text={modal.target.parentId ? "其中的内容将移到上一级文件夹。" : "子文件夹也将删除，其中的内容将移到根目录。"}
         action="删除文件夹" onClose={closeModal} onConfirm={() => deleteCategory(modal.target)} />}
       {modal?.type === "reload" && queue && <Confirm title="重新加载内容" text="重新加载将丢弃这篇内容尚未保存的修改。"

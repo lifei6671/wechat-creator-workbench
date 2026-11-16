@@ -74,7 +74,7 @@ fn prepare(
 ) -> Result<(String, BTreeMap<String, AssetFile>)> {
     let mut assets = BTreeMap::new();
     let mut resolved = BTreeMap::new();
-    let mut resolve = |url: &str| -> Result<Option<String>> {
+    let resolve = |url: &str| -> Result<Option<String>> {
         let file = publication_file(conn, url).map_err(|err| {
             if err.code() == "NOT_FOUND" {
                 AppError::new(
@@ -92,35 +92,7 @@ fn prepare(
         resolved.insert(url.to_owned(), name.clone());
         Ok(Some(name))
     };
-    let mut rewrite = Vec::new();
-    for image in references::images(markdown) {
-        match image {
-            references::Image::Markdown { range, url, alt } => {
-                let Some(name) = resolve(&url)? else {
-                    continue;
-                };
-                let alt = alt
-                    .replace('\\', "\\\\")
-                    .replace('[', "\\[")
-                    .replace(']', "\\]");
-                rewrite.push((range, format!("![{alt}]({name})")));
-            }
-            references::Image::Html(parts) => {
-                for image in references::html_images(markdown, &parts)? {
-                    let Some(name) = resolve(&image.url)? else {
-                        continue;
-                    };
-                    for spans in image.attributes {
-                        let mut parts = spans.into_iter();
-                        if let Some(first) = parts.next() {
-                            rewrite.push((first, name.clone()));
-                            rewrite.extend(parts.map(|rest| (rest, String::new())));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let mut rewrite = references::image_edits(markdown, resolve)?;
     for (label, link) in pulldown_cmark::Parser::new(markdown)
         .reference_definitions()
         .iter()
@@ -132,12 +104,7 @@ fn prepare(
             rewrite.push((link.span.clone(), format!("[{label}]: {name}{title}")));
         }
     }
-    rewrite.sort_unstable_by_key(|(range, _)| range.start);
-    let mut output = markdown.to_owned();
-    for (range, replacement) in rewrite.into_iter().rev() {
-        output.replace_range(range, &replacement);
-    }
-    Ok((output, assets))
+    Ok((references::apply_image_edits(markdown, rewrite), assets))
 }
 
 fn add_file(

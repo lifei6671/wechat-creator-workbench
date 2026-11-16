@@ -39,6 +39,8 @@ export interface EditorImages {
 const iconPaths = {
   zoom: "M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16m10 18-4.35-4.35M11 8v6m-3-3h6",
   source: "m18 16 4-4-4-4M6 8l-4 4 4 4M14.5 4l-5 16",
+  plus: "M12 4v16M4 12h16",
+  grip: "M8.5 5h.01M8.5 12h.01M8.5 19h.01M15.5 5h.01M15.5 12h.01M15.5 19h.01",
 };
 
 export function editorIconButton(label: string, icon: keyof typeof iconPaths) {
@@ -46,7 +48,7 @@ export function editorIconButton(label: string, icon: keyof typeof iconPaths) {
   button.type = "button";
   button.className = "plain-button chrome-icon";
   button.setAttribute("aria-label", label);
-  button.title = label;
+  button.dataset.tooltip = label;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("width", "15");
@@ -56,7 +58,7 @@ export function editorIconButton(label: string, icon: keyof typeof iconPaths) {
   path.setAttribute("d", iconPaths[icon]);
   path.setAttribute("fill", "none");
   path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "1.8");
+  path.setAttribute("stroke-width", icon === "grip" ? "3.6" : icon === "plus" ? "2.2" : "1.8");
   path.setAttribute("stroke-linecap", "round");
   path.setAttribute("stroke-linejoin", "round");
   svg.append(path);

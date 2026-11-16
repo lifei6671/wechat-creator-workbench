@@ -2,7 +2,7 @@ import type { PointerEvent } from "react";
 import type { Category, CategoryPlacement } from "../../../../packages/shared-types";
 import { usePointerDrag } from "./pointer-drag";
 
-type Source = { kind: "folder" | "entry"; id: string; title: string; parent: string | null };
+type Source = { kind: "folder" | "entry"; id: string; title: string; parent: string | null; pinned: boolean };
 type Destination = { id: string; placement: CategoryPlacement } | { id: string | null; placement: "inside" };
 
 function rowFolder(element: Element) {
@@ -20,15 +20,16 @@ export function useExplorerDrag(categories: Category[], allowEntryReorder: boole
     const id = row.dataset.treeId!;
     const kind = row.dataset.treeKind === "folder" ? "folder" : "entry";
     const parent = kind === "folder" ? categories.find(folder => folder.id === id)!.parentId : rowFolder(row);
-    return { kind, id, parent, title: row.dataset.treeTitle! };
+    return { kind, id, parent, title: row.dataset.treeTitle!, pinned: row.hasAttribute("data-tree-pinned") };
   }
 
   function targetAt(event: PointerEvent<HTMLElement>, item: Source): Destination | null {
     const element = document.elementFromPoint(event.clientX, event.clientY);
     if (!element || !event.currentTarget.contains(element) || element.closest(".folder-inline, .entry-inline")) return null;
+    if (item.pinned !== Boolean(element.closest("[data-tree-pinned-area]"))) return null;
     const header = element.closest<HTMLElement>("[data-tree-kind=folder]");
     const row = item.kind === "folder" ? header : element.closest<HTMLElement>("[data-tree-kind=entry]");
-    if (item.kind === "entry") {
+    if (item.kind === "entry" && !item.pinned) {
       const folder = header?.dataset.treeId ?? rowFolder(element);
       if (folder !== item.parent) return { id: folder, placement: "inside" };
       if (!allowEntryReorder) return null;

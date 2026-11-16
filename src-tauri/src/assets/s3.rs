@@ -156,6 +156,25 @@ impl Profile {
         id.map(|id| Self::read(conn, &id)).transpose()
     }
 
+    pub(super) fn automatic(conn: &Connection) -> Result<Option<Self>> {
+        if let Some(profile) = Self::active(conn)?
+            && profile.upload_options(conn)?.auto_upload
+        {
+            return Ok(Some(profile));
+        }
+        Ok(None)
+    }
+
+    pub(super) fn for_incoming_image(
+        conn: &Connection,
+        expected: Option<&Target>,
+    ) -> Result<Option<Self>> {
+        match expected {
+            Some(target) => Self::active_for(conn, Some(target)),
+            None => Self::automatic(conn),
+        }
+    }
+
     pub(super) fn active_for(conn: &Connection, expected: Option<&Target>) -> Result<Option<Self>> {
         let active = Self::active(conn)?;
         if expected.is_some_and(|target| {

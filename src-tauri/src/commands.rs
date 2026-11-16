@@ -1,5 +1,6 @@
 use crate::{
     ai::AiService,
+    assets::Assets,
     content::{
         Entry, Fields, Filter, Kind, Page, Revision, SaveMode, SaveResult,
         taxonomy::{Category, CategoryChange, CategoryIcon, CategoryPlacement, Library},
@@ -8,7 +9,7 @@ use crate::{
     mcp::McpServer,
 };
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
@@ -40,8 +41,9 @@ pub async fn create_entry(
 pub async fn import_markdown(
     app: AppHandle,
     state: State<'_, Workspace>,
+    assets: State<'_, Assets>,
     category_id: Option<String>,
-) -> Result<Option<Entry>> {
+) -> Result<Option<ImportedMarkdown>> {
     let dialog = app
         .dialog()
         .file()
@@ -60,17 +62,34 @@ pub async fn import_markdown(
         let name = path.file_stem().expect("selected Markdown file has a name");
         (name.to_string_lossy().into_owned(), &markdown)
     });
-    state
-        .create_external(
-            Kind::Article,
-            crate::content::EntryPatch {
-                title: Some(title),
-                content_md: Some(body.to_owned()),
-                category_id: Some(category_id),
-                ..Default::default()
-            },
+    let (body, unavailable_images) = assets
+        .import_markdown_images(
+            &state,
+            body,
+            path.parent().expect("selected Markdown file has a parent"),
         )
-        .map(Some)
+        .await?;
+    let entry = state.create_external(
+        Kind::Article,
+        crate::content::EntryPatch {
+            title: Some(title),
+            content_md: Some(body),
+            category_id: Some(category_id),
+            ..Default::default()
+        },
+    )?;
+    let _ = app.emit("assets-changed", ());
+    Ok(Some(ImportedMarkdown {
+        entry,
+        unavailable_images,
+    }))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedMarkdown {
+    entry: Entry,
+    unavailable_images: usize,
 }
 
 fn import_title(markdown: &str) -> Option<(String, &str)> {
@@ -159,6 +178,11 @@ pub async fn reorder_category(
     placement: CategoryPlacement,
 ) -> Result<()> {
     state.reorder_category(&id, &anchor, placement)
+}
+
+#[tauri::command]
+pub async fn set_entry_pinned(state: State<'_, Workspace>, id: String, pinned: bool) -> Result<()> {
+    state.set_entry_pinned(&id, pinned)
 }
 
 #[tauri::command]

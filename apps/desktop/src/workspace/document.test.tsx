@@ -39,7 +39,7 @@ it("renames an inactive tab in place without implicitly selecting it", async () 
   const onSwitch = vi.fn();
   const onAction = vi.fn();
   const onRename = vi.fn().mockResolvedValue(undefined);
-  flushSync(() => root.render(<Theme><DocumentTabs sessions={[first, second]} activeId={null}
+  flushSync(() => root.render(<Theme><DocumentTabs sessions={[first, second]} activeId={null} categories={[]} onMove={vi.fn()}
     readingIds={[]} lockedIds={[]} onSwitch={onSwitch} onClose={vi.fn()} onAction={onAction}
     onReorder={vi.fn()} onRename={onRename} onError={vi.fn()} /></Theme>));
   flushSync(() => container.querySelector("#tab-two")!.dispatchEvent(new MouseEvent("contextmenu", {
@@ -72,7 +72,7 @@ it("shows a tab insertion marker and scrolls overflow by arrow or wheel", async 
     constructor(callback: ResizeObserverCallback) { imitateResize(callback); }
     observe() {} disconnect() {}
   });
-  flushSync(() => root.render(<Theme><DocumentTabs sessions={[first, second]} activeId={"one"}
+  flushSync(() => root.render(<Theme><DocumentTabs sessions={[first, second]} activeId={"one"} categories={[]} onMove={vi.fn()}
     readingIds={[]} lockedIds={[]} onSwitch={vi.fn()} onClose={vi.fn()} onAction={vi.fn()}
     onReorder={onReorder} onRename={vi.fn()} onError={vi.fn()} /></Theme>));
   const list = container.querySelector<HTMLDivElement>(".tabs")!;

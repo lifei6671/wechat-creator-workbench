@@ -172,6 +172,9 @@ fn folder_entry_order_survives_saves_and_restart_without_leaking_between_folders
     assert_eq!(sorted.next_offset, Some(2));
     assert_eq!(sorted.items[0].id, first.row.id);
     assert_eq!(sorted.items[1].id, third.row.id);
+    let row = serde_json::to_value(&sorted.items[0]).unwrap();
+    assert_eq!(row["createdAt"], 90);
+    assert_eq!(row["updatedAt"], 10);
     for (sort, expected) in [
         (EntrySort::NameDesc, [&second, &third, &first]),
         (EntrySort::Updated, [&third, &second, &first]),
@@ -233,6 +236,91 @@ fn folder_entry_order_survives_saves_and_restart_without_leaking_between_folders
     })
     .unwrap();
     assert_eq!(list(&db, None), [second.row.id, third.row.id]);
+}
+
+#[test]
+fn pinned_entries_keep_an_independent_order_across_folders_and_restarts() {
+    use taxonomy::CategoryPlacement::Before;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pinned.db");
+    let db = Workspace::open(&path).unwrap();
+    let folder = db.save_category(None, None, "目录", None).unwrap();
+    let first = db
+        .create_entry(Kind::Article, Some(article("甲", "")), None)
+        .unwrap();
+    let regular = db
+        .create_entry(Kind::Article, Some(article("丙", "")), None)
+        .unwrap();
+    let mut fields = article("乙", "");
+    fields.category_id = Some(folder.id.clone());
+    let second = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    let pin_list = |db: &Workspace, sort| {
+        db.entries(Filter {
+            pinned: Some(true),
+            sort,
+            ..Filter::default()
+        })
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>()
+    };
+
+    db.set_entry_pinned(&first.row.id, true).unwrap();
+    db.set_entry_pinned(&second.row.id, true).unwrap();
+    assert_eq!(
+        pin_list(&db, None),
+        [second.row.id.as_str(), first.row.id.as_str()]
+    );
+    assert!(
+        db.reorder_entry(&first.row.id, &regular.row.id, Before)
+            .is_err()
+    );
+    assert!(
+        db.reorder_entry(&regular.row.id, &first.row.id, Before)
+            .is_err()
+    );
+    db.reorder_entry(&first.row.id, &second.row.id, Before)
+        .unwrap();
+    db.set_entry_pinned(&second.row.id, true).unwrap();
+    drop(db);
+
+    let db = Workspace::open(&path).unwrap();
+    for sort in [None, Some(EntrySort::NameDesc), Some(EntrySort::UpdatedAsc)] {
+        assert_eq!(
+            pin_list(&db, sort),
+            [first.row.id.as_str(), second.row.id.as_str()]
+        );
+    }
+    let root = db
+        .entries(Filter {
+            pinned: Some(false),
+            exact_category: true,
+            ..Filter::default()
+        })
+        .unwrap();
+    assert_eq!(root.items[0].id, regular.row.id);
+    assert_eq!(root.items.len(), 1);
+    let pinned = db.get_entry(&second.row.id).unwrap();
+    assert!(pinned.row.pinned);
+    assert_eq!(pinned.version, second.version);
+    assert_eq!(
+        pinned.fields.category_id.as_deref(),
+        Some(folder.id.as_str())
+    );
+    db.set_entry_pinned(&second.row.id, false).unwrap();
+    let children = db
+        .entries(Filter {
+            pinned: Some(false),
+            exact_category: true,
+            category_id: Some(folder.id),
+            ..Filter::default()
+        })
+        .unwrap();
+    assert_eq!(children.items[0].id, second.row.id);
+    assert!(!children.items[0].pinned);
 }
 
 #[test]

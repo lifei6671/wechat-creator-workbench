@@ -56,7 +56,11 @@ fn main() {
             std::fs::create_dir_all(&dir)?;
             let (db, backups) = Backups::open(&dir)?;
             app.manage(backups);
-            app.manage(Assets::new(dir.join("assets"), &db)?);
+            let mut assets = Assets::new(dir.join("assets"), &db)?;
+            if let Ok(cache) = app.path().app_cache_dir() {
+                assets = assets.with_image_cache(&cache.join("remote-images"));
+            }
+            app.manage(assets);
             app.manage(Imports::new(&db)?);
             app.manage(AiService::new(&db)?);
             app.manage(db);
@@ -84,6 +88,7 @@ fn main() {
             move_category,
             reorder_category,
             reorder_entry,
+            set_entry_pinned,
             revisions,
             export_markdown,
             begin_exit,
@@ -91,6 +96,7 @@ fn main() {
             finish_exit,
             asset_import,
             asset_library,
+            asset_upload_progress,
             asset_thumbnail,
             asset_read,
             asset_localize_image,

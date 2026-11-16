@@ -78,6 +78,23 @@
 .settings-state[data-running="true"] { color: var(--green-11); }
 .settings-feedback { margin: 0; padding: 12px 0; }
 .settings-feedback + .settings-feedback { padding-top: 0; }
+.mcp-address {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%;
+}
+.setting-control:has(> .mcp-address) { flex: 0 1 310px; }
+.mcp-address .rt-TextFieldRoot { min-width: 0; }
+.mcp-footer { align-items: center; gap: 8px; }
+.mcp-feedback { flex: 1 1 90px; min-width: 0; font-size: var(--small-font); min-height: 1lh; }
+.mcp-footer [data-available="false"] { visibility: hidden; }
+.mcp-submit { min-width: 86px; }
+.mcp-settings .rt-Button {
+  transition: background-color 180ms ease-out, color 180ms ease-out, opacity 180ms ease-out, scale 160ms ease-out;
+}
+.mcp-settings .rt-Button:active:not(:disabled) { scale: .97; }
+@media (prefers-reduced-motion: reduce) {
+  .mcp-settings .rt-Button { transition: none; }
+  .mcp-settings .rt-Button:active { scale: none; }
+}
 .settings-check { display: flex; gap: 6px; align-items: center; font-size: var(--small-font); color: var(--text-muted); }
 .ai-settings { display: grid; gap: 14px; }
 .ai-settings-card { border: var(--hairline); border-radius: 8px; }

@@ -5,6 +5,7 @@ import {
   ListPlus, Minus, Pilcrow, Quote, Redo2, Ruler, Scan, Scissors, Sigma, Sparkles, Strikethrough, Table2, Undo2,
 } from "lucide-react";
 import type { ClipboardIO, EditorCommand, ImageContext, LinkContext, MarkdownEditorHandle, TableContext } from "../../../../packages/editor-react";
+import type { ChatSelection } from "../ai/context";
 import { desktop } from "../desktop";
 import { TableContextMenu } from "./TableContextMenu";
 
@@ -22,7 +23,7 @@ export const editorDisplayItems = [
   ["convertLinks", "链接转脚注", FileCode2],
 ] as const;
 
-export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, canHost, hostBusy, uploadingSource, onHostImage, onAiRewrite, children }: {
+export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
   readOnly: boolean;
@@ -33,7 +34,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   hostBusy?: boolean;
   uploadingSource?: string;
   onHostImage?(image: ImageContext): void;
-  onAiRewrite?(): void;
+  onAddSelectionToChat?(selection: ChatSelection): void;
   children: ReactNode;
 }) {
   const [selected, setSelected] = useState(false);
@@ -126,8 +127,13 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         onCloseAutoFocus={finishContextAction}
         aria-label={menu === "code" ? "代码块操作" : menu === "cellText" ? "单元格文字操作" : "正文编辑操作"}>
         {!readOnly && menu !== "code" && <>
-          {selected && onAiRewrite && <ContextMenu.Item onSelect={() => { afterMenuClose.current = onAiRewrite; }}>
-            <Sparkles size={15} />AI 改写
+          {selected && onAddSelectionToChat && <ContextMenu.Item onSelect={() => {
+            const selection = editor.current?.captureContext("selection");
+            if (!selection?.original.trim()) return;
+            const { original, headingPath } = selection;
+            afterMenuClose.current = () => onAddSelectionToChat({ original, headingPath });
+          }}>
+            <Sparkles size={15} />将所选内容添加到聊天
           </ContextMenu.Item>}
           {convertLinkItem}
           <ContextMenu.Item disabled={!ready} onSelect={() => {

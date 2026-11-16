@@ -119,8 +119,8 @@ export function runTableAction(ctx: Ctx, view: EditorView, action: TableAction) 
     case "clearCells": if (state.selection instanceof CellSelection) replaceSelectedCells(view, state.selection); break;
     case "rowBefore": if (top > 0) dispatch(addRowWithAlignment(ctx, tr, rect, top)); break;
     case "rowAfter": dispatch(addRowWithAlignment(ctx, tr, rect, bottom)); break;
-    case "rowUp": if (top > 1) moveRow(top - 1); break;
-    case "rowDown": if (top > 0 && bottom < map.height) moveRow(top + 1); break;
+    case "rowUp": if (top > 0) moveRow(top - 1); break;
+    case "rowDown": if (bottom < map.height) moveRow(top + 1); break;
     case "rowDelete": if (top > 0 && bottom - top < map.height - 1) deleteRow(state, dispatch); break;
     case "columnBefore": dispatch(addColumn(tr, rect, left)); break;
     case "columnAfter": dispatch(addColumn(tr, rect, right)); break;
@@ -154,40 +154,247 @@ export function runTableAction(ctx: Ctx, view: EditorView, action: TableAction) 
   }
 }
 
+// Milkdown Crepe 7.23 table controls, scaled to fit the editor toolbar.
+const plusIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13H13V18C13 18.55 12.55 19 12 19C11.45 19 11 18.55 11 18V13H6C5.45 13 5 12.55 5 12C5 11.45 5.45 11 6 11H11V6C11 5.45 11.45 5 12 5C12.55 5 13 5.45 13 6V11H18C18.55 11 19 11.45 19 12C19 12.55 18.55 13 18 13Z"/></svg>`;
+const dragIcon = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 9.83366C3.35833 9.83366 3.23961 9.78571 3.14383 9.68983C3.04794 9.59394 3 9.47516 3 9.33349C3 9.19171 3.04794 9.07299 3.14383 8.97733C3.23961 8.88155 3.35833 8.83366 3.5 8.83366H12.5C12.6417 8.83366 12.7604 8.8816 12.8562 8.97749C12.9521 9.07338 13 9.19216 13 9.33383C13 9.4756 12.9521 9.59433 12.8562 9.68999C12.7604 9.78577 12.6417 9.83366 12.5 9.83366H3.5ZM3.5 7.16699C3.35833 7.16699 3.23961 7.11905 3.14383 7.02316C3.04794 6.92727 3 6.80849 3 6.66683C3 6.52505 3.04794 6.40633 3.14383 6.31066C3.23961 6.21488 3.35833 6.16699 3.5 6.16699H12.5C12.6417 6.16699 12.7604 6.21494 12.8562 6.31083C12.9521 6.40671 13 6.52549 13 6.66716C13 6.80894 12.9521 6.92766 12.8562 7.02333C12.7604 7.1191 12.6417 7.16699 12.5 7.16699H3.5Z"/></svg>`;
+
+type TableAxis = "row" | "column";
+type TableDrag = { axis: TableAxis; from: number; node: ProseNode; size: number };
+const edgeSnap = 8;
+
+function nearEdge(pointer: number, start: number, end: number) {
+  const before = Math.abs(pointer - start);
+  const after = Math.abs(pointer - end);
+  if (Math.min(before, after) > Math.min(edgeSnap, (end - start) / 3)) return undefined;
+  return before <= after ? 0 : 1;
+}
+
 export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | undefined): NodeView {
   const dom = document.createElement("div");
   dom.className = "rich-table";
   const table = document.createElement("table");
   const contentDOM = table.createTBody();
-  const columnTrack = document.createElement("div");
-  columnTrack.className = "rich-table-column-track";
-  columnTrack.contentEditable = "false";
-  dom.append(table, columnTrack);
+  const controls = document.createElement("div");
+  controls.className = "rich-table-controls";
+  controls.contentEditable = "false";
+  const preview = document.createElement("div");
+  preview.className = "rich-table-preview";
+  preview.hidden = true;
+  preview.inert = true;
+  preview.setAttribute("aria-hidden", "true");
+  const previewBody = preview.appendChild(document.createElement("table")).createTBody();
+  const dragImage = document.createElement("canvas");
+  dragImage.width = dragImage.height = 1;
+  dom.append(table, controls);
+  controls.append(preview);
+  let drag: TableDrag | undefined;
+  let hideTimer: number | undefined;
 
-  for (const [kind, label] of [["column", "在末尾新增列"], ["row", "在末尾新增行"]] as const) {
+  function control(action: "add" | "grip", axis: TableAxis, label: string, icon: string) {
     const button = document.createElement("button");
-    button.className = `rich-table-add rich-table-add-${kind}`;
+    button.className = `rich-table-control rich-table-control-${axis} rich-table-${action}-${axis}`;
     button.type = "button";
-    button.contentEditable = "false";
     button.setAttribute("aria-label", label);
-    button.title = label;
-    button.onmousedown = event => event.preventDefault();
-    button.onclick = () => {
-      if (!view.editable) return;
+    button.dataset.tooltip = label;
+    button.innerHTML = icon;
+    button.hidden = true;
+    controls.append(button);
+    return button;
+  }
+
+  function setOffset(element: HTMLElement, axis: TableAxis, offset: number) {
+    if (axis === "row") element.style.top = `${offset}px`;
+    else element.style.left = `${offset}px`;
+  }
+
+  function axisControls(axis: TableAxis, noun: string) {
+    let index = 0;
+    let boundary = 0;
+    const add = control("add", axis, `在此处插入${noun}`, plusIcon);
+    const grip = control("grip", axis, `拖动${noun}排序`, dragIcon);
+    const line = document.createElement("div");
+    line.className = `rich-table-line rich-table-line-${axis}`;
+    line.hidden = true;
+    controls.append(line);
+
+    add.onmousedown = event => event.preventDefault();
+    add.onclick = () => {
+      if (!view.editable || add.hidden) return;
       const tableStart = getPos()! + 1;
       const node = view.state.doc.nodeAt(tableStart - 1)!;
       const map = TableMap.get(node);
       const rect: TableRect = { map, table: node, tableStart, left: 0, top: 0, right: map.width, bottom: map.height };
       const tr = view.state.tr;
-      if (kind === "column") addColumn(tr, rect, map.width);
-      else addRowWithAlignment(ctx, tr, rect, map.height);
+      if (axis === "column") addColumn(tr, rect, boundary);
+      else addRowWithAlignment(ctx, tr, rect, boundary);
+      hide();
       view.dispatch(tr);
     };
-    (kind === "column" ? columnTrack : dom).append(button);
+    grip.draggable = true;
+    grip.tabIndex = -1;
+    grip.ondragstart = event => {
+      const transfer = event.dataTransfer;
+      if (!view.editable || grip.hidden || !transfer) {
+        event.preventDefault();
+        return;
+      }
+      const origin = axis === "row" ? table.rows[index] : table.rows[0].cells[index];
+      const { width, height } = origin.getBoundingClientRect();
+      drag = { axis, from: index, node: view.state.doc.nodeAt(getPos()!)!, size: axis === "row" ? height : width };
+      transfer.effectAllowed = "move";
+      transfer.setData("application/x-workbench-table", axis);
+      transfer.setDragImage(dragImage, 0, 0);
+      controls.dataset.dragAxis = axis;
+      const bounds = table.getBoundingClientRect();
+      renderPreview(drag, bounds);
+      movePreview(event, drag, bounds);
+      window.addEventListener("dragover", followDrag, true);
+    };
+    grip.ondragend = resetDrag;
+
+    function hide() {
+      add.hidden = grip.hidden = line.hidden = true;
+    }
+    function showLine(offset: number) {
+      setOffset(line, axis, offset);
+      line.hidden = false;
+    }
+    return {
+      line, hide, showLine,
+      showGrip(cellIndex: number, center: number) {
+        index = cellIndex;
+        setOffset(grip, axis, center);
+        grip.hidden = false;
+      },
+      showInsert(at: number, offset: number) {
+        boundary = at;
+        setOffset(add, axis, offset);
+        add.hidden = false;
+        showLine(offset);
+      },
+    };
   }
+  const rows = axisControls("row", "行");
+  const columns = axisControls("column", "列");
+
+  function hideControls() {
+    rows.hide();
+    columns.hide();
+  }
+  function resetDrag() {
+    window.removeEventListener("dragover", followDrag, true);
+    drag = undefined;
+    preview.hidden = true;
+    previewBody.replaceChildren();
+    delete controls.dataset.dragAxis;
+    hideControls();
+  }
+
+  function cellAt(target: EventTarget | null) {
+    const cell = target instanceof Element ? target.closest<HTMLTableCellElement>("td, th") : null;
+    return cell && contentDOM.contains(cell) ? cell : null;
+  }
+  dom.onpointermove = event => {
+    const cell = cellAt(event.target);
+    if (!cell || !view.editable || drag || event.buttons) return;
+    const row = cell.parentElement as HTMLTableRowElement;
+    const tableRect = table.getBoundingClientRect();
+    const cellRect = cell.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const rowEdge = nearEdge(event.clientY, rowRect.top, rowRect.bottom);
+    const columnEdge = nearEdge(event.clientX, cellRect.left, cellRect.right);
+    hideControls();
+    if (rowEdge === undefined && columnEdge === undefined) {
+      rows.showGrip(row.rowIndex, rowRect.top - tableRect.top + rowRect.height / 2);
+      columns.showGrip(cell.cellIndex, cellRect.left - tableRect.left + cellRect.width / 2);
+      return;
+    }
+    if (rowEdge !== undefined && row.rowIndex + rowEdge > 0) {
+      rows.showInsert(row.rowIndex + rowEdge, (rowEdge ? rowRect.bottom : rowRect.top) - tableRect.top);
+    }
+    if (columnEdge !== undefined) {
+      columns.showInsert(cell.cellIndex + columnEdge, (columnEdge ? cellRect.right : cellRect.left) - tableRect.left);
+    }
+  };
+  dom.onpointerenter = () => window.clearTimeout(hideTimer);
+  dom.onpointerleave = event => {
+    if (drag) return;
+    if (!event.buttons) hideControls();
+    // Keep the pressed handle available until Chromium starts the native drag.
+    else hideTimer = window.setTimeout(() => { if (!drag) hideControls(); }, 120);
+  };
+
+  function renderPreview({ axis, from, size }: TableDrag, { width, height }: DOMRect) {
+    const picked = axis === "row" ? [table.rows[from].cloneNode(true)] : Array.from(table.rows, row => {
+      const copy = row.cloneNode(false);
+      copy.appendChild(row.cells[from].cloneNode(true));
+      return copy;
+    });
+    previewBody.replaceChildren(...picked);
+    preview.style.width = `${axis === "row" ? width : size}px`;
+    preview.style.height = `${axis === "row" ? size : height}px`;
+  }
+  function movePreview(event: DragEvent, { axis, size }: TableDrag, bounds: DOMRect) {
+    const pointer = axis === "row" ? event.clientY - bounds.top : event.clientX - bounds.left;
+    const extent = axis === "row" ? bounds.height : bounds.width;
+    setOffset(preview, axis, Math.max(-edgeSnap, Math.min(pointer - size / 2, extent - size + edgeSnap)));
+    setOffset(preview, axis === "row" ? "column" : "row", 0);
+    preview.hidden = false;
+  }
+  function followDrag(event: DragEvent) {
+    if (drag) movePreview(event, drag, table.getBoundingClientRect());
+  }
+  function dropTarget(event: DragEvent, { axis, from }: TableDrag) {
+    const items = axis === "row" ? Array.from(table.rows) : Array.from(table.rows[0].cells);
+    const pointer = axis === "row" ? event.clientY : event.clientX;
+    for (const [index, item] of items.entries()) {
+      const { top, left, width, height } = item.getBoundingClientRect();
+      if (pointer < (axis === "row" ? top + height / 2 : left + width / 2)) {
+        return { to: index > from ? index - 1 : index, edge: axis === "row" ? top : left };
+      }
+    }
+    const last = items.at(-1)!.getBoundingClientRect();
+    return { to: items.length - 1, edge: axis === "row" ? last.bottom : last.right };
+  }
+  dom.ondragover = event => {
+    if (!drag || !view.editable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { axis, from } = drag;
+    const { to, edge } = dropTarget(event, drag);
+    const bounds = table.getBoundingClientRect();
+    const active = axis === "row" ? rows : columns;
+    if (to === from) active.line.hidden = true;
+    else active.showLine(edge - (axis === "row" ? bounds.top : bounds.left));
+    if (event.dataTransfer) event.dataTransfer.dropEffect = to === from ? "none" : "move";
+  };
+  dom.ondragleave = event => {
+    if (!drag || (event.relatedTarget instanceof Node && dom.contains(event.relatedTarget))) return;
+    rows.line.hidden = columns.line.hidden = true;
+  };
+  dom.ondrop = event => {
+    if (!drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { axis, from, node } = drag;
+    const { to } = dropTarget(event, drag);
+    resetDrag();
+    const pos = getPos();
+    if (!view.editable || pos === undefined || view.state.doc.nodeAt(pos) !== node || to === from) return;
+    // ProseMirror's row and column range lookup uses the selection, even with an explicit table position.
+    const cell = TableMap.get(node).positionAt(axis === "row" ? from : 0, axis === "column" ? from : 0, node);
+    view.dispatch(view.state.tr.setSelection(new CellSelection(view.state.doc.resolve(pos + 1 + cell))));
+    const move = axis === "row" ? moveTableRow : moveTableColumn;
+    if (move({ from, to, pos: pos + 1 })(view.state, view.dispatch)) view.focus();
+  };
 
   return {
     dom, contentDOM,
-    stopEvent: event => event.target instanceof HTMLButtonElement && event.target.classList.contains("rich-table-add"),
+    stopEvent: event => event.target instanceof Node && controls.contains(event.target),
+    ignoreMutation: mutation => mutation.type !== "selection" && controls.contains(mutation.target),
+    destroy() {
+      window.clearTimeout(hideTimer);
+      resetDrag();
+    },
   };
 }

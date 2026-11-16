@@ -10,40 +10,6 @@ import { AssetThumb } from "./Assets";
 import { FolderSelect } from "./FolderSelect";
 import { addTag, TagInput } from "./TagInput";
 
-export function EntryLocationDialog({ entry, categories, onClose, onSave }: {
-  entry: Entry;
-  categories: Category[];
-  onClose(): void;
-  onSave(categoryId: string | null): Promise<void>;
-}) {
-  const [value, setValue] = useState(entry.categoryId ?? "none");
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-    setSaving(true);
-    try {
-      await onSave(value === "none" ? null : value);
-      onClose();
-    } catch (error) { setError(errorMessage(error)); }
-    finally { setSaving(false); }
-  }
-  return <Dialog.Root open onOpenChange={open => { if (!open && !saving) onClose(); }}>
-    <Dialog.Content maxWidth="380px" aria-describedby={undefined}>
-      <Dialog.Title>移动到文件夹</Dialog.Title>
-      <form className="dialog-form" onSubmit={save}>
-        <label>所在目录<FolderSelect categories={categories} value={value} onChange={setValue} label="所在目录" defaultLabel="根目录" /></label>
-        {error && <p role="alert" className="inline-error">{error}</p>}
-        <div className="dialog-actions">
-          <Dialog.Close><Button type="button" variant="soft" color="gray" disabled={saving}>取消</Button></Dialog.Close>
-          <Button type="submit" loading={saving}>移动</Button>
-        </div>
-      </form>
-    </Dialog.Content>
-  </Dialog.Root>;
-}
-
 export function PropertiesDialog({ queue, categories, tagSuggestions, locked, onClose, onOpen }: {
   queue: SaveQueue;
   categories: Category[];

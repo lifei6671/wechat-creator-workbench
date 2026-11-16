@@ -20,6 +20,8 @@
 
 P2 复用 [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust) 执行 S3 对象请求，使用 [keyring](https://github.com/hwchen/keyring-rs) 访问系统凭据库，使用 [image](https://github.com/image-rs/image) 校验图片头和尺寸，使用 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) 和 [lol-html](https://github.com/cloudflare/lol-html) 解析正文图像引用，使用 [zip](https://github.com/zip-rs/zip2) 生成带图归档。
 
+普通外链图片使用 [http-cache-semantics](https://github.com/kornelski/rusty-http-cache-semantics) 判定 HTTP 缓存有效期和重新校验所需的请求头，采用 [BSD-2-Clause 许可证](https://github.com/kornelski/rusty-http-cache-semantics/blob/main/LICENSE)。
+
 P3 复用 Plainly 的三套 Rico 微信主题和公众号表格处理规则。固定来源、版权、许可和修改范围见 [排版来源](packages/wechat-renderer/SOURCES.md)。
 
 Rust 导入使用 [scraper](https://github.com/rust-scraper/scraper) 提取公众号正文，使用 [Ammonia](https://github.com/rust-ammonia/ammonia) 净化，使用 [htmd](https://github.com/letmutex/htmd) 生成 Markdown。浏览器端用 [Juice](https://github.com/Automattic/juice) 内联主题样式，使用 [MathJax](https://github.com/mathjax/MathJax) 及 [Mermaid](https://github.com/mermaid-js/mermaid) 生成公式和图表。
@@ -27,5 +29,7 @@ Rust 导入使用 [scraper](https://github.com/rust-scraper/scraper) 提取公�
 P4 使用官方 [rmcp](https://github.com/modelcontextprotocol/rust-sdk) 实现 MCP 协议和 Streamable HTTP 传输（Apache-2.0），使用 [Axum](https://github.com/tokio-rs/axum) 路由本机端点（MIT），使用 [Hyper](https://github.com/hyperium/hyper) 管理可在退出时关闭的 HTTP 连接（MIT）。AI 复用 Rust 的 reqwest 与系统凭据库。
 
 AI 写作侧栏使用 [assistant-ui 和 assistant-stream](https://github.com/assistant-ui/assistant-ui)（MIT）承载消息交互和本地会话适配；使用 [jsdiff](https://github.com/kpdecker/jsdiff)（BSD-3-Clause）显示原文和候选差异；Rust 复用 [sse-stream](https://github.com/4t145/sse-stream) 与 [futures-util](https://github.com/rust-lang/futures-rs)（均为 MIT 或 Apache-2.0）读取模型事件流。对应许可文本见 [AI 依赖许可](third-party-ai.txt)。
+
+编辑器表格使用 Milkdown Crepe v7.23.0 的[加号和拖动图标](https://github.com/Milkdown/milkdown/tree/v7.23.0/packages/crepe/src/icons)。Copyright (c) 2020-present Mirone，采用 [MIT 许可证](https://github.com/Milkdown/milkdown/blob/v7.23.0/LICENSE)。
 
 AI 设置支持从本地源码目录 `apps/desktop/src/assets/ai/` 加载可选图标。可在有相应许可时放入来自 [OpenAI Codex 扩展](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt)（26.51111.21308）的 `codex.png`，以及 [Anthropic Claude Code 扩展](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code)（2.1.325）的 `claude-code.png`。图标归各自的发布方所有。未提供图标时，界面用代理名称标识。

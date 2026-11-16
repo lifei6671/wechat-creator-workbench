@@ -1,5 +1,6 @@
 use super::{
-    Assets, by_url, enqueue, image_header, local_error, publication_file,
+    Assets, by_url, enqueue, has_public_image_host, image_header, local_error, publication_file,
+    remote_image_url,
     s3::{Profile, Target},
 };
 use crate::db::{AppError, Result, Workspace};
@@ -40,7 +41,19 @@ impl Assets {
     ) -> Result<String> {
         let upload = db.write(|tx| {
             let active = Profile::active_for(tx, expected)?;
-            let Some(file) = publication_file(tx, url)? else {
+            let file = match publication_file(tx, url) {
+                Err(error) if expected.is_none() && error.code() == "NOT_FOUND" => {
+                    if url.starts_with("asset://") {
+                        return Err(AppError::new("ASSET_MISSING", "素材库中找不到这张图片"));
+                    }
+                    if !has_public_image_host(&remote_image_url(url)?) {
+                        return Err(AppError::invalid("外链图片必须使用公网地址"));
+                    }
+                    None
+                }
+                result => result?,
+            };
+            let Some(file) = file else {
                 return Ok(None);
             };
             let hash = file

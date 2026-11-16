@@ -1,6 +1,7 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { nativeWindow, windowsTitleBar } from "../desktop";
+import { Tooltip } from "../ui";
 
 export function WindowDragRegion({ onError }: { onError(error: unknown): void }) {
   function drag(event: MouseEvent<HTMLElement>) {
@@ -22,11 +23,18 @@ export function WindowControls({ onError }: { onError(error: unknown): void }) {
     return () => { void listen.then(unlisten => unlisten(), () => {}); };
   }, [onError]);
 
+  const toggleLabel = maximized ? "还原" : "最大化";
   return <div className="window-controls" role="group" aria-label="窗口控制">
-      <button type="button" aria-label="最小化" title="最小化" onClick={() => void nativeWindow().minimize().catch(onError)}><Minus size={15} /></button>
-      <button type="button" aria-label={maximized ? "还原" : "最大化"} title={maximized ? "还原" : "最大化"} onClick={() => void nativeWindow().toggleMaximize().catch(onError)}>
+    <Tooltip content="最小化">
+      <button type="button" aria-label="最小化" onClick={() => void nativeWindow().minimize().catch(onError)}><Minus size={15} /></button>
+    </Tooltip>
+    <Tooltip content={toggleLabel}>
+      <button type="button" aria-label={toggleLabel} onClick={() => void nativeWindow().toggleMaximize().catch(onError)}>
         {maximized ? <Copy size={13} /> : <Square size={13} />}
       </button>
-      <button type="button" className="window-close" aria-label="关闭窗口" title="关闭窗口" onClick={() => void nativeWindow().close().catch(onError)}><X size={16} /></button>
+    </Tooltip>
+    <Tooltip content="关闭窗口">
+      <button type="button" className="window-close" aria-label="关闭窗口" onClick={() => void nativeWindow().close().catch(onError)}><X size={16} /></button>
+    </Tooltip>
   </div>;
 }

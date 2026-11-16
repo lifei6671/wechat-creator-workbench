@@ -2,12 +2,13 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
-  FolderInput, FolderOpen, ListFilter, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
+  FolderOpen, ListFilter, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { footnoteId } from "../../../../packages/markdown-core";
 import { renderWechat, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
+import type { ChatSelection } from "../ai/context";
 import previewCss from "../styles/preview.css?inline";
 import { desktop, errorMessage } from "../desktop";
 import { isConflict, SaveQueue } from "../editor/save-queue";
@@ -16,17 +17,20 @@ import { Tool, Tooltip } from "../ui";
 import { loadLocalImage } from "./Publishing";
 import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./EditorContextMenu";
 import { InlineEntryTitle } from "./InlineEntryTitle";
+import { MoveEntryMenu } from "./MoveEntryMenu";
 import { usePointerDrag } from "./pointer-drag";
 
 export type ViewMode = "edit" | "preview";
 export type TabAction = "closeOthers" | "reading" | "properties" | "search" | "folder"
-  | "move" | "copyPath" | "history" | "export" | "delete" | "restore";
+  | "copyPath" | "history" | "export" | "delete" | "restore";
 
-export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
+export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, categories, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
   sessions: SaveQueue[];
   activeId: string | null;
   readingIds: string[];
   lockedIds: string[];
+  categories: Category[];
+  onMove(id: string, folder: string | null): void;
   onSwitch(id: string): void;
   onClose(id: string): void;
   onAction(id: string, action: TabAction): void;
@@ -151,7 +155,7 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, onSwit
       {sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} active={activeId === queue.entry.id}
         reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1}
         dragging={drag.ghost?.id === queue.entry.id} placement={drag.hint?.id === queue.entry.id ? drag.hint.placement : undefined}
-        onSwitch={onSwitch} onClose={onClose} onAction={onAction} onRename={onRename} onError={onError} />)}
+        categories={categories} onMove={onMove} onSwitch={onSwitch} onClose={onClose} onAction={onAction} onRename={onRename} onError={onError} />)}
     </div>
     {edges.overflow && <div className="tab-scroll-slot">
       {edges.right && <Tool label="向右滚动标签页" className="chrome-icon tab-scroll" onClick={() => scroll(1)}><ChevronRight size={15} /></Tool>}
@@ -161,7 +165,7 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, onSwit
   </div>;
 }
 
-function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, placement, onSwitch, onClose, onAction, onRename, onError }: {
+function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, placement, categories, onMove, onSwitch, onClose, onAction, onRename, onError }: {
   queue: SaveQueue;
   active: boolean;
   reading: boolean;
@@ -169,6 +173,8 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
   hasOtherTabs: boolean;
   dragging: boolean;
   placement?: CategoryPlacement;
+  categories: Category[];
+  onMove(id: string, folder: string | null): void;
   onSwitch(id: string): void;
   onClose(id: string): void;
   onAction(id: string, action: TabAction): void;
@@ -195,11 +201,13 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
         data-placement={placement} data-dragging={dragging || undefined} onAuxClick={event => {
         if (event.button === 1) { event.preventDefault(); onClose(id); }
       }}>
-        <button id={`tab-${id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
-          aria-controls="document-body" tabIndex={active ? 0 : -1} onClick={() => onSwitch(id)} title={title}>
-          {revision !== savedRevision && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
-          <span>{title}</span>
-        </button>
+        <Tooltip content={title}>
+          <button id={`tab-${id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
+            aria-controls="document-body" tabIndex={active ? 0 : -1} onClick={() => onSwitch(id)}>
+            {revision !== savedRevision && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
+            <span>{title}</span>
+          </button>
+        </Tooltip>
         <Tool className="chrome-icon tab-close" label={`关闭 ${title}`} onClick={() => onClose(id)}><X size={14} /></Tool>
       </div>
     </ContextMenu.Trigger>
@@ -219,7 +227,7 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
       <ContextMenu.Separator />
       {deletedAt === null && <>
         <ContextMenu.Item disabled={frozen} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={15} />重命名</ContextMenu.Item>
-        <ContextMenu.Item disabled={frozen} onSelect={() => act("move")}><FolderInput size={15} />移动到目录</ContextMenu.Item>
+        <MoveEntryMenu categories={categories} current={fields.categoryId} disabled={frozen} onMove={folder => onMove(id, folder)} />
         <ContextMenu.Item onSelect={() => act("folder")}><FolderOpen size={15} />打开所在目录</ContextMenu.Item>
       </>}
       <ContextMenu.Item onSelect={() => act("copyPath")}><Copy size={15} />复制工作区路径</ContextMenu.Item>
@@ -232,7 +240,7 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
   </ContextMenu.Root>;
 }
 
-export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage, onAiRewrite }: {
+export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, localizeImageLink, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat }: {
   queue: SaveQueue;
   active: boolean;
   locked: boolean;
@@ -242,13 +250,14 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   onDisplayChange(option: keyof EditorDisplay, checked: boolean): void;
   handle(value: MarkdownEditorHandle | null): void;
   onImages(files: File[]): Promise<string>;
+  localizeImageLink?(url: string): Promise<string>;
   onImageZoom(image: { src: string; alt: string }, trigger: HTMLButtonElement): void;
   onError(error: unknown): void;
   canHost?(src: string): boolean;
   hostBusy?: boolean;
   uploadingSource?: string;
   onHostImage?(image: ImageContext): void;
-  onAiRewrite?(): void;
+  onAddSelectionToChat?(selection: ChatSelection): void;
 }) {
   const { fields } = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const editor = useRef<MarkdownEditorHandle>(null);
@@ -256,7 +265,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
     data-wechat-theme={wechatThemeId(fields.themeId)} hidden={!active}>
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
-      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAiRewrite={onAiRewrite}>
+      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAddSelectionToChat={onAddSelectionToChat}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
         title={display.showTitle && <div className="writing-title">
         {reading ? <h1>{fields.title || untitled}</h1> : <textarea aria-label="标题" rows={1}
@@ -272,7 +281,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
         ref={value => { editor.current = value; handle(value); }} onError={onError} resolveImage={loadLocalImage}
         imageErrorMessage={errorMessage} onImageZoom={onImageZoom} onOpenLink={desktop.openLink}
         onChange={(_id, _revision, contentMd) => queue.edit({ contentMd })}
-        onBlur={() => { void queue.flush(); }} onImages={onImages} />
+        onBlur={() => { void queue.flush(); }} onImages={onImages} localizeImageLink={localizeImageLink} />
     </EditorContextMenu>
   </div>;
 }
@@ -441,7 +450,9 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
         <button className="plain-button path-part" type="button" onClick={() => onReveal(null)}>目录</button>
         {[parent, folder].map(category => category && <span className="path-folder" key={category.id}>
           <ChevronRight size={12} />
-          <button className="plain-button path-part" type="button" title={category.name} onClick={() => onReveal(category.id)}>{category.name}</button>
+          <Tooltip content={category.name}>
+            <button className="plain-button path-part" type="button" onClick={() => onReveal(category.id)}>{category.name}</button>
+          </Tooltip>
         </span>)}
       </>}
       <ChevronRight size={12} /><BreadcrumbTitle key={queue.sessionId} queue={queue} title={fields.title} readOnly={deleted || actions.reading || locked} />

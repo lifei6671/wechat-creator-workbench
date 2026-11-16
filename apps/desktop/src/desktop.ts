@@ -11,7 +11,8 @@ import type {
 
 export interface ImageTarget { endpoint: string; region: string; bucket: string; prefix: string; publicBase: string }
 export interface ImageSecret { accessKey: string; secretKey: string }
-export interface ImageUploadOptions { filenameTemplate: string; quality: "original" | "high" | "standard" | "economy" }
+export interface ImageUploadOptions { filenameTemplate: string; quality: "original" | "high" | "standard" | "economy"; autoUpload: boolean }
+export interface ActiveImageStorage extends ImageTarget { autoUpload: boolean }
 export interface ExportImage { url: string; name: string }
 export type BackupTarget = Omit<ImageTarget, "publicBase">;
 export interface BackupSettings { target: BackupTarget | null; hasKey: boolean; currentWorkspace: string }
@@ -22,7 +23,8 @@ export interface AssetRow {
   uploadStatus: "queued" | "running" | "retrying" | "completed" | "failed" | null;
   uploadError: string | null; cleanupError: string | null; publicUrl: string | null;
 }
-export interface AssetLibrary { items: AssetRow[]; target: ImageTarget | null }
+export interface AssetLibrary { items: AssetRow[]; target: ImageTarget | null; page: number; hasNext: boolean }
+export interface UploadProgress { completed: number; total: number }
 export interface WechatImportJob {
   id: string; url: string; status: "queued" | "running" | "completed" | "partial" | "needs_attention" | "failed";
   entryId: string | null; error: string | null; pendingImages: number;
@@ -78,6 +80,7 @@ export const desktop = {
     invoke<void>("reorder_category", { id, anchor, placement }),
   reorderEntry: (id: string, anchor: string, placement: CategoryPlacement) =>
     invoke<void>("reorder_entry", { id, anchor, placement }),
+  setEntryPinned: (id: string, pinned: boolean) => invoke<void>("set_entry_pinned", { id, pinned }),
   revisions: (id: string) => invoke<Revision[]>("revisions", { id }),
   exportMarkdown: (id: string) => invoke<string | null>("export_markdown", { id }),
   revealFile: (path: string) => revealItemInDir(path),
@@ -86,11 +89,12 @@ export const desktop = {
     invoke<ClipboardContents | null>("clipboard_read", { acceptImages, acceptHtml }),
   copyHtml: (html: string, text: string) => invoke<void>("clipboard_write_html", { html, text }),
   importWechat: (url: string, categoryId: string | null) => invoke<WechatImportJob>("wechat_import", { url, categoryId }),
-  importMarkdown: (categoryId: string | null) => invoke<Entry | null>("import_markdown", { categoryId }),
+  importMarkdown: (categoryId: string | null) => invoke<{ entry: Entry; unavailableImages: number } | null>("import_markdown", { categoryId }),
   importJobs: () => invoke<WechatImportJob[]>("wechat_import_jobs"),
   retryWechatImages: (entry: string) => invoke<WechatImportJob>("wechat_retry_images", { entry }),
   wechatGraphics: (markdown: string) => invoke<SourceFragment[]>("wechat_graphics", { markdown }),
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
+  onMcpStatusChanged: (callback: () => void) => listen("mcp-status-changed", callback),
   saveMcp: (config: McpConfig) => invoke<McpStatus>("mcp_save", { config }),
   mcpToken: (rotate: boolean) => invoke<void>("mcp_token", { rotate }),
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
@@ -137,6 +141,7 @@ export const desktop = {
   assetInfo: (url: string) => invoke<{ id: string; name: string } | null>("asset_info", { url }),
   publicImage: (url: string) => invoke<string>("asset_public", { url }),
   hostImage: (url: string, target: ImageTarget) => invoke<string>("asset_host_image", { url, target }),
+  imageUploadProgress: (markdown: string) => invoke<UploadProgress | null>("asset_upload_progress", { markdown }),
   copyImage: (url: string) => invoke<void>("asset_copy_image", { url }),
   saveImage: (url: string) => invoke<boolean>("asset_save_image", { url }),
   exportWechatHtml: (html: string, images: ExportImage[]) => invoke<boolean>("wechat_export_html", { html, images }),
@@ -145,7 +150,7 @@ export const desktop = {
   cancelExit: () => invoke<void>("cancel_exit"),
   finishExit: () => invoke<void>("finish_exit"),
   cancelCleanup: () => invoke<void>("cancel_asset_cleanup"),
-  assetLibrary: () => invoke<AssetLibrary>("asset_library"),
+  assetLibrary: (page = 0) => invoke<AssetLibrary>("asset_library", { page }),
   onAssetsChanged: (callback: () => void) => listen("assets-changed", callback),
   assetImport: async (file: File, origin: "attachment" | "library" = "attachment") => {
     if (file.size > 20 * 1024 * 1024) throw new Error("单张图片不能超过 20 MB");
@@ -160,7 +165,7 @@ export const desktop = {
   assetExport: (id: string) => invoke<boolean>("asset_export", { id }),
   imageStorageSave: (target: ImageTarget | null, secret?: ImageSecret, options?: ImageUploadOptions) => invoke<void>("image_storage_save", { target, secret, options }),
   imageStorageSettings: () => invoke<{ target: ImageTarget | null; enabled: boolean; secret: ImageSecret | null; options: ImageUploadOptions }>("image_storage_settings"),
-  imageStorageTarget: () => invoke<ImageTarget | null>("image_storage_target"),
+  imageStorageTarget: () => invoke<ActiveImageStorage | null>("image_storage_target"),
   imageStorageTest: (target: ImageTarget, secret?: ImageSecret) => invoke<void>("image_storage_test", { target, secret }),
 };
 

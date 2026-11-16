@@ -1,10 +1,16 @@
 import type MarkdownIt from "markdown-it";
 
+export const calloutLabels = {
+  note: "备注", abstract: "摘要", info: "信息", todo: "待办事项", tip: "提示", success: "成功",
+  question: "问题", warning: "警告", failure: "失败", danger: "危险", bug: "错误", example: "示例", quote: "引用",
+} as const;
+
 export function readCalloutMarker(line: string) {
-  const marker = /^\[!(info|warning)\](?=\s|$)/i.exec(line);
+  const marker = /^\[!([a-z]+)\](?=\s|$)/i.exec(line);
   if (!marker) return;
-  const kind = marker[1].toLowerCase() === "info" ? "info" : "warning";
-  return { marker: marker[0], kind, label: kind === "info" ? "信息" : "警告" };
+  const kind = marker[1].toLowerCase() as keyof typeof calloutLabels;
+  if (!Object.hasOwn(calloutLabels, kind)) return;
+  return { marker: marker[0], kind, label: calloutLabels[kind] };
 }
 
 export function renderCallouts(parser: MarkdownIt) {

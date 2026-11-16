@@ -1,6 +1,7 @@
 import { DropdownMenu } from "@radix-ui/themes";
 import { ChevronDown } from "lucide-react";
 import type { AiAgent, AiAgentModel, AiSelection, AiSettings } from "../desktop";
+import { Tooltip } from "../ui";
 import { AiAgentIcon, agentLabels } from "./AiAgentIcon";
 
 const value = ({ target, agentModel }: AiSelection) => JSON.stringify([target.kind, target.id, agentModel]);
@@ -21,13 +22,13 @@ export function AiTargetPicker({ settings, catalog, selection, label, saving = f
   if (!agents.length && !models.length) return <span className="ai-composer-target" title={label}>{label}</span>;
 
   return <DropdownMenu.Root>
-    <DropdownMenu.Trigger>
-      <button type="button" className="ai-target-trigger" aria-label={`AI 目标：${name}`} title={name}>
+    <Tooltip content={name}><DropdownMenu.Trigger>
+      <button type="button" className="ai-target-trigger" aria-label={`AI 目标：${name}`}>
         {agent && <AiAgentIcon agent={agent} />}
         <span className="ai-composer-target">{modelLabel || label}</span>
         <ChevronDown size={13} aria-hidden="true" />
       </button>
-    </DropdownMenu.Trigger>
+    </DropdownMenu.Trigger></Tooltip>
     <DropdownMenu.Content side="top" align="start" sideOffset={8} size="2" className="ai-target-menu">
       <DropdownMenu.RadioGroup value={selection ? value(selection) : ""}>
         {agents.map(({ id }, index) => <DropdownMenu.Group key={id}>

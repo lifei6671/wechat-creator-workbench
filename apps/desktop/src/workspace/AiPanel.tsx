@@ -6,13 +6,13 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import { Button, ContextMenu, DropdownMenu, TextField, VisuallyHidden } from "@radix-ui/themes";
-import { ArrowUp, Check, ChevronDown, Copy, FileText, History, Plus, Settings, Sparkles, Square, Trash2 } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Copy, FileText, History, Plus, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
 import { diffLines } from "diff";
-import type { AiEditorContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
+import type { MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { renderMarkdown } from "../../../../packages/markdown-core";
 import { desktop, errorMessage, type AiProposalStatus, type AiSelection } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
-import { aiActions, captureAiIntent, matchesAiTarget, messageText, scopeLabels, type AiAction, type CapturedTarget, type ScopeChoice } from "../ai/context";
+import { aiActions, captureAiIntent, matchesAiTarget, messageText, scopeLabels, type AiAction, type CapturedTarget, type ChatSelection, type ScopeChoice } from "../ai/context";
 import { proposalOf, useWritingRuntime } from "../ai/runtime";
 import type { AiProposal } from "../ai/proposals";
 import { messageTimeLabel, untitled } from "../labels";
@@ -27,6 +27,11 @@ const rewriteActions = [
   ["扩写", "扩写选区，让表达更充分，不编造事实。"],
 ] as const;
 
+function selectionPreview(text: string) {
+  const characters = Array.from(text.trim().replace(/\s+/g, " "));
+  return characters.length > 12 ? characters.slice(0, 12).join("") + "…" : characters.join("");
+}
+
 interface Props {
   open: boolean;
   queue?: SaveQueue;
@@ -39,7 +44,7 @@ interface Props {
   canEdit: boolean;
   canSend?(): boolean;
   trackWrite?(write: Promise<void>): Promise<void>;
-  rewriteRequest?: number;
+  selectionRequest?: ChatSelection;
   canWrite(queue: SaveQueue, editor: MarkdownEditorHandle): boolean;
   onClose(): void;
   onSettings(): void;
@@ -54,7 +59,8 @@ export function AiPanel(props: Props) {
   const scopes = props.open && !visited.includes(entryId) ? [...visited, entryId] : visited;
   return scopes.map(id => <div key={id ?? "general"} className="ai-session" hidden={!props.open || id !== entryId}>
     <AiConversation {...props} entryId={id} open={props.open && entryId === id}
-      queue={entryId === id ? props.queue : undefined} editor={entryId === id ? props.editor : undefined} />
+      queue={entryId === id ? props.queue : undefined} editor={entryId === id ? props.editor : undefined}
+      selectionRequest={entryId === id ? props.selectionRequest : undefined} />
   </div>);
 }
 
@@ -62,7 +68,7 @@ type Progress = Exclude<AiProposalStatus, "pending"> | "saving" | "saveFailed" |
 
 function AiConversation(props: Props & { entryId: string | null }) {
   const [error, setError] = useState("");
-  const [targets] = useState(() => new Map<string, CapturedTarget>());
+  const [targets] = useState(() => new Map<string, CapturedTarget | null>());
   const [stored, setStored] = useState<ReadonlySet<string>>(() => new Set());
   const [unavailable, setUnavailable] = useState<ReadonlySet<string>>(() => new Set());
   const [progress, setProgress] = useState<Record<string, Progress>>({});
@@ -81,7 +87,7 @@ function AiConversation(props: Props & { entryId: string | null }) {
     const write = desktop.aiProposalStatus(id, status);
     await (props.trackWrite ? props.trackWrite(write) : write);
     mark(id, status);
-    targets.delete(id);
+    if (status !== "rejected") targets.delete(id);
   }
   async function reject(proposal: AiProposal) {
     if (pending.current.has(proposal.id)) return;
@@ -139,11 +145,11 @@ function AiConversation(props: Props & { entryId: string | null }) {
 }
 
 function ConversationView({
-  open, queue, editor, target, selection, targetPicker, windowControls, canChat, canEdit, canSend, rewriteRequest, onClose, onSettings,
+  open, queue, editor, target, selection, targetPicker, windowControls, canChat, canEdit, canSend, selectionRequest, onClose, onSettings,
   runtime, error, report, clear, targets, stored, progress, unavailable, apply, reject,
 }: Props & {
   runtime: AssistantRuntime; error: string; report(failure: unknown): void;
-  clear(): void; targets: Map<string, CapturedTarget>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
+  clear(): void; targets: Map<string, CapturedTarget | null>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
   unavailable: ReadonlySet<string>;
   apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal): void; reject(proposal: AiProposal): Promise<void>;
 }) {
@@ -151,17 +157,17 @@ function ConversationView({
   const [view, setView] = useState<"chat" | "threads">("chat");
   const [scope, setScope] = useState<ScopeChoice>("auto");
   const [rewrite, setRewrite] = useState(false);
+  const [attachedSelection, setAttachedSelection] = useState<ChatSelection | null>(null);
   const [ready, setReady] = useState(false);
   const [switching, setSwitching] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
-  const lastRewrite = useRef<number | undefined>(undefined);
+  const lastSelectionRequest = useRef<ChatSelection | undefined>(undefined);
   const snapshot = useSyncExternalStore(queue?.subscribe ?? subscribeNothing, queue?.snapshot ?? readNothing);
   const getSelection = useCallback(() => editor?.hasSelection(false) ?? false, [editor]);
   const hasSelection = useSyncExternalStore(editor?.subscribeSelection ?? subscribeNothing, getSelection);
   const getRewritePreview = useCallback(() => {
     if (!open || !rewrite || !editor) return "";
-    const characters = Array.from(editor.selectionText().trim().replace(/\s+/g, " "));
-    return characters.length > 12 ? characters.slice(0, 12).join("") + "…" : characters.join("");
+    return selectionPreview(editor.selectionText());
   }, [editor, open, rewrite]);
   const rewritePreview = useSyncExternalStore(editor?.subscribeSelection ?? subscribeNothing, getRewritePreview);
   const running = useAuiState(state => state.thread.isRunning);
@@ -171,7 +177,7 @@ function ConversationView({
   const archived = useAuiState(state => state.threadListItem.status === "archived");
   const draft = useAuiState(state => state.composer.text);
   const enabled = ready && canChat && open && !running && !switching && !loading && !archived && !(threadId && unavailable.has(threadId));
-  const chosen = rewrite ? "selection" : scope === "auto" ? hasSelection ? "selection" : "section" : scope;
+  const chosen = rewrite || attachedSelection ? "selection" : scope === "auto" ? hasSelection ? "selection" : "section" : scope;
   const title = snapshot ? snapshot.fields.title || untitled : "";
 
   useEffect(() => {
@@ -179,35 +185,40 @@ function ConversationView({
     const { threadIds, archivedThreadIds } = runtime.threads.getState();
     const current = threadIds[0];
     if (!current) {
-      if (archivedThreadIds.length) setView("threads");
+      if (archivedThreadIds.length && !selectionRequest) setView("threads");
       setReady(true);
       return;
     }
     let active = true;
     void runtime.threads.switchToThread(current).catch(report).finally(() => { if (active) setReady(true); });
     return () => { active = false; };
-  }, [ready, listLoading, runtime, report]);
+  }, [ready, listLoading, runtime, report, selectionRequest]);
   useEffect(() => { if (open && view === "chat" && ready && !switching) input.current?.focus({ preventScroll: true }); }, [open, ready, view, switching]);
   useEffect(() => {
-    if (open && rewriteRequest !== undefined && rewriteRequest !== lastRewrite.current) {
-      lastRewrite.current = rewriteRequest;
-      setRewrite(true);
+    if (open && selectionRequest && selectionRequest !== lastSelectionRequest.current) {
+      lastSelectionRequest.current = selectionRequest;
+      setAttachedSelection(selectionRequest);
+      setRewrite(false);
       setView("chat");
       input.current?.focus({ preventScroll: true });
     }
-  }, [rewriteRequest, open]);
+  }, [selectionRequest, open]);
 
   function send(action: AiAction, text: string, prompt = text, fromComposer = false,
-    citation = scope, original?: AiEditorContext) {
+    citation = scope, context?: Parameters<typeof captureAiIntent>[6]) {
     if (!enabled || canSend?.() === false || (action !== "chat" && !canEdit)) return;
     clear();
     try {
-      const intent = captureAiIntent(action, prompt, citation, queue, editor, selection, original);
+      const intent = captureAiIntent(action, prompt, citation, queue, editor, selection, context);
       runtime.thread.append({ role: "user", content: [{ type: "text", text }],
-        metadata: { custom: { action, citation: intent.label, scope: intent.scope, instruction: action === "rewrite" ? prompt : undefined } },
+        metadata: { custom: { action, citation: intent.label, scope: intent.scope, chatSelection: intent.chatSelection,
+          instruction: action === "rewrite" ? prompt : undefined } },
         runConfig: { custom: { intent } },
       });
-      if (fromComposer) aui.composer.setText("");
+      if (fromComposer) {
+        aui.composer.setText("");
+        setAttachedSelection(null);
+      }
       if (action === "rewrite") setRewrite(false);
       setView("chat");
     } catch (failure) { report(failure); }
@@ -219,10 +230,14 @@ function ConversationView({
     if (user?.role !== "user") return;
     const action = user.metadata.custom.action as AiAction;
     const text = messageText(user);
-    const proposalId = proposalOf(messages[index])?.id;
-    const original = proposalId ? targets.get(proposalId) : undefined;
+    const previousProposal = proposalOf(messages[index]);
+    const original = previousProposal && targets.get(previousProposal.id);
     send(action, text, action === "rewrite" ? String(user.metadata.custom.instruction ?? text) : action === "chat" ? text : "", false,
-      user.metadata.custom.scope as ScopeChoice, original && matchesAiTarget(original, queue) ? original.context ?? undefined : undefined);
+      user.metadata.custom.scope as ScopeChoice, {
+        original: original && matchesAiTarget(original, queue) ? original.context ?? undefined : undefined,
+        chatSelection: action === "chat" ? user.metadata.custom.chatSelection as ChatSelection | undefined : undefined,
+        previousProposal,
+      });
   }
   async function switchThread(id?: string) {
     if (!ready || running || switching) return;
@@ -234,13 +249,14 @@ function ConversationView({
       else await runtime.threads.switchToNewThread();
       setView("chat");
       setRewrite(false);
+      setAttachedSelection(current => current === attachedSelection ? null : current);
     } catch (failure) {
       if (!id && threadId) await runtime.threads.switchToThread(threadId).catch(report);
       report(failure);
     }
     finally { setSwitching(false); }
   }
-  const chooseRewrite = () => { setRewrite(true); input.current?.focus({ preventScroll: true }); };
+  const chooseRewrite = () => { setAttachedSelection(null); setRewrite(true); input.current?.focus({ preventScroll: true }); };
 
   return <ThreadPrimitive.Root className="ai-panel" aria-label="AI 聊天" onKeyDown={event => {
     if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
@@ -278,17 +294,12 @@ function ConversationView({
                 const status = message.status;
                 const text = messageText(message);
                 return <MessagePrimitive.Root className="ai-turn">
-                {message.role === "user" ? <>
-                  <p className="ai-user-message">{text}</p>
-                  <div className="button-strip ai-user-actions">
-                    {typeof message.metadata.custom.citation === "string" &&
-                      <p className="muted-text">{message.metadata.custom.citation}</p>}
+                {message.role === "user" ? <AiUserMessage text={text}>
                     {!running && enabled && runtime.thread.getState().messages.at(-1)?.id === message.id &&
                       <Button size="1" color="gray" variant="soft" onClick={() => retry(message.id)}>重新生成</Button>}
                     <AiMessageTime date={message.createdAt} />
                     {text && <AiCopyButton text={text} onError={report} />}
-                  </div>
-                </> : <>
+                </AiUserMessage> : <>
                   {text && <AiReply text={text} onError={report} />}
                   {status?.type === "running" && !message.content.length && <p className="muted-text" role="status">正在回复…</p>}
                   {status?.type === "incomplete" && <p className={status.reason === "cancelled" ? "muted-text" : "inline-error"} role="status">
@@ -308,13 +319,20 @@ function ConversationView({
     <ComposerPrimitive.Root className="ai-composer" autoComplete="off" onSubmit={event => {
       event.preventDefault();
       const text = aui.composer.getState().text.trim();
-      if (text) send(rewrite ? "rewrite" : "chat", text, text, true);
+      if (text) send(rewrite ? "rewrite" : "chat", text, text, true, scope, { chatSelection: attachedSelection ?? undefined });
     }}>
       {queue && <div className="ai-citations">
         <div className="ai-context" title={title}><FileText size={13} aria-hidden="true" /><span>{title}</span></div>
         {rewrite ? <Button type="button" variant="soft" size="1" color="gray" className="ai-rewrite-context"
           onClick={() => setRewrite(false)} aria-label={rewritePreview ? "退出改写选区：" + rewritePreview : "退出改写选区"}>
           <span>{rewritePreview || (hasSelection ? "改写选区" : "未选中文字")}</span><span aria-hidden="true">×</span>
+        </Button> : attachedSelection ? <Button type="button" variant="soft" size="1" color="gray" className="ai-selection-context"
+          aria-label={`移除选区引用：${selectionPreview(attachedSelection.original)}`} onClick={() => {
+            setAttachedSelection(null);
+            if (scope === "auto" || scope === "selection") setScope("none");
+            input.current?.focus({ preventScroll: true });
+          }}>
+          <span>{selectionPreview(attachedSelection.original)}</span><span aria-hidden="true">×</span>
         </Button> : <DropdownMenu.Root>
           <DropdownMenu.Trigger><Button type="button" size="1" color="gray" variant="ghost" className="ai-context-control">
             {chosen === "none" ? "不引用正文" : scopeLabels[chosen]}<ChevronDown size={12} />
@@ -338,7 +356,7 @@ function ConversationView({
         {targetPicker}
         <Tool label="AI 设置" color="gray" onClick={onSettings}><Settings size={15} /></Tool>
         {queue && <DropdownMenu.Root>
-          <DropdownMenu.Trigger><Tool label="写作工具" color="gray" disabled={!enabled || !canEdit}><Sparkles size={15} /></Tool></DropdownMenu.Trigger>
+          <DropdownMenu.Trigger><Tool label="写作工具" className="ai-writing-tools" color="gray" disabled={!enabled || !canEdit}><Sparkles size={15} /></Tool></DropdownMenu.Trigger>
           <DropdownMenu.Content side="top" align="start" size="1">
             <DropdownMenu.Item onSelect={() => send("summary", aiActions.summary, "")}>生成摘要</DropdownMenu.Item>
             <DropdownMenu.Item onSelect={() => send("titles", aiActions.titles, "")}>建议标题</DropdownMenu.Item>
@@ -350,7 +368,7 @@ function ConversationView({
         </DropdownMenu.Root>}
         {running ? <ComposerPrimitive.Cancel asChild><Tool className="ai-send" label="停止生成"><Square size={14} /></Tool></ComposerPrimitive.Cancel>
           : <Button className="ai-send" type="submit" size="1" aria-label="发送消息"
-            disabled={!enabled || !draft.trim() || (chosen === "selection" && !hasSelection)}><ArrowUp size={17} /></Button>}
+            disabled={!enabled || !draft.trim() || (chosen === "selection" && !hasSelection && !attachedSelection)}><ArrowUp size={17} /></Button>}
       </div>
     </ComposerPrimitive.Root>
   </ThreadPrimitive.Root>;
@@ -381,9 +399,26 @@ function AiCopyButton({ text, onError }: { text: string; onError(failure: unknow
   </>;
 }
 
+function AiUserMessage({ text, children }: { text: string; children: ReactNode }) {
+  const citation = useAuiState(state => state.message.metadata.custom.citation);
+  const selectedText = useAuiState(state => {
+    const custom = state.message.metadata.custom;
+    return (custom.chatSelection as ChatSelection | undefined)?.original
+      ?? (custom.action === "rewrite" ? proposalOf(state.thread.messages[state.message.index + 1])?.originalMarkdown : undefined);
+  });
+  return <>
+    {selectedText && <blockquote className="ai-user-quote" aria-label="所选内容" tabIndex={0}>{selectedText}</blockquote>}
+    <p className="ai-user-message">{text}</p>
+    <div className="button-strip ai-user-actions">
+      {!selectedText && typeof citation === "string" && <p className="muted-text">{citation}</p>}
+      {children}
+    </div>
+  </>;
+}
+
 function AiMessageActions({ message, queue, targets, stored, progress, canEdit, canRetry, canRetryRewrite, apply, reject, report, retry }: {
-  message: Parameters<typeof proposalOf>[0]; queue?: SaveQueue;
-  targets: Map<string, CapturedTarget>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
+  message: Parameters<typeof messageText>[0]; queue?: SaveQueue;
+  targets: Map<string, CapturedTarget | null>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
   canEdit: boolean; canRetry: boolean; canRetryRewrite: boolean;
   apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal): void;
   reject(proposal: AiProposal): Promise<void>; report(failure: unknown): void; retry(): void;
@@ -394,7 +429,7 @@ function AiMessageActions({ message, queue, targets, stored, progress, canEdit, 
   const applicable = Boolean(canEdit && target && matchesAiTarget(target, queue));
   const action = useAuiState(state => state.thread.messages[state.message.index - 1]?.metadata.custom.action) as AiAction;
   if (proposal) return <ProposalCard {...{ proposal, retry }} date={message.createdAt} progress={progress[id]} applicable={applicable && stored.has(id)}
-    durable={!target || stored.has(id)} canRetry={canRetryRewrite || (canRetry && applicable)}
+    durable={!targets.has(id) || stored.has(id)} canRetry={canRetry && canEdit}
     accept={() => apply(id, proposal.replacementMarkdown, "rewrite", proposal)}
     reject={() => void reject(proposal)} onError={report} />;
   const candidates = message.metadata.custom.candidates as string[] | undefined;
@@ -428,12 +463,18 @@ function ProposalCard({ proposal, date, applicable, durable, progress, canRetry,
     [proposal.originalMarkdown, proposal.replacementMarkdown]);
   const status = progress ?? proposal.status;
   const statusText = {
-    pending: !durable ? "正在保存提案…" : applicable ? "" : "原选区已失效，请重新选中文字后生成",
-    applied: "已接受", rejected: "已放弃", conflicted: "原选区已失效",
+    pending: !durable ? "正在保存提案…" : applicable ? "" : "原选区已失效。可以复制建议，或重新选择文字发起改写。",
+    applied: "", rejected: "", conflicted: "原选区已失效",
     saving: "正在保存正文…", saveFailed: "正文已修改，保存失败", recordFailed: "正文已保存，提案状态更新失败",
   }[status];
+  const resolvedLabel = status === "applied" ? "已接受" : status === "rejected" ? "已放弃" : undefined;
   return <section className="ai-suggestion" aria-label="修改提案">
-    <strong>修改提案</strong>
+    <strong className="ai-proposal-title">
+      {resolvedLabel && <span className="ai-proposal-status" data-status={status} role="img" aria-label={resolvedLabel} title={resolvedLabel}>
+        {status === "applied" ? <Check size={14} aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
+      </span>}
+      修改提案
+    </strong>
     <p className="muted-text">{proposal.description}</p>
     <details>
       <summary>查看差异</summary>
@@ -442,7 +483,7 @@ function ProposalCard({ proposal, date, applicable, durable, progress, canRetry,
         : <><pre aria-label="原文">{proposal.originalMarkdown}</pre><pre aria-label="建议内容">{proposal.replacementMarkdown}</pre></>}
     </details>
     {statusText && <p className="muted-text" role="status">{statusText}</p>}
-    <div className="button-strip">
+    <div className="button-strip ai-proposal-actions">
       {status === "pending" && <Button size="1" variant="soft" disabled={!applicable} onClick={accept}>接受修改</Button>}
       <AiMessageTime date={date} />
       <AiCopyButton text={proposal.replacementMarkdown} onError={onError} />

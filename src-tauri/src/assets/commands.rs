@@ -48,8 +48,17 @@ pub async fn asset_import(
 pub async fn asset_library(
     db: State<'_, Workspace>,
     assets: State<'_, Assets>,
+    page: Option<u32>,
 ) -> Result<AssetLibrary> {
-    assets.library(&db)
+    assets.library(&db, page.unwrap_or(0))
+}
+
+#[tauri::command]
+pub async fn asset_upload_progress(
+    db: State<'_, Workspace>,
+    markdown: String,
+) -> Result<Option<super::UploadProgress>> {
+    super::upload_progress(&db, &markdown)
 }
 
 #[tauri::command]
@@ -76,7 +85,9 @@ pub async fn asset_read(
     {
         let _ = app.emit("assets-changed", ());
     }
-    Ok(Response::new(assets.read(&db, &url).await?))
+    Ok(Response::new(
+        assets.read_image(&db, &url, retry.unwrap_or(false)).await?,
+    ))
 }
 
 #[tauri::command]
@@ -139,10 +150,26 @@ pub struct ImageStorageSettings {
 }
 
 #[tauri::command]
-pub fn image_storage_target(db: State<'_, Workspace>) -> Result<Option<Target>> {
-    Ok(db
-        .read(super::s3::Profile::active)?
-        .map(|profile| profile.target))
+pub fn image_storage_target(db: State<'_, Workspace>) -> Result<Option<ActiveImageStorage>> {
+    db.read(|conn| {
+        super::s3::Profile::active(conn)?
+            .map(|profile| {
+                let auto_upload = profile.upload_options(conn)?.auto_upload;
+                Ok(ActiveImageStorage {
+                    target: profile.target,
+                    auto_upload,
+                })
+            })
+            .transpose()
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveImageStorage {
+    #[serde(flatten)]
+    target: Target,
+    auto_upload: bool,
 }
 
 #[tauri::command]

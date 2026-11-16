@@ -76,6 +76,7 @@ pub enum Image {
         range: Range<usize>,
         url: String,
         alt: String,
+        title: String,
     },
     Html(Vec<Range<usize>>),
 }
@@ -105,35 +106,44 @@ pub fn images(markdown: &str) -> Vec<Image> {
     .into_offset_iter()
     {
         match event {
-            Event::Start(Tag::Image { dest_url, .. }) if image.is_none() => {
-                image = Some((range.start, canonical_url(&dest_url), String::new(), 1));
+            Event::Start(Tag::Image {
+                dest_url, title, ..
+            }) if image.is_none() => {
+                image = Some((
+                    range.start,
+                    canonical_url(&dest_url),
+                    String::new(),
+                    String::from(title),
+                    1,
+                ));
             }
             Event::Start(Tag::Image { .. }) => {
-                if let Some((_, _, _, depth)) = &mut image {
+                if let Some((_, _, _, _, depth)) = &mut image {
                     *depth += 1;
                 }
             }
             Event::Text(text) | Event::Code(text) => {
-                if let Some((_, _, alt, _)) = &mut image {
+                if let Some((_, _, alt, _, _)) = &mut image {
                     alt.push_str(&text);
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some((_, _, alt, _)) = &mut image {
+                if let Some((_, _, alt, _, _)) = &mut image {
                     alt.push(' ');
                 }
             }
             Event::End(TagEnd::Image) => {
-                if let Some((_, _, _, depth)) = &mut image {
+                if let Some((_, _, _, _, depth)) = &mut image {
                     *depth -= 1;
                 }
-                if matches!(image, Some((_, _, _, 0)))
-                    && let Some((start, url, alt, _)) = image.take()
+                if matches!(image, Some((_, _, _, _, 0)))
+                    && let Some((start, url, alt, title, _)) = image.take()
                 {
                     images.push(Image::Markdown {
                         range: start..range.end,
                         url,
                         alt,
+                        title,
                     });
                 }
             }
@@ -229,6 +239,59 @@ pub fn urls(markdown: &str) -> Result<BTreeSet<String>> {
         }
     }
     Ok(urls)
+}
+
+pub fn image_edits(
+    markdown: &str,
+    mut resolve: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<Vec<(Range<usize>, String)>> {
+    let mut edits = Vec::new();
+    for image in images(markdown) {
+        match image {
+            Image::Markdown {
+                range,
+                url,
+                alt,
+                title,
+            } => {
+                let Some(name) = resolve(&url)? else { continue };
+                let alt = alt
+                    .replace('\\', "\\\\")
+                    .replace('[', "\\[")
+                    .replace(']', "\\]");
+                let title = if title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" \"{}\"", title.replace('\\', "\\\\").replace('"', "\\\""))
+                };
+                edits.push((range, format!("![{alt}]({name}{title})")));
+            }
+            Image::Html(parts) => {
+                for image in html_images(markdown, &parts)? {
+                    let Some(name) = resolve(&image.url)? else {
+                        continue;
+                    };
+                    for spans in image.attributes {
+                        let mut parts = spans.into_iter();
+                        if let Some(first) = parts.next() {
+                            edits.push((first, name.clone()));
+                            edits.extend(parts.map(|rest| (rest, String::new())));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(edits)
+}
+
+pub fn apply_image_edits(markdown: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
+    edits.sort_unstable_by_key(|(range, _)| range.start);
+    let mut output = markdown.to_owned();
+    for (range, replacement) in edits.into_iter().rev() {
+        output.replace_range(range, &replacement);
+    }
+    output
 }
 
 pub fn sync_entry(conn: &Connection, entry_id: &str, markdown: &str) -> Result<()> {

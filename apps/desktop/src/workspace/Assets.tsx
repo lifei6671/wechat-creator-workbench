@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Checkbox, ScrollArea, Select, TextField } from "@radix-ui/themes";
 import { readS3Settings, S3Fields, SettingRow } from "./Settings";
-import { CloudUpload, ImageOff, Plus, Settings2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, CloudUpload, ImageOff, Plus, Settings2 } from "lucide-react";
 import { desktop, errorMessage, type AssetLibrary, type ImageTarget, type ImageUploadOptions } from "../desktop";
 import { Tool, Tooltip } from "../ui";
 
@@ -23,7 +23,7 @@ export function imageMarkdown(id: string, label: string) {
 const acceptedImages = "image/png,image/jpeg,image/gif,image/webp";
 
 const states = {
-  queued: "等待上传", running: "上传中", retrying: "等待重试", failed: "上传失败", completed: "已上传",
+  queued: "等待上传", running: "上传中", retrying: "等待重试", failed: "上传失败", completed: "图床",
 } as const;
 
 export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert, canCover }: {
@@ -40,22 +40,39 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [page, setPage] = useState(0);
+  const [paging, setPaging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let live = true;
     let request = 0;
     function load() {
       const started = ++request;
-      void desktop.assetLibrary().then(value => {
+      void desktop.assetLibrary(page).then(value => {
         if (live && request === started) { setLibrary(value); setError(""); }
-      }, error => { if (live && request === started) setError(errorMessage(error)); });
+      }, error => { if (live && request === started) setError(errorMessage(error)); }).finally(() => {
+        if (live && request === started) setPaging(false);
+      });
     }
     load();
     const unlisten = desktop.onAssetsChanged(load);
     void unlisten.then(load, error => { if (live) setError(errorMessage(error)); });
     return () => { live = false; void unlisten.then(remove => remove(), () => {}); };
-  }, [refresh]);
+  }, [page, refresh]);
+  useLayoutEffect(() => {
+    const viewport = list.current?.closest(".rt-ScrollAreaViewport");
+    if (viewport) viewport.scrollTop = 0;
+  }, [library?.page]);
   const current = library?.items.find(item => item.id === selected);
+
+  function turnPage(next: number) {
+    setSelected(null);
+    setNotice("");
+    setPaging(true);
+    if (next === page) setRefresh(value => value + 1);
+    else setPage(next);
+  }
 
   async function importImages(files: File[]) {
     if (!files.length) return;
@@ -77,7 +94,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
       }} />
     </div>
     <ScrollArea className="explorer-scroll" type="auto" scrollbars="vertical" radius="full">
-      <div className="asset-list" onDragOver={event => {
+      <div ref={list} className="asset-list" onDragOver={event => {
         if (event.dataTransfer.types.includes("Files")) event.preventDefault();
       }} onDrop={event => {
         event.preventDefault();
@@ -100,12 +117,18 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         </div>}
       </div>
     </ScrollArea>
+    {library && (library.page > 0 || library.hasNext) && <div className="asset-pagination" role="group" aria-label="素材分页">
+      <Tool label="上一页" className="chrome-icon" disabled={paging || library.page === 0}
+        onClick={() => turnPage(library.page - 1)}><ChevronLeft size={16} /></Tool>
+      <Tool label="下一页" className="chrome-icon" disabled={paging || !library.hasNext}
+        onClick={() => turnPage(library.page + 1)}><ChevronRight size={16} /></Tool>
+    </div>}
     {current && <section className="asset-details" aria-label="所选图片">
       <AssetThumb id={current.id} name={current.name} />
       <div className="asset-dimensions">
         {current.width && current.height ? `${current.width} × ${current.height}` : "图片详情"}
         {current.bytes != null && <span>{new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(current.bytes / 1024)} KB</span>}
-        <span>{current.publicUrl ? "已上传" : current.uploadStatus ? states[current.uploadStatus] : "本地"}</span>
+        <span>{current.publicUrl ? "图床" : current.uploadStatus ? states[current.uploadStatus] : "本地"}</span>
       </div>
       {current.uploadError && <p className="inline-error" role="alert">{current.uploadError}</p>}
       {current.cleanupError && <p className="inline-error" role="status">上次退出清理未完成：{current.cleanupError}</p>}
@@ -170,7 +193,7 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
-  const [options, setOptions] = useState<ImageUploadOptions>({ filenameTemplate: "", quality: "original" });
+  const [options, setOptions] = useState<ImageUploadOptions>({ filenameTemplate: "", quality: "original", autoUpload: false });
   const filename = useRef<HTMLInputElement>(null);
   useEffect(() => {
     void desktop.imageStorageSettings().then(value => {
@@ -207,6 +230,10 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
       <label className="settings-check image-storage-enabled"><Checkbox checked={enabled} disabled={Boolean(busy)}
         onCheckedChange={value => setEnabled(value === true)} />启用图床</label>
       <S3Fields scope="images" initial={initial.target} hasKey={Boolean(initial.secret)} publicBase={initial.target?.publicBase} credentials={initial.secret} />
+      <SettingRow id="image-auto-upload" label="默认存储到图床" hint="开启后，新导入、粘贴或拖入的图片会自动排队上传。">
+        <Checkbox id="image-auto-upload" checked={options.autoUpload} disabled={!enabled || Boolean(busy)}
+          onCheckedChange={value => setOptions(current => ({ ...current, autoUpload: value === true }))} />
+      </SettingRow>
       <SettingRow id="image-upload-quality" label="上传清晰度" hint="高清、标清和省流转为 WebP。GIF 和动态 WebP 按原文件上传。">
         <Select.Root value={options.quality} onValueChange={(quality: ImageUploadOptions["quality"]) => setOptions(current => ({ ...current, quality }))}>
           <Select.Trigger id="image-upload-quality" /><Select.Content>

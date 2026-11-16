@@ -21,9 +21,12 @@ it("loads small previews only near the viewport and reads the full image when se
   vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL: makeUrl, revokeObjectURL: revokeUrl }));
   const row: AssetRow = {
     id: "one", name: "照片.png", width: 400, height: 200, bytes: 1700,
-    uploadStatus: null, uploadError: null, cleanupError: null, publicUrl: null,
+    uploadStatus: null, uploadError: null, cleanupError: null, publicUrl: "https://cdn.example.test/one.png",
   };
-  vi.spyOn(desktop, "assetLibrary").mockResolvedValue({ items: [row, { ...row, id: "two", name: "图二.png" }], target: null });
+  const library = vi.spyOn(desktop, "assetLibrary").mockImplementation(async (page = 0) => ({
+    items: page ? [{ ...row, id: "three", name: "图三.png" }] : [row, { ...row, id: "two", name: "图二.png" }],
+    target: null, page, hasNext: page === 0,
+  }));
   vi.spyOn(desktop, "onAssetsChanged").mockResolvedValue(() => {});
   const small = vi.spyOn(desktop, "assetThumbnail").mockResolvedValue(new ArrayBuffer(1));
   const full = vi.spyOn(desktop, "assetRead").mockResolvedValue(new ArrayBuffer(2));
@@ -44,6 +47,18 @@ it("loads small previews only near the viewport and reads the full image when se
     expect(tile.getAttribute("aria-pressed")).toBe("true");
     await vi.waitFor(() => expect(container.querySelector(".asset-details img")?.getAttribute("src")).toBe("blob:full"));
     expect(full).toHaveBeenCalledExactlyOnceWith("asset://one");
+    expect(container.querySelector(".asset-dimensions")?.textContent).toContain("图床");
+    const previous = () => container.querySelector<HTMLButtonElement>('[aria-label="上一页"]')!;
+    const next = () => container.querySelector<HTMLButtonElement>('[aria-label="下一页"]')!;
+    expect(previous().disabled).toBe(true);
+    flushSync(() => next().click());
+    await vi.waitFor(() => expect(container.querySelector(".asset-grid")?.textContent).toBe("图三.png"));
+    expect(library).toHaveBeenCalledWith(1);
+    expect(next().disabled).toBe(true);
+    expect(container.querySelector(".asset-details")).toBeNull();
+    flushSync(() => previous().click());
+    await vi.waitFor(() => expect(container.querySelector(".asset-grid")?.textContent).toContain("图二.png"));
+    expect(library).toHaveBeenLastCalledWith(0);
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -57,7 +72,7 @@ it("edits saved S3 credentials in place and disables hosting without clearing fi
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   const target = { endpoint: "https://s3.example.test", region: "auto", bucket: "images", prefix: "photos", publicBase: "https://cdn.example.test" };
   const secret = { accessKey: "test-access", secretKey: "test-secret" };
-  vi.spyOn(desktop, "imageStorageSettings").mockResolvedValue({ target, secret, enabled: true, options: { filenameTemplate: "", quality: "standard" } });
+  vi.spyOn(desktop, "imageStorageSettings").mockResolvedValue({ target, secret, enabled: true, options: { filenameTemplate: "", quality: "standard", autoUpload: false } });
   const test = vi.spyOn(desktop, "imageStorageTest").mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("测试失败"));
   const save = vi.spyOn(desktop, "imageStorageSave").mockResolvedValue(undefined);
   const container = document.createElement("div");
@@ -77,6 +92,12 @@ it("edits saved S3 credentials in place and disables hosting without clearing fi
     submit("test");
     await vi.waitFor(() => expect(container.querySelector('.image-storage-feedback[data-error="false"]')?.textContent).toBe("上传、读取和删除均通过"));
     expect(test).toHaveBeenLastCalledWith(target, secret);
+    const automatic = container.querySelector<HTMLButtonElement>("#image-auto-upload")!;
+    expect(automatic.getAttribute("aria-checked")).toBe("false");
+    flushSync(() => automatic.click());
+    submit("save");
+    await vi.waitFor(() => expect(container.querySelector('.image-storage-feedback[data-error="false"]')?.textContent).toBe("图床设置已保存"));
+    expect(save).toHaveBeenLastCalledWith(target, secret, { filenameTemplate: "", quality: "standard", autoUpload: true });
     submit("test");
     await vi.waitFor(() => expect(container.querySelector('.image-storage-feedback[data-error="true"]')?.textContent).toBe("测试失败"));
     flushSync(() => container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());

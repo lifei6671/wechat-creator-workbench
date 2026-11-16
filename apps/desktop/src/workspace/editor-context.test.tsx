@@ -11,7 +11,7 @@ function Body() {
   return <div className="ProseMirror" style={{ padding: "0 20px" }}><p className="test-body">示例内容</p></div>;
 }
 
-it("routes plain paste to the native clipboard and limits the reading menu", () => {
+it("routes editor context actions and limits the reading menu", async () => {
   vi.stubGlobal("ResizeObserver", class {
     observe() {}
     unobserve() {}
@@ -23,7 +23,7 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
   const editor = {
     current: {
       focus: vi.fn(), search: vi.fn(), target: vi.fn(), insert: vi.fn(), replaceTarget: vi.fn(),
-      captureContext: vi.fn(), selectionText: vi.fn(), subscribeSelection: vi.fn(),
+      captureContext: vi.fn<MarkdownEditorHandle["captureContext"]>(), selectionText: vi.fn(), subscribeSelection: vi.fn(),
       retryMissingImages: vi.fn(),
       linkFootnoteMarkdown: vi.fn(),
       command: vi.fn(), tableAction: vi.fn(), prepareContext: vi.fn<MarkdownEditorHandle["prepareContext"]>().mockReturnValue(null),
@@ -34,13 +34,16 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
   const display = { limitWidth: true, lineNumbers: false, showTitle: true, convertLinks: false };
   const onDisplayChange = vi.fn();
   const onHostImage = vi.fn();
+  const onAddSelectionToChat = vi.fn();
   let hosting = false;
+  let addToChat = false;
 
   const menuItems = () => [...document.querySelectorAll<HTMLElement>(".body-context-menu [role=menuitem]")];
   function openMenu(readOnly: boolean, selector = ".test-body", x = 150) {
     flushSync(() => root.render(<Theme>
       <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={vi.fn()}
-        canHost={() => true} hostBusy={hosting} uploadingSource={hosting ? "asset://image" : undefined} onHostImage={onHostImage}>
+        canHost={() => true} hostBusy={hosting} uploadingSource={hosting ? "asset://image" : undefined} onHostImage={onHostImage}
+        onAddSelectionToChat={addToChat ? onAddSelectionToChat : undefined}>
         <Body />
       </EditorContextMenu>
     </Theme>));
@@ -133,6 +136,16 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
       flushSync(() => imageItems[3].click());
       expect(image.remove).toHaveBeenCalledOnce();
     } finally { copy.mockRestore(); save.mockRestore(); }
+
+    addToChat = true;
+    editor.current.captureContext.mockReturnValueOnce({ entryId: "entry", session: Symbol(), localRevision: 0, from: 1, to: 3,
+      original: "示例", originalSlice: "{}", scope: "selection", headingPath: ["章节"] });
+    openMenu(false);
+    const item = menuItems().find(item => item.textContent === "将所选内容添加到聊天");
+    expect(item).toBeDefined();
+    flushSync(() => item!.click());
+    expect(editor.current.captureContext).toHaveBeenCalledExactlyOnceWith("selection");
+    await vi.waitFor(() => expect(onAddSelectionToChat).toHaveBeenCalledExactlyOnceWith({ original: "示例", headingPath: ["章节"] }));
   } finally {
     flushSync(() => root.unmount());
     container.remove();

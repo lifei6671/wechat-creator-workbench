@@ -37,8 +37,8 @@ export function TableContextMenu({ table, readOnly, onAction, onClipboard, conve
           <ContextMenu.Item disabled={row === 0} onSelect={() => onAction("rowBefore")}><Plus size={15} />在上方新增行</ContextMenu.Item>
           <ContextMenu.Item onSelect={() => onAction("rowAfter")}><Plus size={15} />在下方新增行</ContextMenu.Item>
           <ContextMenu.Separator />
-          <ContextMenu.Item disabled={row < 2} onSelect={() => onAction("rowUp")}><ArrowUp size={15} />向上移动行</ContextMenu.Item>
-          <ContextMenu.Item disabled={row === 0 || row === rows - 1} onSelect={() => onAction("rowDown")}><ArrowDown size={15} />向下移动行</ContextMenu.Item>
+          <ContextMenu.Item disabled={row === 0} onSelect={() => onAction("rowUp")}><ArrowUp size={15} />向上移动行</ContextMenu.Item>
+          <ContextMenu.Item disabled={row === rows - 1} onSelect={() => onAction("rowDown")}><ArrowDown size={15} />向下移动行</ContextMenu.Item>
           <ContextMenu.Item color="red" disabled={row === 0 || rows < 3} onSelect={() => onAction("rowDelete")}><Trash2 size={15} />删除行</ContextMenu.Item>
         </ContextMenu.SubContent>
       </ContextMenu.Sub>

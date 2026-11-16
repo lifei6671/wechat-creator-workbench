@@ -111,12 +111,16 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     }
     disconnect() {}
   });
+  const pinIds = ["pin-a", "pin-b"];
+  let pinned = pinIds;
   const entries = vi.spyOn(desktop, "entries").mockImplementation(async filter => {
-    const all = filter.categoryId === "child" ? [] : filter.categoryId ? ["nested-entry", "another-entry"] : ["entry"];
+    const all = filter.pinned ? pinned : filter.categoryId === "child" ? [] : filter.categoryId ? ["nested-entry", "another-entry"]
+      : ["entry", ...pinIds.filter(id => !pinned.includes(id))];
     const offset = filter.offset!;
     const end = offset + filter.limit!;
     return {
-      items: all.slice(offset, end).map(id => ({ id, title: "稿件", kind: "article", status: "draft", updatedAt: 0, deletedAt: null })),
+      items: all.slice(offset, end).map(id => ({ id, title: "稿件", kind: "article", status: "draft", updatedAt: 0, deletedAt: null,
+        categoryId: filter.categoryId ?? null, pinned: Boolean(filter.pinned) })),
       nextOffset: end < all.length ? end : null,
     };
   });
@@ -132,9 +136,17 @@ it("creates folders inline and sends the indicated folder reorder and entry move
   const onRenameEntry = vi.fn().mockResolvedValue(undefined);
   const onMoveEntry = vi.fn();
   const onOpen = vi.fn();
+  const onRowAction = vi.fn();
+  const onLocateCurrent = vi.fn();
   const onToggleAll = vi.fn();
   const previousSort = localStorage.getItem("directory-sort");
+  const previousLocate = localStorage.getItem("directory-auto-locate");
+  const previousPinCollapse = localStorage.getItem("directory-pins-collapsed");
+  const previousDirectoryCollapse = localStorage.getItem("directory-collapsed");
   localStorage.removeItem("directory-sort");
+  localStorage.removeItem("directory-auto-locate");
+  localStorage.removeItem("directory-pins-collapsed");
+  localStorage.removeItem("directory-collapsed");
   const position = (name: string) => root.querySelector<HTMLElement>(`[data-tree-id=${name}]`)!;
   const point = vi.fn();
   const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
@@ -145,8 +157,8 @@ it("creates folders inline and sends the indicated folder reorder and entry move
       buttons: name === "pointerup" ? 0 : 1, isPrimary: true, pointerId: 1, pointerType: "mouse" });
     flushSync(() => target.dispatchEvent(event));
   }
-  function mount(loading: "all" | "paged", pageSize: number, revision = 0, expanded = ["one"]) {
-    flushSync(() => render.render(<Theme><Explorer section="folders" active="nested-entry" readOnlyIds={[]} treeLocked={false}
+  function mount(loading: "all" | "paged", pageSize: number, revision = 0, expanded = ["one"], openMode: "current" | "new-tab" = "current", active = "nested-entry") {
+    flushSync(() => render.render(<Theme><Explorer section="folders" active={active} openMode={openMode} readOnlyIds={[]} treeLocked={false}
       library={{ workspaceId: "test", tags: [], tagSuggestions: [], categories: [
         { id: "one", parentId: null, sortOrder: 0, name: "一", icon: "folder" },
         { id: "two", parentId: null, sortOrder: 1, name: "二", icon: "archive" },
@@ -158,12 +170,27 @@ it("creates folders inline and sends the indicated folder reorder and entry move
       onImportWechat={onImportWechat} onImportMarkdown={onImportMarkdown}
       onSaveFolder={onSaveFolder} onFolderError={vi.fn()} onReorderFolder={onReorderFolder} onMoveEntry={onMoveEntry}
       onReorderEntry={onReorderEntry} onRenameEntry={onRenameEntry}
-      onCategoryAction={vi.fn()} onOpen={onOpen} onToggleAll={onToggleAll} onRowAction={vi.fn()} onMore={vi.fn()} /></Theme>));
+      onCategoryAction={vi.fn()} onOpen={onOpen} onToggleAll={onToggleAll} onLocateCurrent={onLocateCurrent} onRowAction={onRowAction} onMore={vi.fn()} /></Theme>));
   }
   try {
     mount("paged", 60);
     await vi.waitFor(() => expect(position("entry")).not.toBeNull());
     expect(root.querySelector(".folder-row[data-selected=true], .row-menu")).toBeNull();
+    const pinToggle = root.querySelector<HTMLButtonElement>('[aria-controls="tree-pinned-list"]')!;
+    const directoryToggle = root.querySelector<HTMLButtonElement>('[aria-controls="tree-directory-list"]')!;
+    expect(directoryToggle.textContent).toBe("目录");
+    flushSync(() => pinToggle.click());
+    expect(pinToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(root.querySelector("#tree-pinned-list")?.hasAttribute("inert")).toBe(true);
+    expect(localStorage.getItem("directory-pins-collapsed")).toBe("true");
+    flushSync(() => pinToggle.click());
+    flushSync(() => directoryToggle.click());
+    expect(directoryToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(root.querySelector("#tree-directory-list")?.hasAttribute("inert")).toBe(true);
+    expect(root.querySelector("#tree-pinned-list")?.hasAttribute("inert")).toBe(false);
+    expect(localStorage.getItem("directory-collapsed")).toBe("true");
+    flushSync(() => directoryToggle.click());
+    expect(root.querySelector("#folder-row-one")?.getAttribute("aria-expanded")).toBe("true");
     expect(position("nested-entry").getAttribute("aria-current")).toBe("true");
     expect(root.querySelector("#folder-row-one")!.hasAttribute("title")).toBe(false);
     flushSync(() => root.querySelector<HTMLButtonElement>('[aria-label="全部折叠"]')!.click());
@@ -209,10 +236,19 @@ it("creates folders inline and sends the indicated folder reorder and entry move
       trigger.focus();
       trigger.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
     });
+    open("#entry-row-pin-a");
+    expect(menu()[0]?.textContent).toBe("取消置顶");
+    flushSync(() => menu().find(item => item.textContent === "取消置顶")!.click());
+    expect(onRowAction).toHaveBeenLastCalledWith(expect.objectContaining({ id: "pin-a" }), "unpin");
     open("#entry-row-nested-entry");
-    expect(position("nested-entry").dataset.state).toBe("open");
+    expect(menu()[0]?.textContent).toBe("置顶");
+    expect(position("nested-entry").dataset.menuTarget).toBe("true");
     flushSync(() => menu().find(item => item.textContent === "在新标签打开")!.click());
-    expect(onOpen).toHaveBeenLastCalledWith("nested-entry", true);
+    expect(onOpen).toHaveBeenLastCalledWith("nested-entry", "new-tab");
+    mount("paged", 60, 0, ["one"], "new-tab");
+    open("#entry-row-nested-entry");
+    flushSync(() => menu().find(item => item.textContent === "在当前标签打开")!.click());
+    expect(onOpen).toHaveBeenLastCalledWith("nested-entry", "current");
     open("#entry-row-nested-entry");
     flushSync(() => menu().find(item => item.textContent === "重命名")!.click());
     await vi.waitFor(() => expect(root.querySelector(".tree-entry .entry-inline-name")).not.toBeNull());
@@ -224,6 +260,15 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     });
     expect(onRenameEntry).toHaveBeenCalledExactlyOnceWith("nested-entry", "新稿名");
     await vi.waitFor(() => expect(title.isConnected).toBe(false));
+    open("#entry-row-nested-entry");
+    flushSync(() => menu().find(item => item.textContent === "重命名")!.click());
+    await vi.waitFor(() => expect(root.querySelector(".entry-inline-name")).not.toBeNull());
+    const rename = root.querySelector<HTMLInputElement>(".entry-inline-name")!;
+    flushSync(() => rename.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    await vi.waitFor(() => expect(document.activeElement).toBe(position("nested-entry")));
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(document.querySelector(".entry-hover-card")).toBeNull();
+    expect(onRenameEntry).toHaveBeenCalledTimes(1);
     open("#folder-row-one");
     expect(position("one").dataset.menuTarget).toBe("true");
     expect(menu().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "新建子目录", "编辑名称和图标", "上移", "下移", "删除目录"]);
@@ -244,7 +289,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     const name = root.querySelector<HTMLInputElement>('input[aria-label="目录名称"]')!;
     expect(name).not.toBeNull();
     expect(name.value).toBe("未命名 2");
-    expect(name.closest("li")).toBe(root.querySelector(".folder-tree")?.lastElementChild);
+    expect(name.closest("li")).toBe(root.querySelector("#tree-directory-list")?.lastElementChild);
     expect(root.querySelector('[role="dialog"]')).toBeNull();
     expect(name.disabled).toBe(false);
     expect(document.activeElement).toBe(name);
@@ -307,6 +352,20 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     expect(position("another-entry").parentElement?.dataset.placement).toBeUndefined();
     drag("pointerup", position("another-entry"), 172);
     expect(onReorderEntry).toHaveBeenCalledTimes(1);
+    expect(root.querySelector(".folder-tree")?.firstElementChild?.classList.contains("tree-pinned")).toBe(true);
+    vi.spyOn(position("pin-b"), "getBoundingClientRect").mockReturnValue(new DOMRect(10, 70, 200, 30));
+    drag("pointerdown", position("pin-a"), 30);
+    drag("pointermove", position("pin-b"), 95);
+    drag("pointerup", position("pin-b"), 95);
+    expect(onReorderEntry).toHaveBeenLastCalledWith("pin-a", "pin-b", "after");
+    drag("pointerdown", position("pin-a"), 30);
+    drag("pointermove", position("child"), 125);
+    drag("pointerup", position("child"), 125);
+    drag("pointerdown", position("entry"), 180);
+    drag("pointermove", position("pin-b"), 90);
+    drag("pointerup", position("pin-b"), 90);
+    expect(onMoveEntry).toHaveBeenCalledTimes(1);
+    expect(onReorderEntry).toHaveBeenCalledTimes(2);
 
     drag("pointerdown", position("entry"));
     drag("pointermove", position("child"), 125);
@@ -321,12 +380,36 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     await vi.waitFor(() => expect(root.querySelector(".explorer-scroll")?.getAttribute("data-root-drop")).toBe("true"));
     drag("pointerup", rootTree, 230);
     expect(onMoveEntry).toHaveBeenLastCalledWith("nested-entry", null);
+
+    mount("all", 1, 1, ["one"], "current", "pin-a");
+    flushSync(() => pinToggle.click());
+    expect(pinToggle.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => root.querySelector<HTMLButtonElement>('[aria-label="自动定位当前文件"]')!.click());
+    await vi.waitFor(() => expect(onLocateCurrent).toHaveBeenCalledTimes(1));
+    expect(pinToggle.getAttribute("aria-expanded")).toBe("true");
+    const scrollToPinned = vi.fn();
+    position("pin-a").scrollIntoView = scrollToPinned;
+    const expansion = Object.assign(new Event("transitionend", { bubbles: true }), { propertyName: "grid-template-rows" });
+    flushSync(() => root.querySelector(".tree-pinned .tree-section-content")!.dispatchEvent(expansion));
+    expect(scrollToPinned).toHaveBeenCalledWith({ block: "nearest" });
+    pinned = ["pin-b"];
+    mount("all", 1, 2, ["one"], "current", "pin-a");
+    await vi.waitFor(() => {
+      expect(onLocateCurrent).toHaveBeenCalledTimes(2);
+      expect(position("pin-a").hasAttribute("data-tree-pinned")).toBe(false);
+    });
   } finally {
     flushSync(() => render.unmount());
     root.remove();
     entries.mockRestore();
     if (previousSort === null) localStorage.removeItem("directory-sort");
     else localStorage.setItem("directory-sort", previousSort);
+    if (previousLocate === null) localStorage.removeItem("directory-auto-locate");
+    else localStorage.setItem("directory-auto-locate", previousLocate);
+    if (previousPinCollapse === null) localStorage.removeItem("directory-pins-collapsed");
+    else localStorage.setItem("directory-pins-collapsed", previousPinCollapse);
+    if (previousDirectoryCollapse === null) localStorage.removeItem("directory-collapsed");
+    else localStorage.setItem("directory-collapsed", previousDirectoryCollapse);
     if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
     else Reflect.deleteProperty(document, "elementFromPoint");
     vi.unstubAllGlobals();

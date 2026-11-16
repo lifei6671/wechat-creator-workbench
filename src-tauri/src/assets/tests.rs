@@ -6,36 +6,70 @@ use tokio::{
 };
 
 async fn serve_image(listener: TcpListener, bytes: Vec<u8>) {
-    let (mut stream, _) = listener.accept().await.unwrap();
+    serve_image_response(&listener, "200 OK", "", &bytes).await;
+}
+
+async fn serve_image_response(
+    listener: &TcpListener,
+    status: &str,
+    extra_headers: &str,
+    bytes: &[u8],
+) -> String {
+    let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
     let mut request = Vec::new();
     while !request.ends_with(b"\r\n\r\n") {
         request.push(stream.read_u8().await.unwrap());
     }
     let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: image/png\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
         bytes.len()
     );
     stream.write_all(headers.as_bytes()).await.unwrap();
-    stream.write_all(&bytes).await.unwrap();
+    stream.write_all(bytes).await.unwrap();
     stream.shutdown().await.unwrap();
+    String::from_utf8(request).unwrap()
 }
 
-#[tokio::test]
-async fn public_image_previews_do_not_create_assets() {
-    let (folder, db, mut assets) = setup();
+async fn image_origin(assets: &mut Assets) -> (TcpListener, String) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     assets.external_http = reqwest::Client::builder()
         .no_proxy()
         .resolve("images.example.test", address)
+        .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let url = format!("http://images.example.test:{}/sample.png", address.port());
+    (listener, url)
+}
+
+#[tokio::test]
+async fn public_image_previews_cache_on_disk_without_creating_assets() {
+    let (folder, db, mut assets) = setup();
+    let cache = folder.path().join("image-cache");
+    assets = assets.with_image_cache(&cache);
+    let (listener, url) = image_origin(&mut assets).await;
     let bytes = png();
-    let server = tokio::spawn(serve_image(listener, bytes.clone()));
+    let request = serve_image_response(
+        &listener,
+        "200 OK",
+        "Cache-Control: max-age=3600\r\n",
+        &bytes,
+    );
+    let (loaded, repeated, _) =
+        tokio::join!(assets.read(&db, &url), assets.read(&db, &url), request);
+    assert_eq!(loaded.unwrap(), bytes);
+    assert_eq!(repeated.unwrap(), bytes);
+    drop(listener);
+    drop(assets);
+    let assets = Assets::new(folder.path().join("assets"), &db)
+        .unwrap()
+        .with_image_cache(&cache);
     assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
-    server.await.unwrap();
-    assert!(assets.library(&db).unwrap().items.is_empty());
+    assert!(assets.library(&db, 0).unwrap().items.is_empty());
     assert!(!folder.path().join("assets").exists());
 
     let missing = assets.read(&db, "asset://missing").await.unwrap_err();
@@ -46,6 +80,150 @@ async fn public_image_previews_do_not_create_assets() {
         assets.read(&db, &format!("asset://{id}")).await.unwrap(),
         bytes
     );
+}
+
+#[tokio::test]
+async fn public_image_cache_validates_stale_images_and_honors_no_store() {
+    let (folder, db, assets) = setup();
+    let mut assets = assets.with_image_cache(&folder.path().join("image-cache"));
+    let (listener, url) = image_origin(&mut assets).await;
+    let bytes = png();
+    let (first, _) = tokio::join!(
+        assets.read(&db, &url),
+        serve_image_response(
+            &listener,
+            "200 OK",
+            "Cache-Control: max-age=0\r\nETag: \"v1\"\r\n",
+            &bytes
+        ),
+    );
+    assert_eq!(first.unwrap(), bytes);
+    let (revalidated, request) = tokio::join!(
+        assets.read(&db, &url),
+        serve_image_response(
+            &listener,
+            "304 Not Modified",
+            "Cache-Control: max-age=3600\r\nETag: \"v1\"\r\n",
+            &[]
+        ),
+    );
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("if-none-match: \"v1\"")
+    );
+    assert_eq!(revalidated.unwrap(), bytes);
+    assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
+
+    let (refreshed, request) = tokio::join!(
+        assets.read_image(&db, &url, true),
+        serve_image_response(&listener, "200 OK", "Cache-Control: no-store\r\n", &bytes),
+    );
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("cache-control: no-cache")
+    );
+    assert!(!request.to_ascii_lowercase().contains("if-none-match:"));
+    assert_eq!(refreshed.unwrap(), bytes);
+    drop(listener);
+    assert_eq!(
+        assets.read(&db, &url).await.unwrap_err().code(),
+        "IMAGE_NETWORK"
+    );
+}
+
+#[tokio::test]
+async fn public_image_cache_applies_new_directives_from_last_modified_validation() {
+    let (folder, db, assets) = setup();
+    let cache = folder.path().join("image-cache");
+    let mut assets = assets.with_image_cache(&cache);
+    let (listener, url) = image_origin(&mut assets).await;
+    let bytes = png();
+    let stamp = "Wed, 21 Oct 2015 07:28:00 GMT";
+    let headers = format!("Date: {stamp}\r\nLast-Modified: {stamp}\r\n");
+    let (loaded, _) = tokio::join!(
+        assets.read(&db, &url),
+        serve_image_response(&listener, "200 OK", &headers, &bytes),
+    );
+    assert_eq!(loaded.unwrap(), bytes);
+    let (validated, request) = tokio::join!(
+        assets.read(&db, &url),
+        serve_image_response(
+            &listener,
+            "304 Not Modified",
+            "Cache-Control: no-store\r\n",
+            &[]
+        ),
+    );
+    assert!(request.to_ascii_lowercase().contains(&format!(
+        "if-modified-since: {}",
+        stamp.to_ascii_lowercase()
+    )));
+    assert_eq!(validated.unwrap(), bytes);
+    let count = || {
+        Connection::open(cache.join("images.sqlite3"))
+            .unwrap()
+            .query_row("SELECT count(*) FROM images", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(count(), 0);
+
+    let (loaded, _) = tokio::join!(
+        assets.read(&db, &url),
+        serve_image_response(
+            &listener,
+            "200 OK",
+            "Cache-Control: max-age=3600\r\nAge: 18446744073709551615\r\n",
+            &bytes
+        ),
+    );
+    assert_eq!(loaded.unwrap(), bytes);
+    assert_eq!(count(), 0);
+}
+
+#[tokio::test]
+async fn public_image_cache_refetches_when_a_304_validator_does_not_match() {
+    let (folder, db, assets) = setup();
+    let mut assets = assets.with_image_cache(&folder.path().join("image-cache"));
+    let (listener, url) = image_origin(&mut assets).await;
+    let bytes = png();
+    let (loaded, _) = tokio::join!(
+        assets.read(&db, &url),
+        serve_image_response(
+            &listener,
+            "200 OK",
+            "Cache-Control: max-age=0\r\nETag: \"v1\"\r\n",
+            &bytes
+        ),
+    );
+    assert_eq!(loaded.unwrap(), bytes);
+    let mut updated = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(3, 2)
+        .write_to(&mut updated, ImageFormat::Png)
+        .unwrap();
+    let updated = updated.into_inner();
+    let origin = async {
+        let request =
+            serve_image_response(&listener, "304 Not Modified", "ETag: \"v2\"\r\n", &[]).await;
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("if-none-match: \"v1\"")
+        );
+        let request = serve_image_response(
+            &listener,
+            "200 OK",
+            "Cache-Control: max-age=3600\r\nETag: \"v2\"\r\n",
+            &updated,
+        )
+        .await;
+        assert!(!request.to_ascii_lowercase().contains("if-none-match:"));
+    };
+    let (loaded, ()) = tokio::join!(assets.read(&db, &url), origin);
+    assert_eq!(loaded.unwrap(), updated);
 }
 
 #[tokio::test]
@@ -120,6 +298,36 @@ async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
         .unwrap_err();
     server.await.unwrap();
     assert_eq!(stale_name.code(), "EXPORT_FAILED");
+}
+
+#[tokio::test]
+async fn publication_keeps_public_image_links_without_asset_records() {
+    let (_folder, db, mut assets) = setup();
+    image_profile(&db);
+    let (listener, url) = image_origin(&mut assets).await;
+    let bytes = png();
+    let server = tokio::spawn(serve_image(listener, bytes.clone()));
+    assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
+    server.await.unwrap();
+
+    assert_eq!(assets.public_image(&db, &url).await.unwrap(), url);
+    assert!(assets.library(&db, 0).unwrap().items.is_empty());
+    assert_eq!(
+        assets
+            .public_image(&db, "asset://missing")
+            .await
+            .unwrap_err()
+            .code(),
+        "ASSET_MISSING"
+    );
+    assert_eq!(
+        assets
+            .public_image(&db, "http://127.0.0.1/secret.png")
+            .await
+            .unwrap_err()
+            .code(),
+        "INVALID_INPUT"
+    );
 }
 
 #[tokio::test]
@@ -283,6 +491,253 @@ pub(super) fn png() -> Vec<u8> {
     bytes.into_inner()
 }
 
+fn image_profile(db: &Workspace) {
+    db.write(|tx| {
+        tx.execute("INSERT INTO storage_profiles VALUES ('test-images','images','https://s3.example.test','auto','images','','https://cdn.example.test','test-images')", [])?;
+        tx.execute("INSERT INTO app_settings VALUES ('image_storage_profile','test-images')", [])?;
+        Ok(())
+    }).unwrap();
+}
+
+fn enable_auto_upload(db: &Workspace) {
+    db.write(|tx| {
+        tx.execute(
+            "INSERT INTO app_settings VALUES ('image_upload:test-images', '{\"autoUpload\":true}')",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn upload_progress_counts_only_distinct_tracked_images_in_the_document() {
+    let (_folder, db, assets) = setup();
+    image_profile(&db);
+    let first = assets.import(&db, "一.png", &png()).unwrap();
+    let mut bytes = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(5, 2)
+        .write_to(&mut bytes, ImageFormat::Png)
+        .unwrap();
+    let second = assets.import(&db, "二.png", bytes.get_ref()).unwrap();
+    let markdown = format!(
+        "![原图](asset://{first})\n![重复的公开链接](https://cdn.example.test/one.png)\n\n<img src=\"asset://{second}\">\n\n![外链](https://example.test/other.png)"
+    );
+    assets.upload(&db, &first).unwrap();
+    assert_eq!(
+        upload_progress(&db, &markdown).unwrap(),
+        Some(UploadProgress {
+            completed: 0,
+            total: 1
+        })
+    );
+    db.write(|tx| {
+        tx.execute("UPDATE jobs SET status='completed' WHERE asset_id=?1", [&first])?;
+        tx.execute(
+            "INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at)
+             SELECT sha256,'test-images','one.png','https://cdn.example.test/one.png',1 FROM assets WHERE id=?1",
+            [&first],
+        )?;
+        tx.execute(
+            "INSERT INTO asset_urls SELECT public_url,sha256,storage_profile_id FROM asset_locations",
+            [],
+        )?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(upload_progress(&db, &markdown).unwrap(), None);
+    assets.upload(&db, &second).unwrap();
+    assert_eq!(
+        upload_progress(&db, &markdown).unwrap(),
+        Some(UploadProgress {
+            completed: 1,
+            total: 2
+        })
+    );
+    assert_eq!(
+        upload_progress(&db, &format!("![其他](asset://{first})")).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn new_images_upload_only_automatically_when_the_active_profile_enables_it() {
+    let (_folder, db, assets) = setup();
+    image_profile(&db);
+    let local = assets.import(&db, "本地.png", &png()).unwrap();
+    assert_eq!(assets.library(&db, 0).unwrap().items[0].upload_status, None);
+    assets.upload(&db, &local).unwrap();
+    assert_eq!(
+        assets.library(&db, 0).unwrap().items[0]
+            .upload_status
+            .as_deref(),
+        Some("queued")
+    );
+
+    enable_auto_upload(&db);
+    let mut image = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(5, 2)
+        .write_to(&mut image, ImageFormat::Png)
+        .unwrap();
+    let library_id = assets
+        .import_to_library(&db, "素材.png", image.get_ref())
+        .unwrap();
+    let library = assets.library(&db, 0).unwrap();
+    assert_eq!(
+        library
+            .items
+            .iter()
+            .find(|item| item.id == library_id)
+            .unwrap()
+            .upload_status
+            .as_deref(),
+        Some("queued")
+    );
+    let mut formula = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(5, 4)
+        .write_to(&mut formula, ImageFormat::Png)
+        .unwrap();
+    let derived = assets
+        .derive(&db, "math-inline", "x", formula.get_ref())
+        .unwrap();
+    db.read(|conn| {
+        let queued: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM jobs WHERE asset_id=?1)",
+            [&derived],
+            |r| r.get(0),
+        )?;
+        assert!(!queued);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[tokio::test]
+async fn known_image_from_previous_profile_joins_the_active_upload_queue() {
+    let (_folder, db, assets) = setup();
+    image_profile(&db);
+    let asset = assets.import(&db, "图片.png", &png()).unwrap();
+    let url = "https://old.example.test/sample.png";
+    db.write(|tx| {
+        tx.execute("INSERT INTO storage_profiles VALUES ('old','images','https://old-s3.example.test','auto','old','','https://old.example.test','old')", [])?;
+        tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at) SELECT sha256,'old','key',?1,1 FROM assets WHERE id=?2", params![url,asset])?;
+        tx.execute("INSERT INTO asset_urls SELECT ?1,sha256,'old' FROM assets WHERE id=?2", params![url,asset])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        assets.localize(&db, url).await.unwrap(),
+        format!("asset://{asset}")
+    );
+    assert_eq!(assets.library(&db, 0).unwrap().items[0].upload_status, None);
+    enable_auto_upload(&db);
+    assert_eq!(
+        assets.localize(&db, url).await.unwrap(),
+        format!("asset://{asset}")
+    );
+    assert_eq!(
+        assets.library(&db, 0).unwrap().items[0]
+            .upload_status
+            .as_deref(),
+        Some("queued")
+    );
+}
+
+#[tokio::test]
+async fn exiting_cancels_documents_with_inflight_image_downloads() {
+    let (folder, db, mut assets) = setup();
+    image_profile(&db);
+    enable_auto_upload(&db);
+    let (server, url) = image_origin(&mut assets).await;
+    let markdown = format!("![外链]({url})");
+    let mut import = std::pin::pin!(assets.import_markdown_images(&db, &markdown, folder.path()));
+    let socket = tokio::select! {
+        connection = server.accept() => connection.unwrap().0,
+        result = &mut import => panic!("import completed before making the request: {result:?}"),
+    };
+    db.begin_exit();
+    let error = tokio::time::timeout(Duration::from_secs(1), &mut import)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code(), "EXIT_PENDING");
+    drop(socket);
+    db.cancel_exit();
+}
+
+#[tokio::test]
+async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavailable_links() {
+    let (folder, db, mut assets) = setup();
+    image_profile(&db);
+    let source = folder.path().join("article");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("照片 1.png"), png()).unwrap();
+    std::fs::write(folder.path().join("outside.png"), png()).unwrap();
+    let (server, url) = image_origin(&mut assets).await;
+    let body = format!(
+        "![文档内](<照片 1.png> \"图片标题\")\n\n![外链]({url})\n\n![外部](../outside.png)\n\n`![字面]({url})`"
+    );
+    assert_eq!(
+        assets
+            .import_markdown_images(&db, &body, &source)
+            .await
+            .unwrap(),
+        (body.clone(), 0)
+    );
+
+    enable_auto_upload(&db);
+    let mut remote = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(5, 4)
+        .write_to(&mut remote, ImageFormat::Png)
+        .unwrap();
+    let (imported, _) = tokio::join!(
+        assets.import_markdown_images(&db, &body, &source),
+        serve_image_response(&server, "200 OK", "", remote.get_ref()),
+    );
+    let (imported, unavailable) = imported.unwrap();
+    assert_eq!(unavailable, 1);
+    assert!(imported.contains("![文档内](asset://"));
+    assert!(imported.contains(" \"图片标题\")"));
+    assert!(imported.contains("![外链](asset://"));
+    assert!(imported.contains("![外部](../outside.png)"));
+    assert!(imported.contains(&format!("`![字面]({url})`")));
+    let library = assets.library(&db, 0).unwrap();
+    assert_eq!(library.items.len(), 2);
+    assert!(
+        library
+            .items
+            .iter()
+            .all(|row| row.upload_status.as_deref() == Some("queued"))
+    );
+}
+
+#[test]
+fn asset_library_pages_are_disjoint_and_out_of_range_clamps_to_last_page() {
+    let (_folder, db, assets) = setup();
+    db.write(|tx| {
+        let mut insert = tx
+            .prepare("INSERT INTO assets (id,kind,created_at,name) VALUES (?1,'original',?2,?1)")?;
+        for index in 0..51 {
+            insert.execute(params![format!("asset-{index}"), index])?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let first = assets.library(&db, 0).unwrap();
+    let last = assets.library(&db, 99).unwrap();
+    assert_eq!(first.page, 0);
+    assert!(first.has_next);
+    assert_eq!(first.items.len(), 48);
+    assert_eq!(first.items[0].id, "asset-50");
+    assert_eq!(last.page, 1);
+    assert!(!last.has_next);
+    assert_eq!(
+        last.items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["asset-2", "asset-1", "asset-0"]
+    );
+}
+
 #[tokio::test]
 async fn library_thumbnail_is_small_and_keeps_original_bytes() {
     let (_directory, db, assets) = setup();
@@ -368,7 +823,7 @@ async fn exit_keeps_library_imports_and_cleans_unreferenced_attachments() {
     }).unwrap();
     assert!(
         assets
-            .library(&db)
+            .library(&db, 0)
             .unwrap()
             .items
             .iter()
@@ -384,7 +839,7 @@ async fn exit_keeps_library_imports_and_cleans_unreferenced_attachments() {
     );
     assert!(
         assets
-            .library(&db)
+            .library(&db, 0)
             .unwrap()
             .items
             .iter()
@@ -400,7 +855,7 @@ async fn exit_keeps_library_imports_and_cleans_unreferenced_attachments() {
         bytes
     );
     assert!(!directory.path().join("assets").join(path).exists());
-    let library = assets.library(&db).unwrap();
+    let library = assets.library(&db, 0).unwrap();
     assert_eq!(library.items.len(), 1);
     assert_eq!(library.items[0].id, retained);
     db.read(|conn| {

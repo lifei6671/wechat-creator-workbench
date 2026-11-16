@@ -12,6 +12,7 @@ use std::io::Cursor;
 pub struct UploadOptions {
     pub filename_template: String,
     pub quality: Quality,
+    pub auto_upload: bool,
 }
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
@@ -134,6 +135,7 @@ mod tests {
         let mut options = UploadOptions {
             filename_template: "图片-{year}{month}{day}-{hour}{minute}{second}-{timestamp}".into(),
             quality: Quality::Standard,
+            ..UploadOptions::default()
         };
         let expanded = options.filename(&name, 0).unwrap();
         assert_eq!(expanded, format!("图片-19700101-000000-0-{name}"));

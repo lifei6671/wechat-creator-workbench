@@ -2,15 +2,16 @@ import { useState, type FormEvent } from "react";
 import { Button, Dialog, TextField } from "@radix-ui/themes";
 import { X } from "lucide-react";
 import { desktop, errorMessage, type ExportImage, type WechatImportJob } from "../desktop";
+import { Tooltip } from "../ui";
 import { renderWechat, type ImageResult, type RenderInput, type RenderedWechat } from "../../../../packages/wechat-renderer";
 
 export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose(): void }) {
   return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
     <Dialog.Content className="image-viewer" aria-describedby={undefined}>
       <Dialog.Title className="image-viewer-title">{alt || "图片预览"}</Dialog.Title>
-      <Dialog.Close><button type="button" className="plain-button chrome-icon image-viewer-close" aria-label="关闭图片预览" title="关闭图片预览">
+      <Tooltip content="关闭图片预览"><Dialog.Close><button type="button" className="plain-button chrome-icon image-viewer-close" aria-label="关闭图片预览">
         <X size={18} strokeWidth={1.65} />
-      </button></Dialog.Close>
+      </button></Dialog.Close></Tooltip>
       <img src={src} alt={alt} />
     </Dialog.Content>
   </Dialog.Root>;
@@ -31,7 +32,7 @@ export async function loadLocalImage(url: string, retry = false) {
 }
 
 export async function renderForPublication(input: RenderInput) {
-  const hosting = input.output === "clipboard" && Boolean((await desktop.assetLibrary()).target);
+  const hosting = input.output === "clipboard" && Boolean(await desktop.imageStorageTarget());
   const resolved = new Map<string, Promise<ImageResult>>();
   const exportImages: ExportImage[] = [];
   const result = await renderWechat(input, {

@@ -71,6 +71,7 @@ pub struct Workspace(Mutex<Database>);
 pub struct Database {
     conn: Option<Connection>,
     phase: Phase,
+    running: tokio_util::sync::CancellationToken,
 }
 
 fn closed() -> AppError {
@@ -92,6 +93,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0012_ai_chat.sql"),
     include_str!("../migrations/0013_ai_conversations.sql"),
     include_str!("../migrations/0014_ai_current_thread.sql"),
+    include_str!("../migrations/0015_entry_pins.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -129,6 +131,7 @@ impl Workspace {
         Ok(Self(Mutex::new(Database {
             conn: Some(conn),
             phase: Phase::Running,
+            running: tokio_util::sync::CancellationToken::new(),
         })))
     }
 
@@ -225,10 +228,19 @@ impl Workspace {
     }
 
     pub fn begin_exit(&self) {
-        self.lock().phase = Phase::SavingForExit;
+        let mut db = self.lock();
+        db.phase = Phase::SavingForExit;
+        db.running.cancel();
     }
     pub fn cancel_exit(&self) {
-        self.lock().phase = Phase::Running;
+        let mut db = self.lock();
+        db.phase = Phase::Running;
+        if db.running.is_cancelled() {
+            db.running = tokio_util::sync::CancellationToken::new();
+        }
+    }
+    pub(crate) fn running_lifetime(&self) -> tokio_util::sync::CancellationToken {
+        self.lock().running.clone()
     }
     pub fn start_cleaning(&self) {
         self.lock().phase = Phase::Cleaning;

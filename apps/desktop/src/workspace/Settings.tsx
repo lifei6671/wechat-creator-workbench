@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { desktop, errorMessage, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import type { ViewMode } from "./Document";
+import type { DocumentOpenMode } from "./preferences";
 
 export type Appearance = "system" | "light" | "dark";
 export type ViewShortcut = "none" | "shift-m" | "alt-v";
 
 const groups = [
   { label: "工作区", items: [
-    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: "外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 下载粘贴内容中的外链图片 链接 脚注 目录 加载方式 一次性加载 滚动分页 每页笔记数" },
+    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: "外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 下载粘贴内容中的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数" },
     { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 查找与替换 全文搜索 保存版本 新建笔记" },
     { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
@@ -176,14 +177,15 @@ export function S3Fields({ scope, initial, hasKey, publicBase, credentials }: {
   </>;
 }
 
-export function WorkspaceSettings({ page, appearance, shortcut, preferredView, explorer, downloadPastedImages, convertLinks, folderLoading, folderPageSize,
-  onAppearance, onShortcut, onView, onExplorer, onDownloadPastedImages, onConvertLinks, onFolderLoading, onFolderPageSize }: {
+export function WorkspaceSettings({ page, appearance, shortcut, preferredView, explorer, downloadPastedImages, convertLinks, documentOpenMode, folderLoading, folderPageSize,
+  onAppearance, onShortcut, onView, onExplorer, onDownloadPastedImages, onConvertLinks, onDocumentOpenMode, onFolderLoading, onFolderPageSize }: {
   page: "appearance" | "shortcuts";
   appearance: Appearance;
   shortcut: ViewShortcut;
   preferredView: ViewMode;
   downloadPastedImages: boolean;
   convertLinks: boolean;
+  documentOpenMode: DocumentOpenMode;
   folderLoading: "all" | "paged";
   folderPageSize: number;
   explorer: boolean;
@@ -192,6 +194,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   onView(value: ViewMode): void;
   onDownloadPastedImages(value: boolean): void;
   onConvertLinks(value: boolean): void;
+  onDocumentOpenMode(value: DocumentOpenMode): void;
   onFolderLoading(value: "all" | "paged"): void;
   onFolderPageSize(value: number): void;
   onExplorer(value: boolean): void;
@@ -202,7 +205,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
         <Select.Trigger id="appearance-mode" />
         <Select.Content><Select.Item value="system">跟随系统</Select.Item><Select.Item value="light">浅色</Select.Item><Select.Item value="dark">深色</Select.Item></Select.Content>
       </Select.Root></SettingRow>
-      <SettingRow id="explorer-visibility" label="显示资源导航" hint="控制目录、搜索和素材库所在的左侧栏。"><Switch id="explorer-visibility" radius="full" checked={explorer} onCheckedChange={onExplorer} /></SettingRow>
+      <SettingRow id="explorer-visibility" label="显示资源导航" hint="设置启动时是否显示左侧栏。"><Switch id="explorer-visibility" radius="full" checked={explorer} onCheckedChange={onExplorer} /></SettingRow>
     </div>
     <div className="settings-group-title">编辑与预览</div>
     <div className="settings-card">
@@ -215,12 +218,22 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
       <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
         <Switch id="download-pasted-images" radius="full" checked={downloadPastedImages} onCheckedChange={onDownloadPastedImages} />
       </SettingRow>
-      <SettingRow id="links-to-footnotes" label="链接转脚注" hint="在编辑、预览和公众号排版中显示链接脚注，可随时关闭。">
+      <SettingRow id="links-to-footnotes" label="链接转脚注" hint="设置文档打开时是否默认显示链接脚注。">
         <Switch id="links-to-footnotes" radius="full" checked={convertLinks} onCheckedChange={onConvertLinks} />
       </SettingRow>
     </div>
     <div className="settings-group-title">目录</div>
     <div className="settings-card">
+      <SettingRow id="document-open-mode" label="点击文档">
+        <Select.Root size="2" value={documentOpenMode}
+          onValueChange={value => onDocumentOpenMode(value === "new-tab" ? "new-tab" : "current")}>
+          <Select.Trigger id="document-open-mode" />
+          <Select.Content>
+            <Select.Item value="current">在当前标签打开</Select.Item>
+            <Select.Item value="new-tab">在新标签打开</Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </SettingRow>
       <SettingRow id="folder-loading" label="加载方式" hint="展开目录时一次加载全部笔记，或随滚动分批加载。">
         <Select.Root size="2" value={folderLoading} onValueChange={value => onFolderLoading(value as typeof folderLoading)}>
           <Select.Trigger id="folder-loading" />
@@ -253,67 +266,72 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   </>;
 }
 
-export function McpSettings() {
-  const [status, setStatus] = useState<McpStatus>();
-  const [port, setPort] = useState("");
-  const [permission, setPermission] = useState<McpConfig["permission"]>("read");
-  const [busy, setBusy] = useState(false);
+export function McpSettings({ status, loadError, onStatus }: { status?: McpStatus; loadError: string; onStatus(status: McpStatus): void }) {
+  const [port, setPort] = useState<string>();
+  const [permission, setPermission] = useState<McpConfig["permission"]>();
+  const [busy, setBusy] = useState<"save" | "stop" | "address" | "token" | "reset" | null>(null);
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
-  useEffect(() => {
-    void desktop.mcpStatus().then(value => {
-      setStatus(value);
-      setPort(String(value.config.port));
-      setPermission(value.config.permission);
-    }, failure => setError(errorMessage(failure)));
-  }, []);
 
-  async function perform(action: () => Promise<void>) {
-    setBusy(true);
+  async function perform(kind: NonNullable<typeof busy>, action: () => Promise<void>) {
+    if (busy) return;
+    setBusy(kind);
     setError("");
     setFeedback("");
     try { await action(); }
-    catch (failure) { setError(errorMessage(failure)); }
-    finally { setBusy(false); }
+    catch (failure) {
+      setError(errorMessage(failure));
+      if (kind === "save" || kind === "stop") {
+        try { onStatus(await desktop.mcpStatus()); }
+        catch (refreshError) { setError(`${errorMessage(failure)}。无法读取服务状态：${errorMessage(refreshError)}`); }
+      }
+    }
+    finally { setBusy(null); }
   }
 
-  const apply = () => perform(async () => {
-    const current = await desktop.saveMcp({ port: Number(port), permission, enabled: true });
-    setStatus(current);
+  const address = status?.running ? `http://127.0.0.1:${status.config.port}/mcp` : "";
+  const portValue = port ?? String(status?.config.port ?? "");
+  const permissionValue = permission ?? status?.config.permission ?? "read";
+  const apply = () => perform("save", async () => {
+    const current = await desktop.saveMcp({ port: Number(portValue), permission: permissionValue, enabled: true });
+    onStatus(current);
     setFeedback("设置已保存");
   });
-  const address = status && `http://127.0.0.1:${status.config.port}/mcp`;
-  return <form className="settings-card" onSubmit={event => { event.preventDefault(); void apply(); }}>
-        {status && <>
-          <SettingRow label="运行状态" hint="查看本机 MCP 服务是否在运行及其当前权限。"><span className="settings-state" data-running={status.running} role="status">
-            {status.running ? `运行中，${status.config.permission === "read" ? "只读" : "读写"}` : "已停止"}
-          </span></SettingRow>
-          <SettingRow id="mcp-port" label="端口" hint="MCP 客户端连接本机服务时使用的端口。"><TextField.Root id="mcp-port" type="number" min="1" max="65535" required value={port} onChange={event => setPort(event.target.value)} /></SettingRow>
-          <SettingRow id="mcp-permission" label="令牌权限" hint="控制客户端能否修改工作区内容。"><Select.Root value={permission} onValueChange={value => setPermission(value as McpConfig["permission"])}>
-            <Select.Trigger id="mcp-permission" /><Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
-          </Select.Root></SettingRow>
-          {status.running && <SettingRow id="mcp-address" label="本机地址" hint="将此地址填入 MCP 客户端的服务配置。"><TextField.Root id="mcp-address" readOnly value={address} /></SettingRow>}
-          <SettingRow label="访问令牌" hint="供 MCP 客户端验证身份。"><div className="button-strip setting-actions">
-            {status.running && <Button type="button" variant="soft" color="gray" disabled={busy} onClick={() => void perform(async () => {
-              await desktop.copyText(address!); setFeedback("已复制本机地址");
-            })}>复制地址</Button>}
-            <Button type="button" variant="soft" color="gray" disabled={busy} onClick={() => void perform(async () => {
-              await desktop.mcpToken(false); setFeedback("已复制令牌");
-            })}>复制令牌</Button>
-            {!status.running && <Button type="button" variant="ghost" color="gray" disabled={busy} onClick={() => void perform(async () => {
-              await desktop.mcpToken(true); setFeedback("令牌已重置并复制");
-            })}>重置令牌</Button>}
-          </div></SettingRow>
-        </>}
-        {!status && !error && <p className="settings-feedback muted-text" role="status">正在读取设置…</p>}
-        {(error || status?.error) && <p role="alert" className="settings-feedback inline-error">{error || status?.error}</p>}
-        {feedback && <p role="status" className="settings-feedback muted-text">{feedback}</p>}
-        {status && <div className="settings-footer">
-          {status?.config.enabled && <Button type="button" variant="soft" color="gray" disabled={busy} onClick={() => void perform(async () => {
-            const current = await desktop.saveMcp({ ...status.config, enabled: false });
-            setStatus(current);
-          })}>停止 MCP</Button>}
-          <Button type="submit" loading={busy}>{status.running ? "保存设置" : "启用 MCP"}</Button>
-        </div>}
+  const failure = error || loadError || status?.error;
+  return <form className="settings-card mcp-settings" onSubmit={event => { event.preventDefault(); void apply(); }}>
+    <SettingRow label="运行状态"><span className="settings-state" data-running={status?.running} role="status">
+      {!status ? "正在读取设置…" : status.running ? `运行中，${status.config.permission === "read" ? "只读" : "读写"}` : "已停止"}
+    </span></SettingRow>
+    <SettingRow id="mcp-port" label="端口"><TextField.Root id="mcp-port" type="number" min="1" max="65535" required
+      disabled={!status} value={portValue} onChange={event => setPort(event.target.value)} /></SettingRow>
+    <SettingRow id="mcp-permission" label="令牌权限"><Select.Root value={permissionValue} disabled={!status}
+      onValueChange={value => setPermission(value as McpConfig["permission"])}>
+      <Select.Trigger id="mcp-permission" /><Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
+    </Select.Root></SettingRow>
+    <SettingRow id="mcp-address" label="本机地址"><div className="mcp-address">
+      <TextField.Root id="mcp-address" readOnly value={address} disabled={!status?.running} />
+      <Button type="button" variant="soft" color="gray" loading={busy === "address"} disabled={!status?.running || busy !== null}
+        onClick={() => void perform("address", async () => { await desktop.copyText(address); setFeedback("已复制本机地址"); })}>复制地址</Button>
+    </div></SettingRow>
+    <SettingRow label="访问令牌"><div className="button-strip setting-actions">
+      <Button type="button" variant="soft" color="gray" loading={busy === "token"} disabled={!status || busy !== null}
+        onClick={() => void perform("token", async () => { await desktop.mcpToken(false); setFeedback("已复制令牌"); })}>复制令牌</Button>
+      <Button type="button" variant="ghost" color="gray" loading={busy === "reset"} disabled={!status || status.running || busy !== null}
+        onClick={() => void perform("reset", async () => { await desktop.mcpToken(true); setFeedback("令牌已重置并复制"); })}>重置令牌</Button>
+    </div></SettingRow>
+    <div className="settings-footer mcp-footer">
+      <div className="mcp-feedback">
+        <span role="status" className="muted-text">{failure ? "" : feedback}</span>
+        {failure && <span role="alert" className="inline-error">{failure}</span>}
+      </div>
+      <Button type="button" variant="soft" color="gray" data-available={Boolean(status?.config.enabled)}
+        loading={busy === "stop"} disabled={!status?.config.enabled || busy !== null}
+        onClick={() => void perform("stop", async () => {
+          if (status) onStatus(await desktop.saveMcp({ ...status.config, enabled: false }));
+        })}>停止 MCP</Button>
+      <Button type="submit" className="mcp-submit" loading={busy === "save"} disabled={!status || busy !== null}>
+        {status?.running ? "保存设置" : "启用 MCP"}
+      </Button>
+    </div>
   </form>;
 }
