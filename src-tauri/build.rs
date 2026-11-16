@@ -49,6 +49,7 @@ fn main() {
             "mcp_token",
             "ai_settings",
             "ai_agent_versions",
+            "ai_agent_models",
             "ai_save_preferences",
             "ai_model_has_key",
             "ai_save_model",

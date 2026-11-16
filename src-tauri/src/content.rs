@@ -375,8 +375,8 @@ impl Workspace {
             })
         };
         match mode {
-            SaveMode::Auto | SaveMode::Manual => self.save(operation),
-            SaveMode::AiReplace | SaveMode::External => self.write(operation),
+            SaveMode::Auto | SaveMode::Manual | SaveMode::AiReplace => self.save(operation),
+            SaveMode::External => self.write(operation),
         }
     }
 

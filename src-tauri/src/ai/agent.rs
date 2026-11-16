@@ -1,7 +1,7 @@
 use super::{MAX_RESPONSE_BYTES, response_error, settings::Agent};
 use crate::db::{AppError, Result};
-use serde::Deserialize;
-use std::{env, path::PathBuf, process::Stdio, time::Duration};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, env, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -98,7 +98,6 @@ fn arguments(agent: Agent) -> &'static [&'static str] {
             "--disable",
             "plugins",
             "--json",
-            "-",
         ],
         Agent::ClaudeCode => &[
             "--print",
@@ -115,6 +114,91 @@ fn arguments(agent: Agent) -> &'static [&'static str] {
             "--disable-slash-commands",
         ],
     }
+}
+
+#[derive(Serialize)]
+pub struct ModelOption {
+    id: String,
+    label: String,
+}
+
+fn parse_catalog(data: &[u8]) -> serde_json::Result<Vec<ModelOption>> {
+    #[derive(Deserialize)]
+    struct Catalog {
+        models: Vec<Entry>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        slug: String,
+        display_name: String,
+        visibility: String,
+    }
+    let mut seen = HashSet::new();
+    Ok(serde_json::from_slice::<Catalog>(data)?
+        .models
+        .into_iter()
+        .filter(|entry| {
+            entry.visibility == "list"
+                && valid_model_id(&entry.slug)
+                && !entry.display_name.trim().is_empty()
+                && seen.insert(entry.slug.clone())
+        })
+        .map(|entry| ModelOption {
+            id: entry.slug,
+            label: entry.display_name,
+        })
+        .collect())
+}
+
+pub fn valid_model_id(id: &str) -> bool {
+    id.len() <= 128
+        && id.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._:/".contains(&byte))
+}
+
+async fn codex_catalog() -> Option<Vec<ModelOption>> {
+    let mut command = Command::new(executable(Agent::Codex)?);
+    command
+        .args(["debug", "models", "--bundled"])
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command.spawn().ok()?;
+    timeout(Duration::from_secs(6), async {
+        let mut data = Vec::new();
+        child
+            .stdout
+            .take()?
+            .take((MAX_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut data)
+            .await
+            .ok()?;
+        if data.len() > MAX_RESPONSE_BYTES || !child.wait().await.ok()?.success() {
+            return None;
+        }
+        parse_catalog(&data).ok()
+    })
+    .await
+    .ok()?
+}
+
+pub async fn model_catalog() -> [(Agent, Vec<ModelOption>); 2] {
+    let claude = [("sonnet", "Sonnet"), ("opus", "Opus"), ("haiku", "Haiku")]
+        .into_iter()
+        .map(|(id, label)| ModelOption {
+            id: id.into(),
+            label: label.into(),
+        })
+        .collect();
+    [
+        (Agent::Codex, codex_catalog().await.unwrap_or_default()),
+        (Agent::ClaudeCode, claude),
+    ]
 }
 
 fn process_error(agent: Agent) -> AppError {
@@ -190,7 +274,7 @@ fn result_text(agent: Agent, output: &[u8]) -> Result<String> {
     }
 }
 
-pub async fn run(agent: Agent, prompt: &str) -> Result<String> {
+pub async fn run(agent: Agent, model: Option<&str>, prompt: &str) -> Result<String> {
     let executable = executable(agent).ok_or_else(|| {
         AppError::new(
             "AI_AGENT_MISSING",
@@ -200,6 +284,12 @@ pub async fn run(agent: Agent, prompt: &str) -> Result<String> {
     let directory = tempfile::tempdir().map_err(|_| process_error(agent))?;
     let mut command = Command::new(executable);
     command.args(arguments(agent)).current_dir(directory.path());
+    if let Some(model) = model {
+        command.arg(format!("--model={model}"));
+    }
+    if agent == Agent::Codex {
+        command.arg("-");
+    }
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let output = timeout(AGENT_TIMEOUT, async {
@@ -238,6 +328,21 @@ pub async fn run(agent: Agent, prompt: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_lists_visible_unique_models_with_valid_ids() {
+        let data = br#"{"models":[
+          {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","visibility":"list"},
+          {"slug":"gpt-6.1-sol","display_name":"Duplicate","visibility":"list"},
+          {"slug":"gpt-hidden","display_name":"Hidden","visibility":"hide"},
+          {"slug":"--disable","display_name":"Invalid","visibility":"list"},
+          {"slug":"blank","display_name":" ","visibility":"list"}
+        ]}"#;
+        let options = parse_catalog(data).unwrap();
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, "gpt-6.1-sol");
+        assert_eq!(options[0].label, "GPT-6.1-Sol");
+    }
 
     #[test]
     fn reads_only_final_codex_reply_from_a_completed_turn() {

@@ -65,7 +65,7 @@ export interface Category { id: string; parentId: string | null; name: string; s
 export interface Tag { id: string; name: string }
 export interface Library { workspaceId: string; categories: Category[]; tags: Tag[]; tagSuggestions: string[] }
 export interface Revision { version: number; contentMd: string; reason: "manual" | "before_ai_replace"; createdAt: number }
-export type SaveMode = "auto" | "manual";
+export type SaveMode = "auto" | "manual" | "ai_replace";
 export interface SaveResult { version: number }
 export interface AppError {
   code: "DATABASE" | "INTEGRITY" | "INVALID_INPUT" | "NOT_FOUND" | "VERSION_CONFLICT" | "EXIT_PENDING" | "EXPORT_FAILED";

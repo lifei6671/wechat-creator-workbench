@@ -7,9 +7,10 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { MarkdownEditor, type EditorCommand, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
 import { parseWechat } from "../../../../packages/wechat-renderer";
+import { desktop } from "../desktop";
 import { attachClipboard } from "./clipboard";
 import { SaveQueue } from "./save-queue";
-import { captureAiTask, matchesAiTarget } from "../workspace/AiPanel";
+import { captureAiTask, matchesAiTarget, useAiAssistant } from "../workspace/AiPanel";
 import formatFixtures from "../../../../fixtures/wechat-format.json";
 
 beforeAll(() => {
@@ -71,6 +72,59 @@ it("binds an AI rewrite to the original session and range and gives it a separat
     other.dispose();
     flushSync(() => root.unmount());
     editorContainer.remove();
+  }
+});
+
+it("passes chat history and saves a document proposal with its prior revision and an undo step", async () => {
+  const entry: Entry = { id: "chat-draft", kind: "article", title: "标题", contentMd: "原文", status: "draft", categoryId: null,
+    tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "", version: 1, updatedAt: 0, deletedAt: null, links: [] };
+  const commit = vi.fn(async (_id: string, version: number) => ({ version: version + 1 }));
+  const queue = new SaveQueue(entry, commit, () => {});
+  const unsubscribe = vi.spyOn(desktop, "onAiStarted").mockResolvedValue(() => {});
+  const generate = vi.spyOn(desktop, "aiGenerate")
+    .mockResolvedValueOnce({ reply: "可以加一个小节。", replacement: null })
+    .mockResolvedValue({ reply: "已改好。", replacement: "## 新标题\n\n新段落" });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let editor: MarkdownEditorHandle | null = null;
+  let assistant!: ReturnType<typeof useAiAssistant>;
+  function Harness() {
+    assistant = useAiAssistant();
+    return <MarkdownEditor ref={value => { editor = value; }} entryId={entry.id} value={entry.contentMd}
+      readOnly={false} onChange={(_id, _revision, contentMd) => queue.edit({ contentMd })} onBlur={() => {}} />;
+  }
+  flushSync(() => root.render(<Harness />));
+  const tasks = () => assistant.conversations[queue.sessionId];
+  try {
+    await vi.waitFor(() => expect(editor).not.toBeNull());
+    editor!.insert("未保存的");
+    flushSync(() => assistant.send("怎么改？", queue, editor!));
+    await vi.waitFor(() => expect(tasks()?.[0]?.result).toEqual({ reply: "可以加一个小节。", replacement: null }));
+    flushSync(() => assistant.send("按建议修改正文", queue, editor!));
+    await vi.waitFor(() => expect(tasks()?.[1]?.result).toBeDefined());
+    expect(generate).toHaveBeenLastCalledWith(expect.objectContaining({ entryId: entry.id, text: "未保存的原文",
+      history: [{ user: "怎么改？", assistant: "可以加一个小节。" }] }));
+    flushSync(() => assistant.send("刚才那版还有什么可改？", queue, editor!));
+    await vi.waitFor(() => expect(tasks()?.[2]?.result).toBeDefined());
+    expect(generate).toHaveBeenLastCalledWith(expect.objectContaining({ history: expect.arrayContaining([
+      { user: "按建议修改正文", assistant: expect.stringContaining("## 新标题\n\n新段落") },
+    ]) }));
+    expect(queue.snapshot().fields.contentMd).toBe("未保存的原文");
+    await assistant.apply(tasks()[1], "## 新标题\n\n新段落", queue, editor!, () => true);
+    expect(commit).toHaveBeenNthCalledWith(1, entry.id, 1, expect.objectContaining({ contentMd: "未保存的原文" }), "auto");
+    expect(commit).toHaveBeenNthCalledWith(2, entry.id, 2, expect.objectContaining({ contentMd: "## 新标题\n\n新段落" }), "ai_replace");
+    expect(container.querySelector(".ProseMirror h2")?.textContent).toBe("新标题");
+    editor!.command("undo");
+    expect(queue.snapshot().fields.contentMd).toBe("未保存的原文");
+    await assistant.apply(tasks()[1], "过时的修改", queue, editor!, () => true);
+    expect(queue.snapshot().fields.contentMd).toBe("未保存的原文");
+  } finally {
+    generate.mockRestore();
+    unsubscribe.mockRestore();
+    queue.dispose();
+    flushSync(() => root.unmount());
+    container.remove();
   }
 });
 

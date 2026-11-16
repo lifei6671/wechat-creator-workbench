@@ -4,11 +4,11 @@ import { FilePenLine, FolderOpen, Images, Newspaper, Search } from "lucide-react
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
-import { desktop, errorMessage, windowsTitleBar, type AiOperation, type AiSettings, type BackupSnapshot, type ImageTarget } from "../desktop";
+import { desktop, errorMessage, windowsTitleBar, type AiAgent, type AiAgentModel, type AiOperation, type AiSelection, type AiSettings, type BackupSnapshot, type ImageTarget } from "../desktop";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
 import { commandKey, untitled } from "../labels";
-import { persist, Tool, useStoredInitial } from "../ui";
+import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
 import { workspacePreferences } from "./preferences";
@@ -20,6 +20,7 @@ import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type Se
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiPanel, useAiAssistant } from "./AiPanel";
+import { AiTargetPicker } from "./AiTargetPicker";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
 import { MigrationPanel } from "./Migration";
 import { AssetPanel, canHostImage, ImageStorageSettings, imageMarkdown } from "./Assets";
@@ -41,14 +42,6 @@ const destinations = [
   ["folders", FolderOpen, "内容目录"], ["search", Search, "全文搜索"], ["assets", Images, "素材库"],
   ["imports", Newspaper, "已导入的公众号文章"],
 ] as const;
-
-function SidebarToggleIcon({ expanded = false }: { expanded?: boolean }) {
-  return <svg width="15" height="15" viewBox="0 0 18 18" aria-hidden="true">
-    <rect x="1.5" y="2.25" width="15" height="13.5" rx="2.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
-    {expanded ? <rect x="3.25" y="4" width="3.5" height="10" rx="0.9" fill="currentColor" />
-      : <path d="M5 4.5v9" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />}
-  </svg>;
-}
 
 function useMedia(query: string) {
   const [matches, setMatches] = useState(() => matchMedia(query).matches);
@@ -107,6 +100,8 @@ export function DesktopShell() {
   const [aiOpen, setAiOpen] = useState(false);
   const [aiSettings, setAiSettings] = useState<AiSettings>();
   const [aiSettingsError, setAiSettingsError] = useState("");
+  const [aiChoice, setAiChoice] = useState<AiSelection>();
+  const [agentCatalog, setAgentCatalog] = useState<Partial<Record<AiAgent, AiAgentModel[]>>>();
   const showAiConfiguration = aiOpen || modal?.type === "settings";
   useEffect(() => {
     if (!showAiConfiguration) return;
@@ -123,6 +118,16 @@ export function DesktopShell() {
   const compact = useMedia("(width < 820px)");
   const explorer = preferredExplorer ?? !compact;
   const reading = activeId !== null && readingIds.includes(activeId);
+  const showAiPanel = aiOpen && !focusMode && !reading;
+  const loadAgentModels = showAiPanel && aiSettings?.preferences.enabled === true && aiSettings.agents.some(agent => agent.installed);
+  useEffect(() => {
+    if (!loadAgentModels) return;
+    let current = true;
+    void desktop.aiAgentModels().then(models => {
+      if (current) setAgentCatalog(Object.fromEntries(models));
+    }, () => { if (current) setAgentCatalog({}); });
+    return () => { current = false; };
+  }, [loadAgentModels]);
   const viewMode = reading || focusMode || (activeId !== null && singlePaneIds.includes(activeId)) ? "edit" : preferredView;
   const queues = useRef(new Map<string, SaveQueue>());
   const active = useRef<string | null>(null);
@@ -138,6 +143,9 @@ export function DesktopShell() {
   const sidebarWidth = useRef(initialSidebarWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
   const sidebarPanel = usePanelRef();
+  const aiSidebarPanel = usePanelRef();
+  const [initialAiWidth] = useState(() => useStoredInitial("ai-sidebar-width", 350));
+  const aiSidebarWidth = useRef(initialAiWidth);
   const searchInput = useRef<HTMLInputElement>(null);
   const focusOrigin = useRef<HTMLElement | null>(null);
   const refresh = () => setRefreshCount(count => count + 1);
@@ -313,6 +321,7 @@ export function DesktopShell() {
   }
 
   function forgetTab(id: string) {
+    assistant.forget(queues.current.get(id)!.sessionId);
     queues.current.get(id)!.dispose();
     queues.current.delete(id);
     setReadingIds(current => current.filter(item => item !== id));
@@ -773,7 +782,7 @@ export function DesktopShell() {
     mode: viewMode, setMode: view, focusMode, onFocusMode: () => setFocusMode(value => !value),
     reading, onReading: toggleReading,
     onPalette: () => showModal({ type: "palette" }),
-    onAi: toggleAi, aiOpen: aiOpen && !focusMode && !reading,
+    onAi: toggleAi, aiOpen: showAiPanel,
     onSave: () => {
       if (!reading && selected?.entry.deletedAt === null) {
         commitBreadcrumb();
@@ -958,23 +967,42 @@ export function DesktopShell() {
     const timer = window.setTimeout(clear, 220);
     return () => { window.clearTimeout(timer); clear(); };
   }, [showExplorer, sidebarPanel]);
-  const origin = assistant.task ? queues.current.get(assistant.task.request.entryId) : undefined;
-  const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
-  const canGenerate = Boolean(aiTarget.label && !reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id));
+  useLayoutEffect(() => {
+    const panel = aiSidebarPanel.current!;
+    const group = sidebarGroup.current!;
+    if (showAiPanel !== panel.isCollapsed()) return;
+    group.dataset.aiSidebarMoving = "true";
+    if (showAiPanel) panel.resize(`${aiSidebarWidth.current}px`);
+    else panel.collapse();
+    const clear = () => { delete group.dataset.aiSidebarMoving; };
+    const timer = window.setTimeout(clear, 220);
+    return () => { window.clearTimeout(timer); clear(); };
+  }, [showAiPanel, aiSidebarPanel]);
+  const choice = aiChoice && aiSettings && aiAvailability(aiSettings, aiChoice.target).label ? aiChoice : undefined;
+  const aiTargetId = choice?.target ?? aiSettings?.preferences.defaultTarget;
+  const aiTarget = aiSettings ? aiAvailability(aiSettings, aiTargetId) : { hint: aiSettingsError || "正在读取 AI 设置…" };
+  const aiSelection = aiTargetId && aiTarget.label ? { target: aiTargetId, agentModel: choice?.agentModel } : undefined;
+  const aiEditor = queue ? handles.current.get(queue.entry.id) : undefined;
+  const canEditWithAi = Boolean(queue?.entry.deletedAt === null && aiEditor && !globalLock && !locked.includes(queue.entry.id));
+  const canChat = Boolean(aiTarget.label && !globalLock && (!queue || canEditWithAi));
   function generateAi(operation: AiOperation) {
-    if (exit.current || !queue || reading) return;
-    const editor = handles.current.get(queue.entry.id);
-    if (editor) assistant.start(queue, editor, operation);
+    if (!exit.current && canChat && queue && aiEditor && !reading) assistant.start(queue, aiEditor, operation, aiSelection);
   }
   function closeAi() {
     setAiOpen(false);
     document.getElementById("ai-panel-trigger")?.focus();
   }
-  const aiPanel = aiOpen && !focusMode && !reading && <AiPanel assistant={assistant} origin={origin} target={aiTarget}
-    canGenerate={canGenerate} onGenerate={generateAi} onClose={closeAi} onSettings={showModel} onApply={candidate => {
-      if (exit.current || globalLock || !origin || locked.includes(origin.entry.id) || readingIds.includes(origin.entry.id)) return;
-      const editor = handles.current.get(origin.entry.id);
-      if (editor) assistant.apply(candidate, origin, editor);
+  const aiPanel = <AiPanel open={showAiPanel} assistant={assistant} queue={queue} target={aiTarget} selection={aiSelection}
+    targetPicker={<AiTargetPicker settings={aiSettings} catalog={agentCatalog} selection={aiSelection}
+      label={aiTarget.label ?? aiTarget.hint ?? "选择 AI 目标"} onSelect={setAiChoice} />}
+    windowControls={showAiPanel && windowsTitleBar ? <WindowControls onError={showError} /> : undefined}
+    canChat={canChat} canEdit={canEditWithAi} onGenerate={generateAi} onClose={closeAi} onSettings={showModel}
+    onSend={message => { if (!exit.current && canChat) assistant.send(message, queue, aiEditor, aiSelection); }}
+    onApply={(task, candidate) => {
+      if (!canEditWithAi || !queue || !aiEditor) return;
+      const id = queue.entry.id;
+      void assistant.apply(task, candidate, queue, aiEditor, () => !exit.current && active.current === id
+        && queues.current.get(id) === queue && handles.current.get(id) === aiEditor && !locking.current.has(id));
     }} />;
   const toast = notice && <WorkspaceToast notice={notice} onReveal={path => run(() => desktop.revealFile(path))}
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
@@ -984,7 +1012,10 @@ export function DesktopShell() {
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
     <div className="workspace-shell" inert={Boolean(exitMessage)}>
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup}
-        onLayoutChanged={() => { if (showExplorer) persist("sidebar-width", sidebarWidth.current); }}>
+        onLayoutChanged={() => {
+          if (showExplorer) persist("sidebar-width", sidebarWidth.current);
+          if (showAiPanel) persist("ai-sidebar-width", aiSidebarWidth.current);
+        }}>
           <Panel id="explorer" defaultSize={initialSidebarSize} minSize="192px" collapsible collapsedSize="0px" panelRef={sidebarPanel}
             style={{ overflow: "hidden" }} groupResizeBehavior="preserve-pixel-size"
             onResize={size => {
@@ -1052,7 +1083,7 @@ export function DesktopShell() {
               {!focusMode && <CreateMenu onCreate={() => create()} onImportWechat={() => showWechatImport()}
                 onImportMarkdown={() => importMarkdown()} disabled={globalLock} />}
               <WindowDragRegion onError={showError} />
-              {windowsTitleBar && <WindowControls onError={showError} />}
+              {!showAiPanel && windowsTitleBar && <WindowControls onError={showError} />}
             </header>
             {queue ? <>
               <DocumentToolbar queue={queue} categories={library?.categories ?? []} actions={actions}
@@ -1073,7 +1104,6 @@ export function DesktopShell() {
                     onImageZoom={(image, trigger) => showModal({ type: "imageViewer", ...image }, trigger)} />)}
                 </div>
                 {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks} /></div>}
-                {aiPanel}
                 {workspaceNotice}
               </div>
               <DocumentSaveError key={queue.sessionId} queue={queue} actions={actions} />
@@ -1086,10 +1116,19 @@ export function DesktopShell() {
                   <Button size="2" variant="soft" color="gray" onClick={() => showWechatImport()}>导入公众号文章</Button>
                 </div>
               </div>
-              {aiPanel}
               {workspaceNotice}
             </div>}
           </main>
+        </Panel>
+        <Separator className="divider ai-sidebar-divider" hidden={!showAiPanel} disabled={!showAiPanel}
+          disableDoubleClick aria-label="调整 AI 侧栏宽度" />
+        <Panel id="ai-sidebar" defaultSize="0px" minSize="300px" maxSize="360px" collapsible collapsedSize="0px"
+          panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
+          onResize={size => {
+            if (showAiPanel && size.inPixels > 0) aiSidebarWidth.current = size.inPixels;
+            else if (showAiPanel && !sidebarGroup.current?.dataset.aiSidebarMoving) setAiOpen(false);
+          }}>
+          <div className="ai-sidebar" inert={!showAiPanel}>{aiPanel}</div>
         </Panel>
       </Group>
       <StatusBar queue={queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}

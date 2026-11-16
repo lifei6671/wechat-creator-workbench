@@ -114,9 +114,6 @@ pub async fn save_entry(
     fields: Fields,
     mode: SaveMode,
 ) -> Result<SaveResult> {
-    if matches!(mode, SaveMode::AiReplace) {
-        return Err(AppError::invalid("此入口只接受编辑器保存"));
-    }
     state.save_entry(&id, expected_version, fields, mode)
 }
 

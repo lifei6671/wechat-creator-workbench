@@ -11,7 +11,9 @@ mod mcp;
 mod secrets;
 mod wechat_import;
 
-use ai::{AiService, ai_cancel, ai_generate, ai_jobs, ai_test_target, settings::*};
+use ai::{
+    AiService, ai_agent_models, ai_cancel, ai_generate, ai_jobs, ai_test_target, settings::*,
+};
 use assets::{Assets, commands::*, publishing::*};
 use backup::{
     Backups, backup_commit_restore, backup_configure, backup_create, backup_discard_restore,
@@ -116,6 +118,7 @@ fn main() {
             mcp_token,
             ai_settings,
             ai_agent_versions,
+            ai_agent_models,
             ai_save_preferences,
             ai_model_has_key,
             ai_save_model,

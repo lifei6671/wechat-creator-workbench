@@ -45,7 +45,7 @@ export interface EditorTarget {
 export interface MarkdownEditorHandle {
   focus(): void;
   search(): void;
-  target(): EditorTarget;
+  target(scope?: "document"): EditorTarget;
   insert(text: string): void;
   linkFootnoteMarkdown(source: string): string;
   hostImages?(upload: (src: string) => Promise<string>, eligible: (src: string) => boolean): Promise<number>;
@@ -708,9 +708,10 @@ export function MarkdownEditor(props: Props) {
           if (searchInput.current) searchInput.current.focus();
           else setSearchView(view);
         },
-        target: () => {
-          const { from, to } = view.state.selection;
-          return { entryId, session, localRevision: revision.getState(view.state)!, from, to, original: targetText(view, { from, to }) };
+        target: scope => {
+          const { from, to } = scope === "document" ? { from: 0, to: view.state.doc.content.size } : view.state.selection;
+          return { entryId, session, localRevision: revision.getState(view.state)!, from, to,
+            original: scope === "document" ? markdown : targetText(view, { from, to }) };
         },
         insert: text => {
           if (isWritable(view)) view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, text)));
@@ -767,7 +768,9 @@ export function MarkdownEditor(props: Props) {
         replaceTarget: (target, text) => {
           if (!isWritable(view) || target.entryId !== entryId || target.session !== session
             || target.localRevision !== revision.getState(view.state)) return false;
-          const tr = view.state.tr.replaceRange(target.from, target.to, markdownSlice(editor, text));
+          const slice = markdownSlice(editor, text);
+          const whole = target.from === 0 && target.to === view.state.doc.content.size;
+          const tr = view.state.tr.replaceRange(target.from, target.to, whole ? new Slice(slice.content, 0, 0) : slice);
           view.dispatch(closeHistory(tr));
           view.dispatch(closeHistory(view.state.tr));
           return true;

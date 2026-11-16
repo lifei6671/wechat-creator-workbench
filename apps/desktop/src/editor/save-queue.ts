@@ -24,6 +24,7 @@ export class SaveQueue {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private inFlight: Promise<boolean> | undefined;
   private manual = false;
+  private aiReplace = false;
 
   constructor(
     readonly entry: Entry,
@@ -54,14 +55,15 @@ export class SaveQueue {
     if (!this.state.error) this.timer = setTimeout(() => { void this.flush(); }, 750);
   }
 
-  flush(options: { manual?: boolean; retry?: boolean } = {}): Promise<boolean> {
+  flush(options: { manual?: boolean; retry?: boolean; aiReplace?: boolean } = {}): Promise<boolean> {
     clearTimeout(this.timer);
     if (this.state.error) {
       if (!options.retry || isConflict(this.state.error)) return Promise.resolve(false);
       this.update({ error: null });
     }
     this.manual ||= options.manual === true;
-    if (!this.inFlight && (this.manual || this.state.revision !== this.state.savedRevision)) {
+    this.aiReplace ||= options.aiReplace === true;
+    if (!this.inFlight && (this.aiReplace || this.manual || this.state.revision !== this.state.savedRevision)) {
       this.inFlight = this.drain().finally(() => { this.inFlight = undefined; });
     }
     return this.inFlight ?? Promise.resolve(true);
@@ -71,12 +73,14 @@ export class SaveQueue {
     this.update({ saving: true });
     let committed = false;
     try {
-      while (this.manual || this.state.revision !== this.state.savedRevision) {
+      while (this.aiReplace || this.manual || this.state.revision !== this.state.savedRevision) {
         const { fields, version, revision } = this.state;
-        const mode = this.manual ? "manual" : "auto";
-        this.manual = false;
+        const mode = this.aiReplace ? "ai_replace" : this.manual ? "manual" : "auto";
+        if (mode === "ai_replace") this.aiReplace = false;
+        if (mode === "manual") this.manual = false;
         const { version: committedVersion } = await this.commit(this.entry.id, version, fields, mode).catch(error => {
           this.manual ||= mode === "manual";
+          this.aiReplace ||= mode === "ai_replace";
           throw error;
         });
         committed = true;

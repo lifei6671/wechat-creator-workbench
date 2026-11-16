@@ -89,6 +89,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_default_folders.sql"),
     include_str!("../migrations/0010_asset_retention.sql"),
     include_str!("../migrations/0011_hosted_image_hash.sql"),
+    include_str!("../migrations/0012_ai_chat.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -361,6 +362,23 @@ pub fn workspace_id(conn: &Connection) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adding_ai_chat_preserves_saved_job_details() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, 0, 11).unwrap();
+        conn.execute_batch(
+            "INSERT INTO jobs(id,kind,status,created_at,updated_at) VALUES ('previous','ai','completed',1,2);
+             INSERT INTO ai_job_details VALUES ('previous','titles','local-model',3,4,7);",
+        )
+        .unwrap();
+        migrate(&mut conn, 11, SCHEMA_VERSION).unwrap();
+        let details: (String, String, i64, i64, i64) = conn.query_row(
+            "SELECT operation, model, input_tokens, output_tokens, total_tokens FROM ai_job_details WHERE job_id='previous'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        ).unwrap();
+        assert_eq!(details, ("titles".into(), "local-model".into(), 3, 4, 7));
+    }
 
     #[test]
     fn legacy_assets_keep_present_originals_when_origin_is_unknown() {

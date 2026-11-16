@@ -1,14 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, Select, Switch, Tabs, TextField } from "@radix-ui/themes";
 import { desktop, errorMessage, type AiAgent, type AiModel, type AiModelKind, type AiSettings, type AiTarget } from "../desktop";
+import { AiAgentIcon, agentLabels } from "./AiAgentIcon";
 import { SettingRow } from "./Settings";
 
-const agentLabels: Record<AiAgent, string> = { codex: "Codex", claude_code: "Claude Code" };
-const localAgentIcons = import.meta.glob<string>("../assets/ai/*.png", { eager: true, import: "default", query: "?url" });
-const agentIcons: Partial<Record<AiAgent, string>> = {
-  codex: localAgentIcons["../assets/ai/codex.png"],
-  claude_code: localAgentIcons["../assets/ai/claude-code.png"],
-};
 const groups = { agents: "本地代理", local: "本地模型", custom: "API 模型" } as const;
 const presets = {
   local: [
@@ -26,9 +21,8 @@ const presets = {
 const labelModel = (model: AiModel) => model.name || model.model;
 const targetValue = (target: AiTarget) => `${target.kind}:${target.id}`;
 
-export function aiAvailability(settings: AiSettings) {
+export function aiAvailability(settings: AiSettings, target = settings.preferences.defaultTarget) {
   if (!settings.preferences.enabled) return { hint: "AI 功能未启用" };
-  const target = settings.preferences.defaultTarget;
   if (target?.kind === "agent") {
     const label = agentLabels[target.id];
     return settings.agents.find(agent => agent.id === target.id)?.installed
@@ -101,7 +95,7 @@ export function ModelSettings({ settings, loadError, onChange }: {
 
   return <div className="ai-settings">
     <div className="settings-card ai-settings-card">
-      <SettingRow id="ai-enabled" label="启用 AI 功能" hint="控制 AI 助手能否生成摘要、标题和改写建议。">
+      <SettingRow id="ai-enabled" label="启用 AI 功能" hint="启用 AI 聊天和文档修改建议。">
         <Switch id="ai-enabled" size="2" checked={preferences.enabled} disabled={disabled}
           onCheckedChange={enabled => void run("preferences", "enabled", async () => {
             onChange(await desktop.saveAiPreferences({ ...preferences, enabled }));
@@ -140,7 +134,7 @@ export function ModelSettings({ settings, loadError, onChange }: {
             <div key={agent.id} className="ai-agent-card">
               <div className="ai-agent-heading">
                 <strong>
-                  {agentIcons[agent.id] && <img src={agentIcons[agent.id]} width={16} height={16} alt="" draggable={false} />}
+                  <AiAgentIcon agent={agent.id} />
                   {agentLabels[agent.id]}
                 </strong>
                 <span className="settings-state" data-running={agent.installed}>{agent.installed ? "已安装" : "未找到"}</span>

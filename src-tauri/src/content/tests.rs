@@ -319,8 +319,11 @@ fn stale_versions_cannot_overwrite_and_only_key_saves_create_history() {
     assert_eq!(error["code"], "VERSION_CONFLICT");
     assert_eq!(error["currentVersion"], 2);
     assert_eq!(db.get_entry(id).unwrap().fields.content_md, "自动保存");
+    db.begin_exit();
     db.save_entry(id, 2, article("稿", "AI 改写"), SaveMode::AiReplace)
         .unwrap();
+    db.cancel_exit();
+    assert_eq!(db.get_entry(id).unwrap().fields.content_md, "AI 改写");
     let history = db.revisions(id).unwrap();
     assert_eq!(history[0].reason, "before_ai_replace");
     assert_eq!(history[0].content_md, "自动保存");

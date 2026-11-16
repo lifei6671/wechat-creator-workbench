@@ -30,6 +30,8 @@ export interface McpStatus { config: McpConfig; running: boolean; error: string 
 export type AiAgent = "codex" | "claude_code";
 export type AiModelKind = "local" | "custom";
 export type AiTarget = { kind: "agent"; id: AiAgent } | { kind: "model"; id: string };
+export type AiSelection = { target: AiTarget; agentModel?: string };
+export interface AiAgentModel { id: string; label: string }
 export interface AiModelConfig { endpoint: string; model: string; timeoutSeconds: number }
 export interface AiModel extends AiModelConfig { id: string; kind: AiModelKind; name: string }
 export interface AiPreferences { enabled: boolean; defaultTarget: AiTarget | null }
@@ -39,9 +41,14 @@ export interface AiSettings {
   agents: { id: AiAgent; installed: boolean }[];
 }
 export type AiOperation = "summary" | "titles" | "rewrite";
-export interface AiRequest { id: string; entryId: string; operation: AiOperation; title: string; text: string }
+export interface AiTurn { user: string; assistant: string }
+export type AiRequest = { id: string; title: string; text: string } & Partial<AiSelection> & (
+  { entryId: string; operation: AiOperation }
+  | { entryId: string | null; operation: "chat"; prompt: string; history: AiTurn[] }
+);
+export type AiResult = { candidates: string[] } | { reply: string; replacement: string | null };
 export interface AiJob {
-  id: string; entryId: string; operation: AiOperation; model: string;
+  id: string; entryId: string | null; operation: AiRequest["operation"]; model: string;
   status: "running" | "completed" | "failed" | "cancelled";
   createdAt: number; updatedAt: number; error: string | null;
   usage: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null } | null;
@@ -88,6 +95,7 @@ export const desktop = {
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
   aiSettings: () => invoke<AiSettings>("ai_settings"),
   aiAgentVersions: () => invoke<[AiAgent, string | null][]>("ai_agent_versions"),
+  aiAgentModels: () => invoke<[AiAgent, AiAgentModel[]][]>("ai_agent_models"),
   saveAiPreferences: (preferences: AiPreferences) => invoke<AiSettings>("ai_save_preferences", { preferences }),
   aiModelHasKey: (id: string) => invoke<boolean>("ai_model_has_key", { id }),
   saveAiModel: (id: string | null, kind: AiModelKind, name: string, config: AiModelConfig, apiKey?: string) =>
@@ -96,7 +104,7 @@ export const desktop = {
   testAiTarget: (target: AiTarget) => invoke<void>("ai_test_target", { probe: { kind: "saved", target } }),
   testAiModel: (modelKind: AiModelKind, id: string | null, config: AiModelConfig, apiKey?: string) =>
     invoke<void>("ai_test_target", { probe: { kind: "draft", modelKind, id, config, apiKey } }),
-  aiGenerate: (request: AiRequest) => invoke<{ candidates: string[] }>("ai_generate", { request }),
+  aiGenerate: (request: AiRequest) => invoke<AiResult>("ai_generate", { request }),
   aiCancel: (id: string) => invoke<void>("ai_cancel", { id }),
   aiJobs: () => invoke<AiJob[]>("ai_jobs"),
   onAiStarted: (callback: (id: string) => void) => listen<string>("ai-job-started", event => callback(event.payload)),
