@@ -5,11 +5,12 @@ import { AiAgentIcon, agentLabels } from "./AiAgentIcon";
 
 const value = ({ target, agentModel }: AiSelection) => JSON.stringify([target.kind, target.id, agentModel]);
 
-export function AiTargetPicker({ settings, catalog, selection, label, onSelect }: {
+export function AiTargetPicker({ settings, catalog, selection, label, saving = false, onSelect }: {
   settings?: AiSettings;
   catalog?: Partial<Record<AiAgent, AiAgentModel[]>>;
   selection?: AiSelection;
   label: string;
+  saving?: boolean;
   onSelect(selection: AiSelection): void;
 }) {
   const agents = settings?.preferences.enabled ? settings.agents.filter(agent => agent.installed) : [];
@@ -34,7 +35,7 @@ export function AiTargetPicker({ settings, catalog, selection, label, onSelect }
           <DropdownMenu.Label className="ai-agent-menu-label"><AiAgentIcon agent={id} />{agentLabels[id]}</DropdownMenu.Label>
           {[{ id: undefined, label: "代理默认" }, ...(catalog?.[id] ?? [])].map(model => {
             const option: AiSelection = { target: { kind: "agent", id }, agentModel: model.id };
-            return <DropdownMenu.RadioItem key={model.id ?? ""} value={value(option)} aria-label={`${agentLabels[id]}，${model.label}`}
+            return <DropdownMenu.RadioItem key={model.id ?? ""} value={value(option)} disabled={saving} aria-label={`${agentLabels[id]}，${model.label}`}
               onSelect={() => onSelect(option)}>{model.label}</DropdownMenu.RadioItem>;
           })}
         </DropdownMenu.Group>)}
@@ -43,7 +44,7 @@ export function AiTargetPicker({ settings, catalog, selection, label, onSelect }
           <DropdownMenu.Label>已配置的模型</DropdownMenu.Label>
           {models.map(model => {
             const option: AiSelection = { target: { kind: "model", id: model.id } };
-            return <DropdownMenu.RadioItem key={model.id} value={value(option)} onSelect={() => onSelect(option)}>
+            return <DropdownMenu.RadioItem key={model.id} value={value(option)} disabled={saving} onSelect={() => onSelect(option)}>
               {model.name || model.model}
             </DropdownMenu.RadioItem>;
           })}

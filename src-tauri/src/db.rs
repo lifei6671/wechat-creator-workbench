@@ -90,6 +90,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0010_asset_retention.sql"),
     include_str!("../migrations/0011_hosted_image_hash.sql"),
     include_str!("../migrations/0012_ai_chat.sql"),
+    include_str!("../migrations/0013_ai_conversations.sql"),
+    include_str!("../migrations/0014_ai_current_thread.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -378,6 +380,39 @@ mod tests {
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         ).unwrap();
         assert_eq!(details, ("titles".into(), "local-model".into(), 3, 4, 7));
+    }
+
+    #[test]
+    fn migration_separates_existing_current_threads_from_history() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, 0, 13).unwrap();
+        conn.execute_batch(
+            "INSERT INTO entries(id,kind,title,content_md,status,created_at,updated_at)
+             VALUES ('doc','article','标题','','draft',0,0);
+             INSERT INTO ai_threads(id,entry_id,title,archived,created_at,updated_at) VALUES
+             ('general-old',NULL,'旧会话',0,1,3),('general-current',NULL,'当前会话',0,2,3),
+             ('general-history',NULL,'已归档',1,5,5),('doc-current','doc','文章会话',0,1,3);
+             INSERT INTO ai_messages(id,thread_id,role,content_json,created_at) VALUES
+             ('old-message','general-old','user','{}',2);",
+        )
+        .unwrap();
+        migrate(&mut conn, 13, SCHEMA_VERSION).unwrap();
+        let current = conn
+            .prepare("SELECT id FROM ai_threads WHERE archived=0 ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(current, ["doc-current", "general-current"]);
+        let old_message: String = conn
+            .query_row(
+                "SELECT id FROM ai_messages WHERE thread_id='general-old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_message, "old-message");
     }
 
     #[test]

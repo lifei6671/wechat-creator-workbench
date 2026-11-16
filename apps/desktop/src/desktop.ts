@@ -1,4 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import type { ThreadHistoryAdapter } from "@assistant-ui/react";
+import type { AiContextScope } from "../../../packages/editor-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -34,7 +36,7 @@ export type AiSelection = { target: AiTarget; agentModel?: string };
 export interface AiAgentModel { id: string; label: string }
 export interface AiModelConfig { endpoint: string; model: string; timeoutSeconds: number }
 export interface AiModel extends AiModelConfig { id: string; kind: AiModelKind; name: string }
-export interface AiPreferences { enabled: boolean; defaultTarget: AiTarget | null }
+export interface AiPreferences { enabled: boolean; defaultTarget: AiTarget | null; defaultAgentModel?: string }
 export interface AiSettings {
   preferences: AiPreferences;
   models: AiModel[];
@@ -42,17 +44,16 @@ export interface AiSettings {
 }
 export type AiOperation = "summary" | "titles" | "rewrite";
 export interface AiTurn { user: string; assistant: string }
-export type AiRequest = { id: string; title: string; text: string } & Partial<AiSelection> & (
+export type AiRequest = { id: string; title: string; text: string; prompt?: string } & Partial<AiSelection> & (
   { entryId: string; operation: AiOperation }
-  | { entryId: string | null; operation: "chat"; prompt: string; history: AiTurn[] }
+  | { entryId: string | null; operation: "chat"; prompt: string; history: AiTurn[];
+    context?: { scope: AiContextScope; headingPath: string[] } }
 );
-export type AiResult = { candidates: string[] } | { reply: string; replacement: string | null };
-export interface AiJob {
-  id: string; entryId: string | null; operation: AiRequest["operation"]; model: string;
-  status: "running" | "completed" | "failed" | "cancelled";
-  createdAt: number; updatedAt: number; error: string | null;
-  usage: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null } | null;
-}
+export type AiResult = { candidates: string[]; description?: string } | { reply: string };
+export type AiStreamEvent = { type: "started" } | { type: "delta"; text: string };
+export type AiThread = { id: string; title: string; archived: boolean; updatedAt: number };
+export type AiHistoryItem = Parameters<ThreadHistoryAdapter["append"]>[0];
+export type AiProposalStatus = "pending" | "applied" | "rejected" | "conflicted";
 type ClipboardContents = { kind: "text"; text: string }
   | { kind: "html"; html: string; text: string | null }
   | { kind: "images"; images: { id: string; name: string }[]; errors: string[] };
@@ -104,10 +105,20 @@ export const desktop = {
   testAiTarget: (target: AiTarget) => invoke<void>("ai_test_target", { probe: { kind: "saved", target } }),
   testAiModel: (modelKind: AiModelKind, id: string | null, config: AiModelConfig, apiKey?: string) =>
     invoke<void>("ai_test_target", { probe: { kind: "draft", modelKind, id, config, apiKey } }),
-  aiGenerate: (request: AiRequest) => invoke<AiResult>("ai_generate", { request }),
+  aiChatStream: (threadId: string, request: AiRequest, onEvent: (event: AiStreamEvent) => void) =>
+    invoke<AiResult>("ai_chat_stream", { threadId, request, channel: new Channel(onEvent) }),
   aiCancel: (id: string) => invoke<void>("ai_cancel", { id }),
-  aiJobs: () => invoke<AiJob[]>("ai_jobs"),
-  onAiStarted: (callback: (id: string) => void) => listen<string>("ai-job-started", event => callback(event.payload)),
+  aiThreads: (entryId: string | null) => invoke<AiThread[]>("ai_threads_list", { entryId }),
+  aiThread: (entryId: string | null, threadId: string) => invoke<AiThread>("ai_thread_get", { entryId, threadId }),
+  aiCreateThread: (entryId: string | null) => invoke<string>("ai_thread_create", { entryId }),
+  aiUpdateThread: (threadId: string, change: { title?: string; archived?: boolean }) =>
+    invoke<void>("ai_thread_update", { threadId, ...change }),
+  aiDeleteThread: (threadId: string) => invoke<void>("ai_thread_delete", { threadId }),
+  aiMessages: (threadId: string) => invoke<AiHistoryItem[]>("ai_messages_list", { threadId }),
+  aiSaveMessage: (threadId: string, { parentId, message }: AiHistoryItem) =>
+    invoke<void>("ai_message_save", { threadId, item: { parentId, message } }),
+  aiProposalStatus: (proposalId: string, status: Exclude<AiProposalStatus, "pending">) =>
+    invoke<void>("ai_proposal_status", { proposalId, status }),
   backupSettings: () => invoke<BackupSettings>("backup_settings"),
   configureBackup: (target: BackupTarget, secret?: ImageSecret) => invoke<void>("backup_configure", { target, secret }),
   backupUseImageStorage: () => invoke<void>("backup_use_image_storage"),

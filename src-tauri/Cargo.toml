@@ -32,7 +32,9 @@ serde_json = "1"
 walkdir = "2"
 tempfile = "3"
 html-escape = "0.2"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+sse-stream = "0.2.6"
+futures-util = { version = "0.3", default-features = false }
 scraper = "0.26"
 ammonia = "4"
 htmd = "0.5"

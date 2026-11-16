@@ -2,7 +2,7 @@ import { useRef, useState, type FormEvent, type ReactNode, type RefObject } from
 import { Button, ContextMenu, Dialog, TextField } from "@radix-ui/themes";
 import {
   Bold, CaseSensitive, Clipboard, ClipboardType, CloudUpload, Code2, Copy, FileCode2, FileDown, Heading, ImageMinus, Italic, Link2, List, ListOrdered,
-  ListPlus, Minus, Pilcrow, Quote, Redo2, Ruler, Scan, Scissors, Sigma, Strikethrough, Table2, Undo2,
+  ListPlus, Minus, Pilcrow, Quote, Redo2, Ruler, Scan, Scissors, Sigma, Sparkles, Strikethrough, Table2, Undo2,
 } from "lucide-react";
 import type { ClipboardIO, EditorCommand, ImageContext, LinkContext, MarkdownEditorHandle, TableContext } from "../../../../packages/editor-react";
 import { desktop } from "../desktop";
@@ -22,7 +22,7 @@ export const editorDisplayItems = [
   ["convertLinks", "链接转脚注", FileCode2],
 ] as const;
 
-export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, canHost, hostBusy, uploadingSource, onHostImage, children }: {
+export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, canHost, hostBusy, uploadingSource, onHostImage, onAiRewrite, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
   readOnly: boolean;
@@ -33,6 +33,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   hostBusy?: boolean;
   uploadingSource?: string;
   onHostImage?(image: ImageContext): void;
+  onAiRewrite?(): void;
   children: ReactNode;
 }) {
   const [selected, setSelected] = useState(false);
@@ -125,6 +126,9 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         onCloseAutoFocus={finishContextAction}
         aria-label={menu === "code" ? "代码块操作" : menu === "cellText" ? "单元格文字操作" : "正文编辑操作"}>
         {!readOnly && menu !== "code" && <>
+          {selected && onAiRewrite && <ContextMenu.Item onSelect={() => { afterMenuClose.current = onAiRewrite; }}>
+            <Sparkles size={15} />AI 改写
+          </ContextMenu.Item>}
           {convertLinkItem}
           <ContextMenu.Item disabled={!ready} onSelect={() => {
             linkOrigin.current = editor.current;

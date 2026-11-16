@@ -23,6 +23,7 @@ it("routes plain paste to the native clipboard and limits the reading menu", () 
   const editor = {
     current: {
       focus: vi.fn(), search: vi.fn(), target: vi.fn(), insert: vi.fn(), replaceTarget: vi.fn(),
+      captureContext: vi.fn(), selectionText: vi.fn(), subscribeSelection: vi.fn(),
       retryMissingImages: vi.fn(),
       linkFootnoteMarkdown: vi.fn(),
       command: vi.fn(), tableAction: vi.fn(), prepareContext: vi.fn<MarkdownEditorHandle["prepareContext"]>().mockReturnValue(null),

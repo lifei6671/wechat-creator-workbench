@@ -11,8 +11,10 @@ mod mcp;
 mod secrets;
 mod wechat_import;
 
+use ai::conversations::*;
 use ai::{
-    AiService, ai_agent_models, ai_cancel, ai_generate, ai_jobs, ai_test_target, settings::*,
+    AiService, ai_agent_models, ai_cancel, ai_chat_stream, ai_generate, ai_jobs, ai_test_target,
+    settings::*,
 };
 use assets::{Assets, commands::*, publishing::*};
 use backup::{
@@ -125,6 +127,15 @@ fn main() {
             ai_delete_model,
             ai_test_target,
             ai_generate,
+            ai_chat_stream,
+            ai_threads_list,
+            ai_thread_get,
+            ai_thread_create,
+            ai_thread_update,
+            ai_thread_delete,
+            ai_messages_list,
+            ai_message_save,
+            ai_proposal_status,
             ai_cancel,
             ai_jobs,
             backup_settings,

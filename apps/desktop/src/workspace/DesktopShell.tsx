@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { Button, Theme } from "@radix-ui/themes";
 import { FilePenLine, FolderOpen, Images, Newspaper, Search } from "lucide-react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
-import { desktop, errorMessage, windowsTitleBar, type AiAgent, type AiAgentModel, type AiOperation, type AiSelection, type AiSettings, type BackupSnapshot, type ImageTarget } from "../desktop";
+import { desktop, errorMessage, windowsTitleBar, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type ImageTarget } from "../desktop";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
 import { commandKey, untitled } from "../labels";
@@ -19,7 +19,6 @@ import type { EditorDisplay } from "./EditorContextMenu";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type Section } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { aiAvailability, ModelSettings } from "./AiSettings";
-import { AiPanel, useAiAssistant } from "./AiPanel";
 import { AiTargetPicker } from "./AiTargetPicker";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
 import { MigrationPanel } from "./Migration";
@@ -27,6 +26,8 @@ import { AssetPanel, canHostImage, ImageStorageSettings, imageMarkdown } from ".
 import { WindowControls, WindowDragRegion } from "./WindowTitle";
 import { ImageViewer, PublishImagesDialog, WechatImportDialog, renderForPublication } from "./Publishing";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
+
+const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
 
 type Modal =
   | { type: "palette" | "properties" | "reload" }
@@ -98,13 +99,16 @@ export function DesktopShell() {
   const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiVisited, setAiVisited] = useState(false);
+  useEffect(() => { if (aiOpen) setAiVisited(true); }, [aiOpen]);
   const [aiSettings, setAiSettings] = useState<AiSettings>();
   const [aiSettingsError, setAiSettingsError] = useState("");
-  const [aiChoice, setAiChoice] = useState<AiSelection>();
+  const [savingAiSettings, setSavingAiSettings] = useState(false);
+  const aiSettingsWrite = useRef(false);
   const [agentCatalog, setAgentCatalog] = useState<Partial<Record<AiAgent, AiAgentModel[]>>>();
   const showAiConfiguration = aiOpen || modal?.type === "settings";
   useEffect(() => {
-    if (!showAiConfiguration) return;
+    if (!showAiConfiguration || savingAiSettings) return;
     let current = true;
     void desktop.aiSettings().then(settings => {
       if (current) { setAiSettings(settings); setAiSettingsError(""); }
@@ -112,8 +116,8 @@ export function DesktopShell() {
       if (current) setAiSettingsError(errorMessage(error));
     });
     return () => { current = false; };
-  }, [showAiConfiguration]);
-  const assistant = useAiAssistant();
+  }, [showAiConfiguration, savingAiSettings]);
+  const [aiRewrite, setAiRewrite] = useState<{ sessionId: number; count: number }>();
   const systemDark = useMedia("(prefers-color-scheme: dark)");
   const compact = useMedia("(width < 820px)");
   const explorer = preferredExplorer ?? !compact;
@@ -321,7 +325,6 @@ export function DesktopShell() {
   }
 
   function forgetTab(id: string) {
-    assistant.forget(queues.current.get(id)!.sessionId);
     queues.current.get(id)!.dispose();
     queues.current.delete(id);
     setReadingIds(current => current.filter(item => item !== id));
@@ -874,6 +877,8 @@ export function DesktopShell() {
       await Promise.allSettled(writing.current);
       const all = [...queues.current.values()];
       const results = await Promise.all(all.map(queue => queue.flush()));
+      // An accepted proposal records its status after the associated draft save completes.
+      await Promise.allSettled(writing.current);
       if (!attempt.cancelled && results.every(Boolean)) {
         if (ticket !== undefined) {
           setRestoreRestarting(true);
@@ -978,32 +983,52 @@ export function DesktopShell() {
     const timer = window.setTimeout(clear, 220);
     return () => { window.clearTimeout(timer); clear(); };
   }, [showAiPanel, aiSidebarPanel]);
-  const choice = aiChoice && aiSettings && aiAvailability(aiSettings, aiChoice.target).label ? aiChoice : undefined;
-  const aiTargetId = choice?.target ?? aiSettings?.preferences.defaultTarget;
-  const aiTarget = aiSettings ? aiAvailability(aiSettings, aiTargetId) : { hint: aiSettingsError || "正在读取 AI 设置…" };
-  const aiSelection = aiTargetId && aiTarget.label ? { target: aiTargetId, agentModel: choice?.agentModel } : undefined;
+  const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
+  const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
+  const aiSelection = aiDefaultTarget && aiTarget.label
+    ? { target: aiDefaultTarget, agentModel: aiSettings.preferences.defaultAgentModel } : undefined;
   const aiEditor = queue ? handles.current.get(queue.entry.id) : undefined;
   const canEditWithAi = Boolean(queue?.entry.deletedAt === null && aiEditor && !globalLock && !locked.includes(queue.entry.id));
-  const canChat = Boolean(aiTarget.label && !globalLock && (!queue || canEditWithAi));
-  function generateAi(operation: AiOperation) {
-    if (!exit.current && canChat && queue && aiEditor && !reading) assistant.start(queue, aiEditor, operation, aiSelection);
+  const canChat = Boolean(aiTarget.label && !savingAiSettings && !globalLock && (!queue || canEditWithAi));
+  async function saveAiSettings(operation: () => Promise<AiSettings>) {
+    if (aiSettingsWrite.current) throw new Error("正在保存 AI 设置");
+    aiSettingsWrite.current = true;
+    setSavingAiSettings(true);
+    try {
+      setAiSettings(await operation());
+      setAiSettingsError("");
+    } finally {
+      aiSettingsWrite.current = false;
+      setSavingAiSettings(false);
+    }
+  }
+  function selectAiTarget({ target, agentModel }: AiSelection) {
+    if (!aiSettings) return;
+    void saveAiSettings(() => desktop.saveAiPreferences({
+      ...aiSettings.preferences, defaultTarget: target, defaultAgentModel: agentModel,
+    })).catch(showError);
+  }
+  function openAiRewrite(session: SaveQueue) {
+    if (exit.current || active.current !== session.entry.id || locking.current.has(session.entry.id)) return;
+    setFocusMode(false);
+    setAiOpen(true);
+    setAiRewrite(previous => ({ sessionId: session.sessionId, count: (previous?.count ?? 0) + 1 }));
   }
   function closeAi() {
     setAiOpen(false);
     document.getElementById("ai-panel-trigger")?.focus();
   }
-  const aiPanel = <AiPanel open={showAiPanel} assistant={assistant} queue={queue} target={aiTarget} selection={aiSelection}
+  const aiPanel = <AiPanel open={showAiPanel} queue={queue} editor={aiEditor} target={aiTarget} selection={aiSelection}
     targetPicker={<AiTargetPicker settings={aiSettings} catalog={agentCatalog} selection={aiSelection}
-      label={aiTarget.label ?? aiTarget.hint ?? "选择 AI 目标"} onSelect={setAiChoice} />}
+      label={aiTarget.label ?? aiTarget.hint ?? "选择 AI 目标"} saving={savingAiSettings}
+      onSelect={selectAiTarget} />}
     windowControls={showAiPanel && windowsTitleBar ? <WindowControls onError={showError} /> : undefined}
-    canChat={canChat} canEdit={canEditWithAi} onGenerate={generateAi} onClose={closeAi} onSettings={showModel}
-    onSend={message => { if (!exit.current && canChat) assistant.send(message, queue, aiEditor, aiSelection); }}
-    onApply={(task, candidate) => {
-      if (!canEditWithAi || !queue || !aiEditor) return;
-      const id = queue.entry.id;
-      void assistant.apply(task, candidate, queue, aiEditor, () => !exit.current && active.current === id
-        && queues.current.get(id) === queue && handles.current.get(id) === aiEditor && !locking.current.has(id));
-    }} />;
+    canChat={canChat} canEdit={canEditWithAi} onClose={closeAi} onSettings={showModel}
+    canSend={() => !exit.current}
+    trackWrite={trackAssetTask}
+    rewriteRequest={aiRewrite?.sessionId === queue?.sessionId ? aiRewrite?.count : undefined}
+    canWrite={(origin, editor) => !exit.current && !reading && active.current === origin.entry.id
+      && queues.current.get(origin.entry.id) === origin && handles.current.get(origin.entry.id) === editor && !locking.current.has(origin.entry.id)} />;
   const toast = notice && <WorkspaceToast notice={notice} onReveal={path => run(() => desktop.revealFile(path))}
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
   const workspaceNotice = modal?.type !== "settings" && (backupWorking
@@ -1098,6 +1123,7 @@ export function DesktopShell() {
                     locked={Boolean(exitMessage) || globalLock || locked.includes(session.entry.id)} clipboard={editorClipboard}
                     handle={handle => registerEditor(session.entry.id, handle)}
                     onImages={importImages} onError={showError}
+                    onAiRewrite={() => openAiRewrite(session)}
                     canHost={src => canHostImage(imageTarget, src)} hostBusy={Boolean(imageUpload)}
                     uploadingSource={imageUpload?.sessionId === session.sessionId ? imageUpload.src : undefined}
                     onHostImage={image => hostDocumentImages(session, image)}
@@ -1122,13 +1148,15 @@ export function DesktopShell() {
         </Panel>
         <Separator className="divider ai-sidebar-divider" hidden={!showAiPanel} disabled={!showAiPanel}
           disableDoubleClick aria-label="调整 AI 侧栏宽度" />
-        <Panel id="ai-sidebar" defaultSize="0px" minSize="300px" maxSize="360px" collapsible collapsedSize="0px"
+        <Panel id="ai-sidebar" defaultSize="0px" minSize="300px" maxSize="50%" collapsible collapsedSize="0px"
           panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
           onResize={size => {
             if (showAiPanel && size.inPixels > 0) aiSidebarWidth.current = size.inPixels;
             else if (showAiPanel && !sidebarGroup.current?.dataset.aiSidebarMoving) setAiOpen(false);
           }}>
-          <div className="ai-sidebar" inert={!showAiPanel}>{aiPanel}</div>
+          <div className="ai-sidebar" inert={!showAiPanel}>
+            {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
+          </div>
         </Panel>
       </Group>
       <StatusBar queue={queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
@@ -1148,7 +1176,8 @@ export function DesktopShell() {
     {!exitMessage && <>
       {modal?.type === "settings" && <>
         <SettingsDialog initialPage={modal.page} status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
-          if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError} onChange={setAiSettings} />;
+          if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
+            saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings />;
           if (page === "images") return <ImageStorageSettings track={trackAssetTask} />;
           if (page === "backups") return <BackupPanel busy={backupWorking !== null || migrationWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}

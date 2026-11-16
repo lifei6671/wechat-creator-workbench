@@ -102,5 +102,8 @@ export class SaveQueue {
     }
   }
 
-  dispose() { clearTimeout(this.timer); }
+  dispose() {
+    clearTimeout(this.timer);
+    this.listeners.clear();
+  }
 }

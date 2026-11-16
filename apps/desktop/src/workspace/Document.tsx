@@ -232,7 +232,7 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
   </ContextMenu.Root>;
 }
 
-export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage }: {
+export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage, onAiRewrite }: {
   queue: SaveQueue;
   active: boolean;
   locked: boolean;
@@ -248,6 +248,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   hostBusy?: boolean;
   uploadingSource?: string;
   onHostImage?(image: ImageContext): void;
+  onAiRewrite?(): void;
 }) {
   const { fields } = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const editor = useRef<MarkdownEditorHandle>(null);
@@ -255,7 +256,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
     data-wechat-theme={wechatThemeId(fields.themeId)} hidden={!active}>
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
-      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage}>
+      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAiRewrite={onAiRewrite}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
         title={display.showTitle && <div className="writing-title">
         {reading ? <h1>{fields.title || untitled}</h1> : <textarea aria-label="标题" rows={1}

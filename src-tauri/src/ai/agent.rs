@@ -1,10 +1,12 @@
+mod codex;
+
 use super::{MAX_RESPONSE_BYTES, response_error, settings::Agent};
 use crate::db::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, env, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
+    process::{Child, Command},
     time::timeout,
 };
 
@@ -77,44 +79,20 @@ fn npm_codex(package: &std::path::Path) -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-fn arguments(agent: Agent) -> &'static [&'static str] {
-    match agent {
-        Agent::Codex => &[
-            "exec",
-            "--skip-git-repo-check",
-            "--ephemeral",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--sandbox",
-            "read-only",
-            "-c",
-            "approval_policy=\"never\"",
-            "-c",
-            "web_search=\"disabled\"",
-            "--disable",
-            "shell_tool",
-            "--disable",
-            "hooks",
-            "--disable",
-            "plugins",
-            "--json",
-        ],
-        Agent::ClaudeCode => &[
-            "--print",
-            "--output-format",
-            "json",
-            "--no-session-persistence",
-            "--setting-sources",
-            "",
-            "--tools",
-            "",
-            "--strict-mcp-config",
-            "--mcp-config",
-            r#"{"mcpServers":{}}"#,
-            "--disable-slash-commands",
-        ],
-    }
-}
+const CLAUDE_ARGS: &[&str] = &[
+    "--print",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    "--setting-sources",
+    "",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--mcp-config",
+    r#"{"mcpServers":{}}"#,
+    "--disable-slash-commands",
+];
 
 #[derive(Serialize)]
 pub struct ModelOption {
@@ -234,47 +212,25 @@ pub async fn version(agent: Agent) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn result_text(agent: Agent, output: &[u8]) -> Result<String> {
-    match agent {
-        Agent::Codex => {
-            let mut reply = None;
-            let mut completed = false;
-            for line in output
-                .split(|&byte| byte == b'\n')
-                .filter(|line| !line.is_empty())
-            {
-                let event: serde_json::Value =
-                    serde_json::from_slice(line).map_err(|_| response_error())?;
-                match event["type"].as_str() {
-                    Some("turn.failed") => return Err(process_error(agent)),
-                    Some("item.completed") if event["item"]["type"] == "agent_message" => {
-                        reply = event["item"]["text"].as_str().map(str::to_owned);
-                    }
-                    Some("turn.completed") => completed = true,
-                    _ => {}
-                }
-            }
-            if !completed {
-                return Err(process_error(agent));
-            }
-            reply.ok_or_else(response_error)
-        }
-        Agent::ClaudeCode => {
-            #[derive(Deserialize)]
-            struct Reply {
-                result: Option<String>,
-                is_error: bool,
-            }
-            let reply: Reply = serde_json::from_slice(output).map_err(|_| response_error())?;
-            if reply.is_error {
-                return Err(process_error(agent));
-            }
-            reply.result.ok_or_else(response_error)
-        }
+fn claude_text(output: &[u8]) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Reply {
+        result: Option<String>,
+        is_error: bool,
     }
+    let reply: Reply = serde_json::from_slice(output).map_err(|_| response_error())?;
+    if reply.is_error {
+        return Err(process_error(Agent::ClaudeCode));
+    }
+    reply.result.ok_or_else(response_error)
 }
 
-pub async fn run(agent: Agent, model: Option<&str>, prompt: &str) -> Result<String> {
+pub async fn run(
+    agent: Agent,
+    model: Option<&str>,
+    prompt: &str,
+    on_delta: impl FnMut(String) + Send,
+) -> Result<String> {
     let executable = executable(agent).ok_or_else(|| {
         AppError::new(
             "AI_AGENT_MISSING",
@@ -283,16 +239,18 @@ pub async fn run(agent: Agent, model: Option<&str>, prompt: &str) -> Result<Stri
     })?;
     let directory = tempfile::tempdir().map_err(|_| process_error(agent))?;
     let mut command = Command::new(executable);
-    command.args(arguments(agent)).current_dir(directory.path());
-    if let Some(model) = model {
+    command.current_dir(directory.path()).args(match agent {
+        Agent::Codex => codex::ARGS,
+        Agent::ClaudeCode => CLAUDE_ARGS,
+    });
+    if agent == Agent::ClaudeCode
+        && let Some(model) = model
+    {
         command.arg(format!("--model={model}"));
-    }
-    if agent == Agent::Codex {
-        command.arg("-");
     }
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let output = timeout(AGENT_TIMEOUT, async {
+    timeout(AGENT_TIMEOUT, async {
         let mut child = command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
@@ -300,29 +258,41 @@ pub async fn run(agent: Agent, model: Option<&str>, prompt: &str) -> Result<Stri
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| process_error(agent))?;
-        let mut stdin = child.stdin.take().expect("piped agent stdin");
-        let mut stdout = child
-            .stdout
-            .take()
-            .expect("piped agent stdout")
-            .take((MAX_RESPONSE_BYTES + 1) as u64);
-        let mut output = Vec::new();
-        let (written, read) = tokio::join!(
-            async move { stdin.write_all(prompt.as_bytes()).await },
-            stdout.read_to_end(&mut output),
-        );
-        if output.len() > MAX_RESPONSE_BYTES {
-            return Err(response_error());
+        match agent {
+            Agent::Codex => {
+                let result =
+                    codex::run(&mut child, directory.path(), model, prompt, on_delta).await;
+                let _ = child.kill().await;
+                result
+            }
+            Agent::ClaudeCode => run_claude(&mut child, prompt).await,
         }
-        let status = child.wait().await.map_err(|_| process_error(agent))?;
-        if !status.success() || written.is_err() || read.is_err() {
-            return Err(process_error(agent));
-        }
-        Ok(output)
     })
     .await
-    .map_err(|_| AppError::new("AI_TIMEOUT", "本地代理请求超时"))??;
-    result_text(agent, &output)
+    .map_err(|_| AppError::new("AI_TIMEOUT", "本地代理请求超时"))?
+}
+
+async fn run_claude(child: &mut Child, prompt: &str) -> Result<String> {
+    let mut stdin = child.stdin.take().expect("piped agent stdin");
+    let mut stdout = child
+        .stdout
+        .take()
+        .expect("piped agent stdout")
+        .take((MAX_RESPONSE_BYTES + 1) as u64);
+    let mut output = Vec::new();
+    let (written, read) = tokio::join!(
+        async move { stdin.write_all(prompt.as_bytes()).await },
+        stdout.read_to_end(&mut output),
+    );
+    if output.len() > MAX_RESPONSE_BYTES {
+        return Err(response_error());
+    }
+    let failure = || process_error(Agent::ClaudeCode);
+    let status = child.wait().await.map_err(|_| failure())?;
+    if !status.success() || written.is_err() || read.is_err() {
+        return Err(failure());
+    }
+    claude_text(&output)
 }
 
 #[cfg(test)]
@@ -345,33 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn reads_only_final_codex_reply_from_a_completed_turn() {
-        let output = br#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}
-{"type":"item.completed","item":{"type":"agent_message","text":"first"}}
-{"type":"item.completed","item":{"type":"agent_message","text":"final"}}
-{"type":"turn.completed"}
-"#;
-        assert_eq!(result_text(Agent::Codex, output).unwrap(), "final");
-        assert!(
-            result_text(
-                Agent::Codex,
-                br#"{"type":"turn.failed","error":{"message":"private"}}"#
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn claude_errors_do_not_expose_the_raw_response() {
         assert_eq!(
-            result_text(Agent::ClaudeCode, br#"{"result":"final","is_error":false}"#).unwrap(),
+            claude_text(br#"{"result":"final","is_error":false}"#).unwrap(),
             "final"
         );
-        let failure = result_text(
-            Agent::ClaudeCode,
-            br#"{"result":"private","is_error":true}"#,
-        )
-        .unwrap_err();
+        let failure = claude_text(br#"{"result":"private","is_error":true}"#).unwrap_err();
         assert_eq!(failure.code(), "AI_AGENT");
         assert!(!failure.to_string().contains("private"));
     }

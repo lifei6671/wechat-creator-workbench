@@ -73,6 +73,8 @@ pub struct Model {
 pub struct Preferences {
     pub enabled: bool,
     pub default_target: Option<Target>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent_model: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -173,6 +175,7 @@ impl Settings {
             preferences: Preferences {
                 enabled: model.is_some(),
                 default_target: model.as_ref().map(|model| Target::Model(model.id.clone())),
+                default_agent_model: None,
             },
             models: model.into_iter().collect(),
         })
@@ -202,6 +205,24 @@ impl Settings {
         db.set_setting(SETTINGS, &self)?;
         Ok(self.view())
     }
+
+    fn save_preferences(
+        mut self,
+        db: &Workspace,
+        preferences: Preferences,
+    ) -> Result<SettingsView> {
+        if let Some(Target::Model(id)) = &preferences.default_target {
+            self.model(id)?;
+        }
+        if let Some(model) = preferences.default_agent_model.as_deref()
+            && (!matches!(preferences.default_target, Some(Target::Agent(_)))
+                || !super::agent::valid_model_id(model))
+        {
+            return Err(AppError::invalid("代理模型无效"));
+        }
+        self.preferences = preferences;
+        self.save(db)
+    }
 }
 
 fn delete_key(entry: &keyring::Entry) -> Result<()> {
@@ -230,12 +251,7 @@ pub fn ai_save_preferences(
     db: State<'_, Workspace>,
     preferences: Preferences,
 ) -> Result<SettingsView> {
-    let mut settings = Settings::load(&db)?;
-    if let Some(Target::Model(id)) = &preferences.default_target {
-        settings.model(id)?;
-    }
-    settings.preferences = preferences;
-    settings.save(&db)
+    Settings::load(&db)?.save_preferences(&db, preferences)
 }
 
 #[tauri::command]
@@ -311,6 +327,7 @@ pub fn ai_delete_model(db: State<'_, Workspace>, id: String) -> Result<SettingsV
     settings.models.retain(|model| model.id != id);
     if settings.preferences.default_target == Some(Target::Model(id)) {
         settings.preferences.default_target = None;
+        settings.preferences.default_agent_model = None;
     }
     db.set_setting_with(SETTINGS, &settings, || delete_key(&entry))?;
     Ok(settings.view())
@@ -353,6 +370,65 @@ mod tests {
         assert_eq!(
             reopened.model(LEGACY_MODEL_ID).unwrap().config.model,
             "qwen"
+        );
+    }
+
+    #[test]
+    fn keeps_the_default_agent_model_after_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("workspace.sqlite");
+        {
+            let db = Workspace::open(&path).unwrap();
+            db.set_setting(
+                SETTINGS,
+                &serde_json::json!({
+                    "preferences": { "enabled": true, "defaultTarget": { "kind": "agent", "id": "codex" } },
+                    "models": []
+                }),
+            )
+            .unwrap();
+            let settings = Settings::load(&db).unwrap();
+            assert!(settings.preferences.default_agent_model.is_none());
+            settings
+                .save_preferences(
+                    &db,
+                    Preferences {
+                        enabled: true,
+                        default_target: Some(Target::Agent(Agent::Codex)),
+                        default_agent_model: Some("gpt-6.1-sol".into()),
+                    },
+                )
+                .unwrap();
+        }
+        let db = Workspace::open(&path).unwrap();
+        let settings = Settings::load(&db).unwrap();
+        assert_eq!(
+            settings.preferences.default_target,
+            Some(Target::Agent(Agent::Codex))
+        );
+        assert_eq!(
+            settings.preferences.default_agent_model.as_deref(),
+            Some("gpt-6.1-sol")
+        );
+        assert!(
+            settings
+                .save_preferences(
+                    &db,
+                    Preferences {
+                        enabled: true,
+                        default_target: None,
+                        default_agent_model: Some("gpt-6.1-sol".into()),
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(
+            Settings::load(&db)
+                .unwrap()
+                .preferences
+                .default_agent_model
+                .as_deref(),
+            Some("gpt-6.1-sol")
         );
     }
 

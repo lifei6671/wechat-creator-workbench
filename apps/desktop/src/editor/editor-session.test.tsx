@@ -3,14 +3,17 @@ import { Theme } from "@radix-ui/themes";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { EditorView } from "@milkdown/kit/prose/view";
+import { webcrypto } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { MarkdownEditor, type EditorCommand, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
 import { parseWechat } from "../../../../packages/wechat-renderer";
-import { desktop } from "../desktop";
+import { desktop, type AiHistoryItem, type AiStreamEvent, type AiThread } from "../desktop";
 import { attachClipboard } from "./clipboard";
 import { SaveQueue } from "./save-queue";
-import { captureAiTask, matchesAiTarget, useAiAssistant } from "../workspace/AiPanel";
+import { captureAiIntent, matchesAiTarget } from "../ai/context";
+import { messageTimeLabel } from "../labels";
+import { AiPanel } from "../workspace/AiPanel";
 import formatFixtures from "../../../../fixtures/wechat-format.json";
 
 beforeAll(() => {
@@ -35,8 +38,19 @@ async function select(element: HTMLElement, from: number, to: number, handle: Ma
   await vi.waitFor(() => expect(handle.target().original).toBe(text.textContent!.slice(from, to)));
 }
 
+it("formats chat timestamps by local calendar days", () => {
+  const now = new Date(2026, 10, 16, 20);
+  expect(messageTimeLabel(new Date(2026, 10, 16, 18, 10), now)).toBe("18:10");
+  expect(messageTimeLabel(new Date(2026, 10, 15, 18, 10), now)).toBe("昨天 18:10");
+  expect(messageTimeLabel(new Date(2026, 10, 14, 23, 59), now)).toBe("前天");
+  expect(messageTimeLabel(new Date(2026, 10, 6, 15, 10), now)).toBe("11.06 15:10");
+  expect(messageTimeLabel(new Date(2026, 11, 31, 0, 7), new Date(2027, 0, 1))).toBe("昨天 00:07");
+});
+
 it("binds an AI rewrite to the original session and range and gives it a separate undo step", async () => {
-  const entry: Entry = { id: "draft", kind: "article", title: "标题", contentMd: "初稿 第一段 第二段", status: "draft", categoryId: null,
+  const entry: Entry = { id: "draft", kind: "article", title: "标题",
+    contentMd: "初稿 第一段 第二段\n\n![图](https://example.com/image.png)\n\n| 标题 | 链接 |\n| --- | --- |\n| 示例 | [参考](https://example.com) |\n\n~~~js\nconst value = 1;\n~~~\n\n补充[^note]\n\n[^note]: 脚注",
+    status: "draft", categoryId: null,
     tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "", version: 1, updatedAt: 0, deletedAt: null, links: [] };
   const createQueue = (entry: Entry) => new SaveQueue(entry, vi.fn().mockResolvedValue({ version: 2 }), () => {});
   const original = createQueue(entry);
@@ -55,18 +69,21 @@ it("binds an AI rewrite to the original session and range and gives it a separat
     const handle = handles.get(entry.id)!;
     handle.insert("!");
     await select(editor, 4, 7, handle);
-    const task = captureAiTask(original, handle, "rewrite");
+    const task = captureAiIntent("rewrite", "润色", "auto", original, handle);
     expect(task.request.text).toBe("第一段");
-    expect(matchesAiTarget(task.target, createQueue(entry))).toBe(false);
-    expect(matchesAiTarget(task.target, other)).toBe(false);
+    expect(matchesAiTarget(task.target!, createQueue(entry))).toBe(false);
+    expect(matchesAiTarget(task.target!, other)).toBe(false);
     await select(editor, 8, 11, handle);
-    expect(matchesAiTarget(task.target, original)).toBe(true);
-    expect(handles.get(other.entry.id)!.replaceTarget(task.target.editor!, "新段落")).toBe(false);
-    expect(handle.replaceTarget(task.target.editor!, "新段落")).toBe(true);
-    expect(original.snapshot().fields.contentMd).toBe("!初稿 新段落 第二段");
-    expect(matchesAiTarget(task.target, original)).toBe(false);
+    const before = original.snapshot().fields.contentMd;
+    expect(matchesAiTarget(task.target!, original)).toBe(true);
+    expect(handles.get(other.entry.id)!.replaceTarget(task.target!.context!, "新段落")).toBe(false);
+    expect(handle.replaceTarget(task.target!.context!, "第一段\n\n## 标题")).toBe(false);
+    expect(original.snapshot().fields.contentMd).toBe(before);
+    expect(handle.replaceTarget(task.target!.context!, "新段落")).toBe(true);
+    expect(original.snapshot().fields.contentMd).toBe(before.replace("第一段", "新段落"));
+    expect(matchesAiTarget(task.target!, original)).toBe(false);
     handle.command("undo");
-    expect(original.snapshot().fields.contentMd).toBe("!初稿 第一段 第二段");
+    expect(original.snapshot().fields.contentMd).toBe(before);
   } finally {
     original.dispose();
     other.dispose();
@@ -75,54 +92,268 @@ it("binds an AI rewrite to the original session and range and gives it a separat
   }
 });
 
-it("passes chat history and saves a document proposal with its prior revision and an undo step", async () => {
-  const entry: Entry = { id: "chat-draft", kind: "article", title: "标题", contentMd: "原文", status: "draft", categoryId: null,
-    tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "", version: 1, updatedAt: 0, deletedAt: null, links: [] };
+it("streams chat across article switches and restores chat and selected-range proposals", async () => {
+  const entry: Entry = { id: "chat-draft", kind: "article", title: "标题", contentMd: "开头\n\n## 一\n\n这段正文\n\n## 二\n\n其他段落",
+    status: "draft", categoryId: null, tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "",
+    version: 1, updatedAt: 0, deletedAt: null, links: [] };
   const commit = vi.fn(async (_id: string, version: number) => ({ version: version + 1 }));
   const queue = new SaveQueue(entry, commit, () => {});
-  const unsubscribe = vi.spyOn(desktop, "onAiStarted").mockResolvedValue(() => {});
-  const generate = vi.spyOn(desktop, "aiGenerate")
-    .mockResolvedValueOnce({ reply: "可以加一个小节。", replacement: null })
-    .mockResolvedValue({ reply: "已改好。", replacement: "## 新标题\n\n新段落" });
+  const other = new SaveQueue({ ...entry, id: "another" }, commit, () => {});
+  const threads = new Map<string, AiThread>();
+  const messages = new Map<string, AiHistoryItem[]>();
+  const entryThreads = new Map<string | null, string[]>();
+  const scope = vi.spyOn(desktop, "aiThreads").mockImplementation(async id => (entryThreads.get(id) ?? [])
+    .map(thread => threads.get(thread)!).filter(thread => !thread.archived || messages.get(thread.id)?.length));
+  vi.spyOn(desktop, "aiCreateThread").mockImplementation(async entryId => {
+    const existing = entryThreads.get(entryId) ?? [];
+    const id = "thread-" + entryId + (existing.length ? "-" + existing.length : "");
+    for (const otherId of existing) threads.get(otherId)!.archived = true;
+    entryThreads.set(entryId, [id, ...existing]);
+    threads.set(id, { id, title: "", archived: false, updatedAt: Date.now() });
+    messages.set(id, []);
+    return id;
+  });
+  vi.spyOn(desktop, "aiThread").mockImplementation(async (_entryId, id) => threads.get(id)!);
+  const removeThread = vi.spyOn(desktop, "aiDeleteThread").mockImplementation(async id => {
+    threads.delete(id);
+    messages.delete(id);
+    for (const [entry, ids] of entryThreads) entryThreads.set(entry, ids.filter(thread => thread !== id));
+  });
+  const updateThread = vi.spyOn(desktop, "aiUpdateThread").mockImplementation(async (id, change) => {
+    if (change.archived === false) {
+      const siblings = [...entryThreads.values()].find(ids => ids.includes(id))!;
+      for (const otherId of siblings) threads.get(otherId)!.archived = otherId !== id;
+    }
+    Object.assign(threads.get(id)!, change);
+  });
+  vi.spyOn(desktop, "aiMessages").mockImplementation(async id => structuredClone(messages.get(id) ?? []));
+  let interruptedWrite = false;
+  let blockedThreadWrites: string | undefined;
+  const saveMessage = vi.spyOn(desktop, "aiSaveMessage").mockImplementation(async (thread, item) => {
+    if (!interruptedWrite || thread === blockedThreadWrites) {
+      interruptedWrite = true;
+      throw new Error("对话写入暂时失败");
+    }
+    const saved = messages.get(thread)!;
+    if (item.parentId) expect(saved.some(row => row.message.id === item.parentId)).toBe(true);
+    saved.push(structuredClone({ parentId: item.parentId, message: item.message }));
+  });
+  const updateProposal = vi.spyOn(desktop, "aiProposalStatus").mockImplementation(async (id, status) => {
+    for (const rows of messages.values()) for (const row of rows) {
+      const proposal = row.message.metadata.custom.proposal as { id: string; status: string } | undefined;
+      if (proposal?.id === id) proposal.status = status;
+    }
+  });
+  let emit!: (event: AiStreamEvent) => void;
+  let finish!: (reply: { reply: string }) => void;
+  let fail!: (error: unknown) => void;
+  const cancel = vi.spyOn(desktop, "aiCancel").mockImplementation(async () => fail({ code: "AI_CANCELLED", message: "生成已取消" }));
+  const generate = vi.spyOn(desktop, "aiChatStream").mockImplementation((_id, request, onEvent) => {
+    if (request.operation === "rewrite") {
+      onEvent({ type: "started" });
+      return Promise.resolve({ candidates: ["改写稿"], description: "精简措辞" });
+    }
+    emit = onEvent;
+    return new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+  });
+  const digest = Object.getOwnPropertyDescriptor(crypto, "subtle");
+  Object.defineProperty(crypto, "subtle", { configurable: true, value: webcrypto.subtle });
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  let editor: MarkdownEditorHandle | null = null;
-  let assistant!: ReturnType<typeof useAiAssistant>;
-  function Harness() {
-    assistant = useAiAssistant();
-    return <MarkdownEditor ref={value => { editor = value; }} entryId={entry.id} value={entry.contentMd}
-      readOnly={false} onChange={(_id, _revision, contentMd) => queue.edit({ contentMd })} onBlur={() => {}} />;
-  }
-  flushSync(() => root.render(<Harness />));
-  const tasks = () => assistant.conversations[queue.sessionId];
+  const editors = new Map<string, MarkdownEditorHandle>();
+  const click = (label: string) => {
+    const button = [...container.querySelectorAll<HTMLButtonElement>(".ai-session:not([hidden]) button")]
+      .find(node => node.getAttribute("aria-label") === label || node.textContent === label
+        || node.querySelector(".ai-thread-title")?.textContent === label);
+    expect(button, label).toBeDefined();
+    expect(button!.disabled, label).toBe(false);
+    flushSync(() => button!.click());
+  };
+  const send = async (text: string) => {
+    const field = await vi.waitFor(() => {
+      const input = container.querySelector<HTMLTextAreaElement>(".ai-session:not([hidden]) textarea[aria-label='消息']");
+      expect(input?.disabled, "输入 " + text).toBe(false);
+      return input!;
+    });
+    field.focus();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
+    flushSync(() => field.dispatchEvent(new InputEvent("input", { bubbles: true })));
+    await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>(".ai-session:not([hidden]) button[aria-label='发送消息']")?.disabled,
+      "发送 " + text + " 时：" + field.value + " / " + activePanel().textContent).toBe(false));
+    click("发送消息");
+  };
+  const render = (current: SaveQueue, key: number, rewriteRequest?: number) => flushSync(() => root.render(<Theme>
+    {[queue, other].map(origin => <MarkdownEditor key={origin.sessionId}
+      ref={value => { if (value) editors.set(origin.entry.id, value); }} entryId={origin.entry.id} value={origin.entry.contentMd}
+      active={current === origin} readOnly={false} onChange={(_id, _revision, contentMd) => origin.edit({ contentMd })} onBlur={() => {}} />)}
+    <AiPanel key={key} open queue={current} editor={editors.get(current.entry.id)} target={{ label: "测试模型" }} targetPicker={null}
+      canChat canEdit rewriteRequest={rewriteRequest} canWrite={target => target === current} onClose={() => {}} onSettings={() => {}} />
+  </Theme>));
+  const activePanel = () => container.querySelector(".ai-session:not([hidden])")!;
   try {
-    await vi.waitFor(() => expect(editor).not.toBeNull());
-    editor!.insert("未保存的");
-    flushSync(() => assistant.send("怎么改？", queue, editor!));
-    await vi.waitFor(() => expect(tasks()?.[0]?.result).toEqual({ reply: "可以加一个小节。", replacement: null }));
-    flushSync(() => assistant.send("按建议修改正文", queue, editor!));
-    await vi.waitFor(() => expect(tasks()?.[1]?.result).toBeDefined());
-    expect(generate).toHaveBeenLastCalledWith(expect.objectContaining({ entryId: entry.id, text: "未保存的原文",
-      history: [{ user: "怎么改？", assistant: "可以加一个小节。" }] }));
-    flushSync(() => assistant.send("刚才那版还有什么可改？", queue, editor!));
-    await vi.waitFor(() => expect(tasks()?.[2]?.result).toBeDefined());
-    expect(generate).toHaveBeenLastCalledWith(expect.objectContaining({ history: expect.arrayContaining([
-      { user: "按建议修改正文", assistant: expect.stringContaining("## 新标题\n\n新段落") },
-    ]) }));
-    expect(queue.snapshot().fields.contentMd).toBe("未保存的原文");
-    await assistant.apply(tasks()[1], "## 新标题\n\n新段落", queue, editor!, () => true);
-    expect(commit).toHaveBeenNthCalledWith(1, entry.id, 1, expect.objectContaining({ contentMd: "未保存的原文" }), "auto");
-    expect(commit).toHaveBeenNthCalledWith(2, entry.id, 2, expect.objectContaining({ contentMd: "## 新标题\n\n新段落" }), "ai_replace");
-    expect(container.querySelector(".ProseMirror h2")?.textContent).toBe("新标题");
-    editor!.command("undo");
-    expect(queue.snapshot().fields.contentMd).toBe("未保存的原文");
-    await assistant.apply(tasks()[1], "过时的修改", queue, editor!, () => true);
-    expect(queue.snapshot().fields.contentMd).toBe("未保存的原文");
+    render(queue, 1);
+    await vi.waitFor(() => expect(editors.size).toBe(2));
+    render(queue, 1);
+    const editor = editors.get(entry.id)!;
+    const selectRange = async (from: number, to: number) => {
+      const line = container.querySelectorAll(".ProseMirror p")[1].firstChild!;
+      editor.focus();
+      document.getSelection()!.setBaseAndExtent(line, from, line, to);
+      document.dispatchEvent(new Event("selectionchange"));
+      await vi.waitFor(() => expect(editor.target().original).toBe(line.textContent!.slice(from, to)));
+    };
+    await selectRange(1, 1);
+    expect(editor.captureContext("section")).toMatchObject({ headingPath: ["一"], original: "## 一\n\n这段正文" });
+    await send("怎么改？");
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
+    expect(generate.mock.calls[0][1]).toMatchObject({ operation: "chat", text: "## 一\n\n这段正文",
+      context: { scope: "section", headingPath: ["一"] } });
+    emit({ type: "started" });
+    emit({ type: "delta", text: "可以加" });
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加"));
+    render(other, 1);
+    expect(activePanel().textContent).not.toContain("可以加");
+    finish({ reply: "可以加一条例子。" });
+    await vi.waitFor(() => expect(messages.get("thread-" + entry.id)).toHaveLength(2));
+    render(queue, 1);
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加一条例子。"));
+
+    await send("举什么例子？");
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(2));
+    expect(generate.mock.calls[1][1]).toMatchObject({ history: [{ user: "怎么改？", assistant: "可以加一条例子。" }] });
+    click("停止生成");
+    emit({ type: "started" });
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(generate.mock.calls[1][1].id));
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("已停止生成"));
+
+    await selectRange(0, 4);
+    render(queue, 1, 1);
+    const rewriteChip = () => activePanel().querySelector('button[aria-label^="退出改写选区"]');
+    await vi.waitFor(() => expect(rewriteChip()?.textContent).toBe("这段正文×"));
+    await selectRange(0, 2);
+    await vi.waitFor(() => expect(rewriteChip()?.textContent).toBe("这段×"));
+    await selectRange(0, 4);
+    await send("只改选区");
+    await vi.waitFor(() => expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", text: "这段正文" }));
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("精简措辞"));
+    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    commit.mockRejectedValueOnce(new Error("磁盘写入失败"));
+    await vi.waitFor(() => expect([...activePanel().querySelectorAll("button")].find(node => node.textContent === "接受修改")?.disabled).toBe(false));
+    click("接受修改");
+    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd.replace("这段正文", "改写稿"));
+    expect(updateProposal).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("正文已修改，保存失败"), { timeout: 2500 });
+    expect(queue.snapshot().fields.contentMd).toContain("改写稿");
+    expect(updateProposal).not.toHaveBeenCalled();
+    await queue.flush({ retry: true });
+    await vi.waitFor(() => expect(updateProposal).toHaveBeenCalledWith(generate.mock.calls.at(-1)![1].id, "applied"));
+    expect(commit).toHaveBeenLastCalledWith(entry.id, 1, expect.objectContaining({ contentMd: expect.stringContaining("改写稿") }), "auto");
+    editor.command("undo");
+    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+
+    await selectRange(0, 4);
+    render(queue, 1, 2);
+    await send("再拟一稿");
+    await vi.waitFor(() => expect(messages.get("thread-" + entry.id)).toHaveLength(8));
+    const undoneProposal = generate.mock.calls.at(-1)![1].id;
+    const pendingAccept = () => [...activePanel().querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "接受修改");
+    await vi.waitFor(() => expect(pendingAccept()?.disabled).toBe(false));
+    flushSync(() => {
+      pendingAccept()!.click();
+      editor.command("undo");
+    });
+    await queue.flush();
+    await vi.waitFor(() => expect(updateProposal).toHaveBeenCalledWith(undoneProposal, "conflicted"));
+    expect(updateProposal).not.toHaveBeenCalledWith(undoneProposal, "applied");
+    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    click("对话记录");
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("暂无对话"));
+    click("对话记录");
+    click("新对话");
+    const firstThread = "thread-" + entry.id;
+    await vi.waitFor(() => expect(threads.get(firstThread)?.archived).toBe(true));
+    await vi.waitFor(() => expect(activePanel().textContent).not.toContain("精简措辞"));
+    const savedThread = firstThread + "-1";
+    blockedThreadWrites = savedThread;
+    await send("另一轮对话");
+    await vi.waitFor(() => expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "chat", prompt: "另一轮对话", history: [] }));
+    const reply = "新对话回复\n\n| 功能 | 状态 |\n| --- | --- |\n| 对话恢复 | 正常 |";
+    finish({ reply });
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("新对话回复"));
+    const scroll = activePanel().querySelector('[role="region"][aria-label="表格"]');
+    expect(scroll?.getAttribute("tabindex")).toBe("0");
+    expect(scroll?.querySelector("table thead th")?.textContent).toBe("功能");
+    expect(scroll?.querySelector("table tbody td")?.textContent).toBe("对话恢复");
+    const copyText = vi.spyOn(desktop, "copyText").mockResolvedValue();
+    const [copyUser, copyAssistant] = activePanel().querySelectorAll<HTMLButtonElement>('.ai-turn button[aria-label="复制"]');
+    const timestamps = [copyUser.previousElementSibling, copyAssistant.previousElementSibling];
+    expect(copyUser?.querySelector("svg.lucide-copy")).not.toBeNull();
+    expect(copyAssistant?.querySelector("svg.lucide-copy")).not.toBeNull();
+    flushSync(() => copyUser.click());
+    await vi.waitFor(() => expect(copyUser.querySelector("svg.lucide-check")).not.toBeNull());
+    expect(copyUser.parentElement?.querySelector('[role="status"]')?.textContent).toBe("已复制");
+    expect(copyAssistant.getAttribute("aria-label")).toBe("复制");
+    flushSync(() => copyAssistant.click());
+    await vi.waitFor(() => expect(copyAssistant.querySelector("svg.lucide-check")).not.toBeNull());
+    expect(copyText.mock.calls).toEqual([["另一轮对话"], [reply]]);
+    await vi.waitFor(() => {
+      expect(copyUser.getAttribute("aria-label")).toBe("复制");
+      expect(copyAssistant.getAttribute("aria-label")).toBe("复制");
+    }, { timeout: 1800 });
+    click("对话记录");
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("怎么改？"));
+    expect(activePanel().textContent).not.toContain("另一轮对话");
+    await vi.waitFor(() => expect(saveMessage.mock.calls.filter(([id]) => id === savedThread).length).toBeGreaterThanOrEqual(2));
+    expect(messages.get(savedThread)).toHaveLength(0);
+    blockedThreadWrites = undefined;
+    click("怎么改？");
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加一条例子。"));
+    expect(activePanel().textContent).toContain("已接受");
+    expect(updateThread).toHaveBeenCalledWith(firstThread, { archived: false });
+    expect(threads.get(savedThread)?.archived).toBe(true);
+    expect(messages.get(savedThread)).toHaveLength(2);
+    for (const [index, time] of timestamps.entries()) {
+      const date = messages.get(savedThread)![index].message.createdAt;
+      expect(time?.getAttribute("datetime")).toBe(date.toISOString());
+      expect(time?.textContent).toBe(messageTimeLabel(date));
+    }
+    await send("继续刚才的话题");
+    await vi.waitFor(() => expect(generate.mock.calls.at(-1)).toEqual([
+      firstThread,
+      expect.objectContaining({ prompt: "继续刚才的话题", history: [{ user: "怎么改？", assistant: "可以加一条例子。" }] }),
+      expect.any(Function),
+    ]));
+    finish({ reply: "这是旧会话的续聊回复。" });
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("这是旧会话的续聊回复。"));
+    await vi.waitFor(() => expect(messages.get(firstThread)?.at(-1)?.message.content).toEqual([
+      { type: "text", text: "这是旧会话的续聊回复。" },
+    ]));
+
+    const count = generate.mock.calls.length;
+    render(queue, 2);
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("这是旧会话的续聊回复。"));
+    expect(activePanel().textContent).toContain("精简措辞");
+    expect(activePanel().textContent).toContain("原选区已失效");
+    expect(generate).toHaveBeenCalledTimes(count);
+    expect(scope).toHaveBeenCalledWith(other.entry.id);
+
+    click("新对话");
+    await vi.waitFor(() => expect(threads.get(firstThread)?.archived).toBe(true));
+    render(queue, 3);
+    await vi.waitFor(() => expect(activePanel().querySelectorAll(".ai-thread-list time")).toHaveLength(2));
+    click("删除对话：另一轮对话");
+    await vi.waitFor(() => expect(removeThread).toHaveBeenCalledWith("thread-" + entry.id + "-1"));
+    await vi.waitFor(() => expect(activePanel().querySelectorAll(".ai-thread-list li")).toHaveLength(1));
+    expect(activePanel().textContent).toContain("怎么改？");
+    click("删除对话：怎么改？");
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("暂无对话"));
+    expect(removeThread).toHaveBeenLastCalledWith("thread-" + entry.id);
   } finally {
-    generate.mockRestore();
-    unsubscribe.mockRestore();
+    if (digest) Object.defineProperty(crypto, "subtle", digest); else Reflect.deleteProperty(crypto, "subtle");
+    vi.restoreAllMocks();
     queue.dispose();
+    other.dispose();
     flushSync(() => root.unmount());
     container.remove();
   }

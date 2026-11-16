@@ -40,18 +40,25 @@ export interface EditorTarget {
   from: number;
   to: number;
   original: string;
+  originalSlice: string;
 }
+
+export type AiContextScope = "selection" | "section" | "document";
+export type AiEditorContext = EditorTarget & { scope: AiContextScope; headingPath: string[] };
 
 export interface MarkdownEditorHandle {
   focus(): void;
   search(): void;
   target(scope?: "document"): EditorTarget;
+  captureContext(scope: AiContextScope): AiEditorContext | null;
+  selectionText(): string;
+  subscribeSelection(listener: () => void): () => void;
   insert(text: string): void;
   linkFootnoteMarkdown(source: string): string;
   hostImages?(upload: (src: string) => Promise<string>, eligible: (src: string) => boolean): Promise<number>;
   replaceTarget(target: EditorTarget, text: string): boolean;
   retryMissingImages(): void;
-  hasSelection(): boolean;
+  hasSelection(allowCells?: boolean): boolean;
   command(command: EditorCommand, value?: string): void;
   prepareContext(event: MouseEvent): LinkContext | ImageContext | TableContext | "code" | "cellText" | "object" | null;
   contextCaret?(visible: boolean): void;
@@ -711,7 +718,41 @@ export function MarkdownEditor(props: Props) {
         target: scope => {
           const { from, to } = scope === "document" ? { from: 0, to: view.state.doc.content.size } : view.state.selection;
           return { entryId, session, localRevision: revision.getState(view.state)!, from, to,
-            original: scope === "document" ? markdown : targetText(view, { from, to }) };
+            original: scope === "document" ? markdown : targetText(view, { from, to }),
+            originalSlice: JSON.stringify(view.state.doc.slice(from, to).toJSON()) };
+        },
+        captureContext(scope) {
+          const { doc, selection } = view.state;
+          if (disposed || (scope === "selection" && (selection.empty || selection instanceof CellSelection))) return null;
+          if (scope === "document") return { ...handle.target("document"), scope, headingPath: [] };
+          const headings: { pos: number; level: number; text: string }[] = [];
+          doc.forEach((node, pos) => {
+            if (node.type.name === "heading") headings.push({ pos, level: node.attrs.level, text: node.textContent });
+          });
+          const path: typeof headings = [];
+          for (const heading of headings) {
+            if (heading.pos > selection.from) break;
+            while (path.length && path.at(-1)!.level >= heading.level) path.pop();
+            path.push(heading);
+          }
+          const headingPath = path.map(heading => heading.text);
+          if (scope === "selection") return { ...handle.target(), scope, headingPath };
+          const current = path.at(-1);
+          const { $from } = selection;
+          const from = current?.pos ?? (headings.length || !$from.depth ? 0 : $from.before(1));
+          const to = current
+            ? headings.find(heading => heading.pos > current.pos && heading.level <= current.level)?.pos ?? doc.content.size
+            : headings[0]?.pos ?? ($from.depth ? $from.after(1) : doc.content.size);
+          return { entryId, session, localRevision: revision.getState(view.state)!, from, to, scope, headingPath,
+            original: targetText(view, { from, to }), originalSlice: JSON.stringify(doc.slice(from, to).toJSON()) };
+        },
+        subscribeSelection(listener) {
+          searchListeners.current.add(listener);
+          return () => { searchListeners.current.delete(listener); };
+        },
+        selectionText() {
+          const { doc, selection } = view.state;
+          return handle.hasSelection(false) ? doc.textBetween(selection.from, selection.to, " ") : "";
         },
         insert: text => {
           if (isWritable(view)) view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, text)));
@@ -767,15 +808,35 @@ export function MarkdownEditor(props: Props) {
         },
         replaceTarget: (target, text) => {
           if (!isWritable(view) || target.entryId !== entryId || target.session !== session
-            || target.localRevision !== revision.getState(view.state)) return false;
+            || target.localRevision !== revision.getState(view.state)
+            || target.originalSlice !== JSON.stringify(view.state.doc.slice(target.from, target.to).toJSON())) return false;
           const slice = markdownSlice(editor, text);
-          const whole = target.from === 0 && target.to === view.state.doc.content.size;
-          const tr = view.state.tr.replaceRange(target.from, target.to, whole ? new Slice(slice.content, 0, 0) : slice);
+          const { doc } = view.state;
+          const { from, to } = target;
+          const whole = from === 0 && to === doc.content.size;
+          const $from = doc.resolve(from), $to = doc.resolve(to);
+          const block = slice.content.firstChild;
+          if ($from.sameParent($to) && $from.parent.isTextblock && block) {
+            if (block.type !== doc.type.schema.nodes.paragraph && block.type !== $from.parent.type) return false;
+            for (let i = 0; i < block.childCount; i++) {
+              if (!$from.parent.type.allowsMarks(block.child(i).marks)) return false;
+            }
+          }
+          const tr = view.state.tr.replaceRange(from, to, whole ? new Slice(slice.content, 0, 0) : slice);
+          let withinTarget = true;
+          for (const map of tr.mapping.maps) {
+            map.forEach((start, end) => { withinTarget &&= start >= from && end <= to; });
+          }
+          if (!withinTarget || (!tr.docChanged && text !== target.original)) return false;
+          // A fitted slice can reparent adjacent text even when its step only covers the selection.
+          if ((from > 0 && !doc.slice(0, from).eq(tr.doc.slice(0, tr.mapping.map(from, -1))))
+            || (to < doc.content.size && !doc.slice(to, doc.content.size).eq(tr.doc.slice(tr.mapping.map(to, 1), tr.doc.content.size)))) return false;
           view.dispatch(closeHistory(tr));
           view.dispatch(closeHistory(view.state.tr));
           return true;
         },
-        hasSelection: () => !view.state.selection.empty,
+        hasSelection: (allowCells = true) => !view.state.selection.empty
+          && (allowCells || !(view.state.selection instanceof CellSelection)),
         retryMissingImages: () => { for (const retry of failedImages) retry(); },
         command: (name, value) => {
           if (disposed) return;

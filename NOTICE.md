@@ -26,4 +26,6 @@ Rust 导入使用 [scraper](https://github.com/rust-scraper/scraper) 提取公�
 
 P4 使用官方 [rmcp](https://github.com/modelcontextprotocol/rust-sdk) 实现 MCP 协议和 Streamable HTTP 传输（Apache-2.0），使用 [Axum](https://github.com/tokio-rs/axum) 路由本机端点（MIT），使用 [Hyper](https://github.com/hyperium/hyper) 管理可在退出时关闭的 HTTP 连接（MIT）。AI 复用 Rust 的 reqwest 与系统凭据库。
 
+AI 写作侧栏使用 [assistant-ui 和 assistant-stream](https://github.com/assistant-ui/assistant-ui)（MIT）承载消息交互和本地会话适配；使用 [jsdiff](https://github.com/kpdecker/jsdiff)（BSD-3-Clause）显示原文和候选差异；Rust 复用 [sse-stream](https://github.com/4t145/sse-stream) 与 [futures-util](https://github.com/rust-lang/futures-rs)（均为 MIT 或 Apache-2.0）读取模型事件流。对应许可文本见 [AI 依赖许可](third-party-ai.txt)。
+
 AI 设置支持从本地源码目录 `apps/desktop/src/assets/ai/` 加载可选图标。可在有相应许可时放入来自 [OpenAI Codex 扩展](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt)（26.51111.21308）的 `codex.png`，以及 [Anthropic Claude Code 扩展](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code)（2.1.325）的 `claude-code.png`。图标归各自的发布方所有。未提供图标时，界面用代理名称标识。

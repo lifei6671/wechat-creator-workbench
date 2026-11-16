@@ -141,7 +141,7 @@ it.each(["local", "custom"] as const)("removes a saved %s model with one click",
   });
   function Harness() {
     const [settings, setSettings] = useState(initial);
-    return <Theme><ModelSettings settings={settings} loadError="" onChange={setSettings} /></Theme>;
+    return <Theme><ModelSettings settings={settings} loadError="" onSave={async save => setSettings(await save())} /></Theme>;
   }
   const container = document.createElement("div");
   document.body.append(container);

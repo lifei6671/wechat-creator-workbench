@@ -35,11 +35,13 @@ export function aiAvailability(settings: AiSettings, target = settings.preferenc
 
 type Group = AiModelKind | "preferences";
 type Run = (group: Group, action: string, operation: () => Promise<void>, success?: string) => Promise<void>;
+type SaveSettings = (operation: () => Promise<AiSettings>) => Promise<void>;
 
-export function ModelSettings({ settings, loadError, onChange }: {
+export function ModelSettings({ settings, loadError, saving = false, onSave }: {
   settings?: AiSettings;
   loadError: string;
-  onChange(settings: AiSettings): void;
+  saving?: boolean;
+  onSave: SaveSettings;
 }) {
   const [working, setWorking] = useState("");
   const [feedback, setFeedback] = useState<{ group: Group; error: boolean; text: string }>();
@@ -75,7 +77,7 @@ export function ModelSettings({ settings, loadError, onChange }: {
   if (!settings) return <div className="settings-card"><p className={`settings-feedback ${loadError ? "inline-error" : "muted-text"}`}
     role={loadError ? "alert" : "status"}>{loadError || "正在读取设置…"}</p></div>;
 
-  const disabled = Boolean(working);
+  const disabled = saving || Boolean(working);
   const { preferences } = settings;
   const targets: { target: AiTarget; label: string; missing?: boolean }[] = [
     ...settings.agents.map(agent => ({
@@ -97,19 +99,18 @@ export function ModelSettings({ settings, loadError, onChange }: {
     <div className="settings-card ai-settings-card">
       <SettingRow id="ai-enabled" label="启用 AI 功能" hint="启用 AI 聊天和文档修改建议。">
         <Switch id="ai-enabled" size="2" checked={preferences.enabled} disabled={disabled}
-          onCheckedChange={enabled => void run("preferences", "enabled", async () => {
-            onChange(await desktop.saveAiPreferences({ ...preferences, enabled }));
-          })} />
+          onCheckedChange={enabled => void run("preferences", "enabled",
+            () => onSave(() => desktop.saveAiPreferences({ ...preferences, enabled })))} />
       </SettingRow>
     </div>
     <div className="settings-card ai-settings-card ai-default-card">
-      <SettingRow id="ai-default" label="默认 AI 目标" hint={unavailable ? availability.hint : "AI 助手将使用这个目标。"}>
+      <SettingRow id="ai-default" label="默认 AI 目标"
+        hint={unavailable ? availability.hint : preferences.defaultAgentModel ?? "AI 助手将使用这个目标。"}>
         <Select.Root value={preferences.defaultTarget ? targetValue(preferences.defaultTarget) : "none"} disabled={disabled}
           onValueChange={value => {
             const defaultTarget = targets.find(item => targetValue(item.target) === value)?.target ?? null;
-            void run("preferences", "default", async () => {
-              onChange(await desktop.saveAiPreferences({ ...preferences, defaultTarget }));
-            });
+            void run("preferences", "default", () => onSave(() =>
+              desktop.saveAiPreferences({ ...preferences, defaultTarget, defaultAgentModel: undefined })));
           }}>
           <Select.Trigger id="ai-default" />
           <Select.Content position="popper" className="ai-default-options">
@@ -149,7 +150,7 @@ export function ModelSettings({ settings, loadError, onChange }: {
       {(["local", "custom"] as const).map(kind => <Tabs.Content key={kind} value={kind} forceMount
         className="settings-card ai-settings-card ai-target-pane">
         <ModelPane kind={kind} models={settings.models.filter(model => model.kind === kind)}
-          working={working} onChange={onChange} run={run} feedback={message(kind)} />
+          working={working} disabled={disabled} onSave={onSave} run={run} feedback={message(kind)} />
       </Tabs.Content>)}
     </Tabs.Root>
   </div>;
@@ -168,18 +169,18 @@ function emptyDraft(kind: AiModelKind): Draft {
     keyMode: kind === "local" ? "none" : "system" };
 }
 
-function ModelPane({ kind, models, working, onChange, run, feedback }: {
+function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
   kind: AiModelKind;
   models: AiModel[];
   working: string;
-  onChange(settings: AiSettings): void;
+  disabled: boolean;
+  onSave: SaveSettings;
   run: Run;
   feedback: ReactNode;
 }) {
   const [draft, setDraft] = useState(() => emptyDraft(kind));
   const [keyEndpoint, setKeyEndpoint] = useState<string>();
   const form = useRef<HTMLFormElement>(null);
-  const disabled = Boolean(working);
   const addLabel = kind === "local" ? "添加本地模型" : "添加 API 模型";
   const config = { endpoint: draft.endpoint, model: draft.model, timeoutSeconds: draft.timeoutSeconds };
   const key = draft.keyMode === "none" ? (draft.id ? "" : undefined) : draft.key.trim() || undefined;
@@ -189,7 +190,7 @@ function ModelPane({ kind, models, working, onChange, run, feedback }: {
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void run(kind, `save-${kind}`, async () => {
-      onChange(await desktop.saveAiModel(draft.id, kind, draft.name, config, key));
+      await onSave(() => desktop.saveAiModel(draft.id, kind, draft.name, config, key));
       reset();
     }, "模型已保存");
   }
@@ -219,7 +220,7 @@ function ModelPane({ kind, models, working, onChange, run, feedback }: {
                 () => desktop.testAiTarget(target), "连接成功")}>测试连接</Button>
             <Button type="button" size="1" variant="soft" color="red" disabled={disabled} loading={working === `remove-${model.id}`}
               aria-label={`移除 ${labelModel(model)}`} onClick={() => void run(kind, `remove-${model.id}`, async () => {
-                onChange(await desktop.deleteAiModel(model.id));
+                await onSave(() => desktop.deleteAiModel(model.id));
                 if (draft.id === model.id) reset();
               }, "模型已移除")}>移除</Button>
           </div>
