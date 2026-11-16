@@ -20,7 +20,7 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "rustls"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
-tokio = { version = "1", features = ["sync", "fs", "macros", "time", "net"] }
+tokio = { version = "1", features = ["sync", "fs", "macros", "time", "net", "process", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

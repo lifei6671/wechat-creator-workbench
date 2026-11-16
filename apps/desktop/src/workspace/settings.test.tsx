@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { desktop, type AiSettings } from "../desktop";
+import { ModelSettings } from "./AiSettings";
 import { SettingsDialog } from "./Settings";
 
 let enterSection: (section: HTMLElement) => void;
@@ -46,7 +50,7 @@ it("filters settings by field names and retains entered values while switching c
     expect(document.activeElement?.id).toBe("settings-mcp");
     expect(draft.closest("section")?.hidden).toBe(false);
     change(search, "");
-    flushSync(() => buttons().find(button => button.textContent === "AI 模型")!.click());
+    flushSync(() => buttons().find(button => button.textContent === "AI 代理")!.click());
     expect(draft.closest("section")?.hidden).toBe(false);
     expect(draft.value).toBe("未保存的接口配置");
   } finally {
@@ -71,7 +75,7 @@ it("opens at the requested section, tracks the scroll position and loads storage
   try {
     const viewport = document.querySelector<HTMLElement>(".settings-pages")!;
     expect(viewport.scrollTop).toBe(720);
-    expect(active()).toBe("AI 模型");
+    expect(active()).toBe("AI 代理");
     expect(document.activeElement?.id).toBe("settings-model");
     expect(renderPage).not.toHaveBeenCalledWith("backups");
 
@@ -113,6 +117,48 @@ it("keeps settings open on backdrop clicks and allows explicit dismissal", async
     expect(close).toHaveBeenCalledTimes(1);
     document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click();
     expect(close).toHaveBeenCalledTimes(2);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each(["local", "custom"] as const)("removes a saved %s model with one click", async kind => {
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+  const initial: AiSettings = {
+    preferences: { enabled: true, defaultTarget: { kind: "model", id: "saved-model" } },
+    agents: [],
+    models: [{ id: "saved-model", kind, name: "试用模型", endpoint: "http://localhost:11434/v1/chat/completions",
+      model: "llama3.2", timeoutSeconds: 60 }],
+  };
+  vi.spyOn(desktop, "aiAgentVersions").mockResolvedValue([]);
+  const deleteModel = vi.spyOn(desktop, "deleteAiModel").mockResolvedValue({
+    ...initial, preferences: { ...initial.preferences, defaultTarget: null }, models: [],
+  });
+  function Harness() {
+    const [settings, setSettings] = useState(initial);
+    return <Theme><ModelSettings settings={settings} loadError="" onChange={setSettings} /></Theme>;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  flushSync(() => root.render(<Harness />));
+  try {
+    const tab = container.querySelector(`[role="tab"][aria-controls$="-content-${kind}"]`)!;
+    flushSync(() => tab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    const remove = container.querySelector<HTMLButtonElement>('[data-state="active"] button[aria-label="移除 试用模型"]')!;
+    flushSync(() => remove.click());
+    expect(deleteModel).toHaveBeenCalledOnce();
+    expect(deleteModel).toHaveBeenCalledWith("saved-model");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[aria-label="移除 试用模型"]')).toBeNull();
+      expect(container.querySelector("#ai-default")?.textContent).toBe("未选择");
+    });
   } finally {
     flushSync(() => root.unmount());
     container.remove();

@@ -4,7 +4,7 @@ import { FilePenLine, FolderOpen, Images, Newspaper, Search } from "lucide-react
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
-import { desktop, errorMessage, windowsTitleBar, type AiOperation, type BackupSnapshot, type ImageTarget } from "../desktop";
+import { desktop, errorMessage, windowsTitleBar, type AiOperation, type AiSettings, type BackupSnapshot, type ImageTarget } from "../desktop";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
 import { commandKey, untitled } from "../labels";
@@ -17,7 +17,8 @@ import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, Markd
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type Section } from "./Explorer";
-import { McpSettings, ModelSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
+import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
+import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiPanel, useAiAssistant } from "./AiPanel";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
 import { MigrationPanel } from "./Migration";
@@ -104,6 +105,19 @@ export function DesktopShell() {
   const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiSettings, setAiSettings] = useState<AiSettings>();
+  const [aiSettingsError, setAiSettingsError] = useState("");
+  const showAiConfiguration = aiOpen || modal?.type === "settings";
+  useEffect(() => {
+    if (!showAiConfiguration) return;
+    let current = true;
+    void desktop.aiSettings().then(settings => {
+      if (current) { setAiSettings(settings); setAiSettingsError(""); }
+    }, error => {
+      if (current) setAiSettingsError(errorMessage(error));
+    });
+    return () => { current = false; };
+  }, [showAiConfiguration]);
   const assistant = useAiAssistant();
   const systemDark = useMedia("(prefers-color-scheme: dark)");
   const compact = useMedia("(width < 820px)");
@@ -805,7 +819,7 @@ export function DesktopShell() {
     { name: "导入 Markdown", run: () => importMarkdown() },
     { name: "设置", run: () => openSettings() },
     { name: "MCP 服务设置", run: () => openSettings("mcp") },
-    { name: "AI 模型设置", run: showModel },
+    { name: "AI 代理设置", run: showModel },
     { name: "数据库备份", run: openBackups },
     ...(!reading ? [{ name: "切换 AI 助手", run: toggleAi }] : []),
     { name: "全文搜索", keys: commandKey + "Shift+F", run: openSearch },
@@ -945,7 +959,8 @@ export function DesktopShell() {
     return () => { window.clearTimeout(timer); clear(); };
   }, [showExplorer, sidebarPanel]);
   const origin = assistant.task ? queues.current.get(assistant.task.request.entryId) : undefined;
-  const canGenerate = Boolean(!reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id));
+  const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
+  const canGenerate = Boolean(aiTarget.label && !reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id));
   function generateAi(operation: AiOperation) {
     if (exit.current || !queue || reading) return;
     const editor = handles.current.get(queue.entry.id);
@@ -955,7 +970,7 @@ export function DesktopShell() {
     setAiOpen(false);
     document.getElementById("ai-panel-trigger")?.focus();
   }
-  const aiPanel = aiOpen && !focusMode && !reading && <AiPanel assistant={assistant} origin={origin}
+  const aiPanel = aiOpen && !focusMode && !reading && <AiPanel assistant={assistant} origin={origin} target={aiTarget}
     canGenerate={canGenerate} onGenerate={generateAi} onClose={closeAi} onSettings={showModel} onApply={candidate => {
       if (exit.current || globalLock || !origin || locked.includes(origin.entry.id) || readingIds.includes(origin.entry.id)) return;
       const editor = handles.current.get(origin.entry.id);
@@ -1094,7 +1109,7 @@ export function DesktopShell() {
     {!exitMessage && <>
       {modal?.type === "settings" && <>
         <SettingsDialog initialPage={modal.page} status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
-          if (page === "model") return <ModelSettings />;
+          if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError} onChange={setAiSettings} />;
           if (page === "mcp") return <McpSettings />;
           if (page === "images") return <ImageStorageSettings track={trackAssetTask} />;
           if (page === "backups") return <BackupPanel busy={backupWorking !== null || migrationWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}

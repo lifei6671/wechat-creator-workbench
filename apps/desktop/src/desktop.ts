@@ -27,7 +27,17 @@ export interface WechatImportJob {
 }
 export interface McpConfig { enabled: boolean; port: number; permission: "read" | "write" }
 export interface McpStatus { config: McpConfig; running: boolean; error: string | null }
-export interface AiConfig { endpoint: string; model: string; timeoutSeconds: number }
+export type AiAgent = "codex" | "claude_code";
+export type AiModelKind = "local" | "custom";
+export type AiTarget = { kind: "agent"; id: AiAgent } | { kind: "model"; id: string };
+export interface AiModelConfig { endpoint: string; model: string; timeoutSeconds: number }
+export interface AiModel extends AiModelConfig { id: string; kind: AiModelKind; name: string }
+export interface AiPreferences { enabled: boolean; defaultTarget: AiTarget | null }
+export interface AiSettings {
+  preferences: AiPreferences;
+  models: AiModel[];
+  agents: { id: AiAgent; installed: boolean }[];
+}
 export type AiOperation = "summary" | "titles" | "rewrite";
 export interface AiRequest { id: string; entryId: string; operation: AiOperation; title: string; text: string }
 export interface AiJob {
@@ -76,8 +86,16 @@ export const desktop = {
   saveMcp: (config: McpConfig) => invoke<McpStatus>("mcp_save", { config }),
   mcpToken: (rotate: boolean) => invoke<void>("mcp_token", { rotate }),
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
-  aiSettings: () => invoke<{ config: AiConfig | null; hasKey: boolean }>("ai_settings"),
-  saveAi: (config: AiConfig, apiKey?: string) => invoke<void>("ai_save_settings", { config, apiKey }),
+  aiSettings: () => invoke<AiSettings>("ai_settings"),
+  aiAgentVersions: () => invoke<[AiAgent, string | null][]>("ai_agent_versions"),
+  saveAiPreferences: (preferences: AiPreferences) => invoke<AiSettings>("ai_save_preferences", { preferences }),
+  aiModelHasKey: (id: string) => invoke<boolean>("ai_model_has_key", { id }),
+  saveAiModel: (id: string | null, kind: AiModelKind, name: string, config: AiModelConfig, apiKey?: string) =>
+    invoke<AiSettings>("ai_save_model", { id, kind, name, config, apiKey }),
+  deleteAiModel: (id: string) => invoke<AiSettings>("ai_delete_model", { id }),
+  testAiTarget: (target: AiTarget) => invoke<void>("ai_test_target", { probe: { kind: "saved", target } }),
+  testAiModel: (modelKind: AiModelKind, id: string | null, config: AiModelConfig, apiKey?: string) =>
+    invoke<void>("ai_test_target", { probe: { kind: "draft", modelKind, id, config, apiKey } }),
   aiGenerate: (request: AiRequest) => invoke<{ candidates: string[] }>("ai_generate", { request }),
   aiCancel: (id: string) => invoke<void>("ai_cancel", { id }),
   aiJobs: () => invoke<AiJob[]>("ai_jobs"),

@@ -243,6 +243,7 @@
 .ai-panel-title h2 { margin: 0; font-size: var(--workspace-font); font-weight: 650; }
 .ai-panel-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px; }
 .ai-panel-body p { margin: 0; }
+.ai-active-target { overflow-wrap: anywhere; }
 .ai-actions { flex-wrap: wrap; }
 .ai-target, .ai-job-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .ai-target span, .ai-job-line span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }

@@ -8,6 +8,7 @@
       "minWidth": 1000,
       "minHeight": 640,
       "dragDropEnabled": false,
+      "generalAutofillEnabled": false,
       "decorations": false,
       "shadow": true
     }]

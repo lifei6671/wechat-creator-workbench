@@ -162,11 +162,20 @@ impl Workspace {
     }
 
     pub fn set_setting<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        self.set_setting_with(key, value, || Ok(()))
+    }
+
+    pub fn set_setting_with<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        apply: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
         let value =
             serde_json::to_string(value).map_err(|_| AppError::new("SETTINGS", "无法保存设置"))?;
         self.write(|tx| {
             tx.execute("INSERT INTO app_settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value])?;
-            Ok(())
+            apply()
         })
     }
 

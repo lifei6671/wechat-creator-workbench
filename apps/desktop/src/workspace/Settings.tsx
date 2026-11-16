@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Button, Checkbox, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import { desktop, errorMessage, type AiConfig, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
+import { desktop, errorMessage, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import type { ViewMode } from "./Document";
 
@@ -15,7 +15,7 @@ const groups = [
     { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
   { label: "服务", items: [
-    { id: "model", label: "AI 模型", icon: Sparkles, keywords: "供应商 接口地址 模型名 API 密钥 超时 摘要 标题 改写 OpenAI" },
+    { id: "model", label: "AI 代理", icon: Sparkles, keywords: "默认 AI 目标 本地代理 本地模型 自定义模型 Codex Claude Code Ollama LM Studio 供应商 接口地址 模型名 API 密钥 超时 摘要 标题 改写 OpenAI" },
     { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Codex Claude" },
   ] },
   { label: "存储", items: [
@@ -135,10 +135,10 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   </Dialog.Root>;
 }
 
-export function SettingRow({ id, label, hint, children }: { id?: string; label: string; hint: string; children: ReactNode }) {
+export function SettingRow({ id, label, hint, children }: { id?: string; label: string; hint?: string; children: ReactNode }) {
   return <div className="setting-row"><div className="setting-copy">
     {id ? <label htmlFor={id}>{label}</label> : <span>{label}</span>}
-    <span className="setting-hint">{hint}</span>
+    {hint && <span className="setting-hint">{hint}</span>}
   </div><div className="setting-control">{children}</div></div>;
 }
 
@@ -315,59 +315,5 @@ export function McpSettings() {
           })}>停止 MCP</Button>}
           <Button type="submit" loading={busy}>{status.running ? "保存设置" : "启用 MCP"}</Button>
         </div>}
-  </form>;
-}
-
-export function ModelSettings() {
-  const [config, setConfig] = useState<AiConfig>({ endpoint: "", model: "", timeoutSeconds: 60 });
-  const [key, setKey] = useState("");
-  const [keyEndpoint, setKeyEndpoint] = useState<string>();
-  const [clearKey, setClearKey] = useState(false);
-  const [ready, setReady] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    void desktop.aiSettings().then(value => {
-      if (value.config) {
-        setConfig(value.config);
-        if (value.hasKey) setKeyEndpoint(value.config.endpoint);
-      }
-      setReady(true);
-    }, failure => setError(errorMessage(failure)));
-  }, []);
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    setSaved(false);
-    try {
-      await desktop.saveAi(config, clearKey ? "" : key || undefined);
-      const settings = await desktop.aiSettings();
-      setConfig(settings.config!);
-      setKeyEndpoint(settings.hasKey ? settings.config!.endpoint : undefined);
-      setClearKey(false);
-      setKey("");
-      setSaved(true);
-    }
-    catch (failure) { setError(errorMessage(failure)); }
-    finally { setBusy(false); }
-  }
-  const hasKey = keyEndpoint === config.endpoint;
-  if (!ready) return <div className="settings-card"><p className={`settings-feedback ${error ? "inline-error" : "muted-text"}`}
-    role={error ? "alert" : "status"}>{error || "正在读取设置…"}</p></div>;
-  return <form className="settings-card" onChange={() => setSaved(false)} onSubmit={event => void save(event)}>
-    <SettingRow id="ai-endpoint" label="接口地址" hint="填写兼容 OpenAI Chat Completions 的完整接口地址。"><TextField.Root id="ai-endpoint" type="url" required value={config.endpoint}
-      placeholder="https://api.example.com/v1/chat/completions" onChange={event => { setConfig({ ...config, endpoint: event.target.value }); setClearKey(false); setKey(""); }} /></SettingRow>
-    <SettingRow id="ai-model" label="模型名" hint="填写供应商提供的模型标识，供 AI 助手调用。"><TextField.Root id="ai-model" required value={config.model} onChange={event => setConfig({ ...config, model: event.target.value })} /></SettingRow>
-    <SettingRow id="ai-key" label="API 密钥" hint="按供应商要求填写，用于验证模型请求。"><TextField.Root id="ai-key" type="password" autoComplete="off" disabled={clearKey} value={key} placeholder={hasKey ? "已保存" : undefined}
-      onChange={event => setKey(event.target.value)} />
-      {hasKey && <label className="settings-check"><Checkbox checked={clearKey} onCheckedChange={checked => { setClearKey(checked === true); setSaved(false); }} />清除已保存的密钥</label>}
-    </SettingRow>
-    <SettingRow id="ai-timeout" label="超时（秒）" hint="模型请求超过此时间后结束等待。"><TextField.Root id="ai-timeout" type="number" min="1" max="180" required value={config.timeoutSeconds || ""}
-      onChange={event => setConfig({ ...config, timeoutSeconds: Number(event.target.value) })} /></SettingRow>
-    {error && <p className="settings-feedback inline-error" role="alert">{error}</p>}
-    {saved && <p className="settings-feedback muted-text" role="status">设置已保存</p>}
-    <div className="settings-footer"><Button type="submit" loading={busy}>保存</Button></div>
   </form>;
 }

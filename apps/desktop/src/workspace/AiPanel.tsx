@@ -107,9 +107,10 @@ export function useAiAssistant() {
 
 type Assistant = ReturnType<typeof useAiAssistant>;
 
-export function AiPanel({ assistant, origin, canGenerate, onGenerate, onApply, onClose, onSettings }: {
+export function AiPanel({ assistant, origin, target, canGenerate, onGenerate, onApply, onClose, onSettings }: {
   assistant: Assistant;
   origin?: SaveQueue;
+  target: { label?: string; hint?: string };
   canGenerate: boolean;
   onGenerate(operation: AiOperation): void;
   onApply(candidate: string): void;
@@ -124,6 +125,7 @@ export function AiPanel({ assistant, origin, canGenerate, onGenerate, onApply, o
     onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
     <div className="section-bar ai-panel-title"><h2>AI 助手</h2><Tool label="关闭 AI 助手" onClick={onClose}><X size={15} /></Tool></div>
     <div className="ai-panel-body">
+      <p className="muted-text ai-active-target">{target.label ? `默认目标：${target.label}` : target.hint}</p>
       <div className="button-strip ai-actions">
         {(Object.keys(labels) as AiOperation[]).map(operation => <Button key={operation} size="1" variant="soft" color="gray"
           disabled={!canGenerate || busy} onClick={() => onGenerate(operation)}>{labels[operation]}</Button>)}
@@ -132,13 +134,13 @@ export function AiPanel({ assistant, origin, canGenerate, onGenerate, onApply, o
       {busy && <div className="button-strip"><span role="status">生成中…</span><Button size="1" variant="ghost" disabled={!canCancel}
         onClick={() => { void cancel(); }}>取消生成</Button></div>}
       {task?.error && <div className="ai-candidate"><p className="inline-error" role="alert">{task.error}</p>
-        <Button size="1" variant="soft" color="gray" onClick={retry}>重试</Button></div>}
+        <Button size="1" variant="soft" color="gray" disabled={busy || !target.label} onClick={retry}>重试</Button></div>}
       {task?.result && (origin ? <BoundCandidates task={task} queue={origin} onApply={onApply} onCopy={assistant.copy} />
         : <Candidates task={task} applicable={false} onApply={onApply} onCopy={assistant.copy} />)}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {status && <p className="muted-text" role="status">{status}</p>}
       <div className="button-strip ai-actions">
-        <Button size="1" variant="ghost" color="gray" onClick={onSettings}>模型设置</Button>
+        <Button size="1" variant="ghost" color="gray" onClick={onSettings}>AI 设置</Button>
         <Button size="1" variant="ghost" color="gray" aria-expanded={history} onClick={() => setHistory(value => !value)}>任务记录</Button>
       </div>
       {history && <AiHistory busy={busy} />}

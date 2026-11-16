@@ -1,21 +1,23 @@
+mod agent;
+pub mod settings;
+
 use crate::db::{AppError, Result, Workspace, now};
 use reqwest::{Client, StatusCode, header::HeaderValue};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use settings::{ModelConfig, ModelKind, Settings, Target, loopback};
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use url::{Host, Url};
 use uuid::Uuid;
 
-const SETTINGS: &str = "ai_config";
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 pub struct AiService {
     client: Client,
+    loopback_client: Client,
     running: Mutex<HashMap<String, CancellationToken>>,
     finished: Notify,
 }
@@ -35,66 +37,6 @@ impl Drop for RunningTask<'_> {
             .remove(self.id);
         self.service.finished.notify_waiters();
     }
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiConfig {
-    endpoint: String,
-    model: String,
-    timeout_seconds: u32,
-}
-
-impl AiConfig {
-    fn validate(self) -> Result<Self> {
-        let url = Url::parse(self.endpoint.trim())
-            .map_err(|_| AppError::invalid("请输入完整的 chat/completions 接口地址"))?;
-        let loopback = match url.host() {
-            Some(Host::Domain(host)) => host == "localhost",
-            Some(Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(Host::Ipv6(ip)) => ip.is_loopback(),
-            None => false,
-        };
-        if (url.scheme() != "https" && !(url.scheme() == "http" && loopback))
-            || !url.has_host()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || !url
-                .path()
-                .trim_end_matches('/')
-                .ends_with("/chat/completions")
-        {
-            return Err(AppError::invalid(
-                "请输入不含凭据、参数和片段的 HTTPS chat/completions 地址，本机模型可用 HTTP",
-            ));
-        }
-        let model = self.model.trim().to_owned();
-        if model.is_empty() || model.len() > 512 {
-            return Err(AppError::invalid("请输入有效的模型名"));
-        }
-        if !(1..=180).contains(&self.timeout_seconds) {
-            return Err(AppError::invalid("超时须为 1 至 180 秒"));
-        }
-        Ok(Self {
-            endpoint: url.into(),
-            model,
-            timeout_seconds: self.timeout_seconds,
-        })
-    }
-
-    fn keyring(&self, db: &Workspace) -> Result<keyring::Entry> {
-        let endpoint = Sha256::digest(self.endpoint.as_bytes());
-        crate::secrets::entry(db, &format!("ai-{endpoint:x}"))
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiSettings {
-    config: Option<AiConfig>,
-    has_key: bool,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -296,42 +238,42 @@ fn provider_error(status: StatusCode) -> AppError {
     AppError::new(code, format!("{message}（HTTP {}）", status.as_u16()))
 }
 
-fn parse_candidates(response: ProviderResponse) -> (Result<AiResult>, Usage) {
+fn parse_candidates(content: &str) -> Result<AiResult> {
+    let content = content.trim();
+    let json = content
+        .strip_prefix("```json")
+        .or_else(|| content.strip_prefix("```"))
+        .and_then(|text| text.strip_suffix("```"))
+        .unwrap_or(content);
+    let result: AiResult = serde_json::from_str(json).map_err(|_| response_error())?;
+    if result.candidates.is_empty()
+        || result.candidates.len() > 5
+        || result
+            .candidates
+            .iter()
+            .any(|candidate| candidate.trim().is_empty())
+    {
+        return Err(response_error());
+    }
+    Ok(result)
+}
+
+fn parse_provider_response(response: ProviderResponse) -> (Result<AiResult>, Usage) {
     let usage = response.usage.map(Usage::from).unwrap_or_default();
-    let result = (|| {
-        let content = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .ok_or_else(response_error)?;
-        let content = content.trim();
-        let json = content
-            .strip_prefix("```json")
-            .or_else(|| content.strip_prefix("```"))
-            .and_then(|text| text.strip_suffix("```"))
-            .unwrap_or(content);
-        let result: AiResult = serde_json::from_str(json).map_err(|_| response_error())?;
-        if result.candidates.is_empty()
-            || result.candidates.len() > 5
-            || result
-                .candidates
-                .iter()
-                .any(|candidate| candidate.trim().is_empty())
-        {
-            return Err(response_error());
-        }
-        Ok(result)
-    })();
+    let result = response
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_deref())
+        .ok_or_else(response_error)
+        .and_then(parse_candidates);
     (result, usage)
 }
 
 impl AiService {
     pub fn new(db: &Workspace) -> Result<Self> {
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(network)?;
+        let client = || Client::builder().redirect(reqwest::redirect::Policy::none());
+        let loopback_client = client().no_proxy().build().map_err(network)?;
+        let client = client().build().map_err(network)?;
         db.write(|tx| {
             tx.execute(
                 "UPDATE jobs SET status='cancelled',error='应用上次退出时任务未完成，可手动重试',updated_at=?1
@@ -342,6 +284,7 @@ impl AiService {
         })?;
         Ok(Self {
             client,
+            loopback_client,
             running: Mutex::new(HashMap::new()),
             finished: Notify::new(),
         })
@@ -375,36 +318,46 @@ impl AiService {
         request: &'a AiRequest,
         model: &str,
     ) -> Result<RunningTask<'a>> {
-        let mut running = self.running.lock().expect("AI task lock");
-        db.write(|tx| {
-            let entry_exists = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM entries WHERE id=?1 AND deleted_at IS NULL)",
-                [&request.entry_id],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !entry_exists {
-                return Err(AppError::new("NOT_FOUND", "找不到要处理的内容"));
-            }
-            let stamp = now();
-            let inserted = tx.execute(
-                "INSERT INTO jobs(id,kind,status,entry_id,created_at,updated_at)
+        self.track(&request.id, || {
+            db.write(|tx| {
+                let entry_exists = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM entries WHERE id=?1 AND deleted_at IS NULL)",
+                    [&request.entry_id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !entry_exists {
+                    return Err(AppError::new("NOT_FOUND", "找不到要处理的内容"));
+                }
+                let stamp = now();
+                let inserted = tx.execute(
+                    "INSERT INTO jobs(id,kind,status,entry_id,created_at,updated_at)
                  VALUES (?1,'ai','running',?2,?3,?3) ON CONFLICT(id) DO NOTHING",
-                params![request.id, request.entry_id, stamp],
-            )?;
-            if inserted == 0 {
-                return Err(AppError::invalid("任务 ID 已存在，请重新生成"));
-            }
-            tx.execute(
-                "INSERT INTO ai_job_details(job_id,operation,model) VALUES (?1,?2,?3)",
-                params![request.id, request.operation.name(), model],
-            )?;
-            Ok(())
-        })?;
+                    params![request.id, request.entry_id, stamp],
+                )?;
+                if inserted == 0 {
+                    return Err(AppError::invalid("任务 ID 已存在，请重新生成"));
+                }
+                tx.execute(
+                    "INSERT INTO ai_job_details(job_id,operation,model) VALUES (?1,?2,?3)",
+                    params![request.id, request.operation.name(), model],
+                )?;
+                Ok(())
+            })
+        })
+    }
+
+    fn track<'a>(
+        &'a self,
+        id: &'a str,
+        prepare: impl FnOnce() -> Result<()>,
+    ) -> Result<RunningTask<'a>> {
+        let mut running = self.running.lock().expect("AI task lock");
+        prepare()?;
         let cancel = CancellationToken::new();
-        running.insert(request.id.clone(), cancel.clone());
+        running.insert(id.to_owned(), cancel.clone());
         Ok(RunningTask {
             service: self,
-            id: &request.id,
+            id,
             cancel,
         })
     }
@@ -416,19 +369,26 @@ impl AiService {
         started: impl FnOnce(&str),
     ) -> Result<AiResult> {
         request.validate()?;
-        let config = db
-            .setting::<AiConfig>(SETTINGS)?
-            .ok_or_else(|| AppError::new("AI_CONFIG", "请先在设置中配置 AI 模型"))?;
-        let task = self.start(db, &request, &config.model)?;
+        let settings = Settings::load(db)?;
+        if !settings.preferences.enabled {
+            return Err(AppError::new("AI_DISABLED", "请先在设置中启用 AI 功能"));
+        }
+        let target = settings
+            .preferences
+            .default_target
+            .as_ref()
+            .ok_or_else(|| AppError::new("AI_CONFIG", "请先在设置中选择默认 AI 目标"))?;
+        let name = match target {
+            Target::Agent(agent) => agent.label(),
+            Target::Model(id) => &settings.model(id)?.config.model,
+        };
+        let task = self.start(db, &request, name)?;
         started(&request.id);
         let (result, usage) = tokio::select! {
             biased;
             () = task.cancel.cancelled() => (Err(AppError::new("AI_CANCELLED", "生成已取消")), Usage::default()),
-            result = async {
-                let key = read_key(&config.keyring(db)?)?;
-                self.request(&config, &request, key.as_deref()).await
-            } => match result {
-                Ok(response) => parse_candidates(response),
+            result = self.run_target(db, &settings, target, &request) => match result {
+                Ok(response) => response,
                 Err(error) => (Err(error), Usage::default()),
             },
         };
@@ -453,15 +413,47 @@ impl AiService {
         result
     }
 
+    async fn run_target(
+        &self,
+        db: &Workspace,
+        settings: &Settings,
+        target: &Target,
+        request: &AiRequest,
+    ) -> Result<(Result<AiResult>, Usage)> {
+        match target {
+            Target::Agent(id) => {
+                let [instructions, source] = request.payload("").messages;
+                let prompt = format!(
+                    "{} 不调用工具。\n\n原文资料（JSON）：\n{}",
+                    instructions.content, source.content
+                );
+                let text = agent::run(*id, &prompt).await?;
+                Ok((parse_candidates(&text), Usage::default()))
+            }
+            Target::Model(id) => {
+                let model = settings.model(id)?;
+                let key = read_key(&model.credential(db)?)?;
+                let response = self.request(&model.config, request, key.as_deref()).await?;
+                Ok(parse_provider_response(response))
+            }
+        }
+    }
+
     async fn request(
         &self,
-        config: &AiConfig,
+        config: &ModelConfig,
         request: &AiRequest,
         key: Option<&str>,
     ) -> Result<ProviderResponse> {
-        let mut http = self
-            .client
-            .post(&config.endpoint)
+        let url =
+            url::Url::parse(&config.endpoint).map_err(|_| AppError::invalid("模型接口地址无效"))?;
+        let client = if loopback(&url) {
+            &self.loopback_client
+        } else {
+            &self.client
+        };
+        let mut http = client
+            .post(url)
             .timeout(Duration::from_secs(u64::from(config.timeout_seconds)))
             .json(&request.payload(&config.model));
         if let Some(key) = key {
@@ -483,37 +475,59 @@ impl AiService {
 }
 
 #[tauri::command]
-pub fn ai_settings(db: State<'_, Workspace>) -> Result<AiSettings> {
-    let config: Option<AiConfig> = db.setting(SETTINGS)?;
-    let has_key = match &config {
-        Some(config) => read_key(&config.keyring(&db)?)?.is_some(),
-        None => false,
+pub async fn ai_test_target(
+    db: State<'_, Workspace>,
+    ai: State<'_, AiService>,
+    probe: Probe,
+) -> Result<()> {
+    let settings = Settings::load(&db)?;
+    let request = AiRequest {
+        id: crate::db::id(),
+        entry_id: String::new(),
+        operation: Operation::Summary,
+        title: "连接测试".into(),
+        text: "这是一条连接测试消息。".into(),
     };
-    Ok(AiSettings { config, has_key })
+    let task = ai.track(&request.id, || db.read_running(|_| Ok(())))?;
+    tokio::select! {
+        biased;
+        () = task.cancel.cancelled() => Err(AppError::new("AI_CANCELLED", "连接测试已取消")),
+        result = tokio::time::timeout(Duration::from_secs(45), async {
+            match probe {
+                Probe::Saved { target } => ai.run_target(&db, &settings, &target, &request).await?.0.map(|_| ()),
+                Probe::Draft { model_kind, id, config, api_key } => {
+                    let config = config.validate(model_kind)?;
+                    let key = if let Some(key) = api_key {
+                        if key.trim().is_empty() { None } else { Some(key.trim().to_owned()) }
+                    } else if let Some(id) = id {
+                        let model = settings.model(&id)?;
+                        if model.config.endpoint == config.endpoint { read_key(&model.credential(&db)?)? } else { None }
+                    } else { None };
+                    parse_provider_response(ai.request(&config, &request, key.as_deref()).await?).0.map(|_| ())
+                }
+            }
+        }) => {
+            result.map_err(|_| AppError::new("AI_TIMEOUT", "连接测试超时"))?
+        },
+    }
 }
 
-#[tauri::command]
-pub fn ai_save_settings(
-    db: State<'_, Workspace>,
-    config: AiConfig,
-    api_key: Option<String>,
-) -> Result<()> {
-    let config = config.validate()?;
-    if let Some(key) = api_key {
-        db.read_running(|_| Ok(()))?;
-        let entry = config.keyring(&db)?;
-        let key = key.trim();
-        if key.is_empty() {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(_) => return Err(credential_error()),
-            }
-        } else {
-            authorization(key)?;
-            entry.set_password(key).map_err(|_| credential_error())?;
-        }
-    }
-    db.set_setting(SETTINGS, &config)
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum Probe {
+    Saved {
+        target: Target,
+    },
+    Draft {
+        model_kind: ModelKind,
+        id: Option<String>,
+        config: ModelConfig,
+        api_key: Option<String>,
+    },
 }
 
 #[tauri::command]
@@ -620,11 +634,69 @@ mod tests {
             "usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}
         }))
         .unwrap();
-        let (candidates, usage) = parse_candidates(response);
+        let (candidates, usage) = parse_provider_response(response);
         let failure = candidates.err().unwrap();
         assert_eq!(failure.code(), "AI_RESPONSE");
         assert!(!failure.to_string().contains("模型回显"));
         assert_eq!(usage.total_tokens, Some(11));
+    }
+
+    #[tokio::test]
+    async fn generation_honors_the_switch_and_routes_only_to_the_saved_default() {
+        use axum::{Json, Router, routing::post};
+        use serde_json::{Value, json};
+
+        let (db, entry_id) = workspace();
+        let service = AiService::new(&db).unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let endpoint = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/v1/chat/completions", post(|Json(payload): Json<Value>| async move {
+                assert_eq!(payload["model"], "selected-model");
+                Json(json!({
+                    "choices": [{ "message": { "content": r#"{"candidates":["本地结果"]}"# } }],
+                    "usage": { "total_tokens": 12 }
+                }))
+            }))).await.unwrap();
+        });
+        let mut settings = json!({
+            "preferences": { "enabled": false, "defaultTarget": { "kind": "model", "id": "selected" } },
+            "models": [
+                { "id": "first", "kind": "local", "endpoint": "http://127.0.0.1:1/v1/chat/completions", "model": "wrong-model", "timeoutSeconds": 5 },
+                { "id": "selected", "kind": "local", "endpoint": endpoint, "model": "selected-model", "timeoutSeconds": 5 }
+            ]
+        });
+        db.set_setting("ai_targets", &settings).unwrap();
+        let error = service
+            .generate(&db, request(entry_id.clone()), |_| {
+                panic!("disabled job started")
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), "AI_DISABLED");
+
+        settings["preferences"]["enabled"] = json!(true);
+        db.set_setting("ai_targets", &settings).unwrap();
+        let result = service
+            .generate(&db, request(entry_id), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(result.candidates, ["本地结果"]);
+        db.read(|conn| {
+            let details: (String, String, u32) = conn.query_row(
+                "SELECT j.status, d.model, d.total_tokens FROM jobs j JOIN ai_job_details d ON j.id=d.job_id",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(details, ("completed".into(), "selected-model".into(), 12));
+            Ok(())
+        }).unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -669,13 +741,11 @@ mod tests {
         });
         let (db, entry_id) = workspace();
         let service = AiService::new(&db).unwrap();
-        let config = AiConfig {
+        let config = ModelConfig {
             endpoint,
             model: "fixture-model".into(),
             timeout_seconds: 5,
-        }
-        .validate()
-        .unwrap();
+        };
         let error = service
             .request(&config, &request(entry_id), Some("fixture-key"))
             .await
