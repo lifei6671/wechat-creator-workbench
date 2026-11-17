@@ -22,19 +22,20 @@ export function WorkspaceSearch({ query, caseSensitive, inputRef, onQuery, onCas
   onCaseSensitive(value: boolean): void;
 }) {
   const field = useRef<HTMLInputElement>(null);
+  const anchor = useRef<HTMLDivElement>(null);
   const row = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const cursor = useRef<number | null>(null);
   const pendingQuery = useRef(false);
-  const [open, setOpen] = useState(!query.trim());
+  const [open, setOpen] = useState(false);
   const [history, setHistory] = useState(useStoredInitial<string[]>(historyKey, []));
 
   useLayoutEffect(() => {
     if (open || cursor.current === null) return;
     const position = cursor.current;
-    cursor.current = null;
     field.current!.focus();
     field.current!.setSelectionRange(position, position);
+    cursor.current = null;
   }, [open, query]);
 
   function insert(value: string) {
@@ -65,14 +66,15 @@ export function WorkspaceSearch({ query, caseSensitive, inputRef, onQuery, onCas
     setOpen(false);
   }}>
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <div className="workspace-search-field">
+      <Popover.Anchor virtualRef={anchor} />
+      <div ref={anchor} className="workspace-search-field">
         <Search size={15} aria-hidden="true" />
         <input autoFocus ref={element => {
           field.current = element;
           if (typeof inputRef === "function") inputRef(element);
           else if (inputRef) inputRef.current = element;
         }} aria-label="搜索笔记" placeholder="搜索笔记" value={query}
-          onFocus={() => { if (!query.trim()) setOpen(true); }}
+          onFocus={() => { if (cursor.current === null) setOpen(true); }}
           onClick={() => { if (!query.trim()) setOpen(true); }}
           onChange={event => { pendingQuery.current = true; onQuery(event.target.value); setOpen(!event.target.value.trim()); }}
           onKeyDown={event => {
@@ -95,7 +97,7 @@ export function WorkspaceSearch({ query, caseSensitive, inputRef, onQuery, onCas
       <Popover.Trigger><button className="plain-button chrome-icon workspace-search-options" type="button" aria-label="搜索选项">
         <SlidersHorizontal size={16} />
       </button></Popover.Trigger>
-      <Popover.Content ref={list} className="search-operators" size="1" align="end" sideOffset={10} collisionPadding={8} aria-label="搜索语法"
+      <Popover.Content ref={list} className="search-operators" size="1" align="start" sideOffset={10} collisionPadding={8} aria-label="搜索语法"
         onOpenAutoFocus={event => { if (document.activeElement === field.current) event.preventDefault(); }}
         onInteractOutside={event => { if (row.current?.contains(event.target as Node)) event.preventDefault(); }}
         onEscapeKeyDown={event => { event.preventDefault(); field.current?.focus(); setOpen(false); }}

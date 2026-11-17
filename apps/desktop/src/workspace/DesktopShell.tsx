@@ -34,6 +34,7 @@ const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module
 const minimumDirectoryWidth = 192;
 const minimumTimelineWidth = 144;
 const dividerWidth = 1;
+const minimumNavigationWidth = minimumDirectoryWidth + minimumTimelineWidth + dividerWidth;
 const dividerHitTarget = { fine: 16, coarse: 24 };
 
 type DocumentOptions = { view?: ViewMode; convertLinks?: boolean };
@@ -167,14 +168,20 @@ export function DesktopShell() {
   const writing = useRef(new Set<Promise<unknown>>());
   const locking = useRef(new Set<string>());
   const exit = useRef<{ cancelled: boolean; restoring: boolean } | null>(null);
-  const [initialSidebarWidth] = useState(() => useStoredInitial("sidebar-width", 248));
-  const [initialTimelineWidth] = useState(() => useStoredInitial("timeline-width", 320));
-  const [initialSidebarSize] = useState(() => explorer ? `${initialSidebarWidth}px` : "0px");
-  const sidebarWidth = useRef(initialSidebarWidth);
-  const timelineWidth = useRef(initialTimelineWidth);
+  const [{ directory: initialDirectoryWidth, navigation: initialNavigationWidth }] = useState(() => {
+    const legacyDirectoryWidth = useStoredInitial("sidebar-width", 248);
+    const legacyTimelineWidth = useStoredInitial("timeline-width", 0);
+    const legacyWidth = legacyDirectoryWidth + (legacyTimelineWidth ? legacyTimelineWidth + dividerWidth : 0);
+    return {
+      directory: useStoredInitial("timeline-directory-width", legacyDirectoryWidth),
+      navigation: Math.max(minimumNavigationWidth, useStoredInitial("navigation-width", legacyWidth)),
+    };
+  });
+  const [initialSidebarSize] = useState(() => explorer ? `${initialNavigationWidth}px` : "0px");
+  const navigationWidth = useRef(initialNavigationWidth);
+  const directoryWidth = useRef(initialDirectoryWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
   const timelineGroup = useRef<HTMLDivElement>(null);
-  const previousTimelineMode = useRef(false);
   const timelineWidthsReady = useRef(false);
   const explorerTree = useRef<ExplorerHandle>(null);
   const sidebarPanel = usePanelRef();
@@ -1071,22 +1078,27 @@ export function DesktopShell() {
   useLayoutEffect(() => {
     const panel = sidebarPanel.current!;
     const group = sidebarGroup.current!;
-    const switchedView = previousTimelineMode.current !== timelineMode;
-    previousTimelineMode.current = timelineMode;
-    if (!showExplorer || switchedView) timelineWidthsReady.current = false;
-    if (showExplorer !== panel.isCollapsed() && (!showExplorer || !switchedView)) return;
-    const directoryWidth = sidebarWidth.current;
-    const navigationWidth = directoryWidth + (timelineMode ? timelineWidth.current + dividerWidth : 0);
+    timelineWidthsReady.current = false;
+    const restoreSplit = () => {
+      if (timelineMode && showExplorer) {
+        directoryPanel.current?.resize(directoryWidth.current);
+        timelineWidthsReady.current = true;
+      }
+    };
+    if (showExplorer !== panel.isCollapsed()) {
+      if (!timelineMode || !showExplorer) return;
+      const frame = requestAnimationFrame(restoreSplit);
+      return () => cancelAnimationFrame(frame);
+    }
     group.dataset.sidebarMoving = "true";
     const frame = requestAnimationFrame(() => {
-      if (showExplorer) panel.resize(navigationWidth);
+      if (showExplorer) panel.resize(navigationWidth.current);
       else panel.collapse();
     });
     const clear = () => { delete group.dataset.sidebarMoving; };
     const timer = window.setTimeout(() => {
-      if (timelineMode && showExplorer) directoryPanel.current?.resize(directoryWidth);
+      restoreSplit();
       clear();
-      timelineWidthsReady.current = timelineMode && showExplorer;
     }, 220);
     return () => {
       cancelAnimationFrame(frame);
@@ -1145,7 +1157,7 @@ export function DesktopShell() {
       label={aiTarget.label ?? aiTarget.hint ?? "选择 AI 目标"} saving={savingAiSettings}
       onSelect={selectAiTarget} />}
     windowControls={showAiPanel && windowsTitleBar ? <WindowControls onError={showError} /> : undefined}
-    canChat={canChat} canEdit={canEditWithAi} onClose={closeAi} onSettings={showModel}
+    canChat={canChat} canEdit={canEditWithAi} tagSuggestions={library?.tagSuggestions} onClose={closeAi} onSettings={showModel}
     canSend={() => !exit.current}
     trackWrite={trackAssetTask}
     selectionRequest={aiChatSelection?.sessionId === queue?.sessionId ? aiChatSelection?.selection : undefined}
@@ -1154,12 +1166,6 @@ export function DesktopShell() {
   const toast = notice && <WorkspaceToast notice={notice} onReveal={path => run(() => desktop.revealFile(path))}
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
   const workspaceNotice = modal?.type !== "settings" && toast;
-  function rememberTimelineWidths(directory: number, timeline: number) {
-    sidebarWidth.current = directory;
-    timelineWidth.current = timeline;
-    persist("sidebar-width", directory);
-    persist("timeline-width", timeline);
-  }
   const rowActions: RowActions = {
     active: activeId, categories: library?.categories ?? [], readOnlyIds: [...readingIds, ...locked],
     treeLocked: globalLock, openMode: documentOpenMode, onOpen: (id, mode) => run(() => open(id, mode)),
@@ -1232,22 +1238,18 @@ export function DesktopShell() {
         resizeTargetMinimumSize={dividerHitTarget}
         onLayoutChanged={layout => {
           const group = sidebarGroup.current;
-          if (group && showExplorer && previousTimelineMode.current === timelineMode
-            && !group.dataset.sidebarMoving && !group.dataset.aiSidebarMoving) {
+          if (group && showExplorer && !group.dataset.sidebarMoving && !group.dataset.aiSidebarMoving) {
             const available = group.clientWidth - dividerWidth * (showAiPanel ? 2 : 1);
             const width = Math.round(available * layout.explorer / 100);
-            if (timelineMode && timelineWidthsReady.current && width >= minimumDirectoryWidth + minimumTimelineWidth + dividerWidth) {
-              const directory = Math.min(sidebarWidth.current, width - minimumTimelineWidth - dividerWidth);
-              rememberTimelineWidths(directory, width - directory - dividerWidth);
-            } else if (!timelineMode && width >= minimumDirectoryWidth) {
-              sidebarWidth.current = width;
-              persist("sidebar-width", width);
+            if (width >= minimumNavigationWidth) {
+              navigationWidth.current = width;
+              persist("navigation-width", width);
             }
           }
           if (showAiPanel) persist("ai-sidebar-width", aiSidebarWidth.current);
         }}>
           <Panel id="explorer" defaultSize={initialSidebarSize}
-            minSize={timelineMode ? minimumDirectoryWidth + minimumTimelineWidth + dividerWidth : minimumDirectoryWidth}
+            minSize={minimumNavigationWidth}
             collapsible collapsedSize="0px" panelRef={sidebarPanel}
             style={{ overflow: "hidden" }} groupResizeBehavior="preserve-pixel-size"
             onResize={size => {
@@ -1262,9 +1264,10 @@ export function DesktopShell() {
                 if (!timelineWidthsReady.current || !showExplorer || !groupWidth || sidebarGroup.current?.dataset.aiSidebarMoving) return;
                 const available = groupWidth - dividerWidth;
                 const directory = Math.round(available * layout.directory / 100);
-                rememberTimelineWidths(directory, available - directory);
+                directoryWidth.current = directory;
+                persist("timeline-directory-width", directory);
               }}>
-              <Panel id="directory" defaultSize={initialSidebarWidth} minSize={minimumDirectoryWidth} panelRef={directoryPanel}
+              <Panel id="directory" defaultSize={initialDirectoryWidth} minSize={minimumDirectoryWidth} panelRef={directoryPanel}
                 groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}>
                 {sidebar}
               </Panel>

@@ -5,18 +5,19 @@ import {
   AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadListPrimitive, ThreadPrimitive, useAui, useAuiState,
   type AssistantRuntime,
 } from "@assistant-ui/react";
-import { Button, ContextMenu, DropdownMenu, TextField, VisuallyHidden } from "@radix-ui/themes";
+import { Button, Checkbox, ContextMenu, DropdownMenu, TextField, VisuallyHidden } from "@radix-ui/themes";
 import { ArrowUp, Check, ChevronDown, Copy, FileText, History, Plus, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
 import { diffLines } from "diff";
 import type { MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { renderMarkdown } from "../../../../packages/markdown-core";
-import { desktop, errorMessage, type AiProposalStatus, type AiSelection } from "../desktop";
+import { desktop, errorMessage, type AiPropertyField, type AiPropertyValues, type AiProposalStatus, type AiSelection } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
-import { aiActions, captureAiIntent, matchesAiTarget, messageText, scopeLabels, type AiAction, type CapturedTarget, type ChatSelection, type ScopeChoice } from "../ai/context";
-import { proposalOf, useWritingRuntime, type WritingThreads } from "../ai/runtime";
-import type { AiProposal } from "../ai/proposals";
+import { aiActions, captureAiIntent, matchesAiTarget, messageText, requestedProperties, scopeLabels, type AiAction, type CapturedTarget, type ChatSelection, type ScopeChoice } from "../ai/context";
+import { propertyProposalOf, proposalOf, useWritingRuntime, type WritingThreads } from "../ai/runtime";
+import type { AiPropertyProposal, AiProposal } from "../ai/proposals";
 import { messageTimeLabel, untitled } from "../labels";
 import { Tool } from "../ui";
+import { addTag } from "./TagInput";
 import { WindowDragRegion } from "./WindowTitle";
 
 const readNothing = () => null;
@@ -44,6 +45,7 @@ interface Props {
   canEdit: boolean;
   canSend?(): boolean;
   trackWrite?(write: Promise<void>): Promise<void>;
+  tagSuggestions?: string[];
   selectionRequest?: ChatSelection;
   canWrite(queue: SaveQueue, editor: MarkdownEditorHandle): boolean;
   onClose(): void;
@@ -170,22 +172,54 @@ function AiConversation(props: Props & { session: ConversationSession; onIdle: (
       }
     } catch (failure) { report(failure); }
   }
+  function applyProperties(proposal: AiPropertyProposal, change: AiPropertyValues) {
+    const { id, entryId } = proposal;
+    const { queue, editor } = props;
+    const target = targets.get(id);
+    if (pending.current.has(id) || !stored.has(id) || !queue || !editor || entryId !== queue.entry.id
+      || target?.sessionId !== queue.sessionId || !props.canWrite(queue, editor)) return;
+    const current = queue.snapshot().fields;
+    const tags = change.tags?.reduce((merged, tag) => addTag(merged, tag, props.tagSuggestions ?? []), current.tags);
+    const changed = (tags && tags !== current.tags) || (change.title !== undefined && change.title !== current.title)
+      || (change.summary !== undefined && change.summary !== current.summary);
+    setError("");
+    if (progress[id] === "saveFailed" && changed) {
+      mark(id, "conflicted");
+      targets.delete(id);
+      return;
+    }
+    pending.current.add(id);
+    mark(id, "saving");
+    const save = async () => {
+      if (changed) queue.edit({ ...change, ...(tags && { tags }) });
+      if (!await queue.flush({ retry: true })) throw queue.snapshot().error;
+    };
+    const write = save();
+    void trackWork(props.trackWrite ? props.trackWrite(write) : write).then(() => {
+      mark(id, "applied");
+      targets.delete(id);
+    }, failure => {
+      mark(id, "saveFailed");
+      report(failure);
+    }).finally(() => finishProposal(id));
+  }
   return <AssistantRuntimeProvider runtime={runtime}>
     <ConversationView {...props} runtime={runtime} loadHistory={loadHistory} trackWork={trackWork} error={error} report={report}
       clear={() => setError("")} targets={targets} stored={stored} progress={progress}
-      unavailable={unavailable} apply={apply} reject={reject} />
+      unavailable={unavailable} apply={apply} applyProperties={applyProperties} reject={reject} />
   </AssistantRuntimeProvider>;
 }
 
 function ConversationView({
-  open, queue, editor, target, selection, targetPicker, windowControls, canChat, canEdit, canSend, selectionRequest, onClose, onSettings,
-  runtime, session, onIdle, loadHistory, trackWork, error, report, clear, targets, stored, progress, unavailable, apply, reject,
+  open, queue, editor, target, selection, targetPicker, windowControls, canChat, canEdit, canSend, tagSuggestions, selectionRequest, onClose, onSettings,
+  runtime, session, onIdle, loadHistory, trackWork, error, report, clear, targets, stored, progress, unavailable, apply, applyProperties, reject,
 }: Props & {
   runtime: AssistantRuntime; loadHistory(): Promise<void>; error: string; report(failure: unknown): void;
   session: ConversationSession; onIdle(): void; trackWork<T>(operation: Promise<T>): Promise<T>;
   clear(): void; targets: Map<string, CapturedTarget | null>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
   unavailable: ReadonlySet<string>;
   apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal): void; reject(proposal: AiProposal): Promise<void>;
+  applyProperties(proposal: AiPropertyProposal, change: AiPropertyValues): void;
 }) {
   const aui = useAui();
   const [view, setView] = useState<"chat" | "threads">("chat");
@@ -211,6 +245,7 @@ function ConversationView({
   const threadId = useAuiState(state => state.threadListItem.remoteId);
   const archived = useAuiState(state => state.threadListItem.status === "archived");
   const draft = useAuiState(state => state.composer.text);
+  const propertyFields = !rewrite && queue ? requestedProperties(draft) : [];
   const enabled = ready && canChat && open && view === "chat" && !running && !switching && !loading && !archived && !(threadId && unavailable.has(threadId));
   const chosen = rewrite || attachedSelection ? "selection" : scope === "auto" ? hasSelection ? "selection" : "section" : scope;
   const title = snapshot ? snapshot.fields.title || untitled : "";
@@ -248,10 +283,11 @@ function ConversationView({
     if (!enabled || canSend?.() === false || (action !== "chat" && !canEdit)) return;
     clear();
     try {
-      const intent = captureAiIntent(action, prompt, citation, queue, editor, selection, context);
+      const intent = captureAiIntent(action, prompt, citation, queue, editor, selection, { ...context, tagSuggestions });
       runtime.thread.append({ role: "user", content: [{ type: "text", text }],
         metadata: { custom: { action, citation: intent.label, scope: intent.scope, chatSelection: intent.chatSelection,
-          instruction: action === "rewrite" ? prompt : undefined } },
+          instruction: action === "rewrite" || action === "properties" ? prompt : undefined,
+          propertyFields: context?.propertyFields } },
         runConfig: { custom: { intent } },
       });
       if (fromComposer) {
@@ -271,11 +307,12 @@ function ConversationView({
     const text = messageText(user);
     const proposal = proposalOf(messages[index]);
     const original = proposal && targets.get(proposal.id);
-    send(action, text, action === "rewrite" ? String(user.metadata.custom.instruction ?? text) : action === "chat" ? text : "", false,
+    send(action, text, action === "rewrite" || action === "properties" ? String(user.metadata.custom.instruction ?? text) : action === "chat" ? text : "", false,
       user.metadata.custom.scope as ScopeChoice, {
         original: original?.context && matchesAiTarget(original, queue) && editor?.matchesTarget(original.context)
           ? original.context : undefined,
         chatSelection: action === "chat" ? user.metadata.custom.chatSelection as ChatSelection | undefined : undefined,
+        propertyFields: action === "properties" ? user.metadata.custom.propertyFields as AiPropertyField[] : undefined,
       });
   }
   function toggleHistory() {
@@ -359,7 +396,7 @@ function ConversationView({
                     {status.reason === "cancelled" ? "已停止生成" : status.reason === "error" && typeof status.error === "string"
                       ? status.error : "回复未完成"}
                   </p>}
-                  <AiMessageActions message={message} {...{ queue, targets, stored, progress, apply, reject, report }}
+                  <AiMessageActions message={message} {...{ queue, targets, stored, progress, apply, applyProperties, reject, report }}
                     canEdit={canEdit} canRetry={enabled}
                     retry={() => retry(message.id)} />
                 </>}
@@ -372,14 +409,19 @@ function ConversationView({
     <ComposerPrimitive.Root className="ai-composer" autoComplete="off" onSubmit={event => {
       event.preventDefault();
       const text = aui.composer.getState().text.trim();
-      if (text) send(rewrite ? "rewrite" : "chat", text, text, true, scope, { chatSelection: attachedSelection ?? undefined });
+      if (text) {
+        const fields = !rewrite && queue ? requestedProperties(text) : [];
+        if (fields.length) send("properties", text, text, true, "document", { propertyFields: fields });
+        else send(rewrite ? "rewrite" : "chat", text, text, true, scope, { chatSelection: attachedSelection ?? undefined });
+      }
     }}>
       {queue && <div className="ai-citations">
         <div className="ai-context" title={title}><FileText size={13} aria-hidden="true" /><span>{title}</span></div>
         {rewrite ? <Button type="button" variant="soft" size="1" color="gray" className="ai-rewrite-context"
           onClick={() => setRewrite(false)} aria-label={rewritePreview ? "退出改写选区：" + rewritePreview : "退出改写选区"}>
           <span>{rewritePreview || (hasSelection ? "改写选区" : "未选中文字")}</span><span aria-hidden="true">×</span>
-        </Button> : attachedSelection ? <Button type="button" variant="soft" size="1" color="gray" className="ai-selection-context"
+        </Button> : propertyFields.length > 0 ? <span className="ai-context-control muted-text">{scopeLabels.document}</span>
+        : attachedSelection ? <Button type="button" variant="soft" size="1" color="gray" className="ai-selection-context"
           aria-label={`移除选区引用：${selectionPreview(attachedSelection.original)}`} onClick={() => {
             setAttachedSelection(null);
             if (scope === "auto" || scope === "selection") setScope("none");
@@ -413,6 +455,8 @@ function ConversationView({
           <DropdownMenu.Content side="top" align="start" size="1">
             <DropdownMenu.Item onSelect={() => send("summary", aiActions.summary, "")}>生成摘要</DropdownMenu.Item>
             <DropdownMenu.Item onSelect={() => send("titles", aiActions.titles, "")}>建议标题</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => send("properties", "生成标签、摘要和标题", "给这篇文章生成标签、摘要和标题", false,
+              "document", { propertyFields: ["tags", "summary", "title"] })}>生成内容属性</DropdownMenu.Item>
             <DropdownMenu.Separator />
             {rewriteActions.map(([label, prompt]) => <DropdownMenu.Item key={label} disabled={!hasSelection}
               onSelect={() => send("rewrite", label, prompt)}>{label}</DropdownMenu.Item>)}
@@ -421,7 +465,8 @@ function ConversationView({
         </DropdownMenu.Root>}
         {running ? <ComposerPrimitive.Cancel asChild><Tool className="ai-send" label="停止生成"><Square size={14} /></Tool></ComposerPrimitive.Cancel>
           : <Button className="ai-send" type="submit" size="1" aria-label="发送消息"
-            disabled={!enabled || !draft.trim() || (chosen === "selection" && !hasSelection && !attachedSelection)}><ArrowUp size={17} /></Button>}
+            disabled={!enabled || !draft.trim() || (propertyFields.length > 0
+              ? !canEdit : chosen === "selection" && !hasSelection && !attachedSelection)}><ArrowUp size={17} /></Button>}
       </div>
     </ComposerPrimitive.Root>
   </ThreadPrimitive.Root>;
@@ -463,17 +508,18 @@ function AiUserMessage({ text, children }: { text: string; children: ReactNode }
     {selectedText && <blockquote className="ai-user-quote" aria-label="所选内容" tabIndex={0}>{selectedText}</blockquote>}
     <p className="ai-user-message">{text}</p>
     <div className="button-strip ai-user-actions">
-      {!selectedText && typeof citation === "string" && <p className="muted-text">{citation}</p>}
       {children}
+      {!selectedText && typeof citation === "string" && <p className="ai-user-citation">{citation}</p>}
     </div>
   </>;
 }
 
-function AiMessageActions({ message, queue, targets, stored, progress, canEdit, canRetry, apply, reject, report, retry }: {
+function AiMessageActions({ message, queue, targets, stored, progress, canEdit, canRetry, apply, applyProperties, reject, report, retry }: {
   message: Parameters<typeof messageText>[0]; queue?: SaveQueue;
   targets: Map<string, CapturedTarget | null>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
   canEdit: boolean; canRetry: boolean;
   apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal): void;
+  applyProperties(proposal: AiPropertyProposal, change: AiPropertyValues): void;
   reject(proposal: AiProposal): Promise<void>; report(failure: unknown): void; retry(): void;
 }) {
   const proposal = proposalOf(message);
@@ -481,6 +527,11 @@ function AiMessageActions({ message, queue, targets, stored, progress, canEdit, 
   const target = targets.get(id);
   const applicable = Boolean(canEdit && target && matchesAiTarget(target, queue));
   const action = useAuiState(state => state.thread.messages[state.message.index - 1]?.metadata.custom.action) as AiAction;
+  const propertyProposal = propertyProposalOf(message);
+  if (propertyProposal) return <PropertyProposalCard proposal={propertyProposal} current={queue?.snapshot().fields}
+    progress={progress[id]} bound={target?.sessionId === queue?.sessionId && queue?.entry.id === propertyProposal.entryId}
+    applicable={canEdit && stored.has(id)} canRetry={canRetry && canEdit} retry={retry}
+    accept={change => applyProperties(propertyProposal, change)} />;
   if (proposal) return <ProposalCard {...{ proposal, retry }} date={message.createdAt} progress={progress[id]} applicable={applicable && stored.has(id)}
     durable={!targets.has(id) || stored.has(id)} canRetry={canRetry && canEdit}
     accept={() => apply(id, proposal.replacementMarkdown, "rewrite", proposal)}
@@ -506,6 +557,58 @@ function AiMessageActions({ message, queue, targets, stored, progress, canEdit, 
     {message.status.type === "incomplete" && <Button size="1" variant="soft" color="gray"
       disabled={!canRetry || (action === "rewrite" && !canEdit)} onClick={retry}>重试</Button>}
   </div>;
+}
+
+function PropertyProposalCard({ proposal, current, progress, bound, applicable, canRetry, retry, accept }: {
+  proposal: AiPropertyProposal; current?: AiPropertyValues; progress?: Progress;
+  bound: boolean; applicable: boolean; canRetry: boolean; retry(): void; accept(change: AiPropertyValues): void;
+}) {
+  const [excluded, setExcluded] = useState<ReadonlySet<string>>(() => new Set());
+  const { values } = proposal;
+  const tags = values.tags?.reduce<string[]>((unique, tag) => addTag(unique, tag, []), []) ?? [];
+  const chosenTags = tags.filter(tag => !excluded.has(`tag:${tag}`));
+  const selection: AiPropertyValues = {
+    ...(chosenTags.length > 0 && { tags: chosenTags }),
+    ...(values.title && !excluded.has("title") && { title: values.title }),
+    ...(values.summary && !excluded.has("summary") && { summary: values.summary }),
+  };
+  const disabled = !bound || !applicable || Boolean(progress);
+  function choose(key: string, selected: boolean) {
+    setExcluded(previous => {
+      const next = new Set(previous);
+      if (selected) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  return <section className="ai-suggestion ai-property-proposal" aria-label="内容属性提案">
+    <strong>内容属性提案</strong>
+    {!values.title && <p className="muted-text">{current?.title || untitled}</p>}
+    {tags.length > 0 && <fieldset className="ai-property-group">
+      <legend>添加标签</legend>
+      {tags.map(tag => <label className="ai-property-choice" key={tag}>
+        <Checkbox size="1" checked={!excluded.has(`tag:${tag}`)} disabled={disabled}
+          onCheckedChange={checked => choose(`tag:${tag}`, checked === true)} />{tag}
+      </label>)}
+    </fieldset>}
+    {(["title", "summary"] as const).map(field => values[field] && <div className="ai-property-group" key={field}>
+      <label className="ai-property-choice">
+        <Checkbox size="1" checked={!excluded.has(field)} disabled={disabled}
+          onCheckedChange={checked => choose(field, checked === true)} />{field === "title" ? "标题" : "摘要"}
+      </label>
+      {current?.[field] && current[field] !== values[field] && <p className="muted-text">现有{field === "title" ? "标题" : "摘要"}：{current[field]}</p>}
+      <p className="ai-property-value">{values[field]}</p>
+    </div>)}
+    {progress === "conflicted" && <p className="muted-text" role="status">属性已被修改，请重新生成</p>}
+    <div className="button-strip ai-proposal-actions">
+      {progress === "applied" ? <span className="ai-proposal-status" data-status="applied" role="status"><Check size={14} />已写入内容属性</span>
+        : bound ? <Button size="1" variant="soft"
+          disabled={!applicable || progress === "saving" || !Object.keys(selection).length} onClick={() => accept(selection)}>
+          {progress === "saving" ? "正在保存…" : progress === "saveFailed" ? "重试保存" : "写入内容属性"}
+        </Button>
+        : <Button size="1" variant="soft" color="gray" disabled={!canRetry} onClick={retry}>重新生成</Button>}
+    </div>
+  </section>;
 }
 
 function ProposalCard({ proposal, date, applicable, durable, progress, canRetry, accept, reject, onError, retry }: {

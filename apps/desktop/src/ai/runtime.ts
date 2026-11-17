@@ -6,10 +6,14 @@ import {
 import { createAssistantStream } from "assistant-stream";
 import { desktop, errorMessage, type AiHistoryItem, type AiResult, type AiThread } from "../desktop";
 import { chatHistory, messageText, type AiIntent, type CapturedTarget } from "./context";
-import type { AiProposal } from "./proposals";
+import type { AiPropertyProposal, AiProposal } from "./proposals";
 
 export function proposalOf(message: AiHistoryItem["message"] | undefined): AiProposal | undefined {
   return message?.metadata.custom.proposal as AiProposal | undefined;
+}
+
+export function propertyProposalOf(message: AiHistoryItem["message"]): AiPropertyProposal | undefined {
+  return message.metadata.custom.propertyProposal as AiPropertyProposal | undefined;
 }
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -144,7 +148,7 @@ export function useWritingRuntime(
           await desktop.aiSaveMessage(id, queued);
           updateMetadata(id, { updatedAt: Date.now() });
           items.delete(messageId);
-          const proposal = proposalOf(queued.message);
+          const proposal = proposalOf(queued.message) ?? propertyProposalOf(queued.message);
           if (proposal) markStored(proposal.id);
         }
         unsaved.delete(id);
@@ -213,7 +217,8 @@ export function useWritingRuntime(
           const intent = runConfig.custom?.intent as AiIntent | undefined;
           if (!intent) throw new Error("请重新发送消息");
           const { request, target } = intent;
-          const input = request.operation === "chat" ? { ...request, history: chatHistory(messages, request) } : request;
+          const input = request.operation === "chat" && !request.properties
+            ? { ...request, history: chatHistory(messages, request) } : request;
           try {
             const { remoteId } = await aui.threadListItem.initialize();
             const stream = streamAiRun(remoteId, input, abortSignal, report, trackWork);
@@ -230,6 +235,11 @@ export function useWritingRuntime(
             if (!result || abortSignal.aborted) return;
             if ("reply" in result) {
               yield reply(result.reply);
+            } else if ("properties" in result) {
+              if (!request.entryId || !target) throw new Error("找不到提案对应的文章");
+              const propertyProposal: AiPropertyProposal = { id: request.id, entryId: request.entryId, values: result.properties };
+              targets.set(request.id, target);
+              yield { content: [], metadata: { custom: { propertyProposal, targetId: request.id } } };
             } else if (request.operation === "rewrite") {
               const context = target?.context;
               if (!context) throw new Error("请在正文中选中文字");

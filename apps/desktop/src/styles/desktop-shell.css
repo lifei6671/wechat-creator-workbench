@@ -144,7 +144,8 @@
   outline: none;
 }
 .workspace-search-field input::placeholder, .command-palette-field input::placeholder { color: var(--text-muted); }
-.workspace-search-options[data-state="open"], .workspace-search-tools [aria-pressed="true"] { background: var(--gray-a5); color: var(--text-main); }
+.workspace-search-options[data-state="open"]:not(:hover) { background: transparent; color: var(--text-muted); }
+.workspace-search-tools [aria-pressed="true"] { background: var(--gray-a5); color: var(--text-main); }
 .workspace-search-tools { display: flex; gap: 2px; }
 .workspace-search-tools .chrome-icon { width: 24px; min-width: 24px; height: 24px; min-height: 24px; }
 .search-operators {
@@ -400,7 +401,7 @@
   font-size: max(12px, var(--small-font)); white-space: pre-wrap;
 }
 .ai-user-actions { justify-self: end; }
-.ai-message-time { flex: none; color: var(--sand-11); font-size: 12px; white-space: nowrap; }
+.ai-message-time, .ai-user-citation { flex: none; color: var(--sand-11); font-size: 12px; white-space: nowrap; }
 .ai-message-copy { margin: 0; }
 @media (hover: hover) {
   :is(.ai-turn, .ai-suggestion):not(:hover) > .button-strip:not(:has(> .ai-message-copy:is(:focus-visible, [data-copied])))
@@ -429,6 +430,11 @@
 .ai-proposal-status[data-status="applied"] { color: var(--green-11); }
 .ai-proposal-actions { flex-wrap: wrap; }
 .ai-proposal-actions > .rt-Button { margin: 0; }
+.ai-property-group { display: grid; gap: 5px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.ai-property-group legend { margin-block-end: 5px; padding: 0; }
+.ai-property-choice { display: flex; align-items: baseline; gap: 6px; }
+.ai-property-value { white-space: pre-wrap; }
+.ai-property-proposal .ai-proposal-status { align-items: center; gap: 4px; }
 .ai-suggestion summary { cursor: pointer; color: var(--sand-12); }
 .ai-suggestion details[open] summary { margin-bottom: 8px; }
 .ai-diff :is(ins, del, span) { display: block; overflow-wrap: anywhere; min-height: 1lh; }

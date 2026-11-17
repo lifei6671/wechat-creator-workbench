@@ -1,4 +1,10 @@
-import type { AiProposalStatus } from "../desktop";
+import type { AiProposalStatus, AiPropertyValues } from "../desktop";
+
+export interface AiPropertyProposal {
+  id: string;
+  entryId: string;
+  values: AiPropertyValues;
+}
 
 export interface AiProposal {
   id: string;

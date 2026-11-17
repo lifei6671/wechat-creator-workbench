@@ -73,7 +73,9 @@ pub(super) async fn read(
         {
             emit(ChatEvent::Delta { text: text.clone() });
         }
-        return Ok(parse_provider_response(Operation::Chat, response));
+        return Ok(parse_provider_response(response, |content| {
+            parse_result(Operation::Chat, content)
+        }));
     }
     let mut bytes = 0;
     let events = SseStream::from_bytes_stream(response.bytes_stream().map(|chunk| {

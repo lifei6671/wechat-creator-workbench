@@ -45,13 +45,16 @@ export interface AiSettings {
   agents: { id: AiAgent; installed: boolean }[];
 }
 export type AiOperation = "summary" | "titles" | "rewrite";
+export type AiPropertyValues = Partial<Pick<EntryFields, "tags" | "summary" | "title">>;
+export type AiPropertyField = keyof AiPropertyValues;
 export interface AiTurn { user: string; assistant: string }
 export type AiRequest = { id: string; title: string; text: string; prompt?: string } & Partial<AiSelection> & (
   { entryId: string; operation: AiOperation }
   | { entryId: string | null; operation: "chat"; prompt: string; history: AiTurn[];
-    context?: { scope: AiContextScope; headingPath: string[] } }
+    context?: { scope: AiContextScope; headingPath: string[] };
+    properties?: { fields: AiPropertyField[]; tagSuggestions: string[] } }
 );
-export type AiResult = { candidates: string[]; description?: string } | { reply: string };
+export type AiResult = { candidates: string[]; description?: string } | { reply: string } | { properties: AiPropertyValues };
 export type AiStreamEvent = { type: "started" } | { type: "delta"; text: string };
 export type AiThread = { id: string; title: string; archived: boolean; updatedAt: number };
 export type AiHistoryItem = Parameters<ThreadHistoryAdapter["append"]>[0];

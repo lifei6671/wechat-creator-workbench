@@ -50,7 +50,7 @@ it("lists move destinations by folder hierarchy and selects the intended child",
   }
 });
 
-it("shows search syntax for an empty field and keeps focus when the panel opens", async () => {
+it("shows search syntax on field focus and keeps focus when the panel opens", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   const container = document.createElement("div");
   document.body.append(container);
@@ -85,6 +85,10 @@ it("shows search syntax for an empty field and keeps focus when the panel opens"
     expect(operators()).toBeNull();
     flushSync(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     expect(JSON.parse(localStorage.getItem("workspace-search-history")!)).toEqual(["关键词"]);
+    flushSync(() => container.querySelector<HTMLButtonElement>("[data-outside]")!.focus());
+    flushSync(() => input.focus());
+    expect(operators()).not.toBeNull();
+    expect(document.activeElement).toBe(input);
     flushSync(() => root.render(<Theme><Search key="reopened" /></Theme>));
     const recent = operators()?.querySelector<HTMLButtonElement>(".search-history-item")!;
     expect(recent?.textContent).toBe("关键词");
@@ -92,6 +96,7 @@ it("shows search syntax for an empty field and keeps focus when the panel opens"
     const reopened = container.querySelector<HTMLInputElement>('[aria-label="搜索笔记"]')!;
     expect(reopened.value).toBe("关键词");
     expect(document.activeElement).toBe(reopened);
+    expect(operators()).toBeNull();
     flushSync(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(reopened, "下一次搜索");
       reopened.dispatchEvent(new Event("input", { bubbles: true }));
@@ -124,10 +129,11 @@ it("offers the same creation commands and inserts a search operator at an editab
     const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
     flushSync(() => button("区分大小写").click());
     expect(button("区分大小写").getAttribute("aria-pressed")).toBe("true");
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="搜索笔记"]')!;
+    flushSync(() => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
     flushSync(() => button("搜索选项").click());
     const scoped = [...document.querySelectorAll<HTMLButtonElement>(".search-operator")].find(option => option.textContent!.startsWith("section:"))!;
     flushSync(() => scoped.click());
-    const field = container.querySelector<HTMLInputElement>('input[aria-label="搜索笔记"]')!;
     await vi.waitFor(() => expect(document.activeElement).toBe(field));
     expect(field.value).toBe("测试 section:()");
     expect(field.selectionStart).toBe(field.value.length - 1);

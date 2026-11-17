@@ -12,7 +12,7 @@ import { parseWechat } from "../../../../packages/wechat-renderer";
 import { desktop, type AiHistoryItem, type AiStreamEvent, type AiThread } from "../desktop";
 import { attachClipboard } from "./clipboard";
 import { SaveQueue } from "./save-queue";
-import { captureAiIntent, matchesAiTarget, type ChatSelection } from "../ai/context";
+import { captureAiIntent, matchesAiTarget, requestedProperties, type ChatSelection } from "../ai/context";
 import { messageTimeLabel } from "../labels";
 import { AiPanel } from "../workspace/AiPanel";
 import formatFixtures from "../../../../fixtures/wechat-format.json";
@@ -349,6 +349,11 @@ it("streams chat across article switches and restores chat and selected-range pr
       onEvent({ type: "started" });
       return Promise.resolve({ candidates: ["改写稿"], description: "精简措辞" });
     }
+    if (request.operation === "chat" && request.properties) {
+      return Promise.resolve(request.properties.fields.includes("title")
+        ? { properties: { title: "新的文章标题" } }
+        : { properties: { tags: [" markdown ", "写作", " 写作 ", "不采用"], summary: "新的文章摘要" } });
+    }
     emit = onEvent;
     return new Promise((resolve, reject) => { finish = resolve; fail = reject; });
   });
@@ -388,7 +393,8 @@ it("streams chat across article switches and restores chat and selected-range pr
       }} entryId={origin.entry.id} value={origin.entry.contentMd}
       active={current === origin} readOnly={false} onDocumentChanged={(_id, revision) => origin.markContentDirty(revision)} onBlur={() => {}} />)}
     <AiPanel key={key} open queue={current} editor={editors.get(current.entry.id)} target={{ label: "测试模型" }} targetPicker={null}
-      canChat canEdit selectionRequest={selectionRequest} canWrite={target => target === current} onClose={() => {}} onSettings={() => {}} />
+      canChat canEdit tagSuggestions={["其他段落", "无关工作区标签"]} selectionRequest={selectionRequest}
+      canWrite={target => target === current} onClose={() => {}} onSettings={() => {}} />
   </Theme>));
   const activePanel = () => container.querySelector(".ai-session:not([hidden])")!;
   const chooseRewrite = () => {
@@ -416,6 +422,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
     expect(generate.mock.calls[0][1]).toMatchObject({ operation: "chat", text: "## 一\n\n这段正文",
       context: { scope: "section", headingPath: ["一"] } });
+    expect(activePanel().querySelector(".ai-user-message + .ai-user-actions > .ai-user-citation:last-child")?.textContent).toBe("当前章节");
     emit({ type: "started" });
     emit({ type: "delta", text: "可以加" });
     await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加"));
@@ -663,6 +670,50 @@ it("streams chat across article switches and restores chat and selected-range pr
     flushSync(() => latestProposalAction("重新生成")!.click());
     await vi.waitFor(() => expect(latestProposalAction("接受修改")?.disabled).toBe(false));
     expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", prompt: "精简这一处", text: "这段" });
+
+    queue.edit({ tags: ["原有标签", "Markdown"] });
+    expect(await queue.flush()).toBe(true);
+    await send("给这篇文章补上标签和摘要");
+    await vi.waitFor(() => expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({
+      entryId: entry.id, operation: "chat", context: { scope: "document" },
+      properties: { fields: ["tags", "summary"], tagSuggestions: ["原有标签", "Markdown", "其他段落"] },
+    }));
+    expect([...activePanel().querySelectorAll(".ai-user-message + .ai-user-actions > .ai-user-citation:last-child")].at(-1)?.textContent).toBe("全文");
+    const properties = () => [...activePanel().querySelectorAll(".ai-property-proposal")].at(-1)!;
+    const apply = () => properties()?.querySelector<HTMLButtonElement>(".ai-proposal-actions button");
+    await vi.waitFor(() => expect(apply()?.disabled).toBe(false));
+    expect(generate.mock.calls.at(-1)?.[1].text).toContain("其他段落");
+    expect(queue.snapshot().fields.summary).toBe("");
+    expect(queue.snapshot().fields.tags).toEqual(["原有标签", "Markdown"]);
+    const skip = [...properties().querySelectorAll("label")].find(label => label.textContent === "不采用")!;
+    flushSync(() => skip.querySelector<HTMLButtonElement>('button[role="checkbox"]')!.click());
+    commit.mockRejectedValueOnce(new Error("模拟属性保存失败"));
+    flushSync(() => apply()!.click());
+    await vi.waitFor(() => expect(apply()?.textContent).toBe("重试保存"));
+    expect(queue.snapshot().fields.tags).toEqual(["原有标签", "Markdown", "写作"]);
+    flushSync(() => apply()!.click());
+    await vi.waitFor(() => expect(properties().textContent).toContain("已写入内容属性"));
+    expect(commit.mock.calls.at(-1)?.[0]).toBe(entry.id);
+    expect(queue.snapshot().fields).toMatchObject({ tags: ["原有标签", "Markdown", "写作"], summary: "新的文章摘要", title: entry.title });
+    expect(other.snapshot().fields.tags).toEqual([]);
+
+    await send("给当前文章换个标题");
+    await vi.waitFor(() => expect(properties().textContent).toContain("新的文章标题"));
+    await vi.waitFor(() => expect(apply()?.disabled).toBe(false));
+    commit.mockRejectedValueOnce(new Error("模拟属性保存失败"));
+    flushSync(() => apply()!.click());
+    await vi.waitFor(() => expect(apply()?.textContent).toBe("重试保存"));
+    queue.edit({ title: "手动修改后的标题" });
+    expect(await queue.flush({ retry: true })).toBe(true);
+    flushSync(() => apply()!.click());
+    await vi.waitFor(() => expect(properties().textContent).toContain("属性已被修改，请重新生成"));
+    expect(queue.snapshot().fields.title).toBe("手动修改后的标题");
+    flushSync(() => apply()!.click());
+    await vi.waitFor(() => expect(apply()?.textContent).toBe("写入内容属性"));
+    await vi.waitFor(() => expect(apply()?.disabled).toBe(false));
+    flushSync(() => apply()!.click());
+    await vi.waitFor(() => expect(properties().textContent).toContain("已写入内容属性"));
+    expect(queue.snapshot().fields).toMatchObject({ tags: ["原有标签", "Markdown", "写作"], summary: "新的文章摘要", title: "新的文章标题" });
   } finally {
     if (digest) Object.defineProperty(crypto, "subtle", digest); else Reflect.deleteProperty(crypto, "subtle");
     vi.restoreAllMocks();
@@ -672,6 +723,17 @@ it("streams chat across article switches and restores chat and selected-range pr
     flushSync(() => root.unmount());
     container.remove();
   }
+});
+
+it("routes explicit property requests while keeping advice and how-to questions in chat", () => {
+  expect(requestedProperties("帮我总结这篇文章的核心标签并填充到内容属性里。")).toEqual(["tags"]);
+  expect(requestedProperties("为这篇文章生成标题、摘要和标签")).toEqual(["tags", "summary", "title"]);
+  expect(requestedProperties("这篇文章适合哪些标签？")).toEqual([]);
+  expect(requestedProperties("请问如何给文章添加标签？")).toEqual([]);
+  expect(requestedProperties("你觉得怎么给这篇文章添加标签？")).toEqual([]);
+  expect(requestedProperties("请不要更新这篇文章的标题和标签")).toEqual([]);
+  expect(requestedProperties("给这篇文章加上标签，不要修改摘要和标题")).toEqual(["tags"]);
+  expect(requestedProperties("给这篇文章补上摘要，但标题不要改")).toEqual(["summary"]);
 });
 
 it("rejects async targets after a document changes or its editor session closes", async () => {
