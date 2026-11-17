@@ -1,23 +1,109 @@
 import { entrySortOrders } from "../../../../packages/shared-types";
+import { persist } from "../ui";
+import type { ViewMode } from "./Document";
+import type { Section, TimelineSelection } from "./Explorer";
 
 export type DocumentOpenMode = "current" | "new-tab";
+export type DocumentOptions = { view?: ViewMode; convertLinks?: boolean; outline?: boolean };
+export type TimelineDirectory = "shown" | "manual" | "auto";
 
-type DocumentTabsPreference = { ids: string[]; activeId: string | null };
+type DocumentTabsPreference = {
+  ids: string[];
+  activeId: string | null;
+  readingIds?: string[];
+  options?: Record<string, DocumentOptions>;
+};
 const documentTabsKey = (workspaceId: string) => `document-tabs:${workspaceId}`;
 
-export function readDocumentTabs(workspaceId: string): DocumentTabsPreference | null {
-  const raw = localStorage.getItem(documentTabsKey(workspaceId));
+function readPreference(key: string): unknown {
+  const raw = localStorage.getItem(key);
   if (raw === null) return null;
-  try {
-    const value = JSON.parse(raw) as Partial<DocumentTabsPreference> | null;
-    if (!Array.isArray(value?.ids) || !value.ids.every(id => typeof id === "string")) return null;
-    const ids = [...new Set(value.ids)];
-    return { ids, activeId: value.activeId && ids.includes(value.activeId) ? value.activeId : null };
-  } catch { return null; }
+  try { return JSON.parse(raw) as unknown; } catch { return null; }
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function readDocumentTabs(workspaceId: string): DocumentTabsPreference | null {
+  const value = record(readPreference(documentTabsKey(workspaceId)));
+  if (!Array.isArray(value.ids) || !value.ids.every(id => typeof id === "string")) return null;
+  const ids = [...new Set<string>(value.ids)];
+  const activeId = typeof value.activeId === "string" && ids.includes(value.activeId) ? value.activeId : null;
+  const storedOptions = record(value.options);
+  const options = Object.fromEntries(ids.flatMap(id => {
+    if (!Object.hasOwn(storedOptions, id)) return [];
+    const { view, convertLinks, outline } = record(storedOptions[id]);
+    const valid: DocumentOptions = {};
+    if (view === "edit" || view === "preview") valid.view = view;
+    if (typeof convertLinks === "boolean") valid.convertLinks = convertLinks;
+    if (typeof outline === "boolean") valid.outline = outline;
+    return Object.keys(valid).length ? [[id, valid] as const] : [];
+  }));
+  const storedReadingIds = value.readingIds;
+  const readingIds = Array.isArray(storedReadingIds) ? ids.filter(id => storedReadingIds.includes(id)) : [];
+  return {
+    ids, activeId,
+    ...(readingIds.length ? { readingIds } : {}),
+    ...(Object.keys(options).length ? { options } : {}),
+  };
 }
 
 export function saveDocumentTabs(workspaceId: string, tabs: DocumentTabsPreference) {
-  localStorage.setItem(documentTabsKey(workspaceId), JSON.stringify(tabs));
+  persist(documentTabsKey(workspaceId), tabs);
+}
+
+const sections: readonly Section[] = ["folders", "timeline", "search", "assets", "trash", "imports"];
+const layoutKey = "workspace-layout";
+
+type WorkspaceLayout = {
+  section: Section;
+  explorerOverride: boolean | null;
+  timelineDirectory: TimelineDirectory;
+  focusMode: boolean;
+  aiOpen: boolean;
+};
+
+export function readWorkspaceLayout(): WorkspaceLayout {
+  const { section, explorerOverride, timelineDirectory, focusMode, aiOpen } = record(readPreference(layoutKey));
+  return {
+    section: sections.find(item => item === section) ?? "folders",
+    explorerOverride: typeof explorerOverride === "boolean" ? explorerOverride : null,
+    timelineDirectory: timelineDirectory === "manual" || timelineDirectory === "auto" ? timelineDirectory : "shown",
+    focusMode: focusMode === true,
+    aiOpen: aiOpen === true,
+  };
+}
+
+export function saveWorkspaceLayout(layout: WorkspaceLayout) {
+  persist(layoutKey, layout);
+}
+
+type WorkspaceNavigation = {
+  categoryId?: string;
+  timelineSelection: TimelineSelection;
+  includeTimelineChildren: boolean;
+  query: string;
+  caseSensitive: boolean;
+};
+const navigationKey = (workspaceId: string) => `workspace-navigation:${workspaceId}`;
+
+export function readWorkspaceNavigation(workspaceId: string): WorkspaceNavigation {
+  const { categoryId, timelineSelection, includeTimelineChildren, query, caseSensitive } = record(readPreference(navigationKey(workspaceId)));
+  const { kind, id } = record(timelineSelection);
+  const selection: TimelineSelection = (kind === "folder" || kind === "tag") && typeof id === "string" ? { kind, id }
+    : { kind: kind === "untagged" ? kind : "root" };
+  return {
+    categoryId: typeof categoryId === "string" ? categoryId : undefined,
+    timelineSelection: selection,
+    includeTimelineChildren: includeTimelineChildren !== false,
+    query: typeof query === "string" ? query : "",
+    caseSensitive: caseSensitive === true,
+  };
+}
+
+export function saveWorkspaceNavigation(workspaceId: string, navigation: WorkspaceNavigation) {
+  persist(navigationKey(workspaceId), navigation);
 }
 
 const allowed = {
@@ -31,10 +117,12 @@ const allowed = {
   "directory-auto-locate": (v: unknown) => typeof v === "boolean",
   "directory-pins-collapsed": (v: unknown) => typeof v === "boolean",
   "directory-collapsed": (v: unknown) => typeof v === "boolean",
+  "directory-tags-collapsed": (v: unknown) => typeof v === "boolean",
   explorer: (v: unknown) => typeof v === "boolean",
   "asset-large-tiles": (v: unknown) => typeof v === "boolean",
   "download-pasted-images": (v: unknown) => typeof v === "boolean",
   "links-to-footnotes": (v: unknown) => typeof v === "boolean",
+  "default-document-outline": (v: unknown) => typeof v === "boolean",
   "expanded-folders": (v: unknown) => Array.isArray(v) && v.every(id => typeof id === "string"),
   "editor-display": (v: unknown) => Boolean(v && typeof v === "object" && ["limitWidth", "lineNumbers", "showTitle"]
     .every(key => typeof (v as Record<string, unknown>)[key] === "boolean")),

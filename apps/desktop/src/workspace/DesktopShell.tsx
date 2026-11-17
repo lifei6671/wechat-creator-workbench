@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { Button, Theme } from "@radix-ui/themes";
 import { FilePenLine, FileText, Folder, Image, List, Search } from "lucide-react";
-import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
+import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
@@ -13,11 +13,13 @@ import { commandKey, untitled } from "../labels";
 import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
-import { readDocumentTabs, saveDocumentTabs, workspacePreferences, type DocumentOpenMode } from "./preferences";
+import { readDocumentTabs, readWorkspaceLayout, readWorkspaceNavigation, saveDocumentTabs, saveWorkspaceLayout,
+  saveWorkspaceNavigation, workspacePreferences, type DocumentOpenMode, type DocumentOptions, type TimelineDirectory } from "./preferences";
 import { Confirm, PropertiesDialog, RevisionsDialog } from "./Dialogs";
 import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
+import { Outline } from "./Outline";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section, type TimelineSelection } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { aiAvailability, ModelSettings } from "./AiSettings";
@@ -32,12 +34,13 @@ import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 
 const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
 const minimumDirectoryWidth = 192;
-const minimumTimelineWidth = 144;
+const minimumTimelineWidth = 416;
+const minimumWritingWidth = 360;
+const minimumNavigationWidth = 337;
+const minimumAiWidth = 300;
 const dividerWidth = 1;
-const minimumNavigationWidth = minimumDirectoryWidth + minimumTimelineWidth + dividerWidth;
 const dividerHitTarget = { fine: 16, coarse: 24 };
-
-type DocumentOptions = { view?: ViewMode; convertLinks?: boolean };
+const directoryTransitionMs = 200;
 
 type Modal =
   | { type: "palette" | "reload" }
@@ -65,18 +68,23 @@ function useMedia(query: string) {
 }
 
 export function DesktopShell() {
-  const [section, setSection] = useState<Section>("folders");
+  const [initialLayout] = useState(readWorkspaceLayout);
+  const [section, setSection] = useState<Section>(initialLayout.section);
   const [library, setLibrary] = useState<Library | null>(null);
+  const workspaceId = library?.workspaceId;
+  const [navigationWorkspace, setNavigationWorkspace] = useState<string>();
   const [page, setPage] = useState<EntryPage | null>(null);
   const [categoryId, setCategoryId] = useState<string>();
-  const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
+  const [timelineSelection, setTimelineSelection] = useState<TimelineSelection>({ kind: "root" });
+  const [timelineDirectory, setTimelineDirectory] = useState<TimelineDirectory>(initialLayout.timelineDirectory);
+  const directoryMode = useRef(timelineDirectory);
   const [includeTimelineChildren, setIncludeTimelineChildren] = useState(true);
-  const timelineFolder = timelineSelection?.kind === "folder"
+  const timelineFolder = timelineSelection.kind === "folder"
     ? library?.categories.find(category => category.id === timelineSelection.id) ?? null : null;
-  const timelineTag = timelineSelection?.kind === "tag"
+  const timelineTag = timelineSelection.kind === "tag"
     ? library?.tags.find(tag => tag.id === timelineSelection.id) ?? null : null;
   const timelineMode = section === "timeline";
-  const timelineRoot = timelineSelection?.kind === "root";
+  const timelineRoot = timelineSelection.kind === "root";
   const [expandedFolders, setExpandedFolders] = useState(() => useStoredInitial<string[]>("expanded-folders", []));
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -89,6 +97,7 @@ export function DesktopShell() {
   const [mcpStatus, setMcpStatus] = useState<McpStatus>();
   const [mcpLoadError, setMcpLoadError] = useState("");
   const [tabSessions, setSessions] = useState<SaveQueue[] | null>(null);
+  const [tabsRestored, setTabsRestored] = useState(false);
   const [tabSelection, setTabSelection] = useState<{ id: string; restored: boolean } | null>(null);
   const sessions = tabSessions ?? [];
   const activeId = tabSelection?.id ?? null;
@@ -100,6 +109,7 @@ export function DesktopShell() {
   const [shortcut, setShortcut] = useState(() => useStoredInitial<ViewShortcut>("view-shortcut", "none"));
   const [downloadPastedImages, setDownloadPastedImages] = useState(() => useStoredInitial("download-pasted-images", false));
   const [defaultConvertLinks, setDefaultConvertLinks] = useState(() => useStoredInitial("links-to-footnotes", false));
+  const [defaultOutline, setDefaultOutline] = useState(() => useStoredInitial("default-document-outline", false));
   const [documentOpenMode, setDocumentOpenMode] = useState<DocumentOpenMode>(() =>
     useStoredInitial<string>("document-open-mode", "") === "new-tab" ? "new-tab" : "current");
   const [folderLoading, setFolderLoading] = useState(() => useStoredInitial<"all" | "paged">("folder-loading", "paged"));
@@ -108,8 +118,8 @@ export function DesktopShell() {
     limitWidth: true, lineNumbers: false, showTitle: true,
   }));
   const [preferredExplorer, setPreferredExplorer] = useState(() => useStoredInitial<boolean | null>("explorer", null));
-  const [explorerOverride, setExplorerOverride] = useState<boolean | null>(null);
-  const [focusMode, setFocusMode] = useState(false);
+  const [explorerOverride, setExplorerOverride] = useState(initialLayout.explorerOverride);
+  const [focusMode, setFocusMode] = useState(initialLayout.focusMode);
   const [locked, setLocked] = useState<string[]>([]);
   const [globalLock, setGlobalLock] = useState(false);
   const [exitMessage, setExitMessage] = useState("");
@@ -123,7 +133,8 @@ export function DesktopShell() {
   const [migrationWorking, setMigrationWorking] = useState<"export" | "import" | null>(null);
   const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
+  const [aiOverride, setAiOpen] = useState<boolean | null>(null);
+  const aiOpen = aiOverride ?? initialLayout.aiOpen;
   const [aiVisited, setAiVisited] = useState(false);
   useEffect(() => { if (aiOpen) setAiVisited(true); }, [aiOpen]);
   const [aiSettings, setAiSettings] = useState<AiSettings>();
@@ -148,7 +159,9 @@ export function DesktopShell() {
   const defaultExplorer = preferredExplorer ?? !compact;
   const explorer = explorerOverride ?? defaultExplorer;
   const reading = activeId !== null && readingIds.includes(activeId);
-  const showAiPanel = aiOpen && !focusMode && !reading;
+  const timelineTooNarrow = useMedia(`(width < ${minimumTimelineWidth + minimumWritingWidth + minimumAiWidth + 2 * dividerWidth}px)`);
+  const showAiPanel = aiOpen && !focusMode && !reading && (aiOverride !== null || tabsRestored || tabSessions !== null)
+    && (!timelineMode || !explorer || !timelineTooNarrow);
   const loadAgentModels = showAiPanel && aiSettings?.preferences.enabled === true && aiSettings.agents.some(agent => agent.installed);
   useEffect(() => {
     if (!loadAgentModels) return;
@@ -168,26 +181,37 @@ export function DesktopShell() {
   const writing = useRef(new Set<Promise<unknown>>());
   const locking = useRef(new Set<string>());
   const exit = useRef<{ cancelled: boolean; restoring: boolean } | null>(null);
-  const [{ directory: initialDirectoryWidth, navigation: initialNavigationWidth }] = useState(() => {
+  const [{ directory: initialDirectoryWidth, navigation: initialNavigationWidth, timeline: initialTimelineWidth }] = useState(() => {
     const legacyDirectoryWidth = useStoredInitial("sidebar-width", 248);
     const legacyTimelineWidth = useStoredInitial("timeline-width", 0);
     const legacyWidth = legacyDirectoryWidth + (legacyTimelineWidth ? legacyTimelineWidth + dividerWidth : 0);
+    const directory = Math.max(minimumDirectoryWidth, useStoredInitial("timeline-directory-width", legacyDirectoryWidth));
+    const navigation = Math.max(minimumNavigationWidth, useStoredInitial("navigation-width", legacyWidth));
+    const articleWidth = navigation - directory - dividerWidth;
+    const timeline = useStoredInitial("timeline-article-width", legacyTimelineWidth || articleWidth);
     return {
-      directory: useStoredInitial("timeline-directory-width", legacyDirectoryWidth),
-      navigation: Math.max(minimumNavigationWidth, useStoredInitial("navigation-width", legacyWidth)),
+      directory, navigation,
+      timeline: Math.max(minimumTimelineWidth, timeline),
     };
   });
-  const [initialSidebarSize] = useState(() => explorer ? `${initialNavigationWidth}px` : "0px");
+  const [directoryWidth, setDirectoryWidth] = useState(initialDirectoryWidth);
+  const preferredDirectoryWidth = useRef(initialDirectoryWidth);
+  const [initialSidebarSize] = useState(() => {
+    if (!explorer || focusMode) return "0px";
+    if (!timelineMode) return `${initialNavigationWidth}px`;
+    return `${initialTimelineWidth + (timelineDirectory === "shown" ? directoryWidth + dividerWidth : 0)}px`;
+  });
   const navigationWidth = useRef(initialNavigationWidth);
-  const directoryWidth = useRef(initialDirectoryWidth);
+  const timelineWidth = useRef(initialTimelineWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
-  const timelineGroup = useRef<HTMLDivElement>(null);
-  const timelineWidthsReady = useRef(false);
+  const timelineLayoutReady = useRef(false);
+  const directoryDrag = useRef<{ pointerId: number; startX: number; width: number; articleWidth: number; currentWidth: number }>(null);
+  const directoryTransition = useRef(0);
+  const [initialAiWidth] = useState(() => useStoredInitial("ai-sidebar-width", 350));
   const explorerTree = useRef<ExplorerHandle>(null);
   const sidebarPanel = usePanelRef();
-  const directoryPanel = usePanelRef();
   const aiSidebarPanel = usePanelRef();
-  const [initialAiWidth] = useState(() => useStoredInitial("ai-sidebar-width", 350));
+  const workspacePanels = useGroupRef();
   const aiSidebarWidth = useRef(initialAiWidth);
   const searchInput = useRef<HTMLInputElement>(null);
   const focusOrigin = useRef<HTMLElement | null>(null);
@@ -226,6 +250,9 @@ export function DesktopShell() {
 
   useEffect(() => { persist("expanded-folders", expandedFolders); }, [expandedFolders]);
   useEffect(() => { persist("editor-display", editorDisplay); }, [editorDisplay]);
+  useEffect(() => {
+    saveWorkspaceLayout({ section, explorerOverride, timelineDirectory, focusMode, aiOpen });
+  }, [section, explorerOverride, timelineDirectory, focusMode, aiOpen]);
 
   useEffect(() => {
     let current = true;
@@ -235,9 +262,32 @@ export function DesktopShell() {
     return () => { current = false; };
   }, [refreshCount, timelineMode]);
 
+  useLayoutEffect(() => {
+    if (!library || library.workspaceId === navigationWorkspace) return;
+    const saved = readWorkspaceNavigation(library.workspaceId);
+    const selection = saved.timelineSelection;
+    const folders = library.categories;
+    setCategoryId(folders.some(folder => folder.id === saved.categoryId) ? saved.categoryId : undefined);
+    setTimelineSelection(
+      (selection.kind === "folder" && !folders.some(folder => folder.id === selection.id))
+      || (selection.kind === "tag" && !library.tags.some(tag => tag.id === selection.id))
+        ? { kind: "root" } : selection,
+    );
+    setQuery(saved.query);
+    setCaseSensitive(saved.caseSensitive);
+    setIncludeTimelineChildren(saved.includeTimelineChildren);
+    setNavigationWorkspace(library.workspaceId);
+  }, [library, navigationWorkspace]);
+  useEffect(() => {
+    if (workspaceId && navigationWorkspace === workspaceId) {
+      saveWorkspaceNavigation(workspaceId, { categoryId, timelineSelection, includeTimelineChildren, query, caseSensitive });
+    }
+  }, [workspaceId, navigationWorkspace, categoryId, timelineSelection, includeTimelineChildren, query, caseSensitive]);
+
   const restoreTabs = useEffectEvent(async (workspaceId: string, isCurrent: () => boolean) => {
     const saved = readDocumentTabs(workspaceId);
-    if (!saved?.ids.length || selecting.current || exit.current) return;
+    if (selecting.current || exit.current) return;
+    if (!saved?.ids.length) { setFocusMode(false); return; }
     try {
       const entries = await Promise.all(saved.ids.map(id => desktop.entry(id).catch((failure: unknown) => {
         if (typeof failure === "object" && failure !== null && "code" in failure && failure.code === "NOT_FOUND") return null;
@@ -247,25 +297,36 @@ export function DesktopShell() {
       for (const entry of entries) {
         if (entry && entry.deletedAt === null) queues.current.set(entry.id, new SaveQueue(entry, desktop.save, refresh));
       }
+      setReadingIds((saved.readingIds ?? []).filter(id => queues.current.has(id)));
+      setDocumentOptions(new Map(Object.entries(saved.options ?? {}).filter(([id]) => queues.current.has(id))));
       setSessions([...queues.current.values()]);
       const first = queues.current.keys().next().value;
+      if (!first) setFocusMode(false);
       select(saved.activeId && queues.current.has(saved.activeId) ? saved.activeId : first ?? null, true);
     } catch (error) {
-      if (isCurrent() && !selecting.current && !exit.current) showError(error);
+      if (isCurrent() && !selecting.current && !exit.current) {
+        setFocusMode(false);
+        showError(error);
+      }
     }
   });
-  const workspaceId = library?.workspaceId;
   useEffect(() => {
     if (!workspaceId) return;
     let current = true;
-    void restoreTabs(workspaceId, () => current);
+    void restoreTabs(workspaceId, () => current).finally(() => {
+      if (current) setTabsRestored(true);
+    });
     return () => { current = false; };
   }, [workspaceId]);
   useEffect(() => {
     if (workspaceId && tabSessions) {
-      saveDocumentTabs(workspaceId, { ids: tabSessions.map(tab => tab.entry.id), activeId });
+      saveDocumentTabs(workspaceId, {
+        ids: tabSessions.map(tab => tab.entry.id), activeId,
+        readingIds: readingIds.length ? readingIds : undefined,
+        options: documentOptions.size ? Object.fromEntries(documentOptions) : undefined,
+      });
     }
-  }, [workspaceId, tabSessions, activeId]);
+  }, [workspaceId, tabSessions, activeId, readingIds, documentOptions]);
 
   function more() {
     const offset = page?.nextOffset;
@@ -480,6 +541,104 @@ export function DesktopShell() {
     if (event.detail === 0) requestAnimationFrame(() => {
       document.getElementById(explorer ? "show-sidebar" : "hide-sidebar")?.focus({ preventScroll: true });
     });
+  }
+
+  function rememberAiWidth(width: number) {
+    const pixels = Math.round(width);
+    if (pixels >= minimumAiWidth) {
+      aiSidebarWidth.current = pixels;
+      persist("ai-sidebar-width", pixels);
+    }
+  }
+
+  function changeDirectoryMode(mode: TimelineDirectory) {
+    if (directoryMode.current === mode) return;
+    directoryMode.current = mode;
+    setTimelineDirectory(mode);
+  }
+
+  function fitTimelineDirectory(totalWidth: number) {
+    if (directoryMode.current === "manual") return false;
+    const fits = Math.round(totalWidth) >= preferredDirectoryWidth.current + dividerWidth + minimumTimelineWidth;
+    changeDirectoryMode(fits ? "shown" : "auto");
+    return fits;
+  }
+
+  function rememberTimelineWidth(totalWidth: number) {
+    const fits = fitTimelineDirectory(totalWidth);
+    const articleWidth = Math.round(totalWidth - (fits ? preferredDirectoryWidth.current + dividerWidth : 0));
+    if (articleWidth >= minimumTimelineWidth) {
+      timelineWidth.current = articleWidth;
+      persist("timeline-article-width", articleWidth);
+    }
+  }
+
+  function timelineNavigationWidth(layout = workspacePanels.current!.getLayout()) {
+    const group = sidebarGroup.current!;
+    const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
+    return available * layout.navigation / 100;
+  }
+
+  function preferredNavigationWidth() {
+    return timelineMode
+      ? timelineWidth.current + (directoryMode.current === "shown" ? preferredDirectoryWidth.current + dividerWidth : 0)
+      : navigationWidth.current;
+  }
+
+  function maxTimelineNavigationWidth() {
+    const available = sidebarGroup.current!.clientWidth - dividerWidth * (showAiPanel ? 2 : 1);
+    const aiShare = showAiPanel ? workspacePanels.current!.getLayout()["ai-sidebar"] / 100 : 0;
+    return available * (1 - aiShare) - minimumWritingWidth;
+  }
+
+  function stopDirectoryTransition() {
+    window.clearTimeout(directoryTransition.current);
+    if (sidebarGroup.current) delete sidebarGroup.current.dataset.timelineDirectoryMoving;
+  }
+
+  function toggleTimelineDirectory(restoreFocus: boolean) {
+    const hidden = directoryMode.current !== "shown";
+    const total = Math.round(timelineNavigationWidth());
+    const maxWidth = maxTimelineNavigationWidth();
+    let directory = preferredDirectoryWidth.current;
+    if (hidden && sidebarGroup.current!.clientWidth) {
+      directory = Math.min(directory, Math.floor(maxWidth - minimumTimelineWidth - dividerWidth));
+      if (directory < minimumDirectoryWidth) {
+        setNotice({ type: "info", text: "窗口宽度不足，无法展开目录栏" });
+        return;
+      }
+      if (directory !== preferredDirectoryWidth.current) {
+        preferredDirectoryWidth.current = directory;
+        setDirectoryWidth(directory);
+        persist("timeline-directory-width", directory);
+      }
+    }
+    const directorySpace = directory + dividerWidth;
+    const article = Math.max(minimumTimelineWidth, total - (hidden ? 0 : directorySpace));
+    const width = hidden && maxWidth > 0 ? Math.min(article, maxWidth - directorySpace) : article;
+    const group = sidebarGroup.current!;
+    stopDirectoryTransition();
+    group.dataset.timelineDirectoryMoving = "true";
+    directoryTransition.current = window.setTimeout(() => {
+      stopDirectoryTransition();
+      if (timelineLayoutReady.current && group.clientWidth) rememberTimelineWidth(timelineNavigationWidth());
+    }, directoryTransitionMs + 20);
+    changeDirectoryMode(hidden ? "shown" : "manual");
+    timelineWidth.current = width;
+    persist("timeline-article-width", width);
+    sidebarPanel.current!.resize(width + (hidden ? directorySpace : 0));
+    if (restoreFocus) requestAnimationFrame(() => {
+      document.getElementById(hidden ? "hide-timeline-directory" : "show-timeline-directory")?.focus({ preventScroll: true });
+    });
+  }
+
+  function resizeTimelineDirectory(requested: number, articleWidth: number) {
+    const maxWidth = maxTimelineNavigationWidth() - articleWidth - dividerWidth;
+    const width = Math.round(Math.max(minimumDirectoryWidth, Math.min(requested, maxWidth)));
+    preferredDirectoryWidth.current = width;
+    setDirectoryWidth(width);
+    sidebarPanel.current!.resize(width + dividerWidth + articleWidth);
+    return width;
   }
 
   function revealDirectory() {
@@ -730,7 +889,7 @@ export function DesktopShell() {
         queues.current.get(change.id)?.categoryMoved(change.categoryId, change.version);
       }
       if (categoryId && removed.has(categoryId)) setCategoryId(undefined);
-      setTimelineSelection(selection => selection?.kind === "folder" && removed.has(selection.id) ? null : selection);
+      setTimelineSelection(selection => selection.kind === "folder" && removed.has(selection.id) ? { kind: "root" } : selection);
       setExpandedFolders(current => current.filter(id => !removed.has(id)));
       refresh();
     } finally { setGlobalLock(false); }
@@ -739,6 +898,8 @@ export function DesktopShell() {
   const copy = desktop.copyText;
 
   const selected = activeId ? queues.current.get(activeId) : undefined;
+  const outlineOpen = (activeId ? documentOptions.get(activeId)?.outline : undefined) ?? defaultOutline;
+  const outlineEditor = outlineOpen && viewMode === "edit" && activeId ? handles.current.get(activeId) : undefined;
   const displayFor = (id: string | null): EditorDisplay => ({
     ...editorDisplay, convertLinks: (id ? documentOptions.get(id)?.convertLinks : undefined) ?? defaultConvertLinks,
   });
@@ -815,9 +976,15 @@ export function DesktopShell() {
     });
   }
 
+  function openAi() {
+    setFocusMode(false);
+    if (timelineMode && timelineTooNarrow) setExplorerOverride(false);
+    setAiOpen(true);
+  }
+
   function toggleAi() {
-    if (focusMode) { setFocusMode(false); setAiOpen(true); }
-    else setAiOpen(value => !value);
+    if (showAiPanel) setAiOpen(false);
+    else openAi();
   }
 
   function publication(output: "clipboard" | "html") {
@@ -878,6 +1045,7 @@ export function DesktopShell() {
   const actions: DocumentActions = {
     mode: viewMode, setMode: view, focusMode, onFocusMode: () => setFocusMode(value => !value),
     reading, onReading: toggleReading,
+    outlineOpen, onOutline: checked => { if (activeId) updateDocumentOptions(activeId, { outline: checked }); },
     onPalette: () => showModal({ type: "palette" }),
     onAi: toggleAi, aiOpen: showAiPanel,
     onSave: () => {
@@ -1075,48 +1243,75 @@ export function DesktopShell() {
 
   const queue = selected;
   const showExplorer = explorer && !focusMode;
+  const showTimelineDirectory = showExplorer && timelineMode && timelineDirectory === "shown";
   useLayoutEffect(() => {
     const panel = sidebarPanel.current!;
     const group = sidebarGroup.current!;
-    timelineWidthsReady.current = false;
-    const restoreSplit = () => {
-      if (timelineMode && showExplorer) {
-        directoryPanel.current?.resize(directoryWidth.current);
-        timelineWidthsReady.current = true;
-      }
+    const target = preferredNavigationWidth();
+    timelineLayoutReady.current = false;
+    if (!showExplorer && panel.isCollapsed()) return;
+
+    let frame = 0;
+    let resize = 0;
+    let settled = 0;
+    group.dataset.sidebarRestoring = "true";
+    const animate = showExplorer === panel.isCollapsed();
+    if (animate) group.dataset.sidebarMoving = "true";
+    const timer = animate ? window.setTimeout(() => { delete group.dataset.sidebarMoving; }, 220) : 0;
+    const clear = () => {
+      delete group.dataset.sidebarRestoring;
+      delete group.dataset.sidebarMoving;
     };
-    if (showExplorer !== panel.isCollapsed()) {
-      if (!timelineMode || !showExplorer) return;
-      const frame = requestAnimationFrame(restoreSplit);
-      return () => cancelAnimationFrame(frame);
-    }
-    group.dataset.sidebarMoving = "true";
-    const frame = requestAnimationFrame(() => {
-      if (showExplorer) panel.resize(navigationWidth.current);
-      else panel.collapse();
+    frame = requestAnimationFrame(() => {
+      resize = requestAnimationFrame(() => {
+        if (showExplorer) panel.resize(target);
+        else panel.collapse();
+        settled = requestAnimationFrame(() => {
+          delete group.dataset.sidebarRestoring;
+          timelineLayoutReady.current = timelineMode && showExplorer;
+          if (timelineLayoutReady.current && group.clientWidth) rememberTimelineWidth(timelineNavigationWidth());
+        });
+      });
     });
-    const clear = () => { delete group.dataset.sidebarMoving; };
-    const timer = window.setTimeout(() => {
-      restoreSplit();
-      clear();
-    }, 220);
     return () => {
-      cancelAnimationFrame(frame);
+      timelineLayoutReady.current = false;
+      directoryDrag.current = null;
+      stopDirectoryTransition();
       window.clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(resize);
+      cancelAnimationFrame(settled);
       clear();
     };
-  }, [showExplorer, timelineMode, sidebarPanel, directoryPanel]);
+  }, [showExplorer, timelineMode, sidebarPanel]);
   useLayoutEffect(() => {
     const panel = aiSidebarPanel.current!;
     const group = sidebarGroup.current!;
     if (showAiPanel !== panel.isCollapsed()) return;
     group.dataset.aiSidebarMoving = "true";
-    if (showAiPanel) panel.resize(`${aiSidebarWidth.current}px`);
-    else panel.collapse();
+    const frame = requestAnimationFrame(() => {
+      if (showAiPanel && !showExplorer && group.clientWidth > dividerWidth) {
+        const available = group.clientWidth - dividerWidth;
+        const aiShare = Math.min(50, aiSidebarWidth.current / available * 100);
+        workspacePanels.current!.setLayout({ navigation: 0, writing: 100 - aiShare, "ai-sidebar": aiShare });
+      } else if (showAiPanel) panel.resize(aiSidebarWidth.current);
+      else if (showExplorer && group.clientWidth > dividerWidth) {
+        const available = group.clientWidth - dividerWidth;
+        const width = Math.min(preferredNavigationWidth(), available - minimumWritingWidth);
+        const share = width / available * 100;
+        workspacePanels.current!.setLayout({ navigation: share, writing: 100 - share, "ai-sidebar": 0 });
+      } else panel.collapse();
+    });
     const clear = () => { delete group.dataset.aiSidebarMoving; };
-    const timer = window.setTimeout(clear, 220);
-    return () => { window.clearTimeout(timer); clear(); };
-  }, [showAiPanel, aiSidebarPanel]);
+    const timer = window.setTimeout(() => {
+      clear();
+      if (showAiPanel) {
+        const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
+        rememberAiWidth(available * workspacePanels.current!.getLayout()["ai-sidebar"] / 100);
+      }
+    }, 220);
+    return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); clear(); };
+  }, [showAiPanel, showExplorer, aiSidebarPanel, workspacePanels]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
   const aiSelection = aiDefaultTarget && aiTarget.label
@@ -1144,8 +1339,7 @@ export function DesktopShell() {
   }
   function addSelectionToChat(session: SaveQueue, selection: ChatSelection) {
     if (exit.current || active.current !== session.entry.id || locking.current.has(session.entry.id)) return;
-    setFocusMode(false);
-    setAiOpen(true);
+    openAi();
     setAiChatSelection({ sessionId: session.sessionId, selection });
   }
   function closeAi() {
@@ -1174,21 +1368,27 @@ export function DesktopShell() {
   const hideSidebarButton = <Tool id="hide-sidebar" label="隐藏左侧栏" className="chrome-icon sidebar-toggle" onClick={toggleExplorer}>
     <SidebarToggleIcon expanded />
   </Tool>;
+  const timelineDirectoryToggle = <Tool id={showTimelineDirectory ? "hide-timeline-directory" : "show-timeline-directory"}
+    label={showTimelineDirectory ? "隐藏目录栏" : "展开目录栏"} className="chrome-icon sidebar-toggle"
+    aria-expanded={showTimelineDirectory} aria-controls="timeline-directory" onClick={event => toggleTimelineDirectory(event.detail === 0)}>
+    <SidebarToggleIcon expanded={showTimelineDirectory} />
+  </Tool>;
+  const navigationButtons = destinations.map(([target, Icon, label]) => <Tool key={target} label={label} className="chrome-icon"
+    aria-current={target === section ? "page" : undefined} onClick={() => {
+      if (target === "search") { openSearch(); return; }
+      if (target === "folders" && section === "folders") revealFolder(null);
+      navigate(target);
+    }}>
+    <Icon size={18} strokeWidth={1.8} />
+  </Tool>);
   const sidebar = (
-    <div className="sidebar-workspace" inert={!showExplorer}>
+    <div className="sidebar-workspace" inert={!showExplorer || (timelineMode && !showTimelineDirectory)}>
       <nav className="sidebar-chrome chrome-band" aria-label="工作区导航">
-        <div className="button-strip">
-          {destinations.map(([target, Icon, label]) => <Tool key={target} label={label} className="chrome-icon"
-            aria-current={target === section ? "page" : undefined} onClick={() => {
-              if (target === "search") { openSearch(); return; }
-              if (target === "folders" && section === "folders") revealFolder(null);
-              navigate(target);
-            }}>
-            <Icon size={18} strokeWidth={1.8} />
-          </Tool>)}
-        </div>
-        <WindowDragRegion onError={showError} />
-        {!timelineMode && hideSidebarButton}
+        {(!timelineMode || showTimelineDirectory) && <>
+          <div className="button-strip">{navigationButtons}</div>
+          <WindowDragRegion onError={showError} />
+          {!timelineMode && hideSidebarButton}
+        </>}
       </nav>
       {section === "assets" ? <AssetPanel onImport={files => importImages(files, "library")} onConfigure={() => openSettings("images")}
       canInsert={!reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id)}
@@ -1208,6 +1408,7 @@ export function DesktopShell() {
       : <Explorer {...rowActions} ref={explorerTree} section={section} library={library} page={page}
         activeFolder={queue?.entry.deletedAt === null ? queue.snapshot().fields.categoryId : undefined}
         timelineSelection={timelineSelection} onTimelineSelect={setTimelineSelection} includeTimelineChildren={includeTimelineChildren}
+        directoryTrailingAction={showTimelineDirectory ? timelineDirectoryToggle : undefined}
         preserveActiveFolder={tabSelection?.restored}
         onCreateCurrent={() => create()}
         onToggleAll={expand => setExpandedFolders(expand ? (library?.categories ?? []).map(folder => folder.id) : [])}
@@ -1234,66 +1435,109 @@ export function DesktopShell() {
   return <Theme appearance={appearance === "system" ? systemDark ? "dark" : "light" : appearance} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
     <div className="workspace-shell" inert={Boolean(exitMessage)}>
-      <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup}
+      <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup} groupRef={workspacePanels}
         resizeTargetMinimumSize={dividerHitTarget}
+        onLayoutChange={layout => {
+          const group = sidebarGroup.current;
+          if (timelineLayoutReady.current && group?.clientWidth && !group.dataset.timelineDirectoryMoving
+            && !directoryDrag.current) fitTimelineDirectory(timelineNavigationWidth(layout));
+        }}
         onLayoutChanged={layout => {
           const group = sidebarGroup.current;
-          if (group && showExplorer && !group.dataset.sidebarMoving && !group.dataset.aiSidebarMoving) {
-            const available = group.clientWidth - dividerWidth * (showAiPanel ? 2 : 1);
-            const width = Math.round(available * layout.explorer / 100);
-            if (width >= minimumNavigationWidth) {
-              navigationWidth.current = width;
-              persist("navigation-width", width);
-            }
+          if (!group?.clientWidth || group.dataset.timelineDirectoryMoving) return;
+          const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showAiPanel));
+          const moving = group.dataset.sidebarMoving || group.dataset.sidebarRestoring || group.dataset.aiSidebarMoving;
+          if (showAiPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
+          if (!showExplorer || moving) return;
+          const width = Math.round(available * layout.navigation / 100);
+          if (timelineMode) {
+            if (timelineLayoutReady.current && !directoryDrag.current) rememberTimelineWidth(width);
+          } else if (width >= minimumNavigationWidth) {
+            navigationWidth.current = width;
+            persist("navigation-width", width);
           }
-          if (showAiPanel) persist("ai-sidebar-width", aiSidebarWidth.current);
         }}>
-          <Panel id="explorer" defaultSize={initialSidebarSize}
-            minSize={minimumNavigationWidth}
-            collapsible collapsedSize="0px" panelRef={sidebarPanel}
+          <Panel id="navigation" defaultSize={initialSidebarSize}
+            minSize={timelineMode ? minimumTimelineWidth : minimumNavigationWidth}
+            collapsible={!timelineMode || !showExplorer} collapsedSize="0px" panelRef={sidebarPanel}
             style={{ overflow: "hidden" }} groupResizeBehavior="preserve-pixel-size"
-            onResize={size => {
-              if (!showExplorer) return;
-              if (sidebarGroup.current?.dataset.sidebarMoving) return;
-              if (!size.inPixels) setExplorerOverride(false);
+            onResize={(size, _id, previous) => {
+              if (!timelineMode && showExplorer && previous?.inPixels && !size.inPixels
+                && !sidebarGroup.current?.dataset.sidebarRestoring) setExplorerOverride(false);
             }}>
-            {timelineMode ? <Group id="navigation-panels" className="navigation-panels" orientation="horizontal"
-              resizeTargetMinimumSize={dividerHitTarget}
-              elementRef={timelineGroup} onLayoutChanged={layout => {
-                const groupWidth = timelineGroup.current?.offsetWidth;
-                if (!timelineWidthsReady.current || !showExplorer || !groupWidth || sidebarGroup.current?.dataset.aiSidebarMoving) return;
-                const available = groupWidth - dividerWidth;
-                const directory = Math.round(available * layout.directory / 100);
-                directoryWidth.current = directory;
-                persist("timeline-directory-width", directory);
-              }}>
-              <Panel id="directory" defaultSize={initialDirectoryWidth} minSize={minimumDirectoryWidth} panelRef={directoryPanel}
-                groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}>
+            {timelineMode ? <div className="timeline-navigation">
+              <div id="timeline-directory" style={{ flexBasis: showTimelineDirectory ? directoryWidth : 0 }}>
                 {sidebar}
-              </Panel>
-              {showExplorer && <Separator className="divider sidebar-divider navigation-divider" disableDoubleClick aria-label="调整目录栏宽度" />}
-              <Panel id="timeline" minSize={minimumTimelineWidth} style={{ overflow: "hidden" }}>
-                <div className="timeline-workspace" inert={!showExplorer}>
-                  <Timeline root={timelineRoot} folder={timelineFolder} tag={timelineTag} untagged={timelineSelection?.kind === "untagged"} tags={library?.tags ?? []}
+              </div>
+              {showTimelineDirectory && <div id="resize-timeline-directory" role="separator" tabIndex={0}
+                className="divider sidebar-divider navigation-divider timeline-directory-divider"
+                aria-label="调整目录栏宽度" aria-controls="timeline-directory" aria-orientation="vertical"
+                aria-valuenow={Math.round(directoryWidth / window.innerWidth * 100)} aria-valuetext={directoryWidth + " 像素"}
+                onPointerDown={event => {
+                  if (!event.isPrimary || event.button !== 0) return;
+                  event.preventDefault();
+                  stopDirectoryTransition();
+                  event.currentTarget.focus({ preventScroll: true });
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  directoryDrag.current = {
+                    pointerId: event.pointerId, startX: event.clientX, width: directoryWidth, currentWidth: directoryWidth,
+                    articleWidth: Math.round(timelineNavigationWidth()) - directoryWidth - dividerWidth,
+                  };
+                }}
+                onPointerMove={event => {
+                  const drag = directoryDrag.current;
+                  if (drag?.pointerId !== event.pointerId) return;
+                  const width = drag.width + event.clientX - drag.startX;
+                  if (width < minimumDirectoryWidth / 2) {
+                    persist("timeline-directory-width", drag.currentWidth);
+                    directoryDrag.current = null;
+                    toggleTimelineDirectory(true);
+                  } else drag.currentWidth = resizeTimelineDirectory(width, drag.articleWidth);
+                }}
+                onLostPointerCapture={() => {
+                  const drag = directoryDrag.current;
+                  if (!drag) return;
+                  directoryDrag.current = null;
+                  persist("timeline-directory-width", drag.currentWidth);
+                }}
+                onKeyDown={event => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    toggleTimelineDirectory(true);
+                    return;
+                  }
+                  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                  event.preventDefault();
+                  const articleWidth = Math.round(timelineNavigationWidth()) - directoryWidth - dividerWidth;
+                  const step = event.shiftKey ? 40 : 16;
+                  const width = resizeTimelineDirectory(directoryWidth + (event.key === "ArrowLeft" ? -step : step), articleWidth);
+                  persist("timeline-directory-width", width);
+                }} />}
+              <div id="explorer" className="timeline-workspace" inert={!showExplorer}>
+                  <Timeline root={timelineRoot} folder={timelineFolder} tag={timelineTag} untagged={timelineSelection.kind === "untagged"} tags={library?.tags ?? []}
+                    workspaceId={navigationWorkspace === workspaceId ? workspaceId : undefined}
                     onSelectTag={(id, keyboard) => {
                       setTimelineSelection({ kind: "tag", id });
                       explorerTree.current?.revealTimelineTag(id, keyboard && timelineTag?.id !== id);
                     }}
                     includeChildren={includeTimelineChildren} onIncludeChildren={setIncludeTimelineChildren}
-                    revision={refreshCount} actions={rowActions} sidebarToggle={hideSidebarButton} blankMenu={timelineFolder || timelineRoot ? {
+                    revision={refreshCount} actions={rowActions} sidebarToggle={hideSidebarButton}
+                    navigation={showTimelineDirectory ? undefined : <div className="button-strip">{navigationButtons}</div>}
+                    directoryToggle={showTimelineDirectory ? undefined : timelineDirectoryToggle}
+                    blankMenu={timelineFolder || timelineRoot ? {
                       disabled: globalLock || !library,
                       onCreate: () => create(currentFolder),
                       onImportWechat: () => showWechatImport(currentFolder),
                       onImportMarkdown: () => importMarkdown(currentFolder),
                       onAddFolder: timelineFolder?.parentId ? undefined : () => explorerTree.current?.addFolder(currentFolder),
                     } : null} />
-                </div>
-              </Panel>
-            </Group> : sidebar}
+              </div>
+            </div> : sidebar}
           </Panel>
           {showExplorer && <Separator className={`divider sidebar-divider${timelineMode ? " navigation-divider" : ""}`}
-            disableDoubleClick aria-label={timelineMode ? "调整文章时间流宽度" : "调整资源导航宽度"} />}
-        <Panel id="writing" minSize="360px">
+            disableDoubleClick aria-label={timelineMode ? "调整文章时间流宽度" : "调整资源导航宽度"}
+            onPointerDown={timelineMode ? stopDirectoryTransition : undefined} />}
+        <Panel id="writing" minSize={minimumWritingWidth}>
           <main className="main-workspace" aria-label="写作工作区">
             <header className="workbench-chrome chrome-band">
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
@@ -1314,7 +1558,8 @@ export function DesktopShell() {
                 locked={globalLock || locked.includes(queue.entry.id)}
                 display={display} onDisplayChange={(option, checked) => updateEditorDisplay(queue.entry.id, option, checked)}
                 onReveal={id => { navigate("folders"); revealDirectory(); revealFolder(id); }} />
-              <div className="document-body" data-view={viewMode} id="document-body" role="tabpanel" aria-labelledby={`tab-${activeId}`}>
+              <div className="document-body" data-view={viewMode} data-outline-open={Boolean(outlineEditor) || undefined}
+                id="document-body" role="tabpanel" aria-labelledby={`tab-${activeId}`}>
                 <div className="editor-stack" hidden={viewMode === "preview"}>
                   {sessions.map(session => <DocumentEditor key={session.sessionId}
                     queue={session} active={activeId === session.entry.id} reading={readingIds.includes(session.entry.id)}
@@ -1329,6 +1574,12 @@ export function DesktopShell() {
                     onImageZoom={(image, trigger) => showModal({ type: "imageViewer", ...image }, trigger)} />)}
                 </div>
                 {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks} /></div>}
+                {outlineEditor && <Outline key={queue.sessionId} editor={outlineEditor}
+                  readOnly={reading || Boolean(exitMessage) || globalLock || locked.includes(queue.entry.id) || queue.entry.deletedAt !== null}
+                  onClose={() => {
+                    actions.onOutline(false);
+                    document.getElementById("document-action-trigger")?.focus();
+                  }} />}
                 {workspaceNotice}
               </div>
               <DocumentSaveError key={queue.sessionId} queue={queue} actions={actions} />
@@ -1347,11 +1598,10 @@ export function DesktopShell() {
         </Panel>
         {showAiPanel && <Separator className="divider ai-sidebar-divider"
           disableDoubleClick aria-label="调整 AI 侧栏宽度" />}
-        <Panel id="ai-sidebar" defaultSize="0px" minSize="300px" maxSize="50%" collapsible collapsedSize="0px"
+        <Panel id="ai-sidebar" defaultSize="0px" minSize={minimumAiWidth} maxSize="50%" collapsible collapsedSize="0px"
           panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
-          onResize={size => {
-            if (showAiPanel && size.inPixels > 0) aiSidebarWidth.current = size.inPixels;
-            else if (showAiPanel && !sidebarGroup.current?.dataset.aiSidebarMoving) setAiOpen(false);
+          onResize={(size, _id, previous) => {
+            if (showAiPanel && previous?.inPixels && !size.inPixels && !sidebarGroup.current?.dataset.aiSidebarMoving) setAiOpen(false);
           }}>
           <div className="ai-sidebar" inert={!showAiPanel}>
             {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
@@ -1389,12 +1639,13 @@ export function DesktopShell() {
             working={migrationWorking} feedback={migrationFeedback} prepared={preparedBackup?.migration === true}
             onTransfer={action => void transferWorkspace(action)} onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
           return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} preferredView={preferredView} explorer={defaultExplorer}
-            downloadPastedImages={downloadPastedImages} convertLinks={defaultConvertLinks} documentOpenMode={documentOpenMode}
+            downloadPastedImages={downloadPastedImages} convertLinks={defaultConvertLinks} defaultOutline={defaultOutline} documentOpenMode={documentOpenMode}
             folderLoading={folderLoading} folderPageSize={folderPageSize}
             onAppearance={value => { setAppearance(value); persist("appearance", value); }}
             onView={value => { setPreferredView(value); persist("view", value); }}
             onDownloadPastedImages={value => { setDownloadPastedImages(value); persist("download-pasted-images", value); }}
             onConvertLinks={value => { setDefaultConvertLinks(value); persist("links-to-footnotes", value); }}
+            onDefaultOutline={value => { setDefaultOutline(value); persist("default-document-outline", value); }}
             onDocumentOpenMode={value => { setDocumentOpenMode(value); persist("document-open-mode", value); }}
             onFolderLoading={value => { setFolderLoading(value); persist("folder-loading", value); }}
             onFolderPageSize={value => { setFolderPageSize(value); persist("folder-page-size", value); }}

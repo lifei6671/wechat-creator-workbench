@@ -941,6 +941,52 @@ it("pastes sanitized rich HTML, honors plain paste, and gates editing in read-on
   }
 });
 
+it.each([
+  ["**项目仓库： **", " ", "", "项目仓库："],
+  ["__ 项目仓库：__", " ", "", "项目仓库："],
+  ["**项目仓库： **", "仓库： ", "地址：", "项目地址："],
+])("renders existing bold markup %s after replacing %j with %j", async (source, changed, replacement, title) => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const tail = " https://github.com/example/repo";
+  const clipboard = { read: async () => source + tail, write: vi.fn(), onError: vi.fn() };
+  try {
+    flushSync(() => root.render(<RichEditor entryId="repair-bold" value="" readOnly={false}
+      onDocumentChanged={() => {}} onBlur={() => {}} ref={value => { handle = value; }} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const editor = container.querySelector(".ProseMirror")!;
+    handle!.focus();
+    expect(handle!.clipboard("paste", clipboard)).toBe(true);
+    await vi.waitFor(() => expect(editor.querySelector("p")?.textContent).toBe(source + tail));
+    expect(editor.querySelector("strong")).toBeNull();
+    const paragraph = editor.querySelector("p")!;
+    const text = paragraph.firstChild as Text;
+    const start = source.indexOf(changed);
+    await select(editor as HTMLElement, start, start + changed.length, handle!);
+    const later = Date.now() + 1000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+    try {
+      text.replaceData(start, changed.length, replacement);
+      document.getSelection()!.collapse(text, start + replacement.length);
+      await vi.waitFor(() => expect(editor.querySelector("strong")?.textContent).toBe(title));
+    } finally {
+      clock.mockRestore();
+    }
+    expect(editor.querySelector("a")?.getAttribute("href")).toBe(tail.trim());
+    expect(handle!.captureMarkdown().markdown).toContain(source.replace(changed, replacement));
+    handle!.command("undo");
+    expect(editor.querySelector("strong")).toBeNull();
+    expect(editor.querySelector("p")?.textContent).toBe(source + tail);
+    handle!.command("redo");
+    expect(editor.querySelector("strong")?.textContent).toBe(title);
+    expect(clipboard.onError).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
 it("renders Markdown copied with a plain HTML representation and keeps explicitly plain paste literal", async () => {
   const container = document.createElement("div");
   document.body.append(container);
@@ -1866,6 +1912,35 @@ it("selects only the formula or divider when opening its context menu", async ()
   }
 });
 
+it("keeps code text in place while the mouse is selecting it", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const onDocumentChanged = vi.fn();
+  try {
+    flushSync(() => root.render(<RichEditor ref={value => { handle = value; }} entryId="code-drag-selection"
+      value={"第一段\n\n~~~text\n代码块也应支持拖选\n~~~"} readOnly={false} onDocumentChanged={onDocumentChanged} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const block = container.querySelector(".rich-code-block")!;
+    const code = block.querySelector("code")!;
+    const text = code.firstChild!;
+    handle!.focus();
+    expect(block.classList).not.toContain("rich-code-active");
+    code.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+    document.getSelection()!.setBaseAndExtent(text, 1, text, 6);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.selectionText()).toBe("码块也应支"));
+    expect(block.classList).not.toContain("rich-code-active");
+    code.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+    await vi.waitFor(() => expect(block.classList).toContain("rich-code-active"));
+    expect(handle!.selectionText()).toBe("码块也应支");
+    expect(onDocumentChanged).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
 it("shows fences while editing a code block and uses the chosen language after blur", async () => {
   const container = document.createElement("div");
   const outside = document.createElement("button");
@@ -1957,6 +2032,43 @@ it("inserts pasted images with their document, then localizes external URLs in p
     handle!.command("redo");
     expect(onChange.mock.lastCall![2]).toContain("asset://local-graph");
     expect(io.onError).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("lets the caret enter and edit a bold delimiter without changing the surrounding text", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const changed = vi.fn();
+  try {
+    flushSync(() => root.render(<RichEditor ref={value => { handle = value; }} entryId="bold-delimiter"
+      value={"前面正文\n\n**推荐阅读：**\n\n后面正文"} readOnly={false} onDocumentChanged={changed} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.focus();
+    const bold = container.querySelector("strong")!;
+    document.getSelection()!.collapse(bold.firstChild!, 1);
+    document.dispatchEvent(new Event("selectionchange"));
+    const opener = await vi.waitFor(() => {
+      const field = container.querySelector<HTMLInputElement>('input[aria-label="加粗起始标记"]');
+      expect(field?.value).toBe("**");
+      return field!;
+    });
+    opener.focus();
+    opener.setSelectionRange(1, 1);
+    expect(document.activeElement).toBe(opener);
+    expect(opener.selectionStart).toBe(1);
+    expect(changed).not.toHaveBeenCalled();
+    opener.value = "";
+    opener.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(container.querySelector("strong")).toBeNull();
+    expect([...container.querySelectorAll(".ProseMirror > p")].map(node => node.textContent))
+      .toEqual(["前面正文", "推荐阅读：**", "后面正文"]);
+    expect(changed).toHaveBeenCalledTimes(1);
+    handle!.command("undo");
+    expect(container.querySelector("strong")?.textContent).toBe("推荐阅读：");
   } finally {
     flushSync(() => root.unmount());
     container.remove();

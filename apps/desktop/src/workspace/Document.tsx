@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
-  ListFilter, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
+  ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
@@ -391,6 +391,8 @@ export interface DocumentActions {
   focusMode: boolean;
   reading: boolean;
   onReading(): void;
+  outlineOpen: boolean;
+  onOutline(open: boolean): void;
   onFocusMode(): void;
   onPalette(): void;
   onAi(): void;
@@ -488,6 +490,8 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
         <DropdownMenu.Content align="end" size="1">
           <DropdownMenu.Item onSelect={actions.onProperties}><FilePenLine size={14} />内容属性</DropdownMenu.Item>
           <DropdownMenu.Item onSelect={actions.onSearch}><Search size={14} />{deleted || actions.reading ? "查找" : "查找与替换"}</DropdownMenu.Item>
+          {actions.mode === "edit" && <DropdownMenu.CheckboxItem checked={actions.outlineOpen}
+            onCheckedChange={actions.onOutline}><ListTree size={14} />显示文档大纲</DropdownMenu.CheckboxItem>}
           {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
           {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
           {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages}

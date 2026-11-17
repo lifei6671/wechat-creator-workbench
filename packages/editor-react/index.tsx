@@ -17,7 +17,8 @@ import { SearchQuery, type SearchResult } from "prosemirror-search";
 import { runCommand, textEditingScope, type EditorCommand } from "./commands";
 import { clipboardMarkdownCtx, hrefPattern, richCommonmark, richSchema } from "./schema";
 import { imageContext, imagePattern, prepareImageContext, type EditorImages, type ImageContext } from "./image-view";
-import { editorPresentation, showContextCaret } from "./presentation";
+import { editorPresentation, foldedSections, showContextCaret } from "./presentation";
+import { editorOutline, lastBodyBlock } from "./outline";
 import { cellParagraph, isTableSlice, prepareTableContext, preservesTableSelection, replaceSelectedCells, runTableAction, tableView, type TableAction, type TableContext } from "./table-view";
 import { codeView } from "./code-view";
 import { editorBlockTools } from "./slash-menu";
@@ -28,11 +29,12 @@ import "@milkdown/kit/prose/tables/style/tables.css";
 import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
 import "./editor.css";
 import { editorPerformance, measureEditorPerformance, recordEditorPerformance } from "./performance";
-import { inlineChangedBlocks } from "./inline-changes";
+import { inlineChangedBlocks, repairInlineStrong } from "./inline-changes";
 
 export type { EditorCommand } from "./commands";
 export type { ImageContext } from "./image-view";
 export type { TableAction, TableContext } from "./table-view";
+export type { OutlineItem, OutlinePlacement } from "./outline";
 
 export interface LinkContext { kind: "link"; scope: "body" | "cellText" | TableContext; convert(): void }
 
@@ -50,7 +52,9 @@ export type AiContextScope = "selection" | "section" | "document";
 export type AiEditorContext = EditorTarget & { scope: AiContextScope; headingPath: string[] };
 export interface MarkdownSnapshot { markdown: string; localRevision: number }
 
-export interface MarkdownEditorHandle {
+type OutlineActions = ReturnType<typeof editorOutline>["actions"];
+
+export interface MarkdownEditorHandle extends OutlineActions {
   focus(): void;
   search(): void;
   target(scope?: "document"): EditorTarget;
@@ -295,16 +299,6 @@ function cellRange(selection: CellSelection) {
   };
 }
 
-function lastBodyBlock(doc: ProseNode) {
-  let end = doc.content.size;
-  for (let index = doc.childCount - 1; index >= 0; index--) {
-    const node = doc.child(index);
-    if (node.type.name !== "footnote_definition") return { node, end };
-    end -= node.nodeSize;
-  }
-  return { node: null, end };
-}
-
 function pastedImages(doc: ProseNode, from: number, to: number): PastedImage[] {
   const images: PastedImage[] = [];
   doc.nodesBetween(from, to, (node, pos) => {
@@ -504,6 +498,7 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
 
 export function MarkdownEditor(props: Props) {
   const host = useRef<HTMLDivElement>(null);
+  const scroll = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const viewRef = useRef<EditorView>(null);
   const searchListeners = useRef(new Set<() => void>());
@@ -520,6 +515,8 @@ export function MarkdownEditor(props: Props) {
 
   useEffect(() => {
     const { entryId, value, ref } = latest.current;
+    const outlineListeners = new Set<() => void>();
+    let outline: ReturnType<typeof editorOutline> | undefined;
     let lastSnapshot: { doc: ProseNode; markdown: string };
     const element = host.current!;
     const session = Symbol(entryId);
@@ -742,6 +739,12 @@ export function MarkdownEditor(props: Props) {
       })))
       .use($view(codeBlockSchema.node, () => codeView))
       .use($view(tableSchema.node, ctx => (_node, view, getPos) => tableView(ctx, view, getPos)))
+      .use($prose(ctx => new Plugin({
+        appendTransaction(transactions, _old, state) {
+          const transaction = transactions.at(-1);
+          return transaction ? repairInlineStrong(transaction, state, source => ctx.get(parserCtx)(source)) : null;
+        },
+      })))
       .use($prose(() => new Plugin<DecorationSet>({
         key: searchHighlights,
         state: {
@@ -758,7 +761,22 @@ export function MarkdownEditor(props: Props) {
           return measureEditorPerformance("layout.normalize", () => normalizeDocument(state));
         },
       })))
-      .use($prose(() => editorPresentation(() => latest.current)))
+      .use($prose(ctx => editorPresentation(() => latest.current, (state, source, value) => {
+        const { schema, doc } = state;
+        const { mark, from, to, opening, token } = source;
+        const unmarked: ProseNode[] = [];
+        doc.slice(from, to).content.forEach(node => unmarked.push(node.mark(mark.removeFromSet(node.marks))));
+        const paragraph = schema.nodes.paragraph.create(null, Fragment.fromArray(unmarked));
+        const body = ctx.get(serializerCtx)(schema.topNodeType.create(null, paragraph)).replace(/\n$/, "");
+        const inline = opening ? value + body + token : token + body + value;
+        // Surround the fragment with text so a changed delimiter is still parsed as inline Markdown.
+        const parsed = ctx.get(parserCtx)("x " + inline + " x");
+        const block = parsed.firstChild;
+        const content = parsed.childCount === 1 && block?.type === schema.nodes.paragraph
+          ? block.content.cut(2, block.content.size - 2)
+          : Fragment.from(schema.text(inline));
+        return closeHistory(state.tr.replaceWith(from, to, content));
+      }, () => !disposed)))
       .use($prose(() => new Plugin({
         key: pasteProgress,
         props: { decorations(state) {
@@ -784,6 +802,7 @@ export function MarkdownEditor(props: Props) {
           init: () => 0,
           apply: (tr, value) => {
             if (!tr.docChanged) return value;
+            if (outlineListeners.size) outline?.mapTransaction(tr);
             for (const [id, range] of pending) {
               const mapped = mapRange(range, tr);
               if (mapped) pending.set(id, mapped);
@@ -797,6 +816,9 @@ export function MarkdownEditor(props: Props) {
           update(view, previous) {
             if (view.state.doc !== previous.doc || !view.state.selection.eq(previous.selection)) {
               for (const listener of searchListeners.current) listener();
+            }
+            if (outlineListeners.size && (view.state.doc !== previous.doc || foldedSections(view.state) !== foldedSections(previous))) {
+              for (const listener of outlineListeners) listener();
             }
             const localRevision = revision.getState(view.state)!;
             if (localRevision === revision.getState(previous)) return;
@@ -819,7 +841,12 @@ export function MarkdownEditor(props: Props) {
       if (normalized) view.dispatch(normalized);
       viewRef.current = view;
       lastSnapshot = { doc: view.state.doc, markdown: value };
+      outline = editorOutline(view, scroll.current!, listener => {
+        outlineListeners.add(listener);
+        return () => { outlineListeners.delete(listener); };
+      }, () => !disposed && latest.current.active !== false);
       const handle: MarkdownEditorHandle = {
+        ...outline.actions,
         focus: () => view.focus(),
         search: () => {
           if (searchInput.current) searchInput.current.focus();
@@ -1089,7 +1116,7 @@ export function MarkdownEditor(props: Props) {
               if (!plainText && io.localizeImage) tr.mapping.maps[0]?.forEach((_oldFrom, _oldTo, start, end) => {
                 if (start < end) images.push(...pastedImages(tr.doc, start, end));
               });
-              view.dispatch(tr);
+              view.dispatch(tr.setMeta("uiEvent", "paste"));
               if (io.localizeImage) localizeImages(view, images, io.localizeImage, io.onError, tr.doc);
             }, io.onError, { pasteOffset: asText ? undefined : 0 });
             return true;
@@ -1139,7 +1166,7 @@ export function MarkdownEditor(props: Props) {
   return <div className="editor-host">
     {searchView && <SearchBar view={searchView} readOnly={props.readOnly} inputRef={searchInput} subscribe={subscribeToSearch} onClose={() => setSearchView(null)} />}
     {footnote && props.active !== false && !props.readOnly && <FootnotePopover draft={footnote} onClose={() => setFootnote(null)} />}
-    <div className="editor-scroll">{props.title}<div className="rich-editor" ref={host} /></div>
+    <div className="editor-scroll" ref={scroll}>{props.title}<div className="rich-editor" ref={host} /></div>
     <DomTooltips root={host} />
   </div>;
 }

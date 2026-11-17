@@ -4,12 +4,12 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
-import type { Entry } from "../../../../packages/shared-types";
+import type { Entry, EntryPage } from "../../../../packages/shared-types";
 import { desktop, type AiHistoryItem, type AiStreamEvent } from "../desktop";
 import { AiPanel } from "./AiPanel";
 import { DesktopShell } from "./DesktopShell";
 import type { DocumentEditor } from "./Document";
-import { readDocumentTabs, saveDocumentTabs } from "./preferences";
+import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./preferences";
 import { SaveQueue } from "../editor/save-queue";
 import * as markdown from "../../../../packages/markdown-core";
 
@@ -75,7 +75,7 @@ it.each([
   expect(readDocumentTabs(workspaceId)).toEqual({ ids: expected, activeId: "manual" });
 });
 
-it("keeps startup defaults independent of sidebar, view, and footnote changes", async () => {
+it("restores the last sidebar and document views while keeping their defaults", async () => {
   localStorage.setItem("explorer", "true");
   localStorage.setItem("links-to-footnotes", "false");
   localStorage.setItem("view", JSON.stringify("edit"));
@@ -107,9 +107,69 @@ it("keeps startup defaults independent of sidebar, view, and footnote changes", 
   flushSync(() => root.unmount());
   root = createRoot(container);
   flushSync(() => root.render(<DesktopShell />));
-  await vi.waitFor(() => expect(links("first")).toBe("false"));
-  expect(container.querySelector("#show-sidebar")).toBeNull();
+  await vi.waitFor(() => expect(links("first")).toBe("true"));
+  expect(links("second")).toBe("false");
+  expect(container.querySelector("#show-sidebar")).not.toBeNull();
   expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("edit");
+  click("#tab-first");
+  expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("preview");
+});
+
+it("restores the timeline selection, its collapsed date and tree groups, and the manually hidden directory pane", async () => {
+  const initial = await desktop.library();
+  vi.mocked(desktop.library).mockResolvedValue({ ...initial, tags: [{ id: "wechat", name: "微信" }] });
+  const row = { ...entry("时间流文章", "closed"), updatedAt: Date.now() };
+  vi.mocked(desktop.entries).mockImplementation(async filter => ({
+    items: filter.categoryId === "closed" && filter.includePreview && !filter.pinned ? [row] : [], nextOffset: null,
+  }));
+  const render = () => flushSync(() => root.render(<DesktopShell />));
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  const expanded = (selector: string) => container.querySelector(selector)?.getAttribute("aria-expanded");
+  const heading = () => container.querySelector(".timeline-heading h1")?.textContent;
+  const group = ".timeline-group-toggle";
+  render();
+  await vi.waitFor(() => expect(container.querySelector("#folder-row-closed")).not.toBeNull());
+  click('[aria-label="文章时间流"]');
+  click("#folder-row-closed");
+  await vi.waitFor(() => expect(expanded(group)).toBe("true"));
+  click('.timeline-heading [aria-label="包含子目录"]');
+  await vi.waitFor(() => expect(container.querySelector(".timeline-entries")?.getAttribute("aria-busy")).toBe("false"));
+  click(group);
+  click('[aria-controls="timeline-tags"]');
+  click('[aria-controls="tree-directory-list"]');
+  click("#hide-timeline-directory");
+  expect(container.querySelector("#show-timeline-directory")).not.toBeNull();
+
+  flushSync(() => root.unmount());
+  root = createRoot(container);
+  render();
+  await vi.waitFor(() => expect(heading()).toBe("已折叠"));
+  expect(container.querySelector("#show-timeline-directory")).not.toBeNull();
+  expect(container.querySelector('.timeline-heading [aria-label="包含子目录"]')?.getAttribute("aria-pressed")).toBe("false");
+  await vi.waitFor(() => expect(expanded(group)).toBe("false"));
+  click("#show-timeline-directory");
+  expect(expanded('[aria-controls="timeline-tags"]')).toBe("false");
+  expect(expanded('[aria-controls="tree-directory-list"]')).toBe("false");
+});
+
+it("keeps the AI pane hidden while the saved reading tab loads", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["saved"], activeId: "saved", readingIds: ["saved"] });
+  saveWorkspaceLayout({ section: "timeline", explorerOverride: null, timelineDirectory: "shown", focusMode: false, aiOpen: true });
+  let resolveEntry!: (value: Entry) => void;
+  const load = vi.spyOn(desktop, "entry").mockReturnValue(new Promise<Entry>(resolve => { resolveEntry = resolve; }));
+  const aiDivider = () => container.querySelector('[aria-label="调整 AI 侧栏宽度"]');
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(load).toHaveBeenCalledWith("saved"));
+  expect(aiDivider()).toBeNull();
+  resolveEntry(entry("saved"));
+  const reading = await vi.waitFor(() => {
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="退出阅读模式"]');
+    expect(button).not.toBeNull();
+    return button!;
+  });
+  expect(aiDivider()).toBeNull();
+  flushSync(() => reading.click());
+  expect(aiDivider()).not.toBeNull();
 });
 
 it("browses a folder and its descendants in the timeline while opening the document in the existing editor", async () => {
@@ -145,10 +205,10 @@ it("browses a folder and its descendants in the timeline while opening the docum
   await vi.waitFor(() => expect(container.querySelector('[data-tree-id="旧目录内容"]')).not.toBeNull());
   click('.sidebar-chrome [aria-label="文章时间流"]');
   expect(container.querySelector(".timeline-pane")).not.toBeNull();
-  expect(container.querySelector(".timeline-entries")).toBeNull();
-  expect(container.querySelector(".timeline-folders [aria-current]")).toBeNull();
+  expect(container.querySelector(".timeline-entries")).not.toBeNull();
+  expect(container.querySelector("#timeline-root-folder")?.getAttribute("aria-current")).toBe("true");
   expect(container.querySelector(".timeline-folders")?.textContent).not.toContain("全部文章");
-  expect(vi.mocked(desktop.entries).mock.calls.some(([filter]) => filter.includePreview)).toBe(false);
+  expect(desktop.entries).toHaveBeenCalledWith(expect.objectContaining({ exactCategory: true, includePreview: true }));
   expect(container.querySelector(".sidebar-chrome #hide-sidebar")).toBeNull();
   expect(container.querySelector(".timeline-chrome #hide-sidebar")).not.toBeNull();
   expect(container.querySelector('[data-tree-kind="entry"]')).toBeNull();
@@ -157,7 +217,7 @@ it("browses a folder and its descendants in the timeline while opening the docum
   expect(branch.hasAttribute("inert")).toBe(true);
   click(folderToggle);
   expect(branch.hasAttribute("inert")).toBe(false);
-  expect(container.querySelector(".timeline-entries")).toBeNull();
+  expect(container.querySelector(".timeline-folder-title h1")?.textContent).toBe("根目录");
   click(folderToggle);
   expect(branch.hasAttribute("inert")).toBe(true);
   click("#folder-row-closed");
@@ -194,6 +254,22 @@ it("browses a folder and its descendants in the timeline while opening the docum
   flushSync(() => dateToggle.click());
   expect(dateToggle.getAttribute("aria-expanded")).toBe("false");
   expect(dateGroup.querySelector("ul")?.hasAttribute("inert")).toBe(true);
+  expect(container.querySelector(".sidebar-chrome #hide-timeline-directory")).toBeNull();
+  click(".directory-tools #hide-timeline-directory");
+  expect(container.querySelector("#timeline-directory .sidebar-workspace")?.hasAttribute("inert")).toBe(true);
+  expect(container.querySelector(".timeline-workspace")?.hasAttribute("inert")).toBe(false);
+  const timelineNav = container.querySelector(".timeline-chrome .button-strip")!;
+  expect(timelineNav.parentElement?.querySelector("#show-timeline-directory")).toBeNull();
+  expect(timelineNav.firstElementChild?.getAttribute("aria-label")).toBe("内容目录");
+  const timelineTitle = container.querySelector(".timeline-folder-title")!;
+  expect(timelineTitle.firstElementChild?.id).toBe("show-timeline-directory");
+  expect(timelineTitle.firstElementChild?.nextElementSibling?.tagName).toBe("svg");
+  expect(container.querySelector(".timeline-group")).toBe(dateGroup);
+  await vi.waitFor(() => expect(document.activeElement?.id).toBe("show-timeline-directory"));
+  click("#show-timeline-directory");
+  await vi.waitFor(() => expect(document.activeElement?.id).toBe("hide-timeline-directory"));
+  expect(container.querySelector("#timeline-directory .sidebar-workspace")?.hasAttribute("inert")).toBe(false);
+  expect(container.querySelector("#folder-row-closed")?.getAttribute("aria-current")).toBe("true");
   click("#hide-sidebar");
   expect(container.querySelector(".sidebar-workspace")?.hasAttribute("inert")).toBe(true);
   expect(container.querySelector(".timeline-workspace")?.hasAttribute("inert")).toBe(true);
@@ -244,6 +320,64 @@ it("keeps the AI sidebar toggle in the writing header when the panel opens or cl
   expect(container.querySelector(".workbench-chrome #ai-panel-trigger")).toBe(toggle);
 });
 
+it("keeps timeline results visible until a folder or tag query settles and ignores superseded results", async () => {
+  const library = await desktop.library();
+  vi.mocked(desktop.library).mockResolvedValue({ ...library, tags: [{ id: "wechat", name: "微信" }] });
+  const date = Date.now();
+  const shared = { ...entry("shared"), title: "共用文章", updatedAt: date, preview: { summary: "", image: "asset://cover" } };
+  const rootArticle = { ...entry("root-only"), title: "根目录专属文章", updatedAt: date };
+  function deferredPage() {
+    let resolve!: (page: EntryPage) => void;
+    const promise = new Promise<EntryPage>(complete => { resolve = complete; });
+    return { promise, resolve };
+  }
+  const superseded = deferredPage();
+  const tagPage = deferredPage();
+  const tagPins = deferredPage();
+  vi.mocked(desktop.entries).mockImplementation(async filter => {
+    if (!filter.includePreview) return { items: [], nextOffset: null };
+    if (filter.tagIds?.includes("wechat")) return filter.pinned ? tagPins.promise : tagPage.promise;
+    if (filter.pinned) return { items: [], nextOffset: null };
+    if (filter.categoryId === "closed") return superseded.promise;
+    return { items: [shared, rootArticle], nextOffset: null };
+  });
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  const heading = () => container.querySelector(".timeline-heading h1")?.textContent;
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector("#folder-row-closed")).not.toBeNull());
+  click('.sidebar-chrome [aria-label="文章时间流"]');
+  await vi.waitFor(() => expect(container.querySelector("#timeline-row-root-only")).not.toBeNull());
+  const list = container.querySelector<HTMLDivElement>(".timeline-entries")!;
+  const sharedRow = container.querySelector("#timeline-row-shared")!;
+  const cover = sharedRow.closest(".timeline-entry")!.querySelector(".timeline-cover");
+  expect(cover).not.toBeNull();
+  list.scrollTop = 80;
+  click("#folder-row-closed");
+  expect(heading()).toBe("根目录");
+  expect(list.getAttribute("aria-busy")).toBe("true");
+  expect(list.closest("[inert]")).not.toBeNull();
+  expect(list.textContent).toContain("根目录专属文章");
+  expect(list.textContent).not.toContain("正在加载");
+  click("#timeline-tag-wechat");
+  tagPage.resolve({ items: [shared], nextOffset: null });
+  await Promise.resolve();
+  expect(heading()).toBe("根目录");
+  expect(list.scrollTop).toBe(80);
+  tagPins.resolve({ items: [{ ...entry("tag-pin"), title: "标签置顶文章", updatedAt: date }], nextOffset: null });
+  await vi.waitFor(() => expect(heading()).toBe("微信"));
+  expect(list.textContent).toContain("标签置顶文章");
+  expect(list.textContent).not.toContain("根目录专属文章");
+  expect(list.closest("[inert]")).toBeNull();
+  expect(list.scrollTop).toBe(0);
+  expect(container.querySelector(".timeline-entries")).toBe(list);
+  expect(container.querySelector("#timeline-row-shared")).toBe(sharedRow);
+  expect(sharedRow.closest(".timeline-entry")!.querySelector(".timeline-cover")).toBe(cover);
+  superseded.resolve({ items: [entry("迟到的目录文章")], nextOffset: null });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(heading()).toBe("微信");
+  expect(list.textContent).not.toContain("迟到的目录文章");
+});
+
 it("shows timeline article tags and navigates by counted folders and tags", async () => {
   const baseline = await desktop.library();
   vi.mocked(desktop.library).mockResolvedValue({ ...baseline,
@@ -266,9 +400,12 @@ it("shows timeline article tags and navigates by counted folders and tags", asyn
   await vi.waitFor(() => expect(count("#folder-row-closed")).toBe("3"));
   expect(count("#folder-row-expanded")).toBe("0");
   expect(container.querySelector("#timeline-tags")?.textContent).toBe("微信1无标签2");
-  expect(container.querySelector(".timeline-entries")).toBeNull();
+  expect(container.querySelector("#timeline-root-folder")?.getAttribute("aria-current")).toBe("true");
   click("#folder-row-closed");
-  await vi.waitFor(() => expect(container.querySelector(".timeline-entry-tags")?.textContent).toBe("微信笔记"));
+  await vi.waitFor(() => {
+    expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("已折叠");
+    expect(container.querySelector(".timeline-entry-tags")?.textContent).toBe("微信笔记");
+  });
   expect(count("#folder-row-child")).toBe("2");
   expect(container.querySelector(".timeline-entry-tags")?.nextElementSibling?.tagName).toBe("TIME");
   click('.timeline-heading [aria-label="包含子目录"]');
@@ -277,14 +414,14 @@ it("shows timeline article tags and navigates by counted folders and tags", asyn
   click('[aria-controls="timeline-tags"]');
   expect(container.querySelector("#timeline-tags")?.hasAttribute("inert")).toBe(true);
   const readArticle = vi.spyOn(desktop, "entry");
-  await vi.waitFor(() => expect(container.querySelector(".timeline-entry-tags button")?.textContent).toBe("微信"));
+  await vi.waitFor(() => expect(container.querySelector(".timeline-entries")?.getAttribute("aria-busy")).toBe("false"));
   click(".timeline-entry-tags button");
   expect(wechatRow.getAttribute("aria-current")).toBe("true");
   expect(container.querySelector("#timeline-tags")?.hasAttribute("inert")).toBe(false);
   await vi.waitFor(() => expect(document.activeElement).toBe(wechatRow));
   expect(readArticle).not.toHaveBeenCalled();
   expect(container.querySelector("#folder-row-closed")?.getAttribute("aria-current")).toBeNull();
-  expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("微信");
+  await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("微信"));
   expect(container.querySelector('.timeline-heading [aria-label="包含子目录"]')).toBeNull();
   await vi.waitFor(() => expect(desktop.entries).toHaveBeenCalledWith(expect.objectContaining({ tagIds: ["wechat"], categoryId: undefined })));
   flushSync(() => untaggedRow.click());
@@ -323,10 +460,11 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
   openMenu(".timeline-folders");
   expect(menu()).toBeNull();
   openMenu(".timeline-content");
-  expect(menu()).toBeNull();
+  expect(menu()?.getAttribute("aria-label")).toBe("文章区操作");
+  await closeMenu();
 
   flushSync(() => container.querySelector<HTMLButtonElement>("#timeline-tag-wechat")!.click());
-  await vi.waitFor(() => expect(container.querySelector(".timeline-entry")).not.toBeNull());
+  await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("微信"));
   openMenu(".timeline-content");
   expect(menu()).toBeNull();
   openMenu(".timeline-entry");
@@ -340,7 +478,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
   expect(menu()?.getAttribute("aria-label")).toBe("文件夹操作");
   await closeMenu();
   flushSync(() => container.querySelector<HTMLButtonElement>("#folder-row-closed")!.click());
-  await vi.waitFor(() => expect(container.querySelector(".timeline-entry")).not.toBeNull());
+  await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("已折叠"));
   openMenu(".timeline-entry");
   expect(menuItems()[0].textContent).toBe("置顶");
   await closeMenu();
@@ -379,6 +517,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
   flushSync(() => subfolderInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
   flushSync(() => container.querySelector<HTMLButtonElement>("#folder-row-child")!.click());
   expect(container.querySelector<HTMLButtonElement>("#add-root-folder")!.disabled).toBe(true);
+  await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("子目录"));
   openMenu(".timeline-content");
   expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown"]);
   flushSync(() => menuItems().find(item => item.textContent === "导入 Markdown")!.click());
@@ -422,7 +561,7 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
   expect(openTabs()).toEqual(["open-note"]);
 });
 
-it("lists the root first and only queries unfiled articles after selecting it", async () => {
+it("selects the root by default and only queries unfiled articles", async () => {
   const baseline = await desktop.library();
   vi.mocked(desktop.library).mockResolvedValue({
     ...baseline, articleCounts: { root: 2, folders: { closed: 1 }, tags: {}, untagged: 3 },
@@ -441,9 +580,6 @@ it("lists the root first and only queries unfiled articles after selecting it", 
     return row!;
   });
   expect(container.querySelector("#tree-directory-list > li:first-child")?.contains(rootFolder)).toBe(true);
-  expect(rootFolder.getAttribute("aria-current")).toBeNull();
-  expect(container.querySelector(".timeline-entries")).toBeNull();
-  flushSync(() => rootFolder.click());
   expect(rootFolder.getAttribute("aria-current")).toBe("true");
   expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("根目录");
   expect(container.querySelector('.timeline-heading [aria-label="包含子目录"]')).toBeNull();
@@ -486,6 +622,7 @@ it.each(["completed", "partial"] as const)("opens a %s WeChat import without lea
   });
   flushSync(() => folder.click());
   if (status === "completed") {
+    await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("已折叠"));
     flushSync(() => container.querySelector(".timeline-content")!.dispatchEvent(new MouseEvent("contextmenu", {
       button: 2, bubbles: true, cancelable: true,
     })));

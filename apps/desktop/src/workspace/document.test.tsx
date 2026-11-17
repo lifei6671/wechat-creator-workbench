@@ -3,10 +3,12 @@ import { Theme } from "@radix-ui/themes";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
 import { desktop } from "../desktop";
 import { SaveQueue } from "../editor/save-queue";
 import { DocumentEditor, DocumentTabs, DocumentToolbar, type DocumentActions } from "./Document";
+import { Outline } from "./Outline";
 import { WechatImportDialog } from "./Publishing";
 import { PropertiesDialog } from "./Dialogs";
 
@@ -31,6 +33,111 @@ afterEach(() => {
   container.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("moves complete outline sections through the save queue and restores them with one undo", async () => {
+  const fence = String.fromCharCode(96).repeat(3);
+  const beginning = ["## 重名", "正文[^ref]", "### 子节", "#### 孙节", "> ## 引用内标题\n>\n> 引用",
+    "| 左 | 右 |\n| - | - |\n| 一 | 二 |", "![示例图片](https://example.com/image.png)"].join("\n\n");
+  const second = "## 重名\n\n第二节";
+  const third = ["##", "空标题正文", `${fence}js\nconst value = 1;\n${fence}`].join("\n\n");
+  const footnote = "[^ref]: 脚注定义";
+  const markdown = [beginning, second, third, footnote].join("\n\n");
+  const save = vi.fn().mockResolvedValue({ version: 2 });
+  const original = new SaveQueue({ ...entry("one", "原文"), contentMd: markdown }, save, vi.fn());
+  let reopened: SaveQueue | undefined;
+  const editor: { current: MarkdownEditorHandle | null } = { current: null };
+  const restored: typeof editor = { current: null };
+  const onError = vi.fn();
+  Object.defineProperties(Range.prototype, {
+    getClientRects: { configurable: true, value: () => [new DOMRect()] },
+    getBoundingClientRect: { configurable: true, value: () => new DOMRect() },
+  });
+  function renderEditor(queue: SaveQueue, handle: typeof editor, reading: boolean, active: boolean) {
+    return <DocumentEditor key={queue.sessionId} queue={queue} active={active} locked={false} reading={reading}
+      clipboard={{ read: vi.fn(), write: vi.fn(), onError }} display={display}
+      onDisplayChange={vi.fn()} handle={value => { handle.current = value; }}
+      onImages={vi.fn()} onImageZoom={vi.fn()} onError={onError} />;
+  }
+  function mount({ reading = false, switchDocument = false } = {}) {
+    flushSync(() => root.render(<Theme>
+      {renderEditor(original, editor, reading, !switchDocument)}
+      {switchDocument && reopened && renderEditor(reopened, restored, false, true)}
+      {!switchDocument && editor.current && <Outline editor={editor.current} readOnly={reading} onClose={vi.fn()} />}
+    </Theme>));
+  }
+  const rows = () => [...container.querySelectorAll<HTMLButtonElement>(".outline-heading")].filter(row => !row.closest("[inert]"));
+  try {
+    mount();
+    await vi.waitFor(() => expect(editor.current).not.toBeNull());
+    mount();
+    const handle = editor.current!;
+    const [first, duplicate, empty] = handle.getOutline();
+    const child = first.children[0];
+    expect(child.children[0].children[0].title).toBe("引用内标题");
+    expect(first.id).not.toBe(duplicate.id);
+    expect(rows().map(row => row.textContent)).toEqual(["重名", "子节", "孙节", "引用内标题", "重名", "空标题"]);
+    const toggle = container.querySelector<HTMLButtonElement>('.outline-expand[aria-label="折叠 重名"]')!;
+    flushSync(() => toggle.click());
+    expect(rows().map(row => row.textContent)).toEqual(["重名", "重名", "空标题"]);
+    const query = container.querySelector<HTMLInputElement>('[aria-label="搜索标题"]')!;
+    flushSync(() => { setInput.call(query, "孙节"); query.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(rows().map(row => row.textContent)).toEqual(["重名", "子节", "孙节"]);
+    expect(original.isDirty()).toBe(false);
+    flushSync(() => query.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })));
+    expect(rows().map(row => row.textContent)).toEqual(["重名", "重名", "空标题"]);
+    expect(handle.moveOutlineSection(first, child, "after")).toBe(false);
+    expect(handle.moveOutlineSection(first, duplicate, "before")).toBe(false);
+
+    const fold = container.querySelector<HTMLButtonElement>(".rich-heading-fold")!;
+    fold.click();
+    expect(container.querySelector("h3")!.hidden).toBe(true);
+    expect(handle.scrollToHeading(child)).toBe(true);
+    expect(container.querySelector("h3")!.hidden).toBe(false);
+    expect(handle.target().from).toBe(child.from + 1);
+    expect(original.isDirty()).toBe(false);
+
+    mount({ reading: true });
+    expect(container.querySelector("[data-outline-grip]")).toBeNull();
+    flushSync(() => rows()[1].click());
+    expect(handle.target().from).toBe(duplicate.from + 1);
+    expect(handle.moveOutlineSection(first, empty, "after")).toBe(false);
+    mount();
+    flushSync(() => expect(handle.moveOutlineSection(first, empty, "after")).toBe(true));
+    expect(original.isDirty()).toBe(true);
+    expect(handle.moveOutlineSection(first, empty, "after")).toBe(false);
+    expect(await original.flush()).toBe(true);
+    const moved = original.snapshot().fields.contentMd;
+    expect(moved).toBe([second, third, beginning, footnote].join("\n\n"));
+    expect(save.mock.lastCall![2].contentMd).toBe(moved);
+
+    flushSync(() => handle.command("undo"));
+    expect(handle.captureMarkdown().markdown).toBe(markdown);
+    expect(handle.getOutline().map(item => [item.id, item.from, item.to]))
+      .toEqual([first, duplicate, empty].map(item => [item.id, item.from, item.to]));
+    const [backAtStart, , backAtEnd] = handle.getOutline();
+    flushSync(() => expect(handle.moveOutlineSection(backAtEnd, backAtStart, "before")).toBe(true));
+    expect(handle.captureMarkdown().markdown).toBe([third, beginning, second, footnote].join("\n\n"));
+    flushSync(() => handle.command("undo"));
+    expect(handle.captureMarkdown().markdown).toBe(markdown);
+    reopened = new SaveQueue({ ...entry("two", "重新打开"), contentMd: moved }, vi.fn(), vi.fn());
+    mount({ switchDocument: true });
+    await vi.waitFor(() => expect(restored.current).not.toBeNull());
+    expect(restored.current!.getOutline().map(item => [item.level, item.title])).toEqual([[2, "重名"], [2, ""], [2, "重名"]]);
+    expect(container.querySelector('.document-editor:not([hidden]) table')?.textContent).toBe("左右一二");
+    const [oldFirst, , oldThird] = handle.getOutline();
+    expect(handle.moveOutlineSection(oldFirst, oldThird, "after")).toBe(false);
+    const [newFirst, newSecond] = restored.current!.getOutline();
+    expect(restored.current!.moveOutlineSection(first, newSecond, "after")).toBe(false);
+    expect(restored.current!.getOutline()[0]).toBe(newFirst);
+    expect(onError).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    Reflect.deleteProperty(Range.prototype, "getClientRects");
+    Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
+    original.dispose();
+    reopened?.dispose();
+  }
 });
 
 it("renames an inactive tab in place without implicitly selecting it", async () => {
@@ -123,6 +230,7 @@ it("renames through the focused breadcrumb and updates the editor theme without 
   const noop = () => {};
   const actions: DocumentActions = {
     mode: "edit", setMode: noop, focusMode: false, reading: false, onReading: noop, onFocusMode: noop,
+    outlineOpen: false, onOutline: noop,
     onPalette: noop, onAi: noop, aiOpen: false, onSave: noop, onSearch: noop, onProperties: noop, onSavedVersions: noop,
     onExport: noop, onExportAssets: noop, onExportWechat: noop, onCopyWechat: noop,
     publishing: false, onDelete: noop, onDraft: noop, onCopy: noop, onReload: noop, onRetry: noop,

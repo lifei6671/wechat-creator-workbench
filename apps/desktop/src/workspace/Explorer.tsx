@@ -51,26 +51,27 @@ export function CreateMenu(actions: CreateActions) {
   </DropdownMenu.Root>;
 }
 
-export function BlankAreaMenu({ children, label, onAddFolder, ...actions }: CreateActions & {
+export function BlankAreaMenu({ children, label, actions }: {
   children: ReactNode;
   label: string;
-  onAddFolder?(): void;
+  actions: (CreateActions & { onAddFolder?(): void }) | null;
 }) {
-  const addingFolder = useRef(false);
+  const addFolderAfterMenu = useRef<(() => void) | undefined>(undefined);
   return <ContextMenu.Root>
-    <ContextMenu.Trigger>{children}</ContextMenu.Trigger>
-    <ContextMenu.Content size="1" aria-label={label} onCloseAutoFocus={event => {
-      if (!addingFolder.current) return;
-      addingFolder.current = false;
+    <ContextMenu.Trigger disabled={!actions}>{children}</ContextMenu.Trigger>
+    {actions && <ContextMenu.Content size="1" aria-label={label} onCloseAutoFocus={event => {
+      const addFolder = addFolderAfterMenu.current;
+      if (!addFolder) return;
+      addFolderAfterMenu.current = undefined;
       event.preventDefault();
-      onAddFolder?.();
+      addFolder();
     }}>
       <CreateItems Item={ContextMenu.Item} {...actions} />
-      {onAddFolder && <>
+      {actions.onAddFolder && <>
         <ContextMenu.Separator />
-        <ContextMenu.Item disabled={actions.disabled} onSelect={() => { addingFolder.current = true; }}><FolderPlus size={15} />新建目录</ContextMenu.Item>
+        <ContextMenu.Item disabled={actions.disabled} onSelect={() => { addFolderAfterMenu.current = actions.onAddFolder; }}><FolderPlus size={15} />新建目录</ContextMenu.Item>
       </>}
-    </ContextMenu.Content>
+    </ContextMenu.Content>}
   </ContextMenu.Root>;
 }
 
@@ -91,6 +92,7 @@ interface ExplorerProps {
   timelineSelection?: TimelineSelection | null;
   onTimelineSelect?(selection: TimelineSelection): void;
   includeTimelineChildren?: boolean;
+  directoryTrailingAction?: ReactNode;
   onCreateCurrent?(): void;
   onToggleAll?(expand: boolean): void;
   onLocateCurrent?(): void;
@@ -159,7 +161,7 @@ export function Explorer(props: ExplorerProps) {
   const [pins, setPins] = useState<{ items: EntryRow[]; error?: string } | null>(null);
   const [pinsCollapsed, setPinsCollapsed] = useState(() => useStoredInitial("directory-pins-collapsed", false));
   const [directoryCollapsed, setDirectoryCollapsed] = useState(() => useStoredInitial("directory-collapsed", false));
-  const [tagsCollapsed, setTagsCollapsed] = useState(false);
+  const [tagsCollapsed, setTagsCollapsed] = useState(() => useStoredInitial("directory-tags-collapsed", false));
   const [sort, setSort] = useState(() => useStoredInitial<"manual" | NonNullable<EntryFilter["sort"]>>("directory-sort", "manual"));
   const [autoLocate, setAutoLocate] = useState(() => useStoredInitial("directory-auto-locate", false));
   const markLoading = useCallback((id: string, pending: boolean) => {
@@ -220,6 +222,11 @@ export function Explorer(props: ExplorerProps) {
     persist("directory-collapsed", collapsed);
   }
 
+  function collapseTags(collapsed: boolean) {
+    setTagsCollapsed(collapsed);
+    persist("directory-tags-collapsed", collapsed);
+  }
+
   function scrollAfterSectionExpands(pinned: boolean) {
     if (!locate || locatePinned !== pinned) return;
     document.getElementById(`entry-row-${locate}`)?.scrollIntoView({ block: "nearest" });
@@ -235,7 +242,7 @@ export function Explorer(props: ExplorerProps) {
     addFolder,
     revealDirectory: () => collapseDirectory(false),
     revealTimelineTag(id, focus) {
-      setTagsCollapsed(false);
+      collapseTags(false);
       requestAnimationFrame(() => {
         const row = document.getElementById(`timeline-tag-${id}`);
         if (focus) row?.focus({ preventScroll: true });
@@ -366,6 +373,7 @@ export function Explorer(props: ExplorerProps) {
           if (directoryCollapsed) collapseDirectory(false);
           props.onToggleAll?.(directoryCollapsed || !foldersExpanded);
         }}>{foldersExpanded && !directoryCollapsed ? <ChevronsDownUp size={16} /> : <ChevronsUpDown size={16} />}</Tool>
+      {props.directoryTrailingAction}
     </div>}
     {isSearch && <WorkspaceSearch inputRef={props.searchInputRef} query={query} caseSensitive={props.caseSensitive}
       onQuery={props.onQuery} onCaseSensitive={props.onCaseSensitive} />}
@@ -408,7 +416,7 @@ export function Explorer(props: ExplorerProps) {
               document.getElementById(`timeline-tag-${selection.id}`)?.scrollIntoView?.({ block: "nearest" });
             }
           }}
-          onToggle={() => setTagsCollapsed(!tagsCollapsed)} icon={<Tags size={15} aria-hidden="true" />}>
+          onToggle={() => collapseTags(!tagsCollapsed)} icon={<Tags size={15} aria-hidden="true" />}>
           {library.tags.map(tag => <li key={tag.id}>
             <button type="button" id={`timeline-tag-${tag.id}`} className="plain-button timeline-tag-row"
               aria-current={selection?.kind === "tag" && selection.id === tag.id ? "true" : undefined}
@@ -435,9 +443,11 @@ export function Explorer(props: ExplorerProps) {
     {isTree && drag.ghost && <div className="tree-drag-ghost" aria-hidden="true" ref={drag.ghostElement}
       style={{ translate: `${drag.ghost.x}px ${drag.ghost.y}px` }}><DragIcon size={16} /><span>{drag.ghost.title}</span></div>}
   </aside>;
-  return section === "folders" ? <BlankAreaMenu label="目录操作" disabled={props.treeLocked || !library}
-    onCreate={() => props.onCreate(null)} onImportWechat={() => props.onImportWechat(null)}
-    onImportMarkdown={() => props.onImportMarkdown(null)} onAddFolder={() => addFolder(null)}>
+  return section === "folders" ? <BlankAreaMenu label="目录操作" actions={{
+    disabled: props.treeLocked || !library,
+    onCreate: () => props.onCreate(null), onImportWechat: () => props.onImportWechat(null),
+    onImportMarkdown: () => props.onImportMarkdown(null), onAddFolder: () => addFolder(null),
+  }}>
     {content}
   </BlankAreaMenu> : content;
 }

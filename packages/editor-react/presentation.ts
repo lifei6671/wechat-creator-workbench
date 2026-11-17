@@ -1,5 +1,5 @@
 import { DOMSerializer, Fragment, Slice, type Mark, type Node as ProseNode } from "@milkdown/kit/prose/model";
-import { Plugin, PluginKey, TextSelection, type EditorState } from "@milkdown/kit/prose/state";
+import { Plugin, PluginKey, Selection, TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import { readCalloutMarker } from "../markdown-core/callouts";
 import { codeHighlight } from "./code-view";
@@ -142,10 +142,25 @@ function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumb
 }
 
 const visibleMarks = new Set(["strong", "emphasis", "strike_through", "highlight", "inlineCode", "link"]);
+type StrongDelimiter = { mark: Mark; from: number; to: number; opening: boolean; token: string };
+type DelimiterWidget = (view: EditorView, source: StrongDelimiter) => HTMLElement;
+function isDelimiterInput(view: EditorView, target: EventTarget | null) {
+  return target instanceof HTMLInputElement && target.closest(".rich-strong-delimiter") && view.dom.contains(target);
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function movePastDelimiter(doc: ProseNode, pos: number, direction: -1 | 1) {
+  const point = doc.resolve(pos);
+  const text = (direction < 0 ? point.nodeBefore : point.nodeAfter)?.text;
+  const length = text ? graphemes.segment(text).containing(direction < 0 ? text.length - 1 : 0)?.segment.length ?? 1 : 1;
+  const next = pos + direction * length;
+  return next >= 0 && next <= doc.content.size ? Selection.findFrom(doc.resolve(next), direction, true) : null;
+}
 
 function delimiters(mark: Mark, text: string): [string, string] {
   switch (mark.type.name) {
-    case "strong": return ["**", "**"];
+    case "strong": return mark.attrs.marker === "_" ? ["__", "__"] : ["**", "**"];
     case "emphasis": return ["*", "*"];
     case "strike_through": return ["~~", "~~"];
     case "highlight": return ["==", "=="];
@@ -164,7 +179,7 @@ function delimiters(mark: Mark, text: string): [string, string] {
   }
 }
 
-function syntaxAtCaret(state: EditorState) {
+function syntaxAtCaret(state: EditorState, delimiterWidget: DelimiterWidget) {
   const { $head, empty } = state.selection;
   if ($head.parent.type.name === "code_block") {
     return [Decoration.node($head.before(), $head.after(), { class: "rich-code-active" }, { codeSource: true })];
@@ -173,15 +188,17 @@ function syntaxAtCaret(state: EditorState) {
   const decorations: Decoration[] = [];
   const block = $head.parent;
   const start = $head.start();
-  const add = (pos: number, text: string, side: number, task = false) => {
-    decorations.push(Decoration.widget(pos, () => {
+  const add = (pos: number, text: string, side: number, task = false, source?: StrongDelimiter) => {
+    decorations.push(Decoration.widget(pos, view => {
+      if (source) return delimiterWidget(view, source);
       const marker = document.createElement("span");
       marker.className = "rich-markdown-syntax";
       marker.dataset.markdown = text;
       if (task) marker.dataset.markdownTask = "";
       marker.setAttribute("aria-hidden", "true");
       return marker;
-    }, { key: `syntax-${side}-${text}`, side, ignoreSelection: true }));
+    }, { key: `syntax-${side}-${text}${source ? `-${source.from}-${source.to}` : ""}`, side, ignoreSelection: true,
+      stopEvent: event => Boolean(source && event.target instanceof HTMLInputElement) }));
   };
   let quoteDepth = 0;
   let listItemDepth = 0;
@@ -235,10 +252,14 @@ function syntaxAtCaret(state: EditorState) {
   });
   const active = runs.filter(({ from, to }) => from <= $head.pos && $head.pos <= to)
     .sort((a, b) => a.from - b.from || b.to - a.to || a.order - b.order);
+  const openings = new Set(active.map(({ from }) => from));
   active.forEach(({ mark, from, to }, index) => {
     const [open, close] = delimiters(mark, block.textBetween(from - start, to - start));
-    add(from, open, index + 1);
-    add(to, close, -index - 1);
+    const strong = mark.type.name === "strong";
+    // Keep adjacent closing markers before the next opening marker at the same document position.
+    const closingSide = openings.has(to) ? -active.length - index - 1 : active.length - index;
+    add(from, open, index - active.length, false, strong ? { mark, from, to, opening: true, token: open } : undefined);
+    add(to, close, closingSide, false, strong ? { mark, from, to, opening: false, token: close } : undefined);
   });
   return decorations;
 }
@@ -280,12 +301,93 @@ function linkFootnoteDecorations(doc: ProseNode) {
   return decorations;
 }
 
-export function editorPresentation(options: () => { readOnly: boolean; lineNumbers?: boolean; convertLinks?: boolean }) {
+export function editorPresentation(options: () => { readOnly: boolean; lineNumbers?: boolean; convertLinks?: boolean },
+  replaceDelimiter: (state: EditorState, source: StrongDelimiter, value: string) => Transaction, isLive: () => boolean) {
+  let mouseSyntax: { doc: ProseNode; decorations: Decoration[] } | null = null;
+  let delimiterEdit: { field: HTMLInputElement; doc: ProseNode; decorations: Decoration[] } | null = null;
+  let refreshFrame = 0;
   let cached: { doc: ProseNode; folded: Map<number, Section>; lineNumbers: boolean; blocks: DecorationSet } | undefined;
   let linkNotes: { doc: ProseNode; decorations: DecorationSet } | undefined;
   let combined: { blocks: DecorationSet; links: DecorationSet; set: DecorationSet } | undefined;
+  function makeDelimiter(view: EditorView, source: StrongDelimiter) {
+    const { token, from, to, opening } = source;
+    const marker = document.createElement("span");
+    marker.className = "rich-markdown-syntax rich-strong-delimiter";
+    marker.dataset.markdown = token;
+    const field = document.createElement("input");
+    field.type = "text";
+    field.size = token.length;
+    field.tabIndex = -1;
+    field.spellcheck = false;
+    field.value = token;
+    field.setAttribute("aria-label", opening ? "加粗起始标记" : "加粗结束标记");
+    field.dataset.position = String(opening ? from : to);
+    field.dataset.opening = String(opening);
+    marker.append(field);
+
+    function finish(save: boolean, restoreFocus: boolean, related?: EventTarget | null, direction?: -1 | 1) {
+      if (delimiterEdit?.field !== field) return;
+      const active = delimiterEdit;
+      if (!isLive()) { delimiterEdit = null; return; }
+      const { state } = view;
+      const changed = save && state.doc === active.doc && !options().readOnly && field.value !== token;
+      const focusInEditor = restoreFocus || (related instanceof Node && view.dom.contains(related));
+      const tr = changed ? replaceDelimiter(state, source, field.value) : state.tr;
+      if (restoreFocus && state.doc === active.doc) {
+        const pos = opening ? tr.mapping.map(from, -1) : tr.mapping.map(to, 1);
+        const selection = direction ? movePastDelimiter(tr.doc, pos, direction) : TextSelection.create(tr.doc, pos);
+        if (!selection) return;
+        tr.setSelection(selection);
+      }
+      delimiterEdit = null;
+      if (!changed) field.value = token;
+      view.dispatch(tr.setMeta(presentation, { focused: focusInEditor } satisfies PresentationUpdate));
+      if (restoreFocus) view.focus();
+    }
+
+    field.onfocus = () => {
+      const { state } = view;
+      const held = delimiterEdit?.doc === state.doc ? delimiterEdit : mouseSyntax?.doc === state.doc ? mouseSyntax : null;
+      delimiterEdit = { field, doc: state.doc,
+        decorations: held?.decorations ?? syntaxAtCaret(state, makeDelimiter) };
+    };
+    field.onblur = event => {
+      if (isDelimiterInput(view, event.relatedTarget)) {
+        if (field.value !== token) finish(true, true);
+      } else finish(true, false, event.relatedTarget);
+    };
+    field.onkeydown = event => {
+      if (event.isComposing || event.keyCode === 229) return;
+      const collapsed = field.selectionStart === field.selectionEnd
+        && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+      const atStart = collapsed && event.key === "ArrowLeft" && field.selectionStart === 0;
+      const atEnd = collapsed && event.key === "ArrowRight" && field.selectionEnd === field.value.length;
+      if (!atStart && !atEnd && event.key !== "Enter" && event.key !== "Escape") return;
+      event.preventDefault();
+      const direction = opening && atStart ? -1 : !opening && atEnd ? 1 : undefined;
+      finish(event.key !== "Escape", true, null, direction);
+    };
+    return marker;
+  }
   return new Plugin<PresentationState>({
     key: presentation,
+    view(view) {
+      const doc = view.dom.ownerDocument;
+      const window = doc.defaultView!;
+      const listeners = new AbortController();
+      const finish = () => {
+        if (!mouseSyntax || refreshFrame) return;
+        refreshFrame = window.requestAnimationFrame(() => {
+          refreshFrame = 0;
+          mouseSyntax = null;
+          if (isLive()) view.dispatch(view.state.tr);
+        });
+      };
+      doc.addEventListener("mouseup", finish, { capture: true, signal: listeners.signal });
+      doc.addEventListener("dragend", finish, { capture: true, signal: listeners.signal });
+      window.addEventListener("blur", finish, { signal: listeners.signal });
+      return { destroy() { listeners.abort(); window.cancelAnimationFrame(refreshFrame); } };
+    },
     state: {
       init: () => ({ focused: false, folded: new Map(), context: null }),
       apply(tr, current) {
@@ -362,7 +464,11 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
           persistent = combined.set;
         }
         const decorations = tableSelectionDecorations(state);
-        if ((focused || context) && !readOnly) decorations.push(...syntaxAtCaret(state));
+        if (!readOnly) {
+          if (delimiterEdit?.doc === doc) decorations.push(...delimiterEdit.decorations);
+          else if (mouseSyntax?.doc === doc) decorations.push(...mouseSyntax.decorations);
+          else if (focused || context) decorations.push(...syntaxAtCaret(state, makeDelimiter));
+        }
         const caretHeight = context?.caretHeight;
         if (caretHeight !== undefined && !readOnly && state.selection instanceof TextSelection && state.selection.empty) {
           decorations.push(Decoration.widget(state.selection.head, () => {
@@ -376,8 +482,45 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         return decorations.length ? persistent.add(doc, decorations) : persistent;
       },
       handleDOMEvents: {
-        focus(view) { view.dispatch(view.state.tr.setMeta(presentation, { focused: true } satisfies PresentationUpdate)); return false; },
-        blur(view) { view.dispatch(view.state.tr.setMeta(presentation, { focused: false } satisfies PresentationUpdate)); return false; },
+        mousedown(view, event) {
+          if (event.button !== 0 || !view.editable) return false;
+          view.dom.ownerDocument.defaultView!.cancelAnimationFrame(refreshFrame);
+          refreshFrame = 0;
+          const { state } = view;
+          const { focused, context } = presentation.getState(state)!;
+          // Keep the text in place until the browser has finished measuring its selection.
+          if (mouseSyntax?.doc !== state.doc) {
+            mouseSyntax = { doc: state.doc, decorations: focused || context ? syntaxAtCaret(state, makeDelimiter) : [] };
+          }
+          return false;
+        },
+        keydown(view, event) {
+          if (!view.editable || event.isComposing || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false;
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return false;
+          const selection = view.dom.ownerDocument.getSelection();
+          if (!selection?.isCollapsed || !selection.anchorNode || !view.dom.contains(selection.anchorNode)) return false;
+          const position = view.posAtDOM(selection.anchorNode, selection.anchorOffset);
+          const opening = event.key === "ArrowLeft";
+          const field = view.dom.querySelector<HTMLInputElement>(
+            `.rich-strong-delimiter input[data-position="${position}"][data-opening="${opening}"]`,
+          );
+          if (!field) return false;
+          field.focus();
+          field.setSelectionRange(1, 1);
+          event.preventDefault();
+          return true;
+        },
+        focus(view) {
+          if (isLive()) view.dispatch(view.state.tr.setMeta(presentation, { focused: true } satisfies PresentationUpdate));
+          return false;
+        },
+        blur(view, event) {
+          const target = event.relatedTarget;
+          if (isLive() && !isDelimiterInput(view, target)) {
+            view.dispatch(view.state.tr.setMeta(presentation, { focused: false } satisfies PresentationUpdate));
+          }
+          return false;
+        },
       },
     },
   });

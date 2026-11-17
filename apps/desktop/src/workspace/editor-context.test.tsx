@@ -29,6 +29,8 @@ it("routes editor context actions and limits the reading menu", async () => {
       linkFootnoteMarkdown: vi.fn(),
       command: vi.fn(), tableAction: vi.fn(), prepareContext: vi.fn<MarkdownEditorHandle["prepareContext"]>().mockReturnValue(null),
       hasSelection: () => true, clipboard: vi.fn(), contextCaret: vi.fn(),
+      getOutline: vi.fn(), subscribeOutline: vi.fn(), observeOutlinePosition: vi.fn(),
+      scrollToHeading: vi.fn(), canMoveOutlineSection: vi.fn(), moveOutlineSection: vi.fn(),
     } satisfies MarkdownEditorHandle,
   };
   const clipboard: ClipboardIO = { read: vi.fn(), write: vi.fn(), onError: vi.fn() };

@@ -304,6 +304,12 @@ button.rich-slash-group { border: 0; background: transparent; cursor: pointer; }
 .rich-editor .rich-markdown-syntax { color: var(--gray-10); font-weight: inherit; font-style: normal; user-select: none; }
 .rich-editor .rich-markdown-syntax::before { content: attr(data-markdown); }
 .rich-editor .rich-markdown-syntax:last-child { overflow-wrap: anywhere; }
+.rich-editor .rich-strong-delimiter::before { content: none; }
+.rich-strong-delimiter input {
+  field-sizing: content; min-inline-size: 0; padding: 0; border: 0;
+  background: transparent; color: inherit; font: inherit; cursor: text; user-select: text;
+}
+.rich-strong-delimiter input:focus { outline: none; }
 
 .rich-editor :is(.rich-foldable-heading, .rich-numbered-code, [data-editor-line]:not(.rich-code-line-number)) { position: relative; }
 .rich-editor :is(.rich-heading-fold, .rich-heading-fold-end) {
