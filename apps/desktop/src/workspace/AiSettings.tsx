@@ -92,34 +92,34 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
       })),
     ),
   ];
-  const availability = aiAvailability(settings);
-  const unavailable = preferences.enabled && preferences.defaultTarget && !availability.label;
+  const unavailableHint = preferences.enabled && preferences.defaultTarget ? aiAvailability(settings).hint : undefined;
 
   return <div className="ai-settings">
     <div className="settings-card ai-settings-card">
       <SettingRow id="ai-enabled" label="启用 AI 功能" hint="启用 AI 聊天和文档修改建议。">
-        <Switch id="ai-enabled" size="2" checked={preferences.enabled} disabled={disabled}
+        {hintId => <Switch id="ai-enabled" aria-describedby={hintId} size="2" checked={preferences.enabled} disabled={disabled}
           onCheckedChange={enabled => void run("preferences", "enabled",
-            () => onSave(() => desktop.saveAiPreferences({ ...preferences, enabled })))} />
+            () => onSave(() => desktop.saveAiPreferences({ ...preferences, enabled })))} />}
       </SettingRow>
     </div>
     <div className="settings-card ai-settings-card ai-default-card">
       <SettingRow id="ai-default" label="默认 AI 目标"
-        hint={unavailable ? availability.hint : preferences.defaultAgentModel ?? "AI 助手将使用这个目标。"}>
-        <Select.Root value={preferences.defaultTarget ? targetValue(preferences.defaultTarget) : "none"} disabled={disabled}
+        hint={unavailableHint ?? (preferences.defaultAgentModel
+          ? `新对话默认使用 ${preferences.defaultAgentModel}。` : "用于 AI 助手默认发起的对话和写作请求。")}>
+        {hintId => <Select.Root value={preferences.defaultTarget ? targetValue(preferences.defaultTarget) : "none"} disabled={disabled}
           onValueChange={value => {
             const defaultTarget = targets.find(item => targetValue(item.target) === value)?.target ?? null;
             void run("preferences", "default", () => onSave(() =>
               desktop.saveAiPreferences({ ...preferences, defaultTarget, defaultAgentModel: undefined })));
           }}>
-          <Select.Trigger id="ai-default" />
+          <Select.Trigger id="ai-default" aria-describedby={hintId} />
           <Select.Content position="popper" className="ai-default-options">
             <Select.Item value="none">未选择</Select.Item>
             {targets.map(item => <Select.Item key={targetValue(item.target)} value={targetValue(item.target)}>
               {item.label}{item.missing && <> <span className="ai-target-missing">缺失</span></>}
             </Select.Item>)}
           </Select.Content>
-        </Select.Root>
+        </Select.Root>}
       </SettingRow>
       {message("preferences")}
     </div>
@@ -231,11 +231,12 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
       <div className="ai-model-fields">
         {draft.id === null && <div className="ai-form-field">
           <label htmlFor={`ai-provider-${kind}`}>供应商</label>
+          <span id={`ai-provider-${kind}-hint`} className="setting-hint">选择服务预设以填入对应的接口地址。</span>
           <Select.Root value={draft.preset} disabled={disabled} onValueChange={value => {
             const preset = presets[kind].find(preset => preset.label === value)!;
             update({ preset: value, endpoint: preset.endpoint, name: value === "自定义接口" ? "" : value, key: "" });
           }}>
-            <Select.Trigger id={`ai-provider-${kind}`} />
+            <Select.Trigger id={`ai-provider-${kind}`} aria-describedby={`ai-provider-${kind}-hint`} />
             <Select.Content position="popper">
               {presets[kind].map(preset => <Select.Item key={preset.label} value={preset.label}>{preset.label}</Select.Item>)}
             </Select.Content>
@@ -243,23 +244,27 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
         </div>}
         <div className="ai-form-field">
           <label htmlFor={`ai-name-${kind}`}>显示名称</label>
-          <TextField.Root id={`ai-name-${kind}`} name="model-name" placeholder="选填" maxLength={80} disabled={disabled} value={draft.name}
+          <span id={`ai-name-${kind}-hint`} className="setting-hint">用于在工作台的模型列表中识别这个模型。</span>
+          <TextField.Root id={`ai-name-${kind}`} aria-describedby={`ai-name-${kind}-hint`} name="model-name" placeholder="选填" maxLength={80} disabled={disabled} value={draft.name}
             onChange={event => update({ name: event.target.value })} />
         </div>
         <div className="ai-form-field">
           <label htmlFor={`ai-endpoint-${kind}`}>接口地址</label>
-          <TextField.Root id={`ai-endpoint-${kind}`} type="url" required disabled={disabled} value={draft.endpoint}
+          <span id={`ai-endpoint-${kind}-hint`} className="setting-hint">工作台向此地址发送模型请求。</span>
+          <TextField.Root id={`ai-endpoint-${kind}`} aria-describedby={`ai-endpoint-${kind}-hint`} type="url" required disabled={disabled} value={draft.endpoint}
             placeholder="https://api.example.com/v1" onChange={event => update({ endpoint: event.target.value, key: "" })} />
         </div>
         <div className="ai-form-field">
           <label htmlFor={`ai-model-${kind}`}>模型 ID</label>
-          <TextField.Root id={`ai-model-${kind}`} placeholder={kind === "local" ? "例如 llama3.2" : "填写供应商提供的模型 ID"}
+          <span id={`ai-model-${kind}-hint`} className="setting-hint">指定服务端实际调用的模型。</span>
+          <TextField.Root id={`ai-model-${kind}`} aria-describedby={`ai-model-${kind}-hint`} placeholder={kind === "local" ? "例如 llama3.2" : "填写供应商提供的模型 ID"}
             required disabled={disabled} value={draft.model} onChange={event => update({ model: event.target.value })} />
         </div>
         <div className="ai-form-field">
           <label htmlFor={`ai-key-mode-${kind}`}>API 密钥存储</label>
+          <span id={`ai-key-mode-${kind}-hint`} className="setting-hint">使用系统凭据存储保存密钥。{draft.id && <> <span className="setting-warning">选择「无密钥」并保存会移除已保存的密钥。</span></>}</span>
           <Select.Root value={draft.keyMode} disabled={disabled} onValueChange={(keyMode: Draft["keyMode"]) => update({ keyMode, key: "" })}>
-            <Select.Trigger id={`ai-key-mode-${kind}`} />
+            <Select.Trigger id={`ai-key-mode-${kind}`} aria-describedby={`ai-key-mode-${kind}-hint`} />
             <Select.Content position="popper">
               <Select.Item value="none">无密钥</Select.Item>
               <Select.Item value="system">保存在本机</Select.Item>
@@ -268,10 +273,17 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
         </div>
         {draft.keyMode === "system" && <div className="ai-form-field">
           <label htmlFor={`ai-key-${kind}`}>API 密钥</label>
-          <TextField.Root id={`ai-key-${kind}`} type="password" autoComplete="off" disabled={disabled} value={draft.key}
+          <span id={`ai-key-${kind}-hint`} className="setting-hint">用于验证发给模型服务的请求。</span>
+          <TextField.Root id={`ai-key-${kind}`} aria-describedby={`ai-key-${kind}-hint`} type="password" autoComplete="off" disabled={disabled} value={draft.key}
             placeholder={keyEndpoint === draft.endpoint.trim() ? "已保存，不会显示" : "按供应商要求填写"}
             onChange={event => update({ key: event.target.value })} />
         </div>}
+        <div className="ai-form-field ai-timeout">
+          <label htmlFor={`ai-timeout-${kind}`}>超时（秒）</label>
+          <span id={`ai-timeout-${kind}-hint`} className="setting-hint">等待模型响应的最长时间，超时后请求会结束。</span>
+          <TextField.Root id={`ai-timeout-${kind}`} aria-describedby={`ai-timeout-${kind}-hint`} size="1" type="number" min="1" max="180" required disabled={disabled}
+            value={draft.timeoutSeconds || ""} onChange={event => update({ timeoutSeconds: Number(event.target.value) })} />
+        </div>
       </div>
       <div className="settings-footer ai-model-actions">
         <Button type="submit" disabled={disabled || !draft.model.trim() || !draft.endpoint.trim()}
@@ -282,11 +294,6 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
               () => desktop.testAiModel(kind, draft.id, config, key), "连接成功");
           }}>测试模型</Button>
         {draft.id && <Button type="button" variant="soft" color="gray" disabled={disabled} onClick={reset}>取消编辑</Button>}
-        <div className="ai-timeout">
-          <label htmlFor={`ai-timeout-${kind}`}>超时（秒）</label>
-          <TextField.Root id={`ai-timeout-${kind}`} size="1" type="number" min="1" max="180" required disabled={disabled}
-            value={draft.timeoutSeconds || ""} onChange={event => update({ timeoutSeconds: Number(event.target.value) })} />
-        </div>
       </div>
     </form>
     {feedback}

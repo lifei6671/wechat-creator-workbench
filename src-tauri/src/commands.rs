@@ -13,8 +13,15 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
-pub async fn library(state: State<'_, Workspace>) -> Result<Library> {
-    state.library()
+pub async fn library(
+    state: State<'_, Workspace>,
+    include_article_counts: Option<bool>,
+) -> Result<Library> {
+    if include_article_counts == Some(true) {
+        state.library_with_article_counts(true)
+    } else {
+        state.library()
+    }
 }
 
 #[tauri::command]

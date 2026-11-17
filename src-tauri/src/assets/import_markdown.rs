@@ -13,13 +13,11 @@ impl Assets {
         directory: &Path,
     ) -> Result<(String, usize)> {
         let running = db.running_lifetime();
-        if db.read_running(Profile::automatic)?.is_none() {
-            return Ok((markdown.to_owned(), 0));
-        }
+        let download_remote = db.read_running(Profile::automatic)?.is_some();
         tokio::select! {
             biased;
             () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
-            result = self.download_markdown_images(db, markdown, directory) => result,
+            result = self.download_markdown_images(db, markdown, directory, download_remote) => result,
         }
     }
 
@@ -28,6 +26,7 @@ impl Assets {
         db: &Workspace,
         markdown: &str,
         directory: &Path,
+        download_remote: bool,
     ) -> Result<(String, usize)> {
         let sources = references::urls(markdown)?;
         let root = tokio::fs::canonicalize(directory).await.ok();
@@ -35,13 +34,13 @@ impl Assets {
         let downloads = stream::iter(
             sources
                 .into_iter()
-                .filter(|url| !url.starts_with("asset://")),
+                .filter(|url| !url.starts_with("asset://") && (download_remote || !is_http(url))),
         )
         .map(|source| {
             let root = root.as_deref();
             let base = base.as_ref();
             async move {
-                let imported = if source.starts_with("http://") || source.starts_with("https://") {
+                let imported = if is_http(&source) {
                     self.localize(db, &source).await
                 } else {
                     self.import_relative_image(db, root, base, &source).await
@@ -99,4 +98,8 @@ impl Assets {
             .to_string_lossy();
         Ok(format!("asset://{}", self.import(db, &name, &bytes)?))
     }
+}
+
+fn is_http(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }

@@ -4,6 +4,7 @@ use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -138,10 +139,62 @@ pub struct Library {
     pub categories: Vec<Category>,
     pub tags: Vec<Tag>,
     tag_suggestions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    article_counts: Option<ArticleCounts>,
+}
+
+#[derive(Serialize)]
+struct ArticleCounts {
+    root: i64,
+    folders: BTreeMap<String, i64>,
+    tags: BTreeMap<String, i64>,
+    untagged: i64,
+}
+
+fn article_counts(conn: &Connection) -> Result<ArticleCounts> {
+    let mut root = 0;
+    let mut folders = BTreeMap::new();
+    let mut counts = conn.prepare(
+        "SELECT category_id, COUNT(*) FROM entries
+         WHERE kind='article' AND deleted_at IS NULL GROUP BY category_id",
+    )?;
+    for row in counts.query_map([], |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get(1)?))
+    })? {
+        let (category, count) = row?;
+        if let Some(id) = category {
+            folders.insert(id, count);
+        } else {
+            root = count;
+        }
+    }
+    let tags = conn
+        .prepare(
+            "SELECT r.tag_id, COUNT(*) FROM entries e JOIN entry_tags r ON r.entry_id=e.id
+         WHERE e.kind='article' AND e.deleted_at IS NULL GROUP BY r.tag_id",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let untagged = conn.query_row(
+        "SELECT COUNT(*) FROM entries e WHERE e.kind='article' AND e.deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM entry_tags WHERE entry_id=e.id)",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(ArticleCounts {
+        root,
+        folders,
+        tags,
+        untagged,
+    })
 }
 
 impl Workspace {
     pub fn library(&self) -> Result<Library> {
+        self.library_with_article_counts(false)
+    }
+
+    pub fn library_with_article_counts(&self, include_counts: bool) -> Result<Library> {
         self.read(|conn| {
             let categories = conn.prepare("SELECT id, parent_id, name, sort_order, icon FROM categories ORDER BY sort_order, id")?
                 .query_map([], category_row)?
@@ -150,7 +203,8 @@ impl Workspace {
                 .query_map([], |r| Ok(Tag { id:r.get(0)?, name:r.get(1)? }))?.collect::<rusqlite::Result<_>>()?;
             let tag_suggestions = conn.prepare("SELECT name FROM tags ORDER BY normalized")?
                 .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-            Ok(Library { workspace_id: workspace_id(conn)?, categories, tags, tag_suggestions })
+            let article_counts = include_counts.then(|| article_counts(conn)).transpose()?;
+            Ok(Library { workspace_id: workspace_id(conn)?, categories, tags, tag_suggestions, article_counts })
         })
     }
 

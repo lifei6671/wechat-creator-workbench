@@ -6,10 +6,16 @@ import { Theme } from "@radix-ui/themes";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { desktop, type AiSettings } from "../desktop";
 import { ModelSettings } from "./AiSettings";
-import { SettingsDialog } from "./Settings";
+import { MigrationPanel } from "./Migration";
+import { McpSettings, S3Fields, SettingsDialog } from "./Settings";
 
 let enterSection: (section: HTMLElement) => void;
 beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   vi.stubGlobal("IntersectionObserver", class {
     constructor(callback: (entries: { isIntersecting: boolean; target: Element }[]) => void) {
       enterSection = section => callback([{ isIntersecting: true, target: section }]);
@@ -22,6 +28,38 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+it("associates visible help and warnings with the settings controls they describe", () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  flushSync(() => root.render(<Theme>
+    <McpSettings status={{ config: { enabled: false, port: 8787, permission: "read" }, running: false, error: null }}
+      loadError="" onStatus={() => {}} />
+    <S3Fields scope="backup" initial={null} hasKey={false} />
+    <MigrationPanel busy={false} working={null} feedback={null} prepared
+      onTransfer={() => {}} onConfirmRestore={() => {}} onDiscardRestore={() => {}} />
+  </Theme>));
+  try {
+    const help = (control: Element) => {
+      const id = control.getAttribute("aria-describedby");
+      expect(id).toBeTruthy();
+      return document.getElementById(id!)!;
+    };
+    expect(help(container.querySelector("#backup-endpoint")!).textContent).toBe("用于连接存储服务的 API 地址。");
+    const permission = help(container.querySelector("#mcp-permission")!);
+    expect(permission.textContent).toContain("只读权限允许客户端查阅工作区内容");
+    expect(permission.querySelector(".setting-warning")?.textContent).toContain("客户端可以通过 MCP 修改工作区内容");
+    const reset = [...container.querySelectorAll("button")].find(button => button.textContent === "重置令牌")!;
+    const restore = container.querySelector("#migration-restore-trigger")!;
+    expect(help(reset).querySelector(".setting-warning")?.textContent).toContain("旧令牌的客户端");
+    expect(help(restore).querySelector(".setting-warning")?.textContent).toContain("替换当前工作区的数据");
+    expect(help(reset).id).not.toBe(help(restore).id);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
 });
 
 it("filters settings by field names and retains entered values while switching categories", () => {
@@ -124,11 +162,6 @@ it("keeps settings open on backdrop clicks and allows explicit dismissal", async
 });
 
 it.each(["local", "custom"] as const)("removes a saved %s model with one click", async kind => {
-  vi.stubGlobal("ResizeObserver", class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  });
   const initial: AiSettings = {
     preferences: { enabled: true, defaultTarget: { kind: "model", id: "saved-model" } },
     agents: [],

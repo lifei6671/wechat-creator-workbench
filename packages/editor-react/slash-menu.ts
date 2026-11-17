@@ -4,6 +4,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { calloutLabels } from "../markdown-core/callouts";
 import type { EditorCommand } from "./commands";
 import { editorIconButton } from "./image-view";
+import { foldedSections } from "./presentation";
 
 type Media = "图片" | "视频" | "音频" | "文件" | "白板";
 type Action = { command: EditorCommand; value?: string } | { markdown: string } | { media: Media } | { text: () => string };
@@ -181,18 +182,32 @@ function mountTools(view: EditorView, options: Options) {
   preview.inert = true;
   preview.hidden = true;
   root.append(dropLine, preview);
+  type Block = { from: number; to: number };
+  type Blocks = { folds: ReturnType<typeof foldedSections>; candidates: Block[] };
   let drag: {
     pointerId: number;
     selection: NodeSelection;
     source: HTMLElement;
     x: number;
     y: number;
-    moving: boolean;
+    blocks?: Blocks;
   } | undefined;
 
-  function blockBoundary(selection: NodeSelection, y: number) {
+  function dragBlocks(selection: NodeSelection, folds: Blocks["folds"]): Blocks {
     const { $from } = selection;
     const start = $from.start();
+    const folded = [...(folds?.values() ?? [])];
+    const candidates: Block[] = [];
+    $from.parent.forEach((node, offset) => {
+      const from = start + offset;
+      if (node.type.name === "footnote_definition" || folded.some(section => from >= section.from && from < section.to)) return;
+      candidates.push({ from, to: from + node.nodeSize });
+    });
+    return { folds, candidates };
+  }
+
+  function blockBoundary(selection: NodeSelection, blocks: Block[], y: number) {
+    const { $from } = selection;
     if ($from.depth) {
       const parent = view.nodeDOM($from.before()) as HTMLElement;
       const { top, bottom } = parent.getBoundingClientRect();
@@ -200,24 +215,37 @@ function mountTools(view: EditorView, options: Options) {
     }
     let before: { at: number; y: number; rect: DOMRect } | undefined;
     let last: typeof before;
-    $from.parent.forEach((node, offset) => {
-      if (before || node.type.name === "footnote_definition") return;
-      const at = start + offset;
-      const element = view.nodeDOM(at);
-      if (!(element instanceof HTMLElement)) return;
-      const rect = element.getBoundingClientRect();
-      if (!rect.height) return;
-      if (y < rect.top + rect.height / 2) before = { at, y: rect.top, rect };
-      else last = { at: at + node.nodeSize, y: rect.bottom, rect };
-    });
+    let left = 0;
+    let right = blocks.length - 1;
+    while (left <= right) {
+      const middle = Math.floor((left + right) / 2);
+      let index = middle;
+      let rect: DOMRect | undefined;
+      // A node view can render a zero-height placeholder.
+      for (; index <= right; index++) {
+        const element = view.nodeDOM(blocks[index].from);
+        if (!(element instanceof HTMLElement) || element.hidden) continue;
+        const bounds = element.getBoundingClientRect();
+        if (bounds.height) { rect = bounds; break; }
+      }
+      if (!rect || y < rect.top + rect.height / 2) {
+        if (rect) before = { at: blocks[index].from, y: rect.top, rect };
+        right = middle - 1;
+      } else {
+        last = { at: blocks[index].to, y: rect.bottom, rect };
+        left = index + 1;
+      }
+    }
     return before ?? last;
   }
 
   function dropTarget() {
-    if (!drag?.moving || drag.selection.$from.doc !== view.state.doc || !options.canEdit(view)) return;
+    if (!drag?.blocks || drag.selection.$from.doc !== view.state.doc || !options.canEdit(view)) return;
     const hit = document.elementFromPoint(drag.x, drag.y);
     if (!view.dom.contains(hit) && !actions.contains(hit)) return;
-    const target = blockBoundary(drag.selection, drag.y);
+    const folds = foldedSections(view.state);
+    if (folds !== drag.blocks.folds) drag.blocks = dragBlocks(drag.selection, folds);
+    const target = blockBoundary(drag.selection, drag.blocks.candidates, drag.y);
     if (!target || target.at === drag.selection.from || target.at === drag.selection.to) return;
     const { $from, node } = drag.selection;
     const index = $from.doc.resolve(target.at).index();
@@ -235,10 +263,10 @@ function mountTools(view: EditorView, options: Options) {
 
   function stopDrag() {
     if (!drag) return;
-    const { pointerId, moving } = drag;
+    const { pointerId, blocks } = drag;
     drag = undefined;
     if (grip.hasPointerCapture(pointerId)) grip.releasePointerCapture(pointerId);
-    if (moving) hideActions();
+    if (blocks) hideActions();
     dropLine.hidden = true;
     preview.hidden = true;
     preview.replaceChildren();
@@ -250,16 +278,16 @@ function mountTools(view: EditorView, options: Options) {
     if (selection.$from.doc !== view.state.doc) return;
     event.preventDefault();
     grip.setPointerCapture(event.pointerId);
-    drag = { pointerId: event.pointerId, selection, source: el, x: event.clientX, y: event.clientY, moving: false };
+    drag = { pointerId: event.pointerId, selection, source: el, x: event.clientX, y: event.clientY };
     view.dispatch(view.state.tr.setSelection(selection));
     view.focus();
   };
   grip.onpointermove = event => {
     if (!drag || event.pointerId !== drag.pointerId) return;
     const { clientX: x, clientY: y } = event;
-    if (!drag.moving) {
+    if (!drag.blocks) {
       if (Math.hypot(x - drag.x, y - drag.y) < 5) return;
-      drag.moving = true;
+      drag.blocks = dragBlocks(drag.selection, foldedSections(view.state));
       preview.replaceChildren(drag.source.cloneNode(true));
       preview.hidden = false;
     }

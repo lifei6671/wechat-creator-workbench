@@ -13,7 +13,7 @@ import { $prose, $useKeymap, $view } from "@milkdown/kit/utils";
 import { DomTooltips, Tooltip } from "../ui-react/Tooltip";
 import DOMPurify from "dompurify";
 import { CaseSensitive, ChevronDown, ChevronRight, ChevronUp, Regex, Replace, ReplaceAll, WholeWord, X } from "lucide-react";
-import { getSearchState, replaceAll, replaceNext, search, SearchQuery, setSearchState } from "prosemirror-search";
+import { SearchQuery, type SearchResult } from "prosemirror-search";
 import { runCommand, textEditingScope, type EditorCommand } from "./commands";
 import { clipboardMarkdownCtx, hrefPattern, richCommonmark, richSchema } from "./schema";
 import { imageContext, imagePattern, prepareImageContext, type EditorImages, type ImageContext } from "./image-view";
@@ -27,6 +27,8 @@ import "@milkdown/kit/prose/view/style/prosemirror.css";
 import "@milkdown/kit/prose/tables/style/tables.css";
 import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
 import "./editor.css";
+import { editorPerformance, measureEditorPerformance, recordEditorPerformance } from "./performance";
+import { inlineChangedBlocks } from "./inline-changes";
 
 export type { EditorCommand } from "./commands";
 export type { ImageContext } from "./image-view";
@@ -46,13 +48,17 @@ export interface EditorTarget {
 
 export type AiContextScope = "selection" | "section" | "document";
 export type AiEditorContext = EditorTarget & { scope: AiContextScope; headingPath: string[] };
+export interface MarkdownSnapshot { markdown: string; localRevision: number }
 
 export interface MarkdownEditorHandle {
   focus(): void;
   search(): void;
   target(scope?: "document"): EditorTarget;
+  captureMarkdown(): MarkdownSnapshot;
+  captureDocumentMatch(): () => boolean;
   captureContext(scope: AiContextScope): AiEditorContext | null;
   selectionText(): string;
+  matchesTarget(target: EditorTarget): boolean;
   subscribeSelection(listener: () => void): () => void;
   insert(text: string): void;
   linkFootnoteMarkdown(source: string): string;
@@ -87,7 +93,7 @@ interface Props extends EditorImages {
   convertLinks?: boolean;
   localizeImageLink?(url: string): Promise<string>;
   title?: ReactNode;
-  onChange(entryId: string, localRevision: number, markdown: string): void;
+  onDocumentChanged(entryId: string, localRevision: number): void;
   onBlur(): void;
   onImages?(files: File[]): Promise<string>;
   onOpenLink?(url: string): Promise<void>;
@@ -98,6 +104,7 @@ type PastedImage = Range & { node: ProseNode; src: string };
 const revision = new PluginKey<number>("workbenchRevision");
 const documentLayout = new PluginKey("workbenchDocumentLayout");
 const pasteProgress = new PluginKey("workbenchPasteProgress");
+const searchHighlights = new PluginKey<DecorationSet>("workbenchSearchHighlights");
 const embeddedImage = /^data:(image\/(?:png|jpeg|gif|webp));base64,/i;
 
 async function readPaste(io: ClipboardIO, plainText?: boolean): Promise<ClipboardContent> {
@@ -316,6 +323,7 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
   view: EditorView; readOnly: boolean; inputRef: Ref<HTMLInputElement>;
   subscribe(listener: () => void): () => void; onClose(): void;
 }) {
+  useLayoutEffect(() => { recordEditorPerformance("search.commit"); });
   const [query, setQuery] = useState("");
   const [replacement, setReplacement] = useState("");
   const [showReplace, setShowReplace] = useState(false);
@@ -324,39 +332,57 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
   const [regexp, setRegexp] = useState(false);
   const overlay = useRef<HTMLDivElement>(null);
   const state = useSyncExternalStore(subscribe, () => view.state);
-  const searchQuery = useMemo(() => new SearchQuery({ search: query, replace: replacement, caseSensitive, wholeWord, regexp }),
-    [query, replacement, caseSensitive, wholeWord, regexp]);
+  const searchQuery = useMemo(() => new SearchQuery({ search: query, caseSensitive, wholeWord, regexp }),
+    [query, caseSensitive, wholeWord, regexp]);
   const close = () => { onClose(); view.focus(); };
 
   useEffect(() => {
-    const previous = getSearchState(view.state)?.query;
-    const changed = previous?.search !== searchQuery.search || previous.caseSensitive !== searchQuery.caseSensitive
-      || previous.wholeWord !== searchQuery.wholeWord || previous.regexp !== searchQuery.regexp;
     const { state } = view;
-    const tr = setSearchState(state.tr, searchQuery);
-    if (changed && searchQuery.valid) {
-      const match = searchQuery.findNext(state, state.selection.from) ?? searchQuery.findNext(state);
-      if (match) tr.setSelection(TextSelection.create(state.doc, match.from, match.to));
-    }
-    view.dispatch(tr);
+    if (!searchQuery.valid) return;
+    const match = searchQuery.findNext(state, state.selection.from) ?? searchQuery.findNext(state);
+    if (match) view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, match.from, match.to)));
   }, [view, searchQuery]);
   useEffect(() => () => {
-    if (!view.isDestroyed) view.dispatch(setSearchState(view.state.tr, new SearchQuery({ search: "" })));
+    if (!view.isDestroyed) view.dispatch(view.state.tr.setMeta(searchHighlights, DecorationSet.empty));
   }, [view]);
 
   const matches = useMemo(() => {
-    const results: Range[] = [];
+    const results: SearchResult[] = [];
     if (searchQuery.valid) {
       for (let pos = 0; pos <= state.doc.content.size;) {
         const match = searchQuery.findNext(state, pos);
         if (!match) break;
-        results.push(match);
-        pos = Math.max(match.to, match.from + 1);
+        if (match.from >= pos) results.push(match);
+        pos = Math.max(pos + 1, match.to, match.from + 1);
       }
     }
     return results;
   }, [searchQuery, state.doc]);
-  const active = matches.findIndex(match => match.from === state.selection.from && match.to === state.selection.to);
+  let low = 0, high = matches.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (matches[middle].from < state.selection.from) low = middle + 1;
+    else high = middle;
+  }
+  const anchor = low;
+  const active = matches[anchor]?.from === state.selection.from && matches[anchor].to === state.selection.to ? anchor : -1;
+  const windowStart = Math.max(0, Math.floor(anchor / 100) * 100 - 50);
+  useLayoutEffect(() => {
+    if (view.state.doc !== state.doc || !view.state.selection.eq(state.selection)) return;
+    const window = matches.slice(windowStart, windowStart + 200);
+    const highlights = window.map(({ from, to }, index) => Decoration.inline(from, to, {
+      class: windowStart + index === active ? "ProseMirror-active-search-match" : "ProseMirror-search-match",
+    }));
+    if (active < 0 && !state.selection.empty && searchQuery.valid) {
+      const { from, to } = state.selection;
+      const selected = searchQuery.findNext(state, from);
+      if (selected?.from === from && selected.to === to) {
+        if (highlights.length === 200) highlights.pop();
+        highlights.push(Decoration.inline(from, to, { class: "ProseMirror-active-search-match" }));
+      }
+    }
+    view.dispatch(view.state.tr.setMeta(searchHighlights, DecorationSet.create(state.doc, highlights)));
+  }, [view, state.doc, state.selection, matches, windowStart, active, searchQuery]);
 
   function step(direction: -1 | 1) {
     if (!matches.length) return;
@@ -367,12 +393,39 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
         index = matches.findIndex(match => match.from >= state.selection.to);
         if (index < 0) index = 0;
       } else {
-        const following = matches.findIndex(match => match.to > state.selection.from);
-        index = following > 0 ? following - 1 : matches.length - 1;
+        const previous = anchor - 1;
+        index = previous >= 0 && matches[previous].to > state.selection.from ? previous - 1 : previous;
+        if (index < 0) index = matches.length - 1;
       }
     }
     const next = matches[index];
     view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, next.from, next.to)));
+  }
+
+  function replace(all: boolean) {
+    if (!matches.length) return;
+    const { state } = view;
+    const current = all ? undefined : searchQuery.findNext(state, state.selection.from) ?? matches[0];
+    if (current && (current.from !== state.selection.from || current.to !== state.selection.to)) {
+      view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, current.from, current.to)).scrollIntoView());
+      return;
+    }
+    const replacements = new SearchQuery({ search: query, replace: replacement, caseSensitive, wholeWord, regexp });
+    const targets = current ? [current] : matches.filter((match, index) => {
+      const previous = matches[index - 1];
+      return !previous || match.to > Math.max(previous.to, previous.from + 1);
+    });
+    const tr = state.tr;
+    for (let i = targets.length - 1; i >= 0; i--) {
+      for (const { from, to, insert } of replacements.getReplacements(state, targets[i]).reverse()) tr.replace(from, to, insert);
+    }
+    if (current) {
+      const next = searchQuery.findNext(state, current.to) ?? searchQuery.findNext(state, 0, current.from);
+      const from = next ? tr.mapping.map(next.from, 1) : current.from;
+      const to = next ? tr.mapping.map(next.to, -1) : tr.mapping.map(current.to, 1);
+      tr.setSelection(TextSelection.create(tr.doc, from, to)).scrollIntoView();
+    }
+    view.dispatch(tr);
   }
 
   useLayoutEffect(() => {
@@ -412,7 +465,7 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
     if (event.key === "Escape") { event.stopPropagation(); close(); }
     if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "text") {
       event.preventDefault();
-      if (event.target.name === "replacement") replaceNext(view.state, view.dispatch, view);
+      if (event.target.name === "replacement") replace(false);
       else step(event.shiftKey ? -1 : 1);
     }
   }}>
@@ -442,8 +495,8 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
         <input name="replacement" aria-label="替换" placeholder="替换" value={replacement} onChange={event => setReplacement(event.target.value)} />
       </div>
       <div className="rich-search-actions">
-        <SearchButton label="替换当前匹配" disabled={!matches.length} onClick={() => replaceNext(view.state, view.dispatch, view)}><Replace size={15} /></SearchButton>
-        <SearchButton label="全部替换" disabled={!matches.length} onClick={() => replaceAll(view.state, view.dispatch, view)}><ReplaceAll size={15} /></SearchButton>
+        <SearchButton label="替换当前匹配" disabled={!matches.length} onClick={() => replace(false)}><Replace size={15} /></SearchButton>
+        <SearchButton label="全部替换" disabled={!matches.length} onClick={() => replace(true)}><ReplaceAll size={15} /></SearchButton>
       </div>
     </div>}
   </div>;
@@ -467,7 +520,7 @@ export function MarkdownEditor(props: Props) {
 
   useEffect(() => {
     const { entryId, value, ref } = latest.current;
-    let markdown = value;
+    let lastSnapshot: { doc: ProseNode; markdown: string };
     const element = host.current!;
     const session = Symbol(entryId);
     const pending = new Map<symbol, Range>();
@@ -476,7 +529,7 @@ export function MarkdownEditor(props: Props) {
     const failedImages = new Set<() => void>();
     let disposed = false;
     let detachRef: (() => void) | undefined;
-    const publish = (doc: ProseNode) => {
+    function publishDocument(doc: ProseNode) {
       const { node, end } = lastBodyBlock(doc);
       if (node?.type.name === "paragraph" && !node.content.size) {
         const content = doc.content.cut(0, end - node.nodeSize).append(doc.content.cut(end));
@@ -484,7 +537,8 @@ export function MarkdownEditor(props: Props) {
         doc = doc.copy(content);
       }
       return editor.action(ctx => ctx.get(serializerCtx)(doc).replace(/\n$/, ""));
-    };
+    }
+    const publish = (doc: ProseNode) => measureEditorPerformance("markdown.serialize", () => publishDocument(doc));
     function normalizeDocument(viewState: EditorView["state"], initializing = false) {
       const { doc, selection } = viewState;
       const { node, end } = lastBodyBlock(doc);
@@ -688,12 +742,20 @@ export function MarkdownEditor(props: Props) {
       })))
       .use($view(codeBlockSchema.node, () => codeView))
       .use($view(tableSchema.node, ctx => (_node, view, getPos) => tableView(ctx, view, getPos)))
-      .use($prose(() => search()))
+      .use($prose(() => new Plugin<DecorationSet>({
+        key: searchHighlights,
+        state: {
+          init: () => DecorationSet.empty,
+          apply: (tr, highlights) => tr.getMeta(searchHighlights) as DecorationSet | undefined
+            ?? (tr.docChanged ? highlights.map(tr.mapping, tr.doc) : highlights),
+        },
+        props: { decorations: state => searchHighlights.getState(state) },
+      })))
       .use($prose(() => new Plugin({
         key: documentLayout,
         appendTransaction(transactions, _old, state) {
-          if (!transactions.some(tr => tr.docChanged)) return null;
-          return normalizeDocument(state);
+          if (!transactions.some(tr => tr.docChanged && inlineChangedBlocks(tr) === null)) return null;
+          return measureEditorPerformance("layout.normalize", () => normalizeDocument(state));
         },
       })))
       .use($prose(() => editorPresentation(() => latest.current)))
@@ -733,11 +795,12 @@ export function MarkdownEditor(props: Props) {
         filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(documentLayout)),
         view: () => ({
           update(view, previous) {
-            for (const listener of searchListeners.current) listener();
+            if (view.state.doc !== previous.doc || !view.state.selection.eq(previous.selection)) {
+              for (const listener of searchListeners.current) listener();
+            }
             const localRevision = revision.getState(view.state)!;
             if (localRevision === revision.getState(previous)) return;
-            markdown = publish(view.state.doc);
-            latest.current.onChange(entryId, localRevision, markdown);
+            latest.current.onDocumentChanged(entryId, localRevision);
           },
         }),
       })));
@@ -745,25 +808,36 @@ export function MarkdownEditor(props: Props) {
     const targetText = (view: EditorView, { from, to }: Range) =>
       from === to ? "" : publish(view.state.doc.cut(from, to));
 
+    const opening = editorPerformance ? performance.now() : 0;
     void editor.create().then(() => {
       if (disposed) { void editor.destroy(); return; }
       const view = editor.action(ctx => ctx.get(editorViewCtx));
       const unlink = view.state.tr;
       unlinkFootnoteNames(unlink, footnotedLinkNames(view.state.doc));
       if (unlink.docChanged) view.dispatch(unlink.setMeta(documentLayout, true).setMeta("addToHistory", false));
-      const normalized = normalizeDocument(view.state, true);
+      const normalized = measureEditorPerformance("layout.normalize", () => normalizeDocument(view.state, true));
       if (normalized) view.dispatch(normalized);
       viewRef.current = view;
+      lastSnapshot = { doc: view.state.doc, markdown: value };
       const handle: MarkdownEditorHandle = {
         focus: () => view.focus(),
         search: () => {
           if (searchInput.current) searchInput.current.focus();
           else setSearchView(view);
         },
+        captureMarkdown() {
+          const { doc } = view.state;
+          if (lastSnapshot.doc !== doc) lastSnapshot = { doc, markdown: measureEditorPerformance("markdown.snapshot", () => publish(doc)) };
+          return { markdown: lastSnapshot.markdown, localRevision: revision.getState(view.state)! };
+        },
+        captureDocumentMatch() {
+          const { doc } = view.state;
+          return () => doc.eq(view.state.doc);
+        },
         target: scope => {
           const { from, to } = scope === "document" ? { from: 0, to: view.state.doc.content.size } : view.state.selection;
           return { entryId, session, localRevision: revision.getState(view.state)!, from, to,
-            original: scope === "document" ? markdown : targetText(view, { from, to }),
+            original: scope === "document" ? handle.captureMarkdown().markdown : targetText(view, { from, to }),
             originalSlice: JSON.stringify(view.state.doc.slice(from, to).toJSON()) };
         },
         captureContext(scope) {
@@ -804,7 +878,8 @@ export function MarkdownEditor(props: Props) {
         },
         linkFootnoteMarkdown(source) {
           if (disposed) return source;
-          const doc = source === markdown ? view.state.doc : editor.action(ctx => ctx.get(parserCtx)(source));
+          const doc = lastSnapshot.doc === view.state.doc && source === lastSnapshot.markdown
+            ? view.state.doc : editor.action(ctx => ctx.get(parserCtx)(source));
           const { edits, definitions, missing, existingNames, definitionNames } = linksToFootnotes(new Slice(doc.content, 0, 0), doc, "document");
           const tr = new Transform(doc);
           unlinkFootnoteNames(tr, [...existingNames, ...definitionNames]);
@@ -852,10 +927,11 @@ export function MarkdownEditor(props: Props) {
           if (count) view.dispatch(tr);
           return count;
         },
+        matchesTarget: target => !disposed && target.entryId === entryId && target.session === session
+          && target.localRevision === revision.getState(view.state)
+          && target.originalSlice === JSON.stringify(view.state.doc.slice(target.from, target.to).toJSON()),
         replaceTarget: (target, text) => {
-          if (!isWritable(view) || target.entryId !== entryId || target.session !== session
-            || target.localRevision !== revision.getState(view.state)
-            || target.originalSlice !== JSON.stringify(view.state.doc.slice(target.from, target.to).toJSON())) return false;
+          if (!isWritable(view) || !handle.matchesTarget(target)) return false;
           const slice = markdownSlice(editor, text);
           const { doc } = view.state;
           const { from, to } = target;
@@ -957,7 +1033,7 @@ export function MarkdownEditor(props: Props) {
           }
           const selected = view.state.selection;
           if (action === "copy" && view.editable && selected instanceof AllSelection) {
-            void io.write(markdown).catch(io.onError);
+            void io.write(handle.captureMarkdown().markdown).catch(io.onError);
             return true;
           }
           if (selected instanceof CellSelection) {
@@ -1039,6 +1115,8 @@ export function MarkdownEditor(props: Props) {
           return true;
         },
       };
+      editorPerformance?.editors.set(entryId, { view, handle });
+      if (editorPerformance) recordEditorPerformance("editor.open", performance.now() - opening);
       if (typeof ref === "function") {
         const cleanup = ref(handle);
         detachRef = typeof cleanup === "function" ? cleanup : () => ref(null);
@@ -1050,6 +1128,7 @@ export function MarkdownEditor(props: Props) {
 
     return () => {
       disposed = true;
+      if (editorPerformance?.editors.get(entryId)?.view === viewRef.current) editorPerformance.editors.delete(entryId);
       pending.clear();
       pastes.clear();
       detachRef?.();

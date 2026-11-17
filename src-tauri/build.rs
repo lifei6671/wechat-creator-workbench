@@ -19,6 +19,7 @@ fn main() {
             "begin_exit",
             "cancel_exit",
             "finish_exit",
+            "gpu_acceleration",
             "asset_import",
             "asset_library",
             "asset_upload_progress",

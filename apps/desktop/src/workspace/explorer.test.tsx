@@ -1,12 +1,54 @@
 // @vitest-environment jsdom
 import { useState } from "react";
-import { Theme } from "@radix-ui/themes";
+import { ContextMenu, Theme } from "@radix-ui/themes";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { desktop } from "../desktop";
 import { CreateMenu, Explorer } from "./Explorer";
+import { MoveEntryMenu } from "./MoveEntryMenu";
 import { WorkspaceSearch } from "./WorkspaceSearch";
+
+it("lists move destinations by folder hierarchy and selects the intended child", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onMove = vi.fn();
+  const folders = [
+    { id: "articles", name: "文章", parentId: null, icon: "folder", sortOrder: 0 },
+    { id: "material", name: "资料", parentId: null, icon: "folder", sortOrder: 1 },
+    { id: "drafts", name: "草稿", parentId: "articles", icon: "folder", sortOrder: 0 },
+    { id: "material-drafts", name: "草稿", parentId: "material", icon: "folder", sortOrder: 0 },
+  ] as const;
+  try {
+    flushSync(() => root.render(<Theme><ContextMenu.Root>
+      <ContextMenu.Trigger><button type="button">文档</button></ContextMenu.Trigger>
+      <ContextMenu.Content><MoveEntryMenu categories={[...folders]} current="drafts" onMove={onMove} /></ContextMenu.Content>
+    </ContextMenu.Root></Theme>));
+    flushSync(() => container.querySelector("button")!.dispatchEvent(new MouseEvent("contextmenu", {
+      button: 2, bubbles: true, cancelable: true,
+    })));
+    flushSync(() => document.querySelector('[role="menuitem"]')!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight", bubbles: true, cancelable: true,
+    })));
+    const items = await vi.waitFor(() => {
+      const rows = [...document.querySelectorAll<HTMLElement>(".move-entry-submenu [role=menuitem]")];
+      expect(rows.map(row => row.textContent)).toEqual(["根目录", "文章", "草稿", "资料", "草稿"]);
+      return rows;
+    });
+    expect(items.filter(row => row.classList.contains("move-entry-child"))).toEqual([items[2], items[4]]);
+    expect(items[2].querySelector(".move-entry-current")).not.toBeNull();
+    expect(items[2].getAttribute("aria-label")).toBe("草稿，上级目录 文章（当前位置）");
+    expect(items[4].getAttribute("aria-label")).toBe("草稿，上级目录 资料");
+    flushSync(() => items[4].click());
+    expect(onMove).toHaveBeenCalledExactlyOnceWith("material-drafts");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});
 
 it("shows search syntax for an empty field and keeps focus when the panel opens", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });

@@ -7,6 +7,7 @@ mod clipboard;
 mod commands;
 mod content;
 mod db;
+mod graphics;
 mod mcp;
 mod secrets;
 mod wechat_import;
@@ -26,6 +27,7 @@ use backup::{
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
 use db::Workspace;
+use graphics::gpu_acceleration;
 use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
@@ -58,13 +60,17 @@ fn main() {
             app.manage(backups);
             let mut assets = Assets::new(dir.join("assets"), &db)?;
             if let Ok(cache) = app.path().app_cache_dir() {
-                assets = assets.with_image_cache(&cache.join("remote-images"));
+                assets = assets
+                    .with_image_cache(&cache.join("remote-images"))
+                    .with_thumbnail_cache(cache.join("asset-thumbnails"));
             }
             app.manage(assets);
             app.manage(Imports::new(&db)?);
             app.manage(AiService::new(&db)?);
             app.manage(db);
             app.manage(McpServer::default());
+            #[cfg(windows)]
+            graphics::create_main_window(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle
@@ -94,6 +100,7 @@ fn main() {
             begin_exit,
             cancel_exit,
             finish_exit,
+            gpu_acceleration,
             asset_import,
             asset_library,
             asset_upload_progress,

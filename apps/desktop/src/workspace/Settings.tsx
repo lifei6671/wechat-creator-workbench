@@ -1,7 +1,7 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import { desktop, errorMessage, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
+import { desktop, errorMessage, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import type { ViewMode } from "./Document";
 import type { DocumentOpenMode } from "./preferences";
@@ -11,7 +11,7 @@ export type ViewShortcut = "none" | "shift-m" | "alt-v";
 
 const groups = [
   { label: "工作区", items: [
-    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: "外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 下载粘贴内容中的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数" },
+    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: `外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 下载粘贴内容中的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数${windowsTitleBar ? " GPU 硬件加速 渲染" : ""}` },
     { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 查找与替换 全文搜索 保存版本 新建笔记" },
     { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
@@ -136,11 +136,17 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   </Dialog.Root>;
 }
 
-export function SettingRow({ id, label, hint, children }: { id?: string; label: string; hint?: string; children: ReactNode }) {
+export function SettingRow({ id, label, hint, warning, children }: {
+  id?: string; label: string; hint: string; warning?: string; children(hintId: string): ReactNode;
+}) {
+  const generatedId = useId();
+  const hintId = id ? `${id}-hint` : generatedId;
   return <div className="setting-row"><div className="setting-copy">
     {id ? <label htmlFor={id}>{label}</label> : <span>{label}</span>}
-    {hint && <span className="setting-hint">{hint}</span>}
-  </div><div className="setting-control">{children}</div></div>;
+    <span id={hintId} className="setting-hint">
+      {hint}{warning && <> <span className="setting-warning">{warning}</span></>}
+    </span>
+  </div><div className="setting-control">{children(hintId)}</div></div>;
 }
 
 export function readS3Settings(data: FormData) {
@@ -162,18 +168,69 @@ export function S3Fields({ scope, initial, hasKey, publicBase, credentials }: {
 }) {
   const [showSecret, setShowSecret] = useState(false);
   return <>
-    <SettingRow id={`${scope}-endpoint`} label="S3 端点" hint="用于连接存储服务的 API 地址。"><TextField.Root id={`${scope}-endpoint`} name="endpoint" type="url" required defaultValue={initial?.endpoint} /></SettingRow>
-    <SettingRow id={`${scope}-region`} label="区域" hint="使用服务商指定的区域代码。"><TextField.Root id={`${scope}-region`} name="region" required defaultValue={initial?.region} /></SettingRow>
-    <SettingRow id={`${scope}-bucket`} label="桶名" hint={scope === "images" ? "存放图床图片的存储桶。" : "存放数据库快照的存储桶。"}><TextField.Root id={`${scope}-bucket`} name="bucket" required defaultValue={initial?.bucket} /></SettingRow>
-    <SettingRow id={`${scope}-prefix`} label="对象前缀" hint="给桶内的对象添加路径前缀，可留空。"><TextField.Root id={`${scope}-prefix`} name="prefix" defaultValue={initial?.prefix} /></SettingRow>
-    {scope === "images" && <SettingRow id="images-public" label="公开访问地址" hint="生成可在公众号等外部页面访问的图片链接。"><TextField.Root id="images-public" name="publicBase" type="url" required defaultValue={publicBase} /></SettingRow>}
-    <SettingRow id={`${scope}-access`} label="访问密钥 ID" hint="指定用于连接存储桶的访问凭据。"><TextField.Root id={`${scope}-access`} name="accessKey" type={scope === "images" ? "text" : "password"} autoComplete="off"
-      required={!hasKey} defaultValue={credentials?.accessKey} placeholder={hasKey ? "已保存" : undefined} /></SettingRow>
-    <SettingRow id={`${scope}-secret`} label="秘密访问密钥" hint="与访问密钥 ID 配对，用于签名存储请求。"><TextField.Root id={`${scope}-secret`} name="secretKey" type={showSecret ? "text" : "password"} autoComplete="off"
-      required={!hasKey} defaultValue={credentials?.secretKey} placeholder={hasKey ? "已保存" : undefined}>
-      {scope === "images" && <TextField.Slot><button type="button" className="plain-button" aria-label={showSecret ? "隐藏秘密访问密钥" : "显示秘密访问密钥"}
-        onClick={() => setShowSecret(value => !value)}>{showSecret ? <EyeOff size={15} /> : <Eye size={15} />}</button></TextField.Slot>}
-    </TextField.Root></SettingRow>
+    <SettingRow id={`${scope}-endpoint`} label="S3 端点" hint="用于连接存储服务的 API 地址。">
+      {hintId => <TextField.Root id={`${scope}-endpoint`} aria-describedby={hintId} name="endpoint" type="url" required defaultValue={initial?.endpoint} />}
+    </SettingRow>
+    <SettingRow id={`${scope}-region`} label="区域" hint="使用服务商指定的区域代码。">
+      {hintId => <TextField.Root id={`${scope}-region`} aria-describedby={hintId} name="region" required defaultValue={initial?.region} />}
+    </SettingRow>
+    <SettingRow id={`${scope}-bucket`} label="桶名" hint={scope === "images" ? "存放图床图片的存储桶。" : "存放数据库快照的存储桶。"}>
+      {hintId => <TextField.Root id={`${scope}-bucket`} aria-describedby={hintId} name="bucket" required defaultValue={initial?.bucket} />}
+    </SettingRow>
+    <SettingRow id={`${scope}-prefix`} label="对象前缀" hint="给桶内的对象添加路径前缀，可留空。">
+      {hintId => <TextField.Root id={`${scope}-prefix`} aria-describedby={hintId} name="prefix" defaultValue={initial?.prefix} />}
+    </SettingRow>
+    {scope === "images" && <SettingRow id="images-public" label="公开访问地址" hint="生成可在公众号等外部页面访问的图片链接。">
+      {hintId => <TextField.Root id="images-public" aria-describedby={hintId} name="publicBase" type="url" required defaultValue={publicBase} />}
+    </SettingRow>}
+    <SettingRow id={`${scope}-access`} label="访问密钥 ID" hint="指定用于连接存储桶的访问凭据。">
+      {hintId => <TextField.Root id={`${scope}-access`} aria-describedby={hintId} name="accessKey" type={scope === "images" ? "text" : "password"}
+        autoComplete="off" required={!hasKey} defaultValue={credentials?.accessKey} placeholder={hasKey ? "已保存" : undefined} />}
+    </SettingRow>
+    <SettingRow id={`${scope}-secret`} label="秘密访问密钥" hint="与访问密钥 ID 配对，用于签名存储请求。">
+      {hintId => <TextField.Root id={`${scope}-secret`} aria-describedby={hintId} name="secretKey" type={showSecret ? "text" : "password"}
+        autoComplete="off" required={!hasKey} defaultValue={credentials?.secretKey} placeholder={hasKey ? "已保存" : undefined}>
+        {scope === "images" && <TextField.Slot><button type="button" className="plain-button" aria-label={showSecret ? "隐藏秘密访问密钥" : "显示秘密访问密钥"}
+          onClick={() => setShowSecret(value => !value)}>{showSecret ? <EyeOff size={15} /> : <Eye size={15} />}</button></TextField.Slot>}
+      </TextField.Root>}
+    </SettingRow>
+  </>;
+}
+
+function GpuAccelerationSetting() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    void desktop.gpuAcceleration().then(value => {
+      if (current) setEnabled(value);
+    }, failure => {
+      if (current) setError(errorMessage(failure));
+    });
+    return () => { current = false; };
+  }, []);
+
+  async function save(value: boolean) {
+    setSaving(true);
+    setError("");
+    try {
+      setEnabled(await desktop.gpuAcceleration(value));
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <>
+    <SettingRow id="gpu-acceleration" label="硬件加速"
+      hint="启用后由 GPU 加速界面渲染，让滚动与界面切换更流畅。重启工作台后生效。"
+      warning="关闭后将使用软件渲染，界面可能明显变慢。">
+      {hintId => <Switch id="gpu-acceleration" aria-describedby={hintId} radius="full"
+        checked={enabled === true} disabled={enabled === null || saving} onCheckedChange={save} />}
+    </SettingRow>
+    {error && <p className="settings-feedback inline-error" role="alert">{error}</p>}
   </>;
 }
 
@@ -201,59 +258,67 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
 }) {
   if (page === "appearance") return <>
     <div className="settings-card">
-      <SettingRow id="appearance-mode" label="应用主题" hint="设置工作台的浅色或深色外观，也可跟随系统。"><Select.Root size="2" value={appearance} onValueChange={value => onAppearance(value as Appearance)}>
-        <Select.Trigger id="appearance-mode" />
-        <Select.Content><Select.Item value="system">跟随系统</Select.Item><Select.Item value="light">浅色</Select.Item><Select.Item value="dark">深色</Select.Item></Select.Content>
-      </Select.Root></SettingRow>
-      <SettingRow id="explorer-visibility" label="显示资源导航" hint="设置启动时是否显示左侧栏。"><Switch id="explorer-visibility" radius="full" checked={explorer} onCheckedChange={onExplorer} /></SettingRow>
+      <SettingRow id="appearance-mode" label="应用主题" hint="设置工作台的浅色或深色外观，也可跟随系统。">
+        {hintId => <Select.Root size="2" value={appearance} onValueChange={value => onAppearance(value as Appearance)}>
+          <Select.Trigger id="appearance-mode" aria-describedby={hintId} />
+          <Select.Content><Select.Item value="system">跟随系统</Select.Item><Select.Item value="light">浅色</Select.Item><Select.Item value="dark">深色</Select.Item></Select.Content>
+        </Select.Root>}
+      </SettingRow>
+      <SettingRow id="explorer-visibility" label="显示资源导航" hint="设置启动时是否显示左侧栏。">
+        {hintId => <Switch id="explorer-visibility" aria-describedby={hintId} radius="full" checked={explorer} onCheckedChange={onExplorer} />}
+      </SettingRow>
+      {windowsTitleBar && <GpuAccelerationSetting />}
     </div>
     <div className="settings-group-title">编辑与预览</div>
     <div className="settings-card">
-      <SettingRow id="preferred-view" label="编辑视图" hint="选择工作台默认使用编辑或公众号排版预览。"><Select.Root size="2" value={preferredView}
-        onValueChange={value => onView(value as ViewMode)}>
-        <Select.Trigger id="preferred-view" /><Select.Content>
-          <Select.Item value="edit">编辑</Select.Item><Select.Item value="preview">排版预览</Select.Item>
-        </Select.Content>
-      </Select.Root></SettingRow>
-      <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
-        <Switch id="download-pasted-images" radius="full" checked={downloadPastedImages} onCheckedChange={onDownloadPastedImages} />
+      <SettingRow id="preferred-view" label="编辑视图" hint="选择工作台默认使用编辑或公众号排版预览。">
+        {hintId => <Select.Root size="2" value={preferredView} onValueChange={value => onView(value as ViewMode)}>
+          <Select.Trigger id="preferred-view" aria-describedby={hintId} /><Select.Content>
+            <Select.Item value="edit">编辑</Select.Item><Select.Item value="preview">排版预览</Select.Item>
+          </Select.Content>
+        </Select.Root>}
       </SettingRow>
-      <SettingRow id="links-to-footnotes" label="链接转脚注" hint="设置文档打开时是否默认显示链接脚注。">
-        <Switch id="links-to-footnotes" radius="full" checked={convertLinks} onCheckedChange={onConvertLinks} />
+      <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
+        {hintId => <Switch id="download-pasted-images" aria-describedby={hintId} radius="full" checked={downloadPastedImages} onCheckedChange={onDownloadPastedImages} />}
+      </SettingRow>
+      <SettingRow id="links-to-footnotes" label="链接转脚注" hint="默认将正文中的外部链接显示为文末参考脚注。">
+        {hintId => <Switch id="links-to-footnotes" aria-describedby={hintId} radius="full" checked={convertLinks} onCheckedChange={onConvertLinks} />}
       </SettingRow>
     </div>
     <div className="settings-group-title">目录</div>
     <div className="settings-card">
-      <SettingRow id="document-open-mode" label="点击文档">
-        <Select.Root size="2" value={documentOpenMode}
+      <SettingRow id="document-open-mode" label="点击文档" hint="决定点击列表中的文档时，复用当前标签还是另开一个标签。">
+        {hintId => <Select.Root size="2" value={documentOpenMode}
           onValueChange={value => onDocumentOpenMode(value === "new-tab" ? "new-tab" : "current")}>
-          <Select.Trigger id="document-open-mode" />
+          <Select.Trigger id="document-open-mode" aria-describedby={hintId} />
           <Select.Content>
             <Select.Item value="current">在当前标签打开</Select.Item>
             <Select.Item value="new-tab">在新标签打开</Select.Item>
           </Select.Content>
-        </Select.Root>
+        </Select.Root>}
       </SettingRow>
       <SettingRow id="folder-loading" label="加载方式" hint="展开目录时一次加载全部笔记，或随滚动分批加载。">
-        <Select.Root size="2" value={folderLoading} onValueChange={value => onFolderLoading(value as typeof folderLoading)}>
-          <Select.Trigger id="folder-loading" />
+        {hintId => <Select.Root size="2" value={folderLoading} onValueChange={value => onFolderLoading(value as typeof folderLoading)}>
+          <Select.Trigger id="folder-loading" aria-describedby={hintId} />
           <Select.Content><Select.Item value="all">一次性加载</Select.Item><Select.Item value="paged">滚动分页</Select.Item></Select.Content>
-        </Select.Root>
+        </Select.Root>}
       </SettingRow>
       <SettingRow id="folder-page-size" label="每页笔记数" hint="仅在滚动分页时生效，控制每批加载的数量。">
-        <Select.Root size="2" value={String(folderPageSize)} disabled={folderLoading === "all"} onValueChange={value => onFolderPageSize(Number(value))}>
-          <Select.Trigger id="folder-page-size" />
+        {hintId => <Select.Root size="2" value={String(folderPageSize)} disabled={folderLoading === "all"} onValueChange={value => onFolderPageSize(Number(value))}>
+          <Select.Trigger id="folder-page-size" aria-describedby={hintId} />
           <Select.Content>{[20, 40, 60, 100, 200].map(size => <Select.Item key={size} value={String(size)}>{size}</Select.Item>)}</Select.Content>
-        </Select.Root>
+        </Select.Root>}
       </SettingRow>
     </div>
   </>;
   return <>
     <div className="settings-card">
-      <SettingRow id="view-shortcuts" label="切换编辑视图" hint="设置在编辑与排版预览之间切换的快捷键。"><Select.Root size="2" value={shortcut} onValueChange={value => onShortcut(value as ViewShortcut)}>
-        <Select.Trigger id="view-shortcuts" />
-        <Select.Content><Select.Item value="none">未设置</Select.Item><Select.Item value="shift-m">{commandKey}Shift+M</Select.Item><Select.Item value="alt-v">{commandKey}Alt+V</Select.Item></Select.Content>
-      </Select.Root></SettingRow>
+      <SettingRow id="view-shortcuts" label="切换编辑视图" hint="设置在编辑与排版预览之间切换的快捷键。">
+        {hintId => <Select.Root size="2" value={shortcut} onValueChange={value => onShortcut(value as ViewShortcut)}>
+          <Select.Trigger id="view-shortcuts" aria-describedby={hintId} />
+          <Select.Content><Select.Item value="none">未设置</Select.Item><Select.Item value="shift-m">{commandKey}Shift+M</Select.Item><Select.Item value="alt-v">{commandKey}Alt+V</Select.Item></Select.Content>
+        </Select.Root>}
+      </SettingRow>
     </div>
     <div className="settings-group-title">工作区操作</div>
     <dl className="settings-card shortcut-list">
@@ -299,26 +364,38 @@ export function McpSettings({ status, loadError, onStatus }: { status?: McpStatu
   });
   const failure = error || loadError || status?.error;
   return <form className="settings-card mcp-settings" onSubmit={event => { event.preventDefault(); void apply(); }}>
-    <SettingRow label="运行状态"><span className="settings-state" data-running={status?.running} role="status">
-      {!status ? "正在读取设置…" : status.running ? `运行中，${status.config.permission === "read" ? "只读" : "读写"}` : "已停止"}
-    </span></SettingRow>
-    <SettingRow id="mcp-port" label="端口"><TextField.Root id="mcp-port" type="number" min="1" max="65535" required
-      disabled={!status} value={portValue} onChange={event => setPort(event.target.value)} /></SettingRow>
-    <SettingRow id="mcp-permission" label="令牌权限"><Select.Root value={permissionValue} disabled={!status}
-      onValueChange={value => setPermission(value as McpConfig["permission"])}>
-      <Select.Trigger id="mcp-permission" /><Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
-    </Select.Root></SettingRow>
-    <SettingRow id="mcp-address" label="本机地址"><div className="mcp-address">
-      <TextField.Root id="mcp-address" readOnly value={address} disabled={!status?.running} />
-      <Button type="button" variant="soft" color="gray" loading={busy === "address"} disabled={!status?.running || busy !== null}
-        onClick={() => void perform("address", async () => { await desktop.copyText(address); setFeedback("已复制本机地址"); })}>复制地址</Button>
-    </div></SettingRow>
-    <SettingRow label="访问令牌"><div className="button-strip setting-actions">
-      <Button type="button" variant="soft" color="gray" loading={busy === "token"} disabled={!status || busy !== null}
-        onClick={() => void perform("token", async () => { await desktop.mcpToken(false); setFeedback("已复制令牌"); })}>复制令牌</Button>
-      <Button type="button" variant="ghost" color="gray" loading={busy === "reset"} disabled={!status || status.running || busy !== null}
-        onClick={() => void perform("reset", async () => { await desktop.mcpToken(true); setFeedback("令牌已重置并复制"); })}>重置令牌</Button>
-    </div></SettingRow>
+    <SettingRow label="运行状态" hint="显示本机 MCP 服务是否可供客户端连接。">
+      {hintId => <span className="settings-state" data-running={status?.running} role="status" aria-describedby={hintId}>
+        {!status ? "正在读取设置…" : status.running ? `运行中，${status.config.permission === "read" ? "只读" : "读写"}` : "已停止"}
+      </span>}
+    </SettingRow>
+    <SettingRow id="mcp-port" label="端口" hint="客户端通过此端口连接 MCP 服务。">
+      {hintId => <TextField.Root id="mcp-port" aria-describedby={hintId} type="number" min="1" max="65535" required
+        disabled={!status} value={portValue} onChange={event => setPort(event.target.value)} />}
+    </SettingRow>
+    <SettingRow id="mcp-permission" label="令牌权限" hint="只读权限允许客户端查阅工作区内容。"
+      warning="选择读写后，客户端可以通过 MCP 修改工作区内容。">
+      {hintId => <Select.Root value={permissionValue} disabled={!status} onValueChange={value => setPermission(value as McpConfig["permission"])}>
+        <Select.Trigger id="mcp-permission" aria-describedby={hintId} />
+        <Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
+      </Select.Root>}
+    </SettingRow>
+    <SettingRow id="mcp-address" label="本机地址" hint="将此地址填入 MCP 客户端的连接配置。">
+      {hintId => <div className="mcp-address">
+        <TextField.Root id="mcp-address" aria-describedby={hintId} readOnly value={address} disabled={!status?.running} />
+        <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "address"} disabled={!status?.running || busy !== null}
+          onClick={() => void perform("address", async () => { await desktop.copyText(address); setFeedback("已复制本机地址"); })}>复制地址</Button>
+      </div>}
+    </SettingRow>
+    <SettingRow label="访问令牌" hint="用于验证连接到 MCP 的客户端。"
+      warning="重置后，使用旧令牌的客户端需要更新配置。">
+      {hintId => <div className="button-strip setting-actions">
+        <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "token"} disabled={!status || busy !== null}
+          onClick={() => void perform("token", async () => { await desktop.mcpToken(false); setFeedback("已复制令牌"); })}>复制令牌</Button>
+        <Button type="button" aria-describedby={hintId} variant="ghost" color="gray" loading={busy === "reset"} disabled={!status || status.running || busy !== null}
+          onClick={() => void perform("reset", async () => { await desktop.mcpToken(true); setFeedback("令牌已重置并复制"); })}>重置令牌</Button>
+      </div>}
+    </SettingRow>
     <div className="settings-footer mcp-footer">
       <div className="mcp-feedback">
         <span role="status" className="muted-text">{failure ? "" : feedback}</span>

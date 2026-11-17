@@ -229,9 +229,11 @@ async fn public_image_cache_refetches_when_a_304_validator_does_not_match() {
 #[tokio::test]
 async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
     let (folder, db, media) = setup();
+    let cache = folder.path().join("asset-thumbnails");
+    let media = media.with_thumbnail_cache(cache.clone());
     let original = png();
     let mut encoded = Cursor::new(Vec::new());
-    image::DynamicImage::new_rgb8(2, 3)
+    image::DynamicImage::new_rgb8(3, 2)
         .write_to(&mut encoded, ImageFormat::WebP)
         .unwrap();
     let hosted = encoded.into_inner();
@@ -247,7 +249,7 @@ async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
     }).unwrap();
     for (bytes, export) in [
         (hosted.clone(), false),
-        (original, false),
+        (original.clone(), false),
         (hosted.clone(), true),
     ] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -291,13 +293,31 @@ async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
         Ok(())
     })
     .unwrap();
-    let server = tokio::spawn(serve_image(listener, hosted));
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            serve_image_response(&listener, "200 OK", "", &hosted).await;
+        }
+    });
     let stale_name = media
         .read_export_file(&db, &file, &original_name)
         .await
         .unwrap_err();
-    server.await.unwrap();
     assert_eq!(stale_name.code(), "EXPORT_FAILED");
+    let fallback = media.thumbnail(&db, &id).await.unwrap();
+    assert_eq!(
+        image_header(&fallback).unwrap(),
+        (ImageFormat::Png, 160, 107)
+    );
+    server.await.unwrap();
+    assert!(!cache.exists());
+
+    std::fs::write(media.root.join(file.path.unwrap()), &original).unwrap();
+    let preview = media.thumbnail(&db, &id).await.unwrap();
+    assert_eq!(
+        image_header(&preview).unwrap(),
+        (ImageFormat::Png, 107, 160)
+    );
+    assert_eq!(std::fs::read_dir(cache).unwrap().count(), 1);
 }
 
 #[tokio::test]
@@ -666,7 +686,6 @@ async fn exiting_cancels_documents_with_inflight_image_downloads() {
 #[tokio::test]
 async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavailable_links() {
     let (folder, db, mut assets) = setup();
-    image_profile(&db);
     let source = folder.path().join("article");
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("照片 1.png"), png()).unwrap();
@@ -675,14 +694,20 @@ async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavaila
     let body = format!(
         "![文档内](<照片 1.png> \"图片标题\")\n\n![外链]({url})\n\n![外部](../outside.png)\n\n`![字面]({url})`"
     );
-    assert_eq!(
-        assets
-            .import_markdown_images(&db, &body, &source)
-            .await
-            .unwrap(),
-        (body.clone(), 0)
-    );
+    let (local, unavailable) = assets
+        .import_markdown_images(&db, &body, &source)
+        .await
+        .unwrap();
+    assert_eq!(unavailable, 1);
+    let library = assets.library(&db, 0).unwrap();
+    assert_eq!(library.items.len(), 1);
+    let id = &library.items[0].id;
+    assert!(local.contains(&format!(r#"![文档内](asset://{id} "图片标题")"#)));
+    assert!(local.contains(&format!("![外链]({url})")));
+    assert!(local.contains("![外部](../outside.png)"));
+    assert!(library.items[0].upload_status.is_none());
 
+    image_profile(&db);
     enable_auto_upload(&db);
     let mut remote = Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(5, 4)
@@ -740,7 +765,9 @@ fn asset_library_pages_are_disjoint_and_out_of_range_clamps_to_last_page() {
 
 #[tokio::test]
 async fn library_thumbnail_is_small_and_keeps_original_bytes() {
-    let (_directory, db, assets) = setup();
+    let (directory, db, assets) = setup();
+    let cache = directory.path().join("asset-thumbnails");
+    let assets = assets.with_thumbnail_cache(cache.clone());
     let mut bytes = Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         400,
@@ -753,7 +780,9 @@ async fn library_thumbnail_is_small_and_keeps_original_bytes() {
     let id = assets
         .import_to_library(&db, "素材.png", &original)
         .unwrap();
-    let preview = assets.thumbnail(&db, &id).await.unwrap();
+    let (first, second) = tokio::join!(assets.thumbnail(&db, &id), assets.thumbnail(&db, &id));
+    let preview = first.unwrap();
+    assert_eq!(second.unwrap(), preview);
     assert_eq!(image_header(&preview).unwrap(), (ImageFormat::Png, 160, 80));
     let decoded = image::load_from_memory(&preview).unwrap().to_rgba8();
     assert_eq!(decoded.get_pixel(20, 20).0, [92, 18, 6, 128]);
@@ -761,6 +790,20 @@ async fn library_thumbnail_is_small_and_keeps_original_bytes() {
         assets.read(&db, &format!("asset://{id}")).await.unwrap(),
         original
     );
+    let hash = format!("{:x}", Sha256::digest(&original));
+    assert_eq!(
+        std::fs::read(cache.join(format!("v1-160-{hash}.png"))).unwrap(),
+        preview
+    );
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+    assert_eq!(assets.library(&db, 0).unwrap().items.len(), 1);
+
+    let file = db.read(|conn| by_id(conn, &id)).unwrap();
+    std::fs::remove_file(assets.root.join(file.path.unwrap())).unwrap();
+    let reopened = Assets::new(directory.path().join("assets"), &db)
+        .unwrap()
+        .with_thumbnail_cache(cache);
+    assert_eq!(reopened.thumbnail(&db, &id).await.unwrap(), preview);
 }
 
 #[tokio::test]

@@ -1,8 +1,9 @@
-import { useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Spinner } from "@radix-ui/themes";
-import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Sparkles, Trash2 } from "lucide-react";
+import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Trash2 } from "lucide-react";
 import { desktop, type UploadProgress } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
+import { recordEditorPerformance } from "../../../../packages/editor-react/performance";
 import { commandKey } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
@@ -10,7 +11,7 @@ import type { DocumentActions } from "./Document";
 export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, backupProgress, migrationProgress,
   imageStorageEnabled, assetRevision, imageUpload, onError, onMcp, onPalette, onTrash, onSettings }: {
   queue?: SaveQueue;
-  actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "aiOpen" | "onAi" | "publishing" | "onCopyWechat">;
+  actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat">;
   trashActive: boolean;
   settingsOpen: boolean;
   mcpRunning?: boolean;
@@ -75,8 +76,6 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
           </button>}
         </div>}
         <div className="button-strip">
-          {!actions.reading && <Tool label="AI 助手" id="ai-panel-trigger" className="chrome-icon"
-            aria-expanded={actions.aiOpen} onClick={actions.onAi}><Sparkles size={15} strokeWidth={1.65} /></Tool>}
           <Tool label="设置" className="chrome-icon" aria-haspopup="dialog" aria-expanded={settingsOpen}
             onClick={event => onSettings(event.currentTarget)}><Settings size={16} strokeWidth={1.65} /></Tool>
         </div>
@@ -89,7 +88,11 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
   queue: SaveQueue; reading: boolean; imageStorageEnabled: boolean; assetRevision: number; imageUpload: UploadProgress | null;
   onError(error: unknown): void;
 }) {
-  const { fields, error, revision, savedRevision, saving } = useSyncExternalStore(queue.subscribe, queue.snapshot);
+  const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
+  const dirty = useSyncExternalStore(queue.subscribe, queue.isDirty);
+  const saving = useSyncExternalStore(queue.subscribe, queue.isSaving);
+  const error = useSyncExternalStore(queue.subscribe, queue.saveError);
+  useLayoutEffect(() => { recordEditorPerformance("status.commit"); });
   const wordSource = useDeferredValue(fields.contentMd);
   const count = useMemo(() => Array.from(wordSource.replace(/\s/g, "")).length.toLocaleString("zh-CN"), [wordSource]);
   const [backgroundUpload, setBackgroundUpload] = useState<UploadProgress | null>(null);
@@ -119,7 +122,7 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
     </Tooltip>}
     {reading && <span>只读</span>}
     <span role="status" className={error ? "status-error" : undefined}>
-      {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving ? "保存中…" : revision === savedRevision ? "已保存" : "未保存"}
+      {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving ? "保存中…" : dirty ? "未保存" : "已保存"}
     </span>
     <span>{count} 字</span>
   </div>;

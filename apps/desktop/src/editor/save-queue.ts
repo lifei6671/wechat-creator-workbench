@@ -1,6 +1,11 @@
 import type { AppError, Entry, EntryFields, SaveMode, SaveResult } from "../../../../packages/shared-types";
+import type { MarkdownSnapshot } from "../../../../packages/editor-react";
+import { editorPerformance, recordEditorPerformance } from "../../../../packages/editor-react/performance";
 
 type Commit = (id: string, version: number, fields: EntryFields, mode: SaveMode) => Promise<SaveResult>;
+type SaveOptions = { manual?: boolean; retry?: boolean; aiReplace?: boolean };
+const SAVE_DELAY_MS = 750;
+const MAX_SAVE_DELAY_MS = 4000;
 
 export interface SaveSnapshot {
   fields: EntryFields;
@@ -22,9 +27,14 @@ export class SaveQueue {
   private listeners = new Set<() => void>();
   private state: SaveSnapshot;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private saveDeadline?: number;
+  private contentProvider?: () => MarkdownSnapshot;
+  private pendingContentRevision?: number;
   private inFlight: Promise<boolean> | undefined;
   private manual = false;
   private aiReplace = false;
+  private drainToLatest = false;
+  private saveRequested = false;
 
   constructor(
     readonly entry: Entry,
@@ -43,6 +53,34 @@ export class SaveQueue {
     return () => { this.listeners.delete(listener); };
   };
   snapshot = () => this.state;
+  snapshotFields = () => this.state.fields;
+  isDirty = () => this.state.revision !== this.state.savedRevision;
+  isSaving = () => this.state.saving;
+  saveError = () => this.state.error;
+
+  bindContentProvider(read: () => MarkdownSnapshot) {
+    this.contentProvider = read;
+    return () => {
+      if (this.contentProvider !== read) return;
+      const { fields } = this.capture();
+      this.contentProvider = undefined;
+      this.pendingContentRevision = undefined;
+      if (fields !== this.state.fields) this.update({ fields });
+    };
+  }
+
+  markContentDirty(localRevision: number) {
+    this.pendingContentRevision = localRevision;
+    this.change();
+  }
+
+  capture(): SaveSnapshot {
+    const snapshot = this.state;
+    if (this.pendingContentRevision === undefined) return snapshot;
+    const content = this.contentProvider?.();
+    if (content?.localRevision !== this.pendingContentRevision) throw new Error("无法读取当前正文修订");
+    return { ...snapshot, fields: { ...snapshot.fields, contentMd: content.markdown } };
+  }
 
   private update(change: Partial<SaveSnapshot>) {
     this.state = { ...this.state, ...change };
@@ -50,39 +88,63 @@ export class SaveQueue {
   }
 
   edit(change: Partial<EntryFields>) {
-    this.update({ fields: { ...this.state.fields, ...change }, revision: this.state.revision + 1 });
-    clearTimeout(this.timer);
-    if (!this.state.error) this.timer = setTimeout(() => { void this.flush(); }, 750);
+    if (change.contentMd !== undefined) this.pendingContentRevision = undefined;
+    this.change({ ...this.state.fields, ...change });
   }
 
-  flush(options: { manual?: boolean; retry?: boolean; aiReplace?: boolean } = {}): Promise<boolean> {
+  private change(fields = this.state.fields) {
+    this.update({ fields, revision: this.state.revision + 1 });
     clearTimeout(this.timer);
+    if (!this.state.error) {
+      const now = Date.now();
+      this.saveDeadline ??= now + MAX_SAVE_DELAY_MS;
+      this.timer = setTimeout(() => { void this.requestSave(); }, Math.min(SAVE_DELAY_MS, this.saveDeadline - now));
+    }
+  }
+
+  flush(options: SaveOptions = {}): Promise<boolean> {
+    return this.requestSave(options);
+  }
+
+  private requestSave(options?: SaveOptions): Promise<boolean> {
+    clearTimeout(this.timer);
+    this.saveDeadline = undefined;
     if (this.state.error) {
-      if (!options.retry || isConflict(this.state.error)) return Promise.resolve(false);
+      if (!options?.retry || isConflict(this.state.error)) return Promise.resolve(false);
       this.update({ error: null });
     }
-    this.manual ||= options.manual === true;
-    this.aiReplace ||= options.aiReplace === true;
-    if (!this.inFlight && (this.aiReplace || this.manual || this.state.revision !== this.state.savedRevision)) {
-      this.inFlight = this.drain().finally(() => { this.inFlight = undefined; });
-    }
-    return this.inFlight ?? Promise.resolve(true);
+    this.manual ||= options?.manual === true;
+    this.aiReplace ||= options?.aiReplace === true;
+    if (!this.inFlight && !this.aiReplace && !this.manual && !this.isDirty()) return Promise.resolve(true);
+    this.saveRequested = true;
+    this.drainToLatest ||= options !== undefined;
+    if (this.inFlight) return this.inFlight;
+    let complete!: (saved: boolean) => void;
+    let fail!: (error: unknown) => void;
+    const saving = new Promise<boolean>((resolve, reject) => { complete = resolve; fail = reject; });
+    this.inFlight = saving;
+    void this.drain().then(complete, fail);
+    return saving;
   }
 
   private async drain() {
-    this.update({ saving: true });
     let committed = false;
     try {
-      while (this.aiReplace || this.manual || this.state.revision !== this.state.savedRevision) {
-        const { fields, version, revision } = this.state;
+      this.update({ saving: true });
+      while ((this.saveRequested || this.drainToLatest) && (this.aiReplace || this.manual || this.isDirty())) {
+        this.saveRequested = false;
+        const { fields, version, revision } = this.capture();
+        this.pendingContentRevision = undefined;
+        if (fields !== this.state.fields) this.update({ fields });
         const mode = this.aiReplace ? "ai_replace" : this.manual ? "manual" : "auto";
         if (mode === "ai_replace") this.aiReplace = false;
         if (mode === "manual") this.manual = false;
+        const started = editorPerformance ? performance.now() : 0;
         const { version: committedVersion } = await this.commit(this.entry.id, version, fields, mode).catch(error => {
           this.manual ||= mode === "manual";
           this.aiReplace ||= mode === "ai_replace";
           throw error;
-        });
+        }).finally(() => { if (editorPerformance) recordEditorPerformance("save.ipc", performance.now() - started); });
         committed = true;
         this.update({ version: committedVersion, savedRevision: revision });
       }
@@ -91,6 +153,10 @@ export class SaveQueue {
       this.update({ error });
       return false;
     } finally {
+      this.drainToLatest = false;
+      this.saveRequested = false;
+      // An idle notification can immediately trigger an explicit save of the remaining edits.
+      this.inFlight = undefined;
       this.update({ saving: false });
       if (committed) this.onCommit();
     }
@@ -104,6 +170,8 @@ export class SaveQueue {
 
   dispose() {
     clearTimeout(this.timer);
+    this.contentProvider = undefined;
+    this.pendingContentRevision = undefined;
     this.listeners.clear();
   }
 }

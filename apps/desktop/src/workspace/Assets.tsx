@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
-import { Button, Checkbox, ScrollArea, Select, TextField } from "@radix-ui/themes";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type RefObject } from "react";
+import { Button, Checkbox, Select, TextField } from "@radix-ui/themes";
 import { readS3Settings, S3Fields, SettingRow } from "./Settings";
-import { ChevronLeft, ChevronRight, CloudUpload, ImageOff, Plus, Settings2 } from "lucide-react";
-import { desktop, errorMessage, type AssetLibrary, type ImageTarget, type ImageUploadOptions } from "../desktop";
-import { Tool, Tooltip } from "../ui";
+import { ChevronLeft, ChevronRight, CloudUpload, Grid2X2, Grid3X3, ImageOff, Plus, Settings2 } from "lucide-react";
+import { desktop, errorMessage, type AssetLibrary, type AssetRow, type ImageTarget, type ImageUploadOptions } from "../desktop";
+import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 
 export function canHostImage(target: ImageTarget | null, src: string) {
   if (!target) return false;
@@ -26,6 +26,10 @@ const states = {
   queued: "等待上传", running: "上传中", retrying: "等待重试", failed: "上传失败", completed: "图床",
 } as const;
 
+function assetImageKey(item: AssetRow) {
+  return `${item.id}:${item.bytes}:${item.publicUrl}`;
+}
+
 export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert, canCover }: {
   onImport(files: File[]): Promise<string>;
   onInsert(id: string, name: string): void;
@@ -35,15 +39,16 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   onConfigure(): void;
 }) {
   const [library, setLibrary] = useState<AssetLibrary | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<{ id: string; key: string; thumbnail?: string } | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [page, setPage] = useState(0);
   const [paging, setPaging] = useState(false);
+  const [largeTiles, setLargeTiles] = useState(() => useStoredInitial("asset-large-tiles", false));
   const input = useRef<HTMLInputElement>(null);
-  const list = useRef<HTMLDivElement>(null);
+  const scroll = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let live = true;
     let request = 0;
@@ -61,10 +66,10 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
     return () => { live = false; void unlisten.then(remove => remove(), () => {}); };
   }, [page, refresh]);
   useLayoutEffect(() => {
-    const viewport = list.current?.closest(".rt-ScrollAreaViewport");
-    if (viewport) viewport.scrollTop = 0;
+    if (scroll.current) scroll.current.scrollTop = 0;
   }, [library?.page]);
-  const current = library?.items.find(item => item.id === selected);
+  const current = library?.items.find(item => item.id === selected?.id);
+  const currentKey = current && assetImageKey(current);
 
   function turnPage(next: number) {
     setSelected(null);
@@ -83,7 +88,13 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
 
   return <aside className="explorer" aria-label="素材库">
     <div className="section-bar explorer-title">
-      <h1>素材库</h1>
+      <div className="asset-heading">
+        <h1>素材库</h1>
+        <Tool label={largeTiles ? "切换为小缩略图" : "切换为大缩略图"} className="chrome-icon"
+          onClick={() => { setLargeTiles(!largeTiles); persist("asset-large-tiles", !largeTiles); }}>
+          {largeTiles ? <Grid3X3 size={15} /> : <Grid2X2 size={15} />}
+        </Tool>
+      </div>
       <div className="button-strip">
         <Tool label="导入图片" disabled={loading} onClick={() => input.current?.click()}><Plus size={16} /></Tool>
         <Tool label="S3 图床设置" onClick={onConfigure}><Settings2 size={16} /></Tool>
@@ -93,8 +104,8 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         event.currentTarget.value = "";
       }} />
     </div>
-    <ScrollArea className="explorer-scroll" type="auto" scrollbars="vertical" radius="full">
-      <div ref={list} className="asset-list" onDragOver={event => {
+    <div ref={scroll} className="explorer-scroll explorer-list-scroll asset-scroll">
+      <div className="asset-list" onDragOver={event => {
         if (event.dataTransfer.types.includes("Files")) event.preventDefault();
       }} onDrop={event => {
         event.preventDefault();
@@ -106,25 +117,26 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         {library?.items.length === 0 && !loading && <div className="explorer-empty">
           <Button size="1" variant="soft" onClick={() => input.current?.click()}>导入图片</Button>
         </div>}
-        {library && library.items.length > 0 && <div className="asset-grid" role="group" aria-label="图片">
-          {library.items.map(item => <Tooltip key={item.id} content={item.name || "图片"}>
-            <button className="plain-button asset-tile" type="button" aria-pressed={selected === item.id}
-              onClick={() => { setSelected(item.id); setNotice(""); }}>
-              <AssetThumb key={`${item.bytes}:${item.publicUrl}`} id={item.id} name={item.name} tile available={item.bytes !== null} />
-              <span className="asset-tile-name">{item.name || "图片"}</span>
-            </button>
-          </Tooltip>)}
+        {library && library.items.length > 0 && <div className="asset-grid" data-large={largeTiles || undefined} role="group" aria-label="图片">
+          {library.items.map(item => {
+            const key = assetImageKey(item);
+            return <AssetTile key={key} item={item} selected={selected?.id === item.id} onSelect={thumbnail => {
+              setSelected({ id: item.id, key, thumbnail });
+              setNotice("");
+            }} />;
+          })}
         </div>}
       </div>
-    </ScrollArea>
+    </div>
     {library && (library.page > 0 || library.hasNext) && <div className="asset-pagination" role="group" aria-label="素材分页">
       <Tool label="上一页" className="chrome-icon" disabled={paging || library.page === 0}
         onClick={() => turnPage(library.page - 1)}><ChevronLeft size={16} /></Tool>
       <Tool label="下一页" className="chrome-icon" disabled={paging || !library.hasNext}
         onClick={() => turnPage(library.page + 1)}><ChevronRight size={16} /></Tool>
     </div>}
-    {current && <section className="asset-details" aria-label="所选图片">
-      <AssetThumb id={current.id} name={current.name} />
+    {current && <section className="asset-details asset-library-details" aria-label="所选图片">
+      <AssetThumb key={currentKey} id={current.id} name={current.name}
+        thumbnail={selected?.key === currentKey ? selected?.thumbnail : undefined} />
       <div className="asset-dimensions">
         {current.width && current.height ? `${current.width} × ${current.height}` : "图片详情"}
         {current.bytes != null && <span>{new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(current.bytes / 1024)} KB</span>}
@@ -147,43 +159,80 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   </aside>;
 }
 
-export function AssetThumb({ id, name, tile = false, available = true }: {
-  id: string; name: string; tile?: boolean; available?: boolean;
+function AssetTile({ item, selected, onSelect }: {
+  item: AssetRow; selected: boolean; onSelect(thumbnail?: string): void;
 }) {
   const media = useRef<HTMLSpanElement>(null);
-  const [visible, setVisible] = useState(!tile);
-  const [result, setResult] = useState<{ id: string; src?: string } | null>(null);
+  const [broken, setBroken] = useState(false);
+  const available = item.bytes !== null;
+  const visible = useNearViewport(media, available);
+  const result = useAssetImage(visible && available ? `asset://${item.id}` : null, true);
+  const src = broken ? undefined : result?.src;
+  return <Tooltip content={item.name || "图片"}>
+    <button className="plain-button asset-tile" type="button" aria-pressed={selected}
+      onClick={() => onSelect(src)}>
+      <span className="asset-tile-media" ref={media} aria-hidden="true">
+        {src ? <img src={src} alt="" onError={() => setBroken(true)} /> : (!available || result) && <ImageOff size={16} />}
+      </span>
+      <span className="asset-tile-name">{item.name || "图片"}</span>
+    </button>
+  </Tooltip>;
+}
+
+export function CoverThumbnail({ source }: { source: string }) {
+  const media = useRef<HTMLSpanElement>(null);
+  const visible = useNearViewport(media, true);
+  const result = useAssetImage(visible ? source : null, true);
+  return <span ref={media} className="timeline-cover" aria-hidden="true">
+    {result?.src && <img src={result.src} alt="" draggable={false} />}
+  </span>;
+}
+
+function useNearViewport(media: RefObject<HTMLSpanElement | null>, available: boolean) {
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
-    if (!tile || !available) return;
+    if (!available) return;
     const target = media.current!;
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       setVisible(true);
       observer.disconnect();
-    }, { root: target.closest(".rt-ScrollAreaViewport"), rootMargin: "60px" });
+    }, { root: target.closest(".explorer-list-scroll"), rootMargin: "60px" });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [tile, available]);
+  }, [media, available]);
+  return visible;
+}
+
+export function AssetThumb({ id, name, thumbnail }: { id: string; name: string; thumbnail?: string }) {
+  const result = useAssetImage(`asset://${id}`);
+  const src = result ? result.src : thumbnail;
+  return src
+    ? <img className="asset-thumbnail" src={src} alt={name} />
+    : <div className="asset-thumbnail asset-placeholder">{result ? "图片缺失" : "正在加载图片…"}</div>;
+}
+
+function useAssetImage(url: string | null, small = false) {
+  const [result, setResult] = useState<{ url: string; src?: string } | null>(null);
   useEffect(() => {
-    if (!visible || !available) return;
+    if (!url) return;
     let live = true;
     let objectUrl: string | undefined;
-    const image = tile ? desktop.assetThumbnail(id) : desktop.assetRead(`asset://${id}`);
-    void image.then(bytes => {
-      if (live) {
-        objectUrl = URL.createObjectURL(new Blob([bytes], { type: tile ? "image/png" : "" }));
-        setResult({ id, src: objectUrl });
+    const localThumbnail = small && url.startsWith("asset://");
+    const request = localThumbnail ? desktop.assetThumbnail(url.slice("asset://".length)) : desktop.assetRead(url);
+    void request.then(async bytes => {
+      if (!live) return;
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type: localThumbnail ? "image/png" : "" }));
+      if (!localThumbnail) {
+        const image = new Image();
+        image.src = objectUrl;
+        await image.decode();
       }
-    }, () => { if (live) setResult({ id }); });
+      if (live) setResult({ url, src: objectUrl });
+    }).catch(() => { if (live) setResult({ url }); });
     return () => { live = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [id, visible, tile, available]);
-  const src = result?.id === id ? result.src : undefined;
-  if (tile) return <span className="asset-tile-media" ref={media} aria-hidden="true">
-    {src ? <img src={src} alt="" onError={() => setResult({ id })} /> : (!available || result?.id === id) && <ImageOff size={16} />}
-  </span>;
-  return src
-    ? <img className="asset-thumbnail" src={src} alt={name} onError={() => setResult({ id })} />
-    : <div className="asset-thumbnail asset-placeholder">{result?.id === id ? "图片缺失" : "正在加载图片…"}</div>;
+  }, [url, small]);
+  return result?.url === url ? result : null;
 }
 
 const uploadVariables = [["year", "年"], ["month", "月"], ["day", "日"], ["hour", "时"], ["minute", "分"], ["second", "秒"], ["timestamp", "时间戳"]] as const;
@@ -227,25 +276,28 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
   const prefix = uploadVariables.reduce((text, [key], index) => text.replaceAll(`{${key}}`, parts[index] ?? String(sample.getTime())), options.filenameTemplate.trim());
   return <form className="settings-card" autoComplete="off" onSubmit={submit} aria-busy={Boolean(busy)}>
     {initial && <>
-      <label className="settings-check image-storage-enabled"><Checkbox checked={enabled} disabled={Boolean(busy)}
-        onCheckedChange={value => setEnabled(value === true)} />启用图床</label>
+      <SettingRow id="image-storage-enabled" label="启用图床" hint="使用在线存储为图片生成可用于发布的链接。">
+        {hintId => <Checkbox id="image-storage-enabled" aria-describedby={hintId} checked={enabled} disabled={Boolean(busy)}
+          onCheckedChange={value => setEnabled(value === true)} />}
+      </SettingRow>
       <S3Fields scope="images" initial={initial.target} hasKey={Boolean(initial.secret)} publicBase={initial.target?.publicBase} credentials={initial.secret} />
-      <SettingRow id="image-auto-upload" label="默认存储到图床" hint="开启后，新导入、粘贴或拖入的图片会自动排队上传。">
-        <Checkbox id="image-auto-upload" checked={options.autoUpload} disabled={!enabled || Boolean(busy)}
-          onCheckedChange={value => setOptions(current => ({ ...current, autoUpload: value === true }))} />
+      <SettingRow id="image-auto-upload" label="默认存储到图床" hint="自动上传新导入、粘贴或拖入的图片。"
+        warning="开启后，新加入的本地图片会发送到所配置的存储桶。">
+        {hintId => <Checkbox id="image-auto-upload" aria-describedby={hintId} checked={options.autoUpload} disabled={!enabled || Boolean(busy)}
+          onCheckedChange={value => setOptions(current => ({ ...current, autoUpload: value === true }))} />}
       </SettingRow>
       <SettingRow id="image-upload-quality" label="上传清晰度" hint="高清、标清和省流转为 WebP。GIF 和动态 WebP 按原文件上传。">
-        <Select.Root value={options.quality} onValueChange={(quality: ImageUploadOptions["quality"]) => setOptions(current => ({ ...current, quality }))}>
-          <Select.Trigger id="image-upload-quality" /><Select.Content>
+        {hintId => <Select.Root value={options.quality} onValueChange={(quality: ImageUploadOptions["quality"]) => setOptions(current => ({ ...current, quality }))}>
+          <Select.Trigger id="image-upload-quality" aria-describedby={hintId} /><Select.Content>
             <Select.Item value="original">原图</Select.Item><Select.Item value="high">高清</Select.Item>
             <Select.Item value="standard">标清</Select.Item><Select.Item value="economy">省流</Select.Item>
           </Select.Content>
-        </Select.Root>
+        </Select.Root>}
       </SettingRow>
       <div className="image-naming">
         <div className="image-naming-header"><label htmlFor="image-filename">文件命名规则</label>
           <Button type="button" size="1" variant="ghost" onClick={() => setOptions(current => ({ ...current, filenameTemplate: "" }))}>恢复默认</Button></div>
-        <TextField.Root ref={filename} id="image-filename" placeholder="默认按内容哈希命名" value={options.filenameTemplate}
+        <TextField.Root ref={filename} id="image-filename" aria-describedby="image-filename-hint" placeholder="默认按内容哈希命名" value={options.filenameTemplate}
           onChange={event => setOptions(current => ({ ...current, filenameTemplate: event.target.value }))} />
         <div className="image-naming-variables" aria-label="插入命名变量">{uploadVariables.map(([key, label]) => <Button key={key} type="button" size="1" variant="soft" color="gray" onClick={() => {
           const input = filename.current!;
@@ -256,7 +308,7 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
           requestAnimationFrame(() => { input.focus(); input.setSelectionRange(from + token.length, from + token.length); });
         }}>{label}</Button>)}</div>
         <output htmlFor="image-filename" className="image-naming-preview">{prefix ? `${prefix}-` : ""}a8f3…72ce.{options.quality === "original" ? "jpg" : "webp"}</output>
-        <span className="setting-hint">日期和时间使用 UTC。文件名自动添加内容哈希和扩展名。</span>
+        <span id="image-filename-hint" className="setting-hint">设置图床文件名的前缀。日期和时间使用 UTC，系统会自动添加内容哈希和扩展名。</span>
       </div>
     </>}
     <div className="settings-footer image-storage-footer">

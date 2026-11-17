@@ -13,10 +13,10 @@ import { renderMarkdown } from "../../../../packages/markdown-core";
 import { desktop, errorMessage, type AiProposalStatus, type AiSelection } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import { aiActions, captureAiIntent, matchesAiTarget, messageText, scopeLabels, type AiAction, type CapturedTarget, type ChatSelection, type ScopeChoice } from "../ai/context";
-import { proposalOf, useWritingRuntime } from "../ai/runtime";
+import { proposalOf, useWritingRuntime, type WritingThreads } from "../ai/runtime";
 import type { AiProposal } from "../ai/proposals";
 import { messageTimeLabel, untitled } from "../labels";
-import { SidebarToggleIcon, Tool } from "../ui";
+import { Tool } from "../ui";
 import { WindowDragRegion } from "./WindowTitle";
 
 const readNothing = () => null;
@@ -50,26 +50,48 @@ interface Props {
   onSettings(): void;
 }
 
+type ConversationSession = WritingThreads & {
+  entryId: string | null; targets: Map<string, CapturedTarget | null>; draft?: string; isBusy?: () => boolean;
+};
+
 export function AiPanel(props: Props) {
   const entryId = props.queue?.entry.id ?? null;
-  const [visited, setVisited] = useState<(string | null)[]>([]);
+  const sessions = useRef(new Map<string | null, ConversationSession>());
+  const [mounted, setMounted] = useState<ConversationSession[]>([]);
+  const [settled, setSettled] = useState(0);
+  const onIdle = useCallback(() => setSettled(value => value + 1), []);
   useEffect(() => {
-    if (props.open) setVisited(value => value.includes(entryId) ? value : [...value, entryId]);
-  }, [entryId, props.open]);
-  const scopes = props.open && !visited.includes(entryId) ? [...visited, entryId] : visited;
-  return scopes.map(id => <div key={id ?? "general"} className="ai-session" hidden={!props.open || id !== entryId}>
-    <AiConversation {...props} entryId={id} open={props.open && entryId === id}
-      queue={entryId === id ? props.queue : undefined} editor={entryId === id ? props.editor : undefined}
-      selectionRequest={entryId === id ? props.selectionRequest : undefined} />
-  </div>);
+    let active = sessions.current.get(entryId);
+    if (!active && props.open) {
+      active = { entryId, items: new Map(), targets: new Map() };
+      sessions.current.set(entryId, active);
+    }
+    setMounted(previous => {
+      const ordered = active && (props.open || previous.includes(active)) && previous[0] !== active
+        ? [active, ...previous.filter(session => session !== active)] : previous;
+      let cached = 0;
+      const next = ordered.filter(session => session === active || session.isBusy?.() || cached++ < 3);
+      return next.length === ordered.length ? ordered : next;
+    });
+  }, [entryId, props.open, settled]);
+  return mounted.map(session => {
+    const active = session.entryId === entryId;
+    return <div key={session.entryId ?? "general"} className="ai-session" hidden={!props.open || !active}>
+      <AiConversation {...props} session={session} onIdle={onIdle} open={props.open && active}
+        queue={active ? props.queue : undefined} editor={active ? props.editor : undefined}
+        selectionRequest={active ? props.selectionRequest : undefined} />
+    </div>;
+  });
 }
 
 type Progress = Exclude<AiProposalStatus, "pending"> | "saving" | "saveFailed" | "recordFailed";
 
-function AiConversation(props: Props & { entryId: string | null }) {
+function AiConversation(props: Props & { session: ConversationSession; onIdle: () => void }) {
+  const { session, onIdle } = props;
+  const { targets } = session;
   const [error, setError] = useState("");
-  const [targets] = useState(() => new Map<string, CapturedTarget | null>());
-  const [stored, setStored] = useState<ReadonlySet<string>>(() => new Set());
+  // A cached session can remount only after its outstanding proposal writes settle.
+  const [stored, setStored] = useState<ReadonlySet<string>>(() => new Set(targets.keys()));
   const [unavailable, setUnavailable] = useState<ReadonlySet<string>>(() => new Set());
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const pending = useRef(new Set<string>());
@@ -80,9 +102,20 @@ function AiConversation(props: Props & { entryId: string | null }) {
     if (failed) next.add(id); else next.delete(id);
     return next;
   }), []);
-  const runtime = useWritingRuntime(props.entryId, report, markStored, markUnavailable, targets);
+  const { runtime, loadHistory, trackWork, hasPendingWork } = useWritingRuntime(
+    session.entryId, session, report, markStored, markUnavailable, targets, onIdle,
+  );
+  useLayoutEffect(() => {
+    session.isBusy = () => hasPendingWork() || pending.current.size > 0 || runtime.thread.getState().isRunning
+      || Object.values(progress).includes("recordFailed");
+    return () => { delete session.isBusy; };
+  }, [session, hasPendingWork, runtime, progress]);
 
   const mark = (id: string, status: Progress) => setProgress(previous => ({ ...previous, [id]: status }));
+  const finishProposal = (id: string) => {
+    pending.current.delete(id);
+    onIdle();
+  };
   async function changeStatus(id: string, status: Exclude<AiProposalStatus, "pending">) {
     const write = desktop.aiProposalStatus(id, status);
     await (props.trackWrite ? props.trackWrite(write) : write);
@@ -94,7 +127,7 @@ function AiConversation(props: Props & { entryId: string | null }) {
     pending.current.add(proposal.id);
     try { await changeStatus(proposal.id, "rejected"); }
     catch (failure) { report(failure); }
-    finally { pending.current.delete(proposal.id); }
+    finally { finishProposal(proposal.id); }
   }
   function apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal) {
     if (pending.current.has(id)) return;
@@ -105,24 +138,24 @@ function AiConversation(props: Props & { entryId: string | null }) {
     try {
       if (proposal) {
         if (!stored.has(id)) return;
-        const before = queue.snapshot().fields.contentMd;
+        const restored = editor.captureDocumentMatch();
         if (!context || !editor.replaceTarget(context, candidate)) {
           pending.current.add(id);
-          void changeStatus(id, "conflicted").catch(report).finally(() => pending.current.delete(id));
+          void changeStatus(id, "conflicted").catch(report).finally(() => finishProposal(id));
           return;
         }
         pending.current.add(id);
         const revision = queue.snapshot().revision;
         const checkSave = () => {
           const state = queue.snapshot();
-          const reverted = state.revision > revision && state.savedRevision < revision && state.fields.contentMd === before;
+          const reverted = state.revision > revision && state.savedRevision < revision && restored();
           if (reverted || state.savedRevision >= revision) {
             unsubscribe();
             void changeStatus(id, reverted ? "conflicted" : "applied").catch(failure => {
               mark(id, reverted ? "conflicted" : "recordFailed");
               report(failure);
             })
-              .finally(() => pending.current.delete(id));
+              .finally(() => finishProposal(id));
           } else {
             mark(id, state.error ? "saveFailed" : "saving");
           }
@@ -138,7 +171,7 @@ function AiConversation(props: Props & { entryId: string | null }) {
     } catch (failure) { report(failure); }
   }
   return <AssistantRuntimeProvider runtime={runtime}>
-    <ConversationView {...props} runtime={runtime} error={error} report={report}
+    <ConversationView {...props} runtime={runtime} loadHistory={loadHistory} trackWork={trackWork} error={error} report={report}
       clear={() => setError("")} targets={targets} stored={stored} progress={progress}
       unavailable={unavailable} apply={apply} reject={reject} />
   </AssistantRuntimeProvider>;
@@ -146,9 +179,10 @@ function AiConversation(props: Props & { entryId: string | null }) {
 
 function ConversationView({
   open, queue, editor, target, selection, targetPicker, windowControls, canChat, canEdit, canSend, selectionRequest, onClose, onSettings,
-  runtime, error, report, clear, targets, stored, progress, unavailable, apply, reject,
+  runtime, session, onIdle, loadHistory, trackWork, error, report, clear, targets, stored, progress, unavailable, apply, reject,
 }: Props & {
-  runtime: AssistantRuntime; error: string; report(failure: unknown): void;
+  runtime: AssistantRuntime; loadHistory(): Promise<void>; error: string; report(failure: unknown): void;
+  session: ConversationSession; onIdle(): void; trackWork<T>(operation: Promise<T>): Promise<T>;
   clear(): void; targets: Map<string, CapturedTarget | null>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
   unavailable: ReadonlySet<string>;
   apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal): void; reject(proposal: AiProposal): Promise<void>;
@@ -160,6 +194,7 @@ function ConversationView({
   const [attachedSelection, setAttachedSelection] = useState<ChatSelection | null>(null);
   const [ready, setReady] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const lastSelectionRequest = useRef<ChatSelection | undefined>(undefined);
   const snapshot = useSyncExternalStore(queue?.subscribe ?? subscribeNothing, queue?.snapshot ?? readNothing);
@@ -176,23 +211,27 @@ function ConversationView({
   const threadId = useAuiState(state => state.threadListItem.remoteId);
   const archived = useAuiState(state => state.threadListItem.status === "archived");
   const draft = useAuiState(state => state.composer.text);
-  const enabled = ready && canChat && open && !running && !switching && !loading && !archived && !(threadId && unavailable.has(threadId));
+  const enabled = ready && canChat && open && view === "chat" && !running && !switching && !loading && !archived && !(threadId && unavailable.has(threadId));
   const chosen = rewrite || attachedSelection ? "selection" : scope === "auto" ? hasSelection ? "selection" : "section" : scope;
   const title = snapshot ? snapshot.fields.title || untitled : "";
 
   useEffect(() => {
     if (ready || listLoading) return;
-    const { threadIds, archivedThreadIds } = runtime.threads.getState();
-    const current = threadIds[0];
-    if (!current) {
-      if (archivedThreadIds.length && !selectionRequest) setView("threads");
+    const current = runtime.threads.getState().threadIds[0];
+    const restoreDraft = () => {
+      if (session.draft) aui.composer.setText(session.draft);
       setReady(true);
+    };
+    if (!current) {
+      restoreDraft();
       return;
     }
     let active = true;
-    void runtime.threads.switchToThread(current).catch(report).finally(() => { if (active) setReady(true); });
+    void trackWork(runtime.threads.switchToThread(current)).catch(report).finally(() => { if (active) restoreDraft(); });
     return () => { active = false; };
-  }, [ready, listLoading, runtime, report, selectionRequest]);
+  }, [ready, listLoading, runtime, report, aui, session, trackWork]);
+  useLayoutEffect(() => { if (ready) session.draft = draft; }, [ready, session, draft]);
+  useEffect(() => { if (!running) onIdle(); }, [running, onIdle]);
   useEffect(() => { if (open && view === "chat" && ready && !switching) input.current?.focus({ preventScroll: true }); }, [open, ready, view, switching]);
   useEffect(() => {
     if (open && selectionRequest && selectionRequest !== lastSelectionRequest.current) {
@@ -230,23 +269,37 @@ function ConversationView({
     if (user?.role !== "user") return;
     const action = user.metadata.custom.action as AiAction;
     const text = messageText(user);
-    const previousProposal = proposalOf(messages[index]);
-    const original = previousProposal && targets.get(previousProposal.id);
+    const proposal = proposalOf(messages[index]);
+    const original = proposal && targets.get(proposal.id);
     send(action, text, action === "rewrite" ? String(user.metadata.custom.instruction ?? text) : action === "chat" ? text : "", false,
       user.metadata.custom.scope as ScopeChoice, {
-        original: original && matchesAiTarget(original, queue) ? original.context ?? undefined : undefined,
+        original: original?.context && matchesAiTarget(original, queue) && editor?.matchesTarget(original.context)
+          ? original.context : undefined,
         chatSelection: action === "chat" ? user.metadata.custom.chatSelection as ChatSelection | undefined : undefined,
-        previousProposal,
       });
+  }
+  function toggleHistory() {
+    if (view === "threads") { setView("chat"); return; }
+    clear();
+    setView("threads");
+    setHistoryLoading(true);
+    void trackWork(loadHistory()).catch(report).finally(() => setHistoryLoading(false));
   }
   async function switchThread(id?: string) {
     if (!ready || running || switching) return;
     clear();
     setSwitching(true);
     try {
-      if (id) await runtime.threads.switchToThread(id);
-      else if (threadId) await runtime.threads.getItemById(threadId).archive();
-      else await runtime.threads.switchToNewThread();
+      if (id) {
+        await trackWork(runtime.threads.switchToThread(id));
+        await trackWork(runtime.threads.reload());
+      }
+      else {
+        if (threadId) await trackWork(runtime.threads.getItemById(threadId).archive());
+        else await trackWork(runtime.threads.switchToNewThread());
+        aui.composer.setText("");
+      }
+      targets.clear();
       setView("chat");
       setRewrite(false);
       setAttachedSelection(current => current === attachedSelection ? null : current);
@@ -268,15 +321,15 @@ function ConversationView({
       <Tool label="新对话" color="gray" disabled={!ready || running || switching} onClick={() => void switchThread()}><Plus size={16} /></Tool>
       {open && windowControls && <WindowDragRegion onError={report} />}
       <div className="ai-chat-header-tools">
-        <Tool label="对话记录" color="gray" aria-pressed={view === "threads"}
-          onClick={() => setView(view === "threads" ? "chat" : "threads")}><History size={15} /></Tool>
-        <Tool label="隐藏右侧栏" className="chrome-icon" onClick={onClose}><SidebarToggleIcon expanded side="right" /></Tool>
+        <Tool label="对话记录" color="gray" aria-pressed={view === "threads"} disabled={!ready || switching || historyLoading}
+          onClick={toggleHistory}><History size={15} /></Tool>
       </div>
       {open && windowControls}
     </header>
     <ThreadPrimitive.Viewport className="ai-transcript">
       {view === "threads"
-        ? <ConversationList runtime={runtime} disabled={!ready || running || switching} select={id => void switchThread(id)} report={report} />
+        ? historyLoading || listLoading ? <p role="status" className="muted-text">正在读取对话…</p>
+          : <ConversationList runtime={runtime} disabled={!ready || running || switching} select={id => void switchThread(id)} report={report} />
         : !ready || loading || switching ? <p role="status" className="muted-text">正在读取对话…</p>
         : <>
           <ThreadPrimitive.Empty><div className="ai-chat-empty">
@@ -300,14 +353,14 @@ function ConversationView({
                     <AiMessageTime date={message.createdAt} />
                     {text && <AiCopyButton text={text} onError={report} />}
                 </AiUserMessage> : <>
-                  {text && <AiReply text={text} onError={report} />}
+                  {text && <AiReply text={text} streaming={status?.type === "running"} onError={report} />}
                   {status?.type === "running" && !message.content.length && <p className="muted-text" role="status">正在回复…</p>}
                   {status?.type === "incomplete" && <p className={status.reason === "cancelled" ? "muted-text" : "inline-error"} role="status">
                     {status.reason === "cancelled" ? "已停止生成" : status.reason === "error" && typeof status.error === "string"
                       ? status.error : "回复未完成"}
                   </p>}
                   <AiMessageActions message={message} {...{ queue, targets, stored, progress, apply, reject, report }}
-                    canEdit={canEdit} canRetry={enabled} canRetryRewrite={Boolean(enabled && canEdit && hasSelection)}
+                    canEdit={canEdit} canRetry={enabled}
                     retry={() => retry(message.id)} />
                 </>}
               </MessagePrimitive.Root>; }}
@@ -416,10 +469,10 @@ function AiUserMessage({ text, children }: { text: string; children: ReactNode }
   </>;
 }
 
-function AiMessageActions({ message, queue, targets, stored, progress, canEdit, canRetry, canRetryRewrite, apply, reject, report, retry }: {
+function AiMessageActions({ message, queue, targets, stored, progress, canEdit, canRetry, apply, reject, report, retry }: {
   message: Parameters<typeof messageText>[0]; queue?: SaveQueue;
   targets: Map<string, CapturedTarget | null>; stored: ReadonlySet<string>; progress: Record<string, Progress>;
-  canEdit: boolean; canRetry: boolean; canRetryRewrite: boolean;
+  canEdit: boolean; canRetry: boolean;
   apply(id: string, candidate: string, action: AiAction, proposal?: AiProposal): void;
   reject(proposal: AiProposal): Promise<void>; report(failure: unknown): void; retry(): void;
 }) {
@@ -451,7 +504,7 @@ function AiMessageActions({ message, queue, targets, stored, progress, canEdit, 
     <AiMessageTime date={message.createdAt} />
     {text && <AiCopyButton text={text} onError={report} />}
     {message.status.type === "incomplete" && <Button size="1" variant="soft" color="gray"
-      disabled={action === "rewrite" ? !canRetryRewrite : !canRetry} onClick={retry}>重试</Button>}
+      disabled={!canRetry || (action === "rewrite" && !canEdit)} onClick={retry}>重试</Button>}
   </div>;
 }
 
@@ -507,13 +560,9 @@ function ConversationList({ runtime, disabled, select, report }: {
   runtime: AssistantRuntime; disabled: boolean; select(id: string): void; report(failure: unknown): void;
 }) {
   const ids = useAuiState(state => state.threads.archivedThreadIds);
-  const loading = useAuiState(state => state.threads.isLoading);
   const [editing, setEditing] = useState("");
   const [deleting, setDeleting] = useState("");
-  useEffect(() => {
-    if (!disabled) void runtime.threads.reload().catch(report);
-  }, [runtime, disabled, report]);
-  if (!ids.length) return <p className="muted-text">{loading ? "正在读取对话…" : "暂无对话"}</p>;
+  if (!ids.length) return <p className="muted-text">暂无对话</p>;
   return <ul className="ai-thread-list" aria-label="对话记录"><ThreadListPrimitive.Items archived>{({ threadListItem }) => {
     const { id, title, lastMessageAt } = threadListItem;
     const name = title || "新对话";
@@ -551,9 +600,13 @@ function ConversationList({ runtime, disabled, select, report }: {
   }}</ThreadListPrimitive.Items></ul>;
 }
 
-function AiReply({ text, onError }: { text: string; onError(error: unknown): void }) {
+function AiReply({ text, streaming, onError }: { text: string; streaming: boolean; onError(error: unknown): void }) {
   const element = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
+  const latest = useRef(text);
+  const rendered = useRef<string | undefined>(undefined);
+  const timer = useRef<number | undefined>(undefined);
+  const render = useCallback((text: string) => {
+    if (rendered.current === text) return;
     const content = renderMarkdown(text);
     for (const table of content.querySelectorAll("table")) {
       const scroll = document.createElement("div");
@@ -565,7 +618,25 @@ function AiReply({ text, onError }: { text: string; onError(error: unknown): voi
       scroll.append(table);
     }
     element.current?.replaceChildren(content);
-  }, [text]);
+    rendered.current = text;
+  }, []);
+  useLayoutEffect(() => {
+    latest.current = text;
+    if (!streaming || rendered.current === undefined) {
+      window.clearTimeout(timer.current);
+      timer.current = undefined;
+      render(text);
+    } else if (timer.current === undefined) {
+      timer.current = window.setTimeout(() => {
+        timer.current = undefined;
+        render(latest.current);
+      }, 80);
+    }
+  }, [text, streaming, render]);
+  useLayoutEffect(() => () => {
+    window.clearTimeout(timer.current);
+    timer.current = undefined;
+  }, []);
   return <div className="ai-message-markdown" ref={element} onClick={event => {
     const anchor = (event.target as HTMLElement).closest("a[href]");
     if (!anchor) return;

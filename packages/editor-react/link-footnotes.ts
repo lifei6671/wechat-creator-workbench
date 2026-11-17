@@ -10,6 +10,17 @@ function linkMark(node: ProseNode) {
   return node.marks.find(mark => mark.type.name === "link" && sourceLink.test(mark.attrs.href));
 }
 
+export function hasLinkFootnoteContent(block: ProseNode): boolean {
+  if (block.type.name === "footnote_definition") return true;
+  let found = false;
+  block.descendants(node => {
+    if (!found) found = node.type.name === "footnote_reference" || !!linkMark(node)
+      || (node.isText && /https?:\/\/|mailto:/i.test(node.text!));
+    return !found;
+  });
+  return found;
+}
+
 export function inFootnote($pos: ResolvedPos) {
   for (let depth = $pos.depth; depth > 0; depth--) if ($pos.node(depth).type.name === "footnote_definition") return true;
   return false;

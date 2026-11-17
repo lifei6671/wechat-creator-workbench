@@ -77,13 +77,13 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
       {!settings && !error && <p className="settings-feedback muted-text" role="status">正在读取设置…</p>}
       {settings && <SettingRow label="备份桶" hint={configured ? `数据库快照存放在 ${settings.target?.bucket}。`
         : settings.target ? "重新填写访问密钥后即可读写数据库快照。" : "配置用于保存和读取数据库快照的存储桶。"}>
-        <Button id="configure-backup" size="2" color="gray" variant="soft" disabled={busy} onClick={() => {
+        {hintId => <Button id="configure-backup" aria-describedby={hintId} size="2" color="gray" variant="soft" disabled={busy} onClick={() => {
           setConfiguring(true);
           requestAnimationFrame(() => document.getElementById("backup-endpoint")?.focus());
-        }}>{configured ? "修改配置" : "配置备份桶"}</Button>
+        }}>{configured ? "修改配置" : "配置备份桶"}</Button>}
       </SettingRow>}
       {configured && <SettingRow label="备份当前工作区" hint="上传当前数据库快照，每个工作区保留最近 5 份。">
-        <Button size="2" disabled={busy} onClick={() => { void onCreate(); }}>立即备份</Button>
+        {hintId => <Button size="2" aria-describedby={hintId} disabled={busy} onClick={() => { void onCreate(); }}>立即备份</Button>}
       </SettingRow>}
       {progress && <p className="settings-feedback muted-text" role="status">{progress}</p>}
       {feedback && !progress && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
@@ -93,23 +93,26 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
         <Button size="1" variant="ghost" onClick={() => setRefresh(value => value + 1)}>重试读取</Button>
       </div>}
       {prepared && <SettingRow label="已校验的备份"
-        hint={`${prepared.workspaceLabel} ${backupDate(prepared.snapshot.createdAt)}`}>
-        <div className="button-strip setting-actions">
-          <Button id="backup-restore-trigger" size="1" variant="soft" disabled={busy} onClick={onConfirmRestore}>确认恢复</Button>
+        hint={`${prepared.workspaceLabel} ${backupDate(prepared.snapshot.createdAt)}`}
+        warning="恢复将用此备份替换当前工作区的数据库。">
+        {hintId => <div className="button-strip setting-actions">
+          <Button id="backup-restore-trigger" aria-describedby={hintId} size="1" variant="soft" disabled={busy} onClick={onConfirmRestore}>确认恢复</Button>
           <Button size="1" variant="ghost" color="gray" disabled={busy} onClick={onDiscardRestore}>取消</Button>
-        </div>
+        </div>}
       </SettingRow>}
     </div>
       {configured && workspace && <>
         <div className="settings-group-title">备份列表</div>
         <div className="settings-card">
-        <SettingRow id="backup-workspace" label="工作区" hint="选择要查看备份的工作区。"><Select.Root value={workspace} onValueChange={setSelected}>
-          <Select.Trigger id="backup-workspace" />
-          <Select.Content>
-            <Select.Item value={current!}>当前工作区</Select.Item>
-            {remote.filter(id => id !== current).map(id => <Select.Item key={id} value={id} title={id}>{id}</Select.Item>)}
-          </Select.Content>
-        </Select.Root></SettingRow>
+        <SettingRow id="backup-workspace" label="工作区" hint="选择要查看备份的工作区。">
+          {hintId => <Select.Root value={workspace} onValueChange={setSelected}>
+            <Select.Trigger id="backup-workspace" aria-describedby={hintId} />
+            <Select.Content>
+              <Select.Item value={current!}>当前工作区</Select.Item>
+              {remote.filter(id => id !== current).map(id => <Select.Item key={id} value={id} title={id}>{id}</Select.Item>)}
+            </Select.Content>
+          </Select.Root>}
+        </SettingRow>
         {!listError && !items && <p className="settings-feedback muted-text" role="status">正在读取备份…</p>}
         {items?.length === 0 && <p className="settings-feedback muted-text">此工作区暂无备份</p>}
         {!!items?.length && <ul className="backup-list" aria-label="备份列表">{items.map(item => <li key={item.name}>

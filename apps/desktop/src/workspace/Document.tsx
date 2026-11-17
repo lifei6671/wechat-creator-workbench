@@ -2,10 +2,11 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
-  FolderOpen, ListFilter, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
+  ListFilter, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { recordEditorPerformance } from "../../../../packages/editor-react/performance";
 import { footnoteId } from "../../../../packages/markdown-core";
 import { renderWechat, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
 import type { ChatSelection } from "../ai/context";
@@ -21,7 +22,7 @@ import { MoveEntryMenu } from "./MoveEntryMenu";
 import { usePointerDrag } from "./pointer-drag";
 
 export type ViewMode = "edit" | "preview";
-export type TabAction = "closeOthers" | "reading" | "properties" | "search" | "folder"
+export type TabAction = "closeOthers" | "reading" | "properties" | "search"
   | "copyPath" | "history" | "export" | "delete" | "restore";
 
 export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, categories, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
@@ -183,7 +184,8 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
 }) {
   const [renaming, setRenaming] = useState(false);
   const renameAfterMenu = useRef(false);
-  const { fields, revision, savedRevision } = useSyncExternalStore(queue.subscribe, queue.snapshot);
+  const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
+  const dirty = useSyncExternalStore(queue.subscribe, queue.isDirty);
   const { id, deletedAt } = queue.entry;
   const title = fields.title || untitled;
   const frozen = reading || locked;
@@ -204,7 +206,7 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
         <Tooltip content={title}>
           <button id={`tab-${id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
             aria-controls="document-body" tabIndex={active ? 0 : -1} onClick={() => onSwitch(id)}>
-            {revision !== savedRevision && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
+            {dirty && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
             <span>{title}</span>
           </button>
         </Tooltip>
@@ -228,7 +230,6 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
       {deletedAt === null && <>
         <ContextMenu.Item disabled={frozen} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={15} />重命名</ContextMenu.Item>
         <MoveEntryMenu categories={categories} current={fields.categoryId} disabled={frozen} onMove={folder => onMove(id, folder)} />
-        <ContextMenu.Item onSelect={() => act("folder")}><FolderOpen size={15} />打开所在目录</ContextMenu.Item>
       </>}
       <ContextMenu.Item onSelect={() => act("copyPath")}><Copy size={15} />复制工作区路径</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("export")}><FileDown size={15} />导出 Markdown</ContextMenu.Item>
@@ -259,7 +260,8 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   onHostImage?(image: ImageContext): void;
   onAddSelectionToChat?(selection: ChatSelection): void;
 }) {
-  const { fields } = useSyncExternalStore(queue.subscribe, queue.snapshot);
+  const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
+  useLayoutEffect(() => { recordEditorPerformance("document.commit"); });
   const editor = useRef<MarkdownEditorHandle>(null);
   const readOnly = reading || locked || queue.entry.deletedAt !== null;
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
@@ -278,9 +280,15 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
             }
           }} onBlur={() => { void queue.flush(); }} />}
         </div>}
-        ref={value => { editor.current = value; handle(value); }} onError={onError} resolveImage={loadLocalImage}
+        ref={value => {
+          editor.current = value;
+          if (!value) return;
+          const release = queue.bindContentProvider(value.captureMarkdown);
+          handle(value);
+          return () => { release(); editor.current = null; handle(null); };
+        }} onError={onError} resolveImage={loadLocalImage}
         imageErrorMessage={errorMessage} onImageZoom={onImageZoom} onOpenLink={desktop.openLink}
-        onChange={(_id, _revision, contentMd) => queue.edit({ contentMd })}
+        onDocumentChanged={(_id, revision) => queue.markContentDirty(revision)}
         onBlur={() => { void queue.flush(); }} onImages={onImages} localizeImageLink={localizeImageLink} />
     </EditorContextMenu>
   </div>;

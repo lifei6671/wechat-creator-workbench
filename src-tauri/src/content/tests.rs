@@ -28,6 +28,168 @@ fn search(query: &str) -> Filter {
 }
 
 #[test]
+fn timeline_counts_and_filters_live_articles_by_folder_and_tag() {
+    let db = memory();
+    let parent = db.save_category(None, None, "写作", None).unwrap();
+    let child = db
+        .save_category(None, Some(&parent.id), "草稿", None)
+        .unwrap();
+    let mut tagged = article("微信文章", "正文");
+    tagged.category_id = Some(parent.id.clone());
+    tagged.tags = vec!["资料".into(), "wechat".into()];
+    let tagged = db.create_entry(Kind::Article, Some(tagged), None).unwrap();
+    let mut untagged = article("无标签文章", "正文");
+    untagged.category_id = Some(child.id.clone());
+    let untagged = db
+        .create_entry(Kind::Article, Some(untagged), None)
+        .unwrap();
+    let mut root = article("根目录文章", "正文");
+    root.tags.push("根目录标签".into());
+    let root = db.create_entry(Kind::Article, Some(root), None).unwrap();
+    db.set_entry_pinned(&root.row.id, true).unwrap();
+    let mut deleted = article("回收站文章", "");
+    deleted.tags.push("wechat".into());
+    let deleted = db.create_entry(Kind::Article, Some(deleted), None).unwrap();
+    db.set_deleted(&deleted.row.id, deleted.version, true)
+        .unwrap();
+    let mut idea = Fields::empty(Kind::Idea);
+    idea.category_id = Some(parent.id.clone());
+    idea.tags.push("wechat".into());
+    db.create_entry(Kind::Idea, Some(idea), None).unwrap();
+
+    let library = serde_json::to_value(db.library_with_article_counts(true).unwrap()).unwrap();
+    let tag = library["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tag| tag["name"] == "wechat")
+        .unwrap();
+    let tag_id = tag["id"].as_str().unwrap();
+    let counts = &library["articleCounts"];
+    assert_eq!(counts["root"], 1);
+    assert_eq!(counts["folders"][&parent.id], 1);
+    assert_eq!(counts["folders"][&child.id], 1);
+    assert_eq!(counts["tags"][tag_id], 1);
+    assert_eq!(counts["untagged"], 1);
+    assert!(
+        serde_json::to_value(db.library().unwrap())
+            .unwrap()
+            .get("articleCounts")
+            .is_none()
+    );
+
+    let page = db
+        .entries(Filter {
+            kind: Some(Kind::Article),
+            tag_ids: Some(vec![tag_id.into()]),
+            include_preview: true,
+            ..Filter::default()
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id, tagged.row.id);
+    assert_eq!(
+        page.items[0].preview.as_ref().unwrap().tags,
+        ["wechat", "资料"]
+    );
+    let page = db
+        .entries(Filter {
+            kind: Some(Kind::Article),
+            untagged: true,
+            include_preview: true,
+            ..Filter::default()
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id, untagged.row.id);
+    assert!(page.items[0].preview.as_ref().unwrap().tags.is_empty());
+
+    let page = db
+        .entries(Filter {
+            kind: Some(Kind::Article),
+            exact_category: true,
+            pinned: Some(true),
+            include_preview: true,
+            ..Filter::default()
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id, root.row.id);
+}
+
+#[test]
+fn timeline_projects_previews_and_pages_a_folder_by_updated_time() {
+    let db = memory();
+    let parent = db.save_category(None, None, "文章目录", None).unwrap();
+    let child = db
+        .save_category(None, Some(&parent.id), "子目录", None)
+        .unwrap();
+    let mut first = article("直属文章", "正文");
+    first.category_id = Some(parent.id.clone());
+    first.summary = " 手写摘要\n第二行 ".into();
+    let first = db.create_entry(Kind::Article, Some(first), None).unwrap();
+    let mut second = article(
+        "子目录文章",
+        "![说明文字](asset://inline)\n\n这是 **正文** 第一段。\n\n下一段。",
+    );
+    second.category_id = Some(child.id);
+    let second = db.create_entry(Kind::Article, Some(second), None).unwrap();
+    db.create_entry(Kind::Article, Some(article("根目录文章", "")), None)
+        .unwrap();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE entries SET updated_at=100 WHERE id=?1",
+            [&first.row.id],
+        )?;
+        tx.execute(
+            "UPDATE entries SET updated_at=200 WHERE id=?1",
+            [&second.row.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let list = |exact_category, offset, include_preview| {
+        db.entries(Filter {
+            category_id: Some(parent.id.clone()),
+            kind: Some(Kind::Article),
+            exact_category,
+            sort: Some(EntrySort::Updated),
+            include_preview,
+            limit: NonZeroU32::new(1),
+            offset,
+            ..Filter::default()
+        })
+        .unwrap()
+    };
+    let latest = list(false, 0, true);
+    assert_eq!(latest.next_offset, Some(1));
+    assert_eq!(latest.items[0].id, second.row.id);
+    let row = serde_json::to_value(&latest.items[0]).unwrap();
+    assert_eq!(row["preview"]["summary"], "这是 正文 第一段。 下一段。");
+    assert_eq!(row["preview"]["image"], "asset://inline");
+    assert!(row.get("contentMd").is_none());
+
+    for page in [list(false, 1, true), list(true, 0, true)] {
+        assert_eq!(page.next_offset, None);
+        assert_eq!(page.items[0].id, first.row.id);
+        assert_eq!(
+            page.items[0].preview.as_ref().unwrap().summary,
+            "手写摘要 第二行"
+        );
+    }
+    let plain = serde_json::to_value(&list(false, 0, false).items[0]).unwrap();
+    assert!(plain.get("preview").is_none());
+    let explicit = entry_preview(
+        "摘要",
+        Some("cover".into()),
+        "![图](asset://inline)",
+        vec![],
+    );
+    assert_eq!(explicit.image.as_deref(), Some("asset://cover"));
+}
+
+#[test]
 fn workspace_search_matches_persisted_scopes_before_pagination() {
     let db = memory();
     let root = db.save_category(None, None, "Notes", None).unwrap();

@@ -65,7 +65,8 @@ export const nativeWindow = () => getCurrentWindow();
 
 export const desktop = {
   openLink: (url: string) => openUrl(url),
-  library: () => invoke<Library>("library"),
+  gpuAcceleration: (enabled?: boolean) => invoke<boolean>("gpu_acceleration", { enabled }),
+  library: (includeArticleCounts = false) => invoke<Library>("library", { includeArticleCounts }),
   entries: (filter: EntryFilter) => invoke<EntryPage>("entries", { filter }),
   entry: (id: string) => invoke<Entry>("get_entry", { id }),
   create: (kind: EntryKind, fields?: EntryFields, sourceEntryId?: string) => invoke<Entry>("create_entry", { kind, fields, sourceEntryId }),

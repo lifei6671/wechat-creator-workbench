@@ -2,7 +2,6 @@ import type { AiContextScope, AiEditorContext, MarkdownEditorHandle } from "../.
 import type { AiRequest, AiSelection, AiTurn } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import type { ThreadMessage } from "@assistant-ui/react";
-import type { AiProposal } from "./proposals";
 
 export const aiActions = { summary: "生成摘要", titles: "建议标题", rewrite: "改写选区" } as const;
 export const scopeLabels = { selection: "选区", section: "当前章节", document: "全文" } as const;
@@ -12,7 +11,7 @@ export type ChatSelection = Pick<AiEditorContext, "original" | "headingPath">;
 export type CapturedTarget = { sessionId: number; revision: number; context: AiEditorContext | null };
 export type AiIntent = {
   request: AiRequest; target: CapturedTarget | null; baseVersion: number; label?: string; scope: ScopeChoice;
-  chatSelection?: ChatSelection; previousProposal?: AiProposal;
+  chatSelection?: ChatSelection;
 };
 
 const encoder = new TextEncoder();
@@ -21,16 +20,16 @@ const limit = 256 * 1024;
 
 export function captureAiIntent(operation: AiAction, prompt: string, scope: ScopeChoice,
   queue?: SaveQueue, editor?: MarkdownEditorHandle, selection?: AiSelection,
-  { original, chatSelection, previousProposal }: { original?: AiEditorContext; chatSelection?: ChatSelection; previousProposal?: AiProposal } = {}): AiIntent {
+  { original, chatSelection }: { original?: AiEditorContext; chatSelection?: ChatSelection } = {}): AiIntent {
   const snapshot = queue?.snapshot();
   const entryId = queue?.entry.id ?? null;
   const requested = operation === "rewrite" ? "selection" : operation === "chat" ? scope : "document";
-  const editorContext = original ?? (chatSelection || previousProposal || !snapshot || !editor || requested === "none" ? null : requested === "auto"
+  const editorContext = original ?? (chatSelection || !snapshot || !editor || requested === "none" ? null : requested === "auto"
     ? editor.captureContext("selection") ?? editor.captureContext("section")
     : editor.captureContext(requested));
   const quotedSelection = chatSelection ?? (editorContext?.scope === "selection"
     ? { original: editorContext.original, headingPath: editorContext.headingPath }
-    : previousProposal && { original: previousProposal.originalMarkdown, headingPath: [] });
+    : undefined);
   const context = quotedSelection ? { ...quotedSelection, scope: "selection" as const } : editorContext;
   if (requested === "selection" && !context) throw new Error("请在正文中选中文字");
   const title = context ? snapshot?.fields.title ?? "" : "";
@@ -51,7 +50,6 @@ export function captureAiIntent(operation: AiAction, prompt: string, scope: Scop
     label: context ? scopeLabels[context.scope] : queue ? "不引用正文" : undefined,
     scope: context?.scope ?? "none",
     chatSelection: quotedSelection,
-    previousProposal,
   };
 }
 

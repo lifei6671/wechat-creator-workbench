@@ -318,11 +318,12 @@ mod tests {
             },
         )
         .unwrap();
-        update_thread(&db, &general, None, Some(true)).unwrap();
         drop(db);
 
         let db = Workspace::open(&path).unwrap();
-        assert!(list_threads(&db, None).unwrap()[0].archived);
+        let previous_run = list_threads(&db, None).unwrap();
+        assert_eq!(previous_run[0].id, general);
+        assert!(!previous_run[0].archived);
         let empty = create_thread(&db, None).unwrap();
         assert_eq!(list_threads(&db, None).unwrap().len(), 2);
         update_thread(&db, &general, None, Some(false)).unwrap();

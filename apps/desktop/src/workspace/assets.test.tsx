@@ -6,8 +6,13 @@ import { expect, it, vi } from "vitest";
 import { desktop, type AssetRow } from "../desktop";
 import { AssetPanel, ImageStorageSettings } from "./Assets";
 
-it("loads small previews only near the viewport and reads the full image when selected", async () => {
+it("loads tiles near the viewport and keeps the selected thumbnail visible until its original decodes", async () => {
   const visible = new Map<Element, () => void>();
+  const decode = new Map<string, () => void>();
+  vi.stubGlobal("Image", class {
+    src = "";
+    decode() { return new Promise<void>(resolve => decode.set(this.src, resolve)); }
+  });
   vi.stubGlobal("IntersectionObserver", class {
     constructor(private callback: IntersectionObserverCallback) {}
     observe(target: Element) {
@@ -16,7 +21,8 @@ it("loads small previews only near the viewport and reads the full image when se
     disconnect() {}
   });
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
-  const makeUrl = vi.fn().mockReturnValueOnce("blob:thumbnail").mockReturnValueOnce("blob:full");
+  const makeUrl = vi.fn().mockReturnValueOnce("blob:thumb-one").mockReturnValueOnce("blob:thumb-two")
+    .mockReturnValueOnce("blob:full-one").mockReturnValueOnce("blob:full-two");
   const revokeUrl = vi.fn();
   vi.stubGlobal("URL", Object.assign(class extends URL {}, { createObjectURL: makeUrl, revokeObjectURL: revokeUrl }));
   const row: AssetRow = {
@@ -38,16 +44,48 @@ it("loads small previews only near the viewport and reads the full image when se
       onCover={vi.fn()} onConfigure={vi.fn()} canInsert={false} canCover={false} /></Theme>));
     await vi.waitFor(() => expect(visible.size).toBe(2));
     expect(small).not.toHaveBeenCalled();
-    const tile = container.querySelector<HTMLButtonElement>(".asset-tile")!;
-    flushSync(() => visible.get(tile.querySelector(".asset-tile-media")!)!());
-    await vi.waitFor(() => expect(tile.querySelector("img")?.getAttribute("src")).toBe("blob:thumbnail"));
+    const tiles = container.querySelectorAll<HTMLButtonElement>(".asset-tile");
+    const seeTile = (tile: HTMLButtonElement) => flushSync(() => visible.get(tile.querySelector(".asset-tile-media")!)!());
+    seeTile(tiles[0]);
+    await vi.waitFor(() => expect(tiles[0].querySelector("img")?.getAttribute("src")).toBe("blob:thumb-one"));
     expect(small).toHaveBeenCalledExactlyOnceWith("one");
+    seeTile(tiles[1]);
+    await vi.waitFor(() => expect(tiles[1].querySelector("img")?.getAttribute("src")).toBe("blob:thumb-two"));
+    const grid = container.querySelector(".asset-grid")!;
+    expect(grid.hasAttribute("data-large")).toBe(false);
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="切换为大缩略图"]')!.click());
+    expect(grid.getAttribute("data-large")).toBe("true");
+    expect(localStorage.getItem("asset-large-tiles")).toBe("true");
+    expect(grid.querySelector(".asset-tile")).toBe(tiles[0]);
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="切换为小缩略图"]')!.click());
+    expect(grid.hasAttribute("data-large")).toBe(false);
     expect(full).not.toHaveBeenCalled();
-    flushSync(() => tile.click());
-    expect(tile.getAttribute("aria-pressed")).toBe("true");
-    await vi.waitFor(() => expect(container.querySelector(".asset-details img")?.getAttribute("src")).toBe("blob:full"));
+    const scroll = container.querySelector<HTMLDivElement>(".asset-scroll")!;
+    scroll.scrollTop = 120;
+    const preview = () => container.querySelector(".asset-details img");
+    flushSync(() => tiles[0].click());
+    expect(tiles[0].getAttribute("aria-pressed")).toBe("true");
+    expect(preview()?.getAttribute("src")).toBe("blob:thumb-one");
+    await vi.waitFor(() => expect(decode.has("blob:full-one")).toBe(true));
     expect(full).toHaveBeenCalledExactlyOnceWith("asset://one");
     expect(container.querySelector(".asset-dimensions")?.textContent).toContain("图床");
+    flushSync(() => tiles[1].click());
+    expect(tiles[1].getAttribute("aria-pressed")).toBe("true");
+    expect(preview()?.getAttribute("src")).toBe("blob:thumb-two");
+    expect(preview()?.getAttribute("alt")).toBe("图二.png");
+    expect(scroll.scrollTop).toBe(120);
+    expect(container.querySelectorAll(".asset-tile")[1]).toBe(tiles[1]);
+    await vi.waitFor(() => expect(decode.has("blob:full-two")).toBe(true));
+    await Promise.resolve(decode.get("blob:full-one")!());
+    expect(preview()?.getAttribute("src")).toBe("blob:thumb-two");
+    decode.get("blob:full-two")!();
+    await vi.waitFor(() => expect(preview()?.getAttribute("src")).toBe("blob:full-two"));
+    expect(full.mock.calls).toEqual([["asset://one"], ["asset://two"]]);
+    expect(small.mock.calls).toEqual([["one"], ["two"]]);
+    full.mockRejectedValueOnce(new Error("图片缺失"));
+    flushSync(() => tiles[0].click());
+    expect(preview()?.getAttribute("src")).toBe("blob:thumb-one");
+    await vi.waitFor(() => expect(container.querySelector(".asset-placeholder")?.textContent).toBe("图片缺失"));
     const previous = () => container.querySelector<HTMLButtonElement>('[aria-label="上一页"]')!;
     const next = () => container.querySelector<HTMLButtonElement>('[aria-label="下一页"]')!;
     expect(previous().disabled).toBe(true);
@@ -64,8 +102,9 @@ it("loads small previews only near the viewport and reads the full image when se
     container.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    localStorage.removeItem("asset-large-tiles");
   }
-  expect(revokeUrl.mock.calls.map(call => call[0]).sort()).toEqual(["blob:full", "blob:thumbnail"]);
+  expect(revokeUrl.mock.calls.map(call => call[0]).sort()).toEqual(["blob:full-one", "blob:full-two", "blob:thumb-one", "blob:thumb-two"]);
 });
 
 it("edits saved S3 credentials in place and disables hosting without clearing fields", async () => {

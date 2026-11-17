@@ -38,6 +38,7 @@ export interface EntryRow {
   deletedAt: number | null;
   categoryId: string | null;
   pinned?: boolean;
+  preview?: { summary: string; image: string | null; tags?: string[] };
 }
 export interface Entry extends EntryRow, EntryFields {
   version: number;
@@ -50,7 +51,9 @@ export interface EntryFilter {
   kind?: EntryKind;
   categoryId?: string;
   exactCategory?: boolean;
+  includePreview?: boolean;
   tagIds?: string[];
+  untagged?: boolean;
   query?: string;
   workspaceSearch?: { text: string; caseSensitive: boolean };
   deleted: boolean;
@@ -67,7 +70,13 @@ export type CategoryIcon =
 export type CategoryPlacement = "before" | "after";
 export interface Category { id: string; parentId: string | null; name: string; sortOrder: number; icon: CategoryIcon }
 export interface Tag { id: string; name: string }
-export interface Library { workspaceId: string; categories: Category[]; tags: Tag[]; tagSuggestions: string[] }
+export interface Library {
+  workspaceId: string;
+  categories: Category[];
+  tags: Tag[];
+  tagSuggestions: string[];
+  articleCounts?: { root: number; folders: Record<string, number>; tags: Record<string, number>; untagged: number };
+}
 export interface Revision { version: number; contentMd: string; reason: "manual" | "before_ai_replace"; createdAt: number }
 export type SaveMode = "auto" | "manual" | "ai_replace";
 export interface SaveResult { version: number }

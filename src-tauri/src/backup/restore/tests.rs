@@ -30,7 +30,16 @@ fn title(db: &Workspace) -> String {
 fn online_backup_includes_uncheckpointed_wal_and_produces_a_standalone_database() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("content.db");
-    let (_live, workspace) = populate(&path, "WAL 中的内容");
+    let (live, workspace) = populate(&path, "WAL 中的内容");
+    live.write(|tx| {
+        tx.execute_batch(
+            r#"INSERT INTO ai_threads(id,entry_id,created_at,updated_at) VALUES ('thread','entry',0,0);
+               INSERT INTO ai_messages(id,thread_id,role,content_json,created_at)
+               VALUES ('message','thread','user','{"id":"message","role":"user","createdAt":"2026-11-16T08:00:00.000Z","content":[{"type":"text","text":"旧会话"}],"metadata":{"custom":{"action":"chat"}}}',0);"#,
+        )?;
+        Ok(())
+    })
+    .unwrap();
     assert!(
         fs::metadata(root.path().join("content.db-wal"))
             .unwrap()
@@ -50,6 +59,26 @@ fn online_backup_includes_uncheckpointed_wal_and_produces_a_standalone_database(
         .unwrap();
     assert_eq!(mode, "delete");
     assert_eq!(recovered, "WAL 中的内容");
+    drop(conn);
+    prepare_file(
+        &snapshot,
+        &PendingRestore {
+            workspace,
+            name: "snapshot.sqlite".into(),
+            migration: None,
+        },
+    )
+    .unwrap();
+    let conn = Connection::open_with_flags(&snapshot, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let restored: (String, bool, String) = conn
+        .query_row(
+            "SELECT t.entry_id, t.archived, json_extract(m.content_json, '$.content[0].text')
+         FROM ai_threads t JOIN ai_messages m ON m.thread_id=t.id WHERE t.id='thread'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(restored, ("entry".into(), false, "旧会话".into()));
 }
 
 #[test]

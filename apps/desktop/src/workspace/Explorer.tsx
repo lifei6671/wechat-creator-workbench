@@ -2,11 +2,11 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Rea
 import { Button, ContextMenu, DropdownMenu, HoverCard, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
-  FolderOpen, FolderPlus, History, Link, PencilLine, Pin, PinOff, Plus, SquareArrowOutUpRight, Trash2,
+  FolderOpen, FolderPlus, History, Link, PencilLine, Pin, PinOff, Plus, SquareArrowOutUpRight, Tag, Tags, Trash2,
 } from "lucide-react";
 import type { Category, CategoryIcon, CategoryPlacement, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
-import { dateLabel, statusLabels, untitled } from "../labels";
+import { dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 import { folderIcons } from "./folder-icons";
 import { MoveEntryMenu } from "./MoveEntryMenu";
@@ -16,9 +16,10 @@ import { useExplorerDrag } from "./explorer-drag";
 import type { DocumentOpenMode } from "./preferences";
 import { WorkspaceSearch } from "./WorkspaceSearch";
 
-export type Section = "folders" | "search" | "assets" | "trash" | "imports";
+export type Section = "folders" | "timeline" | "search" | "assets" | "trash" | "imports";
+export type TimelineSelection = { kind: "folder" | "tag"; id: string } | { kind: "root" | "untagged" };
 export type CategoryAction = "delete" | "up" | "down";
-export type EntryRowAction = "delete" | "restore" | "duplicate" | "pin" | "unpin" | "copyTitle" | "copyPath" | "history" | "export";
+export type EntryRowAction = "delete" | "restore" | "duplicate" | "pin" | "unpin" | "copyTitle" | "copyPath" | "history" | "export" | "properties";
 
 interface CreateActions {
   onCreate(): void;
@@ -50,9 +51,33 @@ export function CreateMenu(actions: CreateActions) {
   </DropdownMenu.Root>;
 }
 
+export function BlankAreaMenu({ children, label, onAddFolder, ...actions }: CreateActions & {
+  children: ReactNode;
+  label: string;
+  onAddFolder?(): void;
+}) {
+  const addingFolder = useRef(false);
+  return <ContextMenu.Root>
+    <ContextMenu.Trigger>{children}</ContextMenu.Trigger>
+    <ContextMenu.Content size="1" aria-label={label} onCloseAutoFocus={event => {
+      if (!addingFolder.current) return;
+      addingFolder.current = false;
+      event.preventDefault();
+      onAddFolder?.();
+    }}>
+      <CreateItems Item={ContextMenu.Item} {...actions} />
+      {onAddFolder && <>
+        <ContextMenu.Separator />
+        <ContextMenu.Item disabled={actions.disabled} onSelect={() => { addingFolder.current = true; }}><FolderPlus size={15} />新建目录</ContextMenu.Item>
+      </>}
+    </ContextMenu.Content>
+  </ContextMenu.Root>;
+}
+
 export interface ExplorerHandle {
-  addRootFolder(): void;
+  addFolder(parent: string | null): void;
   revealDirectory(): void;
+  revealTimelineTag(id: string, focus: boolean): void;
 }
 
 interface ExplorerProps {
@@ -63,6 +88,9 @@ interface ExplorerProps {
   active: string | null;
   activeFolder?: string | null;
   preserveActiveFolder?: boolean;
+  timelineSelection?: TimelineSelection | null;
+  onTimelineSelect?(selection: TimelineSelection): void;
+  includeTimelineChildren?: boolean;
   onCreateCurrent?(): void;
   onToggleAll?(expand: boolean): void;
   onLocateCurrent?(): void;
@@ -93,30 +121,32 @@ interface ExplorerProps {
   onCategoryAction(category: Category, action: CategoryAction): void;
   openMode: DocumentOpenMode;
   onOpen(id: string, mode?: DocumentOpenMode): void;
-  onRowAction(row: EntryRow, action: EntryRowAction): void;
+  onRowAction(row: EntryRow, action: EntryRowAction, trigger?: HTMLElement | null): void;
   onMore(): void;
 }
 
-type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "treeLocked" | "openMode" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError" | "onMoveEntry"> & {
+export type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "treeLocked" | "openMode" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError" | "onMoveEntry"> & {
   categories: Category[];
 };
 
-const allEntries = 2_147_483_647;
+export const allEntries = 2_147_483_647;
 const entryDate = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
 });
 
-function TreeSection({ id, title, collapsed, onToggle, onExpanded, pinned, children }: {
-  id: string; title: string; collapsed: boolean; onToggle(): void; onExpanded(): void; pinned?: boolean; children: ReactNode;
+function TreeSection({ id, title, collapsed, onToggle, onExpanded, pinned, icon, children }: {
+  id: string; title: string; collapsed: boolean; onToggle(): void; onExpanded?(): void;
+  pinned?: boolean; icon?: ReactNode; children: ReactNode;
 }) {
+  const chevron = <ChevronDown size={14} className="tree-section-chevron" aria-hidden="true" />;
   return <li className={pinned ? "tree-section tree-pinned" : "tree-section"} data-tree-pinned-area={pinned ? "" : undefined}>
     <button type="button" className="plain-button tree-section-title" aria-expanded={!collapsed} aria-controls={id} onClick={onToggle}>
-      {title}<ChevronDown size={14} aria-hidden="true" />
+      {icon ? <>{chevron}{icon}{title}</> : <>{title}{chevron}</>}
     </button>
     <div className="tree-section-content" data-collapsed={collapsed} onTransitionEnd={event => {
-      if (!collapsed && event.target === event.currentTarget && event.propertyName === "grid-template-rows") onExpanded();
+      if (!collapsed && event.target === event.currentTarget && event.propertyName === "grid-template-rows") onExpanded?.();
     }}>
-      <ul id={id} aria-label={pinned ? "置顶文档" : "目录文档"} inert={collapsed}>{children}</ul>
+      <ul id={id} aria-label={pinned ? "置顶文档" : title === "目录" ? "目录文档" : title} inert={collapsed}>{children}</ul>
     </div>
   </li>;
 }
@@ -129,6 +159,7 @@ export function Explorer(props: ExplorerProps) {
   const [pins, setPins] = useState<{ items: EntryRow[]; error?: string } | null>(null);
   const [pinsCollapsed, setPinsCollapsed] = useState(() => useStoredInitial("directory-pins-collapsed", false));
   const [directoryCollapsed, setDirectoryCollapsed] = useState(() => useStoredInitial("directory-collapsed", false));
+  const [tagsCollapsed, setTagsCollapsed] = useState(false);
   const [sort, setSort] = useState(() => useStoredInitial<"manual" | NonNullable<EntryFilter["sort"]>>("directory-sort", "manual"));
   const [autoLocate, setAutoLocate] = useState(() => useStoredInitial("directory-auto-locate", false));
   const markLoading = useCallback((id: string, pending: boolean) => {
@@ -139,10 +170,20 @@ export function Explorer(props: ExplorerProps) {
   const categories = library?.categories ?? [];
   const rowActions = { ...props, categories };
   const foldersExpanded = categories.some(category => category.parentId === null && expanded.includes(category.id));
-  const isTree = section === "folders";
+  const isTimeline = section === "timeline";
+  const counts = isTimeline ? library?.articleCounts : undefined;
+  const folderCounts = { ...counts?.folders };
+  if (counts && props.includeTimelineChildren) {
+    for (const { id, parentId } of categories) {
+      if (parentId) folderCounts[parentId] = (folderCounts[parentId] ?? 0) + (counts.folders[id] ?? 0);
+    }
+  }
+  const selection = props.timelineSelection;
+  const timelineFolder = isTimeline && selection?.kind === "folder" ? categories.find(folder => folder.id === selection.id) : undefined;
+  const isTree = section === "folders" || isTimeline;
   const workspaceId = library?.workspaceId;
   useEffect(() => {
-    if (!isTree || !workspaceId) return;
+    if (section !== "folders" || !workspaceId) return;
     let current = true;
     void desktop.entries({ pinned: true, deleted: false, offset: 0, limit: allEntries }).then(({ items }) => {
       if (current) setPins({ items: items.filter(row => row.pinned) });
@@ -150,10 +191,10 @@ export function Explorer(props: ExplorerProps) {
       if (current) setPins(previous => ({ items: previous?.items ?? [], error: errorMessage(error) }));
     });
     return () => { current = false; };
-  }, [isTree, workspaceId, revision]);
+  }, [section, workspaceId, revision]);
   const pinnedIds = new Set(pins?.items.map(row => row.id));
   const hasPinSection = pinnedIds.size > 0 || Boolean(pins?.error);
-  const locate = autoLocate && pins && !preserveActiveFolder ? props.active : null;
+  const locate = !isTimeline && autoLocate && pins && !preserveActiveFolder ? props.active : null;
   const locatePinned = locate !== null && pinnedIds.has(locate);
   const locateInFolders = locatePinned || directoryCollapsed ? null : locate;
   const locatedEntry = useRef<{ id: string; pinned: boolean } | null>(null);
@@ -190,7 +231,18 @@ export function Explorer(props: ExplorerProps) {
     setEditing(current => current && !current.target && current.parent === parent ? current : { parent });
   }
 
-  useImperativeHandle(props.ref, () => ({ addRootFolder: () => addFolder(null), revealDirectory: () => collapseDirectory(false) }));
+  useImperativeHandle(props.ref, () => ({
+    addFolder,
+    revealDirectory: () => collapseDirectory(false),
+    revealTimelineTag(id, focus) {
+      setTagsCollapsed(false);
+      requestAnimationFrame(() => {
+        const row = document.getElementById(`timeline-tag-${id}`);
+        if (focus) row?.focus({ preventScroll: true });
+        row?.scrollIntoView?.({ block: "nearest" });
+      });
+    },
+  }));
 
   function finishMenu(event: Event) {
     const edit = editAfterMenu.current;
@@ -222,23 +274,47 @@ export function Explorer(props: ExplorerProps) {
       const open = expanded.includes(category.id);
       const [Icon] = folderIcons[category.icon];
       const Chevron = open ? ChevronDown : ChevronRight;
+      const hasChildren = isTimeline && categories.some(child => child.parentId === category.id);
+      const childrenId = `folder-${category.id}`;
       const drop = drag.hint?.id === category.id ? drag.hint.placement : undefined;
+      const children = (isTimeline ? hasChildren || editing?.parent === category.id : open)
+        ? <ul className="folder-children" id={childrenId} data-tree-container={category.id} aria-label={category.name}
+          inert={isTimeline && !open}>
+          {branch(category.id)}
+          {!isTimeline && <FolderEntries key={sort} categoryId={category.id} revision={revision} limit={limit} markLoading={markLoading} actions={rowActions} drag={drag}
+            pinnedIds={pinnedIds} sort={sort === "manual" ? undefined : sort}
+            locate={props.activeFolder === category.id ? locateInFolders : null} />}
+          {editing && !editing.target && editing.parent === category.id && <li>{folderEditor(editing)}</li>}
+        </ul> : null;
       return <li key={category.id} className="tree-folder" data-placement={drop}>
         {editing?.target?.id === category.id ? folderEditor(editing) : <div className="folder-row"
           data-tree-kind="folder" data-tree-id={category.id} data-tree-title={category.name}
           data-menu-target={contextFolder === category.id || undefined}
           data-dragging={drag.ghost?.id === category.id || undefined} data-tree-draggable={!props.treeLocked || undefined}>
+          {isTimeline && (hasChildren
+            ? <button type="button" className="plain-button timeline-folder-toggle" aria-label={`${open ? "折叠" : "展开"} ${category.name}`}
+              aria-expanded={open} aria-controls={childrenId} onClick={() => props.onFolder(category.id)}>
+              <ChevronDown size={12} aria-hidden="true" />
+            </button>
+            : <span className="timeline-folder-toggle" aria-hidden="true" />)}
           <ContextMenu.Root onOpenChange={open => setContextFolder(current => open ? category.id : current === category.id ? null : current)}>
-            <Tooltip content={category.name}><ContextMenu.Trigger>
-              <button type="button" id={`folder-row-${category.id}`} className="plain-button folder-select" aria-expanded={open}
-                aria-controls={open ? `folder-${category.id}` : undefined} onClick={() => props.onFolder(category.id)}>
-                <Chevron size={12} className="folder-chevron" />
+            <ContextMenu.Trigger>
+              <button type="button" id={`folder-row-${category.id}`} className="plain-button folder-select"
+                aria-expanded={isTimeline ? undefined : open}
+                aria-current={isTimeline && selection?.kind === "folder" && selection.id === category.id ? "true" : undefined}
+                aria-controls={!isTimeline && open ? childrenId : undefined}
+                onClick={() => {
+                  if (isTimeline) props.onTimelineSelect?.({ kind: "folder", id: category.id });
+                  else props.onFolder(category.id);
+                }}>
+                {!isTimeline && <Chevron size={12} className="folder-chevron" />}
                 <span className="folder-icon" aria-hidden="true">{loadingFolders.includes(category.id)
                   ? <Spinner size="1" />
                   : open && category.icon === "folder" ? <FolderOpen size={15} /> : <Icon size={15} />}</span>
                 <span>{category.name}</span>
+                {counts && <span className="timeline-count" aria-label={`${folderCounts[category.id] ?? 0} 篇文章`}>{folderCounts[category.id] ?? 0}</span>}
               </button>
-            </ContextMenu.Trigger></Tooltip>
+            </ContextMenu.Trigger>
             <ContextMenu.Content size="1" aria-label="文件夹操作" onCloseAutoFocus={finishMenu}>
               <CreateItems Item={ContextMenu.Item} disabled={props.treeLocked} onCreate={() => props.onCreate(category.id)}
                 onImportWechat={() => props.onImportWechat(category.id)} onImportMarkdown={() => props.onImportMarkdown(category.id)} />
@@ -254,13 +330,7 @@ export function Explorer(props: ExplorerProps) {
             </ContextMenu.Content>
           </ContextMenu.Root>
         </div>}
-        {open && <ul className="folder-children" id={`folder-${category.id}`} data-tree-container={category.id} aria-label={category.name}>
-          {branch(category.id)}
-          <FolderEntries key={sort} categoryId={category.id} revision={revision} limit={limit} markLoading={markLoading} actions={rowActions} drag={drag}
-            pinnedIds={pinnedIds} sort={sort === "manual" ? undefined : sort}
-            locate={props.activeFolder === category.id ? locateInFolders : null} />
-          {editing && !editing.target && editing.parent === category.id && <li>{folderEditor(editing)}</li>}
-        </ul>}
+        {isTimeline && children ? <div className="tree-section-content" data-collapsed={!open}>{children}</div> : children}
       </li>;
     });
   }
@@ -268,8 +338,10 @@ export function Explorer(props: ExplorerProps) {
   const content = <aside className="explorer" aria-label={isTree ? "内容目录" : listLabel} {...(isTree ? drag.events : {})}>
     {isTree && <div className="directory-tools" role="group" aria-label="目录快捷操作">
       <Tool label="新建笔记" className="chrome-icon" disabled={props.treeLocked || !library} onClick={() => props.onCreateCurrent ? props.onCreateCurrent() : props.onCreate(null)}><FilePenLine size={16} /></Tool>
-      <Tool id="add-root-folder" label="新建目录" className="chrome-icon" disabled={props.treeLocked || !library} onClick={() => addFolder(null)}><FolderPlus size={16} /></Tool>
-      <DropdownMenu.Root><Tooltip content="排序"><DropdownMenu.Trigger>
+      <Tool id="add-root-folder" label={timelineFolder ? "新建子目录" : "新建目录"} className="chrome-icon"
+        disabled={props.treeLocked || !library || Boolean(timelineFolder?.parentId)}
+        onClick={() => addFolder(timelineFolder?.id ?? null)}><FolderPlus size={16} /></Tool>
+      {!isTimeline && <DropdownMenu.Root><Tooltip content="排序"><DropdownMenu.Trigger>
         <button type="button" aria-label="排序" className="plain-button chrome-icon"><ArrowDownNarrowWide size={16} /></button>
       </DropdownMenu.Trigger></Tooltip><DropdownMenu.Content size="1">
         <DropdownMenu.RadioGroup value={sort} onValueChange={value => { setSort(value as typeof sort); persist("directory-sort", value); }}>
@@ -284,11 +356,11 @@ export function Explorer(props: ExplorerProps) {
           <DropdownMenu.Separator />
           <DropdownMenu.RadioItem value="manual">手动排序</DropdownMenu.RadioItem>
         </DropdownMenu.RadioGroup>
-      </DropdownMenu.Content></DropdownMenu.Root>
-      <Tool label="自动定位当前文件" className="chrome-icon" aria-pressed={autoLocate} onClick={() => {
+      </DropdownMenu.Content></DropdownMenu.Root>}
+      {!isTimeline && <Tool label="自动定位当前文件" className="chrome-icon" aria-pressed={autoLocate} onClick={() => {
         setAutoLocate(!autoLocate); persist("directory-auto-locate", !autoLocate);
         if (!autoLocate && preserveActiveFolder) props.onLocateCurrent?.();
-      }}><Crosshair size={16} /></Tool>
+      }}><Crosshair size={16} /></Tool>}
       <Tool label={foldersExpanded && !directoryCollapsed ? "全部折叠" : "全部展开"} className="chrome-icon" disabled={!categories.length}
         onClick={() => {
           if (directoryCollapsed) collapseDirectory(false);
@@ -300,8 +372,9 @@ export function Explorer(props: ExplorerProps) {
     {!isTree && !isSearch && <div className="section-bar explorer-title"><h1>{listLabel}</h1></div>}
 
     <div className="explorer-scroll explorer-list-scroll" data-root-drop={drag.hint?.id === null || undefined}>
-      {isTree ? <ul className="explorer-content folder-tree" data-tree-container="" aria-label="目录和内容">
-        {hasPinSection && <TreeSection id="tree-pinned-list" title="置顶" collapsed={pinsCollapsed} pinned
+      {isTree ? <ul className={`explorer-content folder-tree${isTimeline ? " timeline-folders" : ""}`} data-tree-container=""
+        aria-label={isTimeline ? "目录" : "目录和内容"}>
+        {!isTimeline && hasPinSection && <TreeSection id="tree-pinned-list" title="置顶" collapsed={pinsCollapsed} pinned
           onExpanded={() => scrollAfterSectionExpands(true)} onToggle={() => {
           setPinsCollapsed(!pinsCollapsed);
           persist("directory-pins-collapsed", !pinsCollapsed);
@@ -313,12 +386,44 @@ export function Explorer(props: ExplorerProps) {
         </TreeSection>}
         <TreeSection id="tree-directory-list" title="目录" collapsed={directoryCollapsed}
           onExpanded={() => scrollAfterSectionExpands(false)} onToggle={() => collapseDirectory(!directoryCollapsed)}>
+          {isTimeline && <li><div className="folder-row">
+            <span className="timeline-folder-toggle" aria-hidden="true" />
+            <button type="button" id="timeline-root-folder" className="plain-button folder-select"
+              aria-current={selection?.kind === "root" ? "true" : undefined}
+              onClick={() => props.onTimelineSelect?.({ kind: "root" })}>
+              <span className="folder-icon" aria-hidden="true"><FolderOpen size={15} /></span>
+              <span>{rootFolderLabel}</span>
+              {counts && <span className="timeline-count" aria-label={`${counts.root} 篇文章`}>{counts.root}</span>}
+            </button>
+          </div></li>}
           {branch(null)}
-          <FolderEntries key={sort} revision={revision} limit={limit} markLoading={markLoading} actions={rowActions} drag={drag}
+          {!isTimeline && <FolderEntries key={sort} revision={revision} limit={limit} markLoading={markLoading} actions={rowActions} drag={drag}
             pinnedIds={pinnedIds} sort={sort === "manual" ? undefined : sort} locate={props.activeFolder === null ? locateInFolders : null}
-            empty={library?.categories.length === 0 && pins && !pinnedIds.size && !editing ? "暂无内容" : undefined} />
+            empty={library?.categories.length === 0 && pins && !pinnedIds.size && !editing ? "暂无内容" : undefined} />}
           {editing && !editing.target && editing.parent === null && <li>{folderEditor(editing)}</li>}
         </TreeSection>
+        {isTimeline && library && <TreeSection id="timeline-tags" title="标签" collapsed={tagsCollapsed}
+          onExpanded={() => {
+            if (selection?.kind === "tag") {
+              document.getElementById(`timeline-tag-${selection.id}`)?.scrollIntoView?.({ block: "nearest" });
+            }
+          }}
+          onToggle={() => setTagsCollapsed(!tagsCollapsed)} icon={<Tags size={15} aria-hidden="true" />}>
+          {library.tags.map(tag => <li key={tag.id}>
+            <button type="button" id={`timeline-tag-${tag.id}`} className="plain-button timeline-tag-row"
+              aria-current={selection?.kind === "tag" && selection.id === tag.id ? "true" : undefined}
+              onClick={() => props.onTimelineSelect?.({ kind: "tag", id: tag.id })}>
+              <Tag size={15} aria-hidden="true" /><span>{tag.name}</span>
+              {counts && <span className="timeline-count" aria-label={`${counts.tags[tag.id] ?? 0} 篇文章`}>{counts.tags[tag.id] ?? 0}</span>}
+            </button>
+          </li>)}
+          <li><button type="button" className="plain-button timeline-tag-row"
+            aria-current={selection?.kind === "untagged" ? "true" : undefined}
+            onClick={() => props.onTimelineSelect?.({ kind: "untagged" })}>
+            <Tag size={15} aria-hidden="true" /><span>无标签</span>
+            {counts && <span className="timeline-count" aria-label={`${counts.untagged} 篇文章`}>{counts.untagged}</span>}
+          </button></li>
+        </TreeSection>}
       </ul> : <ul className={`explorer-content entry-list${isSearch ? " search-results" : ""}`} aria-label={isSearch ? "搜索结果" : listLabel}>
         {isSearch && !query.trim() ? null : props.listError ? <ListError message={props.listError} onRetry={props.onRetry} />
           : !page ? <li className="explorer-empty">正在载入…</li>
@@ -330,15 +435,11 @@ export function Explorer(props: ExplorerProps) {
     {isTree && drag.ghost && <div className="tree-drag-ghost" aria-hidden="true" ref={drag.ghostElement}
       style={{ translate: `${drag.ghost.x}px ${drag.ghost.y}px` }}><DragIcon size={16} /><span>{drag.ghost.title}</span></div>}
   </aside>;
-  return <ContextMenu.Root>
-    <ContextMenu.Trigger disabled={!isTree}>{content}</ContextMenu.Trigger>
-    {isTree && <ContextMenu.Content size="1" aria-label="目录操作" onCloseAutoFocus={finishMenu}>
-      <CreateItems Item={ContextMenu.Item} disabled={props.treeLocked || !library} onCreate={() => props.onCreate(null)}
-        onImportWechat={() => props.onImportWechat(null)} onImportMarkdown={() => props.onImportMarkdown(null)} />
-      <ContextMenu.Separator />
-      <ContextMenu.Item disabled={props.treeLocked || !library} onSelect={() => { editAfterMenu.current = () => addFolder(null); }}><FolderPlus size={15} />新建目录</ContextMenu.Item>
-    </ContextMenu.Content>}
-  </ContextMenu.Root>;
+  return section === "folders" ? <BlankAreaMenu label="目录操作" disabled={props.treeLocked || !library}
+    onCreate={() => props.onCreate(null)} onImportWechat={() => props.onImportWechat(null)}
+    onImportMarkdown={() => props.onImportMarkdown(null)} onAddFolder={() => addFolder(null)}>
+    {content}
+  </BlankAreaMenu> : content;
 }
 
 function ListError({ message, onRetry }: { message: string; onRetry(): void }) {
@@ -426,8 +527,9 @@ function FolderEntries({ categoryId, pinnedIds, revision, limit, markLoading, ac
   </>;
 }
 
-function ContentRow({ row, actions, detail = false, pinned, draggable, dragging, placement }: {
+export function ContentRow({ row, actions, detail = false, pinned, draggable, dragging, placement, timeline }: {
   row: EntryRow; actions: RowActions; detail?: boolean; pinned?: boolean; draggable?: boolean; dragging?: boolean; placement?: CategoryPlacement;
+  timeline?: { id: string; content: ReactNode };
 }) {
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -437,33 +539,47 @@ function ContentRow({ row, actions, detail = false, pinned, draggable, dragging,
   const title = row.title || untitled;
   const deleted = row.deletedAt !== null;
   const reading = actions.readOnlyIds.includes(row.id);
-  const act = (action: EntryRowAction) => actions.onRowAction(row, action);
-  return <li className={!detail ? "tree-item" : undefined} data-placement={placement}>
-    {renaming ? <div className={detail ? "entry-inline entry-detail" : "entry-inline tree-entry"}>
+  const rowId = timeline?.id ?? `entry-row-${row.id}`;
+  const isPinned = pinned || row.pinned;
+  const pinLabel = isPinned ? "取消置顶" : "置顶";
+  const PinIcon = isPinned ? PinOff : Pin;
+  const act = (action: EntryRowAction) => {
+    if (timeline) actions.onRowAction(row, action, document.getElementById(rowId));
+    else actions.onRowAction(row, action);
+  };
+  const trigger = <ContextMenu.Trigger>
+    {timeline ? <div className="plain-button timeline-entry" data-menu-target={menuOpen || undefined}>
+      <button type="button" id={rowId} className="timeline-entry-open" aria-label={title}
+        aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)} />
+      {timeline.content}
+    </div> : <button type="button" id={rowId}
+      className={`plain-button entry-row ${detail ? "entry-detail" : "tree-entry"}`}
+      data-tree-kind={detail ? undefined : "entry"} data-tree-id={row.id}
+      data-tree-title={detail ? undefined : title}
+      data-tree-draggable={draggable || undefined} data-tree-pinned={pinned || undefined} data-dragging={dragging || undefined}
+      data-menu-target={menuOpen || undefined}
+      aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)}>
+      {pinned ? <Pin size={15} /> : <FileText size={15} />}<span className="entry-title">{title}</span>
+      {detail && <span className="entry-meta"><span>{statusLabels[row.status]}</span><time dateTime={new Date(row.updatedAt).toISOString()}>{dateLabel(row.updatedAt)}</time></span>}
+    </button>}
+  </ContextMenu.Trigger>;
+  return <li className={timeline ? "timeline-item" : !detail ? "tree-item" : undefined} data-placement={placement}>
+    {renaming ? <div className={timeline ? "entry-inline timeline-entry" : detail ? "entry-inline entry-detail" : "entry-inline tree-entry"}>
       <FileText size={15} /><InlineEntryTitle title={row.title} placeholder={untitled} onError={actions.onFolderError}
         onSave={name => actions.onRenameEntry(row.id, name)} onClose={restore => {
           setRenaming(false);
           if (restore) requestAnimationFrame(() => {
             if (document.activeElement !== document.body) return;
             restoringRowFocus.current = true;
-            document.getElementById(`entry-row-${row.id}`)?.focus();
+            document.getElementById(rowId)?.focus();
             restoringRowFocus.current = false;
           });
         }} />
     </div> : <ContextMenu.Root onOpenChange={open => { setMenuOpen(open); if (open) setHoverOpen(false); }}>
-      <HoverCard.Root open={!menuOpen && !dragging && hoverOpen} onOpenChange={setHoverOpen} openDelay={420} closeDelay={100}>
+      {timeline ? trigger : <HoverCard.Root open={!menuOpen && !dragging && hoverOpen} onOpenChange={setHoverOpen} openDelay={420} closeDelay={100}>
       <HoverCard.Trigger onFocus={event => {
         if (restoringRowFocus.current) event.preventDefault();
-      }}><ContextMenu.Trigger>
-        <button type="button" id={`entry-row-${row.id}`} className={`plain-button entry-row ${detail ? "entry-detail" : "tree-entry"}`}
-          data-tree-kind={detail ? undefined : "entry"} data-tree-id={row.id} data-tree-title={detail ? undefined : title}
-          data-tree-draggable={draggable || undefined} data-tree-pinned={pinned || undefined} data-dragging={dragging || undefined}
-          data-menu-target={menuOpen || undefined}
-          aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)}>
-          {pinned ? <Pin size={15} /> : <FileText size={15} />}<span className="entry-title">{title}</span>
-          {detail && <span className="entry-meta"><span>{statusLabels[row.status]}</span><time dateTime={new Date(row.updatedAt).toISOString()}>{dateLabel(row.updatedAt)}</time></span>}
-        </button>
-      </ContextMenu.Trigger></HoverCard.Trigger>
+      }}>{trigger}</HoverCard.Trigger>
       <HoverCard.Content side="right" align="start" sideOffset={10} className="entry-hover-card">
         <strong>{title}</strong>
         {row.createdAt !== undefined && <span><CalendarDays size={15} aria-hidden="true" />
@@ -471,7 +587,9 @@ function ContentRow({ row, actions, detail = false, pinned, draggable, dragging,
         </span>}
         <span><History size={15} aria-hidden="true" /><time dateTime={new Date(row.updatedAt).toISOString()}>更新于 {entryDate.format(row.updatedAt)}</time></span>
       </HoverCard.Content>
-      </HoverCard.Root>
+      </HoverCard.Root>}
+      {timeline && !deleted && <Tool label={pinLabel} className="timeline-pin" disabled={actions.treeLocked}
+        onClick={() => act(isPinned ? "unpin" : "pin")}><PinIcon size={14} /></Tool>}
       <ContextMenu.Content size="1" onCloseAutoFocus={event => {
         if (!renameAfterMenu.current) return;
         renameAfterMenu.current = false;
@@ -480,8 +598,8 @@ function ContentRow({ row, actions, detail = false, pinned, draggable, dragging,
         setRenaming(true);
       }}>
         {!deleted && <>
-          <ContextMenu.Item disabled={actions.treeLocked} onSelect={() => act(pinned || row.pinned ? "unpin" : "pin")}>
-            {pinned || row.pinned ? <><PinOff size={14} />取消置顶</> : <><Pin size={14} />置顶</>}
+          <ContextMenu.Item disabled={actions.treeLocked} onSelect={() => act(isPinned ? "unpin" : "pin")}>
+            <PinIcon size={14} />{pinLabel}
           </ContextMenu.Item>
           <ContextMenu.Separator />
         </>}
@@ -505,6 +623,10 @@ function ContentRow({ row, actions, detail = false, pinned, draggable, dragging,
         {deleted
           ? <ContextMenu.Item onSelect={() => act("restore")}><ArchiveRestore size={14} />恢复</ContextMenu.Item>
           : <ContextMenu.Item color="red" disabled={reading} onSelect={() => act("delete")}><Trash2 size={14} />移入回收站</ContextMenu.Item>}
+        {!deleted && !detail && <>
+          <ContextMenu.Separator />
+          <ContextMenu.Item onSelect={() => act("properties")}><FilePenLine size={14} />内容属性</ContextMenu.Item>
+        </>}
       </ContextMenu.Content>
     </ContextMenu.Root>}
   </li>;

@@ -4,13 +4,19 @@ import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/
 import { readCalloutMarker } from "../markdown-core/callouts";
 import { codeHighlight } from "./code-view";
 import { tableSelectionDecorations } from "./table-view";
-import { linksToFootnotes } from "./link-footnotes";
+import { hasLinkFootnoteContent, linksToFootnotes } from "./link-footnotes";
+import { measureEditorPerformance } from "./performance";
+import { inlineChangedBlocks } from "./inline-changes";
 
 type Section = { from: number; to: number };
 type TextContext = { caretHeight?: number };
 type PresentationState = { focused: boolean; folded: Map<number, Section>; context: TextContext | null };
 type PresentationUpdate = { focused: boolean } | { toggle: number } | { context: TextContext | null };
 const presentation = new PluginKey<PresentationState>("workbenchPresentation");
+
+export function foldedSections(state: EditorState): ReadonlyMap<number, Section> | undefined {
+  return presentation.getState(state)?.folded;
+}
 
 export function showContextCaret(view: EditorView, visible: boolean) {
   const { selection } = view.state;
@@ -72,17 +78,17 @@ function codeLineNumber(pos: number, line: number) {
   }, { key: `code-line-${line}`, side: -1, ignoreSelection: true });
 }
 
-function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumbers: boolean) {
+function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumbers: boolean, from = 0, to = doc.content.size) {
   const decorations: Decoration[] = [];
   for (const section of folded.values()) {
-    for (let pos = section.from; pos < section.to;) {
+    for (let pos = Math.max(from, section.from); pos < Math.min(to, section.to);) {
       const end = pos + doc.nodeAt(pos)!.nodeSize;
       decorations.push(Decoration.node(pos, end, { hidden: "" }));
       pos = end;
     }
   }
   let line = 1;
-  doc.descendants((node, pos, parent) => {
+  doc.nodesBetween(from, to, (node, pos, parent) => {
     const name = node.type.name;
     const list = name === "bullet_list" || name === "ordered_list";
     const attrs: Record<string, string> = {};
@@ -276,7 +282,8 @@ function linkFootnoteDecorations(doc: ProseNode) {
 
 export function editorPresentation(options: () => { readOnly: boolean; lineNumbers?: boolean; convertLinks?: boolean }) {
   let cached: { doc: ProseNode; folded: Map<number, Section>; lineNumbers: boolean; blocks: DecorationSet } | undefined;
-  let linkNotes: { doc: ProseNode; decorations: Decoration[] } | undefined;
+  let linkNotes: { doc: ProseNode; decorations: DecorationSet } | undefined;
+  let combined: { blocks: DecorationSet; links: DecorationSet; set: DecorationSet } | undefined;
   return new Plugin<PresentationState>({
     key: presentation,
     state: {
@@ -285,13 +292,18 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         const update = tr.getMeta(presentation) as PresentationUpdate | undefined;
         const focused = update && "focused" in update ? update.focused : current.focused;
         let folded = current.folded;
+        const inline = tr.docChanged ? inlineChangedBlocks(tr) : null;
         if (update && "toggle" in update) {
           const pos = update.toggle;
           folded = new Map(folded);
           if (!folded.delete(pos)) folded.set(pos, sectionAfter(tr.doc, pos)!);
         } else if (folded.size && tr.docChanged) {
           folded = new Map();
-          for (const pos of current.folded.keys()) {
+          for (const [pos, range] of current.folded) {
+            if (inline) {
+              folded.set(tr.mapping.map(pos), { from: tr.mapping.map(range.from), to: tr.mapping.map(range.to) });
+              continue;
+            }
             const mapped = tr.mapping.mapResult(pos + 1, -1);
             const point = tr.doc.resolve(mapped.pos);
             if (mapped.deletedAcross || point.parent.type.name !== "heading") continue;
@@ -299,6 +311,25 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
             const section = sectionAfter(tr.doc, heading);
             if (section) folded.set(heading, section);
           }
+        }
+        if (inline && cached?.doc === tr.before && cached.folded === current.folded && folded.size === current.folded.size
+          && !(update && "toggle" in update)) {
+          const extended = inline.filter(index => tr.doc.child(index).type.name !== "paragraph");
+          if (!cached.lineNumbers || !extended.length) {
+            let blocks = cached.blocks.map(tr.mapping, tr.doc);
+            for (const index of extended) {
+              const from = tr.doc.resolve(0).posAtIndex(index), to = from + tr.doc.child(index).nodeSize;
+              const obsolete = blocks.find(from, to).filter(item => item.from >= from && item.to <= to
+                && (item.from !== item.to || (item.from > from && item.to < to)));
+              blocks = blocks.remove(obsolete).add(tr.doc, measureEditorPerformance("decoration.blocks.local", () =>
+                blockDecorations(tr.doc, folded, false, from, to).find()));
+            }
+            cached = { ...cached, doc: tr.doc, folded, blocks };
+          }
+        }
+        if (inline && linkNotes?.doc === tr.before && inline.every(index =>
+          !hasLinkFootnoteContent(tr.before.child(index)) && !hasLinkFootnoteContent(tr.doc.child(index)))) {
+          linkNotes = { doc: tr.doc, decorations: linkNotes.decorations.map(tr.mapping, tr.doc) };
         }
         if (tr.selectionSet) {
           const caret = tr.selection.head;
@@ -318,13 +349,19 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         const { focused, folded, context } = presentation.getState(state)!;
         const { readOnly, lineNumbers = false, convertLinks } = options();
         if (cached?.doc !== doc || cached.folded !== folded || cached.lineNumbers !== lineNumbers) {
-          cached = { doc, folded, lineNumbers, blocks: blockDecorations(doc, folded, lineNumbers) };
+          cached = { doc, folded, lineNumbers, blocks: measureEditorPerformance("decoration.blocks.full", () => blockDecorations(doc, folded, lineNumbers)) };
+        }
+        let persistent = cached.blocks;
+        if (convertLinks) {
+          if (linkNotes?.doc !== doc) linkNotes = { doc, decorations: measureEditorPerformance("decoration.links.full", () =>
+            DecorationSet.create(doc, linkFootnoteDecorations(doc))) };
+          const links = linkNotes.decorations;
+          if (combined?.blocks !== persistent || combined.links !== links) {
+            combined = { blocks: persistent, links, set: persistent.add(doc, links.find()) };
+          }
+          persistent = combined.set;
         }
         const decorations = tableSelectionDecorations(state);
-        if (convertLinks) {
-          if (linkNotes?.doc !== doc) linkNotes = { doc, decorations: linkFootnoteDecorations(doc) };
-          decorations.push(...linkNotes.decorations);
-        }
         if ((focused || context) && !readOnly) decorations.push(...syntaxAtCaret(state));
         const caretHeight = context?.caretHeight;
         if (caretHeight !== undefined && !readOnly && state.selection instanceof TextSelection && state.selection.empty) {
@@ -336,7 +373,7 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
             return caret;
           }, { key: `context-caret-${caretHeight}`, side: 1, ignoreSelection: true }));
         }
-        return decorations.length ? cached.blocks.add(doc, decorations) : cached.blocks;
+        return decorations.length ? persistent.add(doc, decorations) : persistent;
       },
       handleDOMEvents: {
         focus(view) { view.dispatch(view.state.tr.setMeta(presentation, { focused: true } satisfies PresentationUpdate)); return false; },

@@ -5,6 +5,10 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:menu:allow-new",
+    "core:menu:allow-set-enabled",
+    "core:menu:allow-popup",
+    "core:resources:allow-close",
     "opener:allow-reveal-item-in-dir",
     {
       "identifier": "opener:allow-open-url",
@@ -77,6 +81,7 @@
     "allow-begin-exit",
     "allow-cancel-exit",
     "allow-finish-exit",
+    "allow-gpu-acceleration",
     "allow-asset-import",
     "allow-asset-library",
     "allow-asset-upload-progress",

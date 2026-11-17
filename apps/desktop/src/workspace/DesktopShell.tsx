@@ -1,11 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { Button, Theme } from "@radix-ui/themes";
-import { FilePenLine, FolderOpen, Images, Newspaper, Search } from "lucide-react";
+import { FilePenLine, FileText, Folder, Image, List, Search } from "lucide-react";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type UploadProgress } from "../desktop";
+import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
 import { commandKey, untitled } from "../labels";
@@ -17,24 +18,29 @@ import { Confirm, PropertiesDialog, RevisionsDialog } from "./Dialogs";
 import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
-import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type Section } from "./Explorer";
+import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section, type TimelineSelection } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
 import { MigrationPanel } from "./Migration";
 import { AssetPanel, canHostImage, ImageStorageSettings, imageMarkdown } from "./Assets";
+import { Timeline } from "./Timeline";
 import { WindowControls, WindowDragRegion } from "./WindowTitle";
 import { ImageViewer, PublishImagesDialog, WechatImportDialog, renderForPublication } from "./Publishing";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 
 const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
+const minimumDirectoryWidth = 192;
+const minimumTimelineWidth = 144;
+const dividerWidth = 1;
+const dividerHitTarget = { fine: 16, coarse: 24 };
 
 type DocumentOptions = { view?: ViewMode; convertLinks?: boolean };
 
 type Modal =
-  | { type: "palette" | "properties" | "reload" }
-  | { type: "revisions"; id: string }
+  | { type: "palette" | "reload" }
+  | { type: "properties" | "revisions"; id: string }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
   | { type: "wechatImport"; categoryId: string | null }
@@ -42,8 +48,8 @@ type Modal =
   | { type: "publishImages"; images: RenderedWechat["images"] };
 
 const destinations = [
-  ["folders", FolderOpen, "内容目录"], ["search", Search, "全文搜索"], ["assets", Images, "素材库"],
-  ["imports", Newspaper, "已导入的公众号文章"],
+  ["folders", Folder, "内容目录"], ["timeline", List, "文章时间流"], ["search", Search, "全文搜索"], ["assets", Image, "素材库"],
+  ["imports", FileText, "已导入的公众号文章"],
 ] as const;
 
 function useMedia(query: string) {
@@ -62,6 +68,14 @@ export function DesktopShell() {
   const [library, setLibrary] = useState<Library | null>(null);
   const [page, setPage] = useState<EntryPage | null>(null);
   const [categoryId, setCategoryId] = useState<string>();
+  const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
+  const [includeTimelineChildren, setIncludeTimelineChildren] = useState(true);
+  const timelineFolder = timelineSelection?.kind === "folder"
+    ? library?.categories.find(category => category.id === timelineSelection.id) ?? null : null;
+  const timelineTag = timelineSelection?.kind === "tag"
+    ? library?.tags.find(tag => tag.id === timelineSelection.id) ?? null : null;
+  const timelineMode = section === "timeline";
+  const timelineRoot = timelineSelection?.kind === "root";
   const [expandedFolders, setExpandedFolders] = useState(() => useStoredInitial<string[]>("expanded-folders", []));
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -154,11 +168,17 @@ export function DesktopShell() {
   const locking = useRef(new Set<string>());
   const exit = useRef<{ cancelled: boolean; restoring: boolean } | null>(null);
   const [initialSidebarWidth] = useState(() => useStoredInitial("sidebar-width", 248));
+  const [initialTimelineWidth] = useState(() => useStoredInitial("timeline-width", 320));
   const [initialSidebarSize] = useState(() => explorer ? `${initialSidebarWidth}px` : "0px");
   const sidebarWidth = useRef(initialSidebarWidth);
+  const timelineWidth = useRef(initialTimelineWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
+  const timelineGroup = useRef<HTMLDivElement>(null);
+  const previousTimelineMode = useRef(false);
+  const timelineWidthsReady = useRef(false);
   const explorerTree = useRef<ExplorerHandle>(null);
   const sidebarPanel = usePanelRef();
+  const directoryPanel = usePanelRef();
   const aiSidebarPanel = usePanelRef();
   const [initialAiWidth] = useState(() => useStoredInitial("ai-sidebar-width", 350));
   const aiSidebarWidth = useRef(initialAiWidth);
@@ -166,6 +186,7 @@ export function DesktopShell() {
   const focusOrigin = useRef<HTMLElement | null>(null);
   const refresh = () => setRefreshCount(count => count + 1);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
+  useEffect(() => installInputContextMenu(showError), [showError]);
   function updateDocumentOptions(id: string, patch: DocumentOptions) {
     setDocumentOptions(current => new Map(current).set(id, { ...current.get(id), ...patch }));
   }
@@ -201,11 +222,11 @@ export function DesktopShell() {
 
   useEffect(() => {
     let current = true;
-    void desktop.library().then(result => { if (current) setLibrary(result); }, error => {
+    void desktop.library(timelineMode).then(result => { if (current) setLibrary(result); }, error => {
       if (current) setNotice({ type: "error", text: errorMessage(error) });
     });
     return () => { current = false; };
-  }, [refreshCount]);
+  }, [refreshCount, timelineMode]);
 
   const restoreTabs = useEffectEvent(async (workspaceId: string, isCurrent: () => boolean) => {
     const saved = readDocumentTabs(workspaceId);
@@ -418,7 +439,7 @@ export function DesktopShell() {
   }
 
   function navigate(next: Section) {
-    if (section === "folders" && next !== section) {
+    if ((section === "folders" || section === "timeline") && next !== section) {
       const field = document.activeElement;
       if (field instanceof HTMLElement && field.closest(".folder-inline, .folder-icon-picker, .entry-inline")) field.blur();
     }
@@ -467,15 +488,21 @@ export function DesktopShell() {
     });
   }
 
+  function toggleFolderExpanded(id: string) {
+    setExpandedFolders(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+  }
+
   function toggleFolder(id: string) {
     setCategoryId(id);
-    setExpandedFolders(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+    toggleFolderExpanded(id);
   }
 
   function activateCreated(entry: Entry) {
     ++selecting.current;
-    navigate("folders");
-    revealDirectory();
+    if (section !== "timeline") {
+      navigate("folders");
+      revealDirectory();
+    }
     revealFolder(entry.categoryId);
     pendingEditorFocus.current = entry.id;
     install(entry);
@@ -494,7 +521,7 @@ export function DesktopShell() {
     }
   }
 
-  const currentFolder = section === "folders" ? categoryId ?? null : null;
+  const currentFolder = section === "timeline" ? timelineFolder?.id ?? null : section === "folders" ? categoryId ?? null : null;
 
   function create(parent: string | null = currentFolder) {
     run(async () => {
@@ -519,7 +546,7 @@ export function DesktopShell() {
     const queue = queues.current.get(id);
     if (queue && isConflict(queue.snapshot().error)) {
       await withEntryLock(id, async () => {
-        const fields = queue.snapshot().fields;
+        const fields = queue.capture().fields;
         const draft = await desktop.create("article", {
           ...fields, status: "draft", source: null, publishedAt: null, publishedUrl: "",
         });
@@ -548,7 +575,7 @@ export function DesktopShell() {
   async function currentEntry(id: string): Promise<Entry> {
     const queue = queues.current.get(id);
     if (!queue) return desktop.entry(id);
-    const { version, fields } = queue.snapshot();
+    const { version, fields } = queue.capture();
     return { ...queue.entry, ...fields, version };
   }
 
@@ -566,6 +593,7 @@ export function DesktopShell() {
         case "pin": case "unpin": await desktop.setEntryPinned(row.id, action === "pin"); refresh(); return;
         case "export": return exportMarkdown(row.id);
         case "history": showModal({ type: "revisions", id: row.id }, trigger); return;
+        case "properties": showModal({ type: "properties", id: row.id }, trigger); return;
         case "duplicate": {
           const entry = await currentEntry(row.id);
           activateCreated(await desktop.create("article", {
@@ -603,7 +631,7 @@ export function DesktopShell() {
         break;
       case "properties":
         switchTab(id);
-        showModal({ type: "properties" }, trigger);
+        showModal({ type: "properties", id }, trigger);
         break;
       case "search":
         switchTab(id);
@@ -612,18 +640,12 @@ export function DesktopShell() {
         }
         requestAnimationFrame(() => handles.current.get(id)?.search());
         break;
-      case "folder":
-        switchTab(id);
-        navigate("folders");
-        revealDirectory();
-        revealFolder(queue.snapshot().fields.categoryId);
-        break;
       default:
         entryAction(queue.entry, action, trigger);
     }
   }
 
-  async function changeEntryLocation(entry: Entry, change: Partial<Pick<EntryFields, "title" | "categoryId">>) {
+  async function saveEntryFields(entry: Entry, change: Partial<EntryFields>) {
     const queue = queues.current.get(entry.id);
     if (queue) {
       queue.edit(change);
@@ -632,6 +654,10 @@ export function DesktopShell() {
       await desktop.save(entry.id, entry.version, { ...entry, ...change }, "auto");
       refresh();
     }
+  }
+
+  async function changeEntryLocation(entry: Entry, change: Partial<Pick<EntryFields, "title" | "categoryId">>) {
+    await saveEntryFields(entry, change);
     if (change.categoryId !== undefined && entry.id === active.current) revealFolder(change.categoryId);
   }
 
@@ -697,6 +723,7 @@ export function DesktopShell() {
         queues.current.get(change.id)?.categoryMoved(change.categoryId, change.version);
       }
       if (categoryId && removed.has(categoryId)) setCategoryId(undefined);
+      setTimelineSelection(selection => selection?.kind === "folder" && removed.has(selection.id) ? null : selection);
       setExpandedFolders(current => current.filter(id => !removed.has(id)));
       refresh();
     } finally { setGlobalLock(false); }
@@ -789,10 +816,10 @@ export function DesktopShell() {
   function publication(output: "clipboard" | "html") {
     if (!selected || publishing || exit.current) return;
     if (projectLinks === null) { setNotice({ type: "info", text: "编辑器正在加载，请稍后重试" }); return; }
-    const { fields, revision } = selected.snapshot();
     setPublishing(true);
     run(async () => {
       try {
+        const { fields, revision } = selected.capture();
         const input = { output, revision, markdown: projectLinks?.(fields.contentMd) ?? fields.contentMd, themeId: fields.themeId };
         const { result, hosting, exportImages } = await renderForPublication(input);
         try {
@@ -857,7 +884,9 @@ export function DesktopShell() {
       if (viewMode === "preview") view("edit");
       requestAnimationFrame(() => handles.current.get(selected.entry.id)?.search());
     },
-    onProperties: () => showModal({ type: "properties" }, document.getElementById("document-action-trigger")),
+    onProperties: () => {
+      if (activeId) showModal({ type: "properties", id: activeId }, document.getElementById("document-action-trigger"));
+    },
     onSavedVersions: () => { if (selected) showModal({ type: "revisions", id: selected.entry.id }, document.getElementById("document-action-trigger")); },
     onExport: () => { if (selected) run(() => exportMarkdown(selected.entry.id)); },
     onExportAssets: () => {
@@ -870,7 +899,7 @@ export function DesktopShell() {
     onExportWechat: () => publication("html"),
     onCopyWechat: () => publication("clipboard"),
     onCopyMarkdown: () => {
-      if (selected) run(async () => { await copy(selected.snapshot().fields.contentMd); setNotice({ type: "info", text: "Markdown 已复制" }); });
+      if (selected) run(async () => { await copy(selected.capture().fields.contentMd); setNotice({ type: "info", text: "Markdown 已复制" }); });
     },
     onHostImages: selected && imageTarget ? () => hostDocumentImages(selected) : undefined,
     hostingImages: Boolean(imageUpload),
@@ -878,7 +907,7 @@ export function DesktopShell() {
     onDelete: () => { if (selected) run(() => changeDeleted(selected.entry.id, selected.entry.deletedAt === null)); },
     onDraft: () => { if (selected) run(() => saveConflictCopy(selected.entry.id)); },
     onCopy: () => {
-      if (selected) run(async () => { await copy(selected.snapshot().fields.contentMd); setNotice({ type: "info", text: "已复制当前正文" }); });
+      if (selected) run(async () => { await copy(selected.capture().fields.contentMd); setNotice({ type: "info", text: "已复制当前正文" }); });
     },
     onReload: () => showModal({ type: "reload" }),
     onRetry: () => { if (selected) run(() => selected.flush({ retry: true })); },
@@ -1042,14 +1071,29 @@ export function DesktopShell() {
   useLayoutEffect(() => {
     const panel = sidebarPanel.current!;
     const group = sidebarGroup.current!;
-    if (showExplorer !== panel.isCollapsed()) return;
+    const switchedView = previousTimelineMode.current !== timelineMode;
+    previousTimelineMode.current = timelineMode;
+    if (!showExplorer || switchedView) timelineWidthsReady.current = false;
+    if (showExplorer !== panel.isCollapsed() && (!showExplorer || !switchedView)) return;
+    const directoryWidth = sidebarWidth.current;
+    const navigationWidth = directoryWidth + (timelineMode ? timelineWidth.current + dividerWidth : 0);
     group.dataset.sidebarMoving = "true";
-    if (showExplorer) panel.resize(`${sidebarWidth.current}px`);
-    else panel.collapse();
+    const frame = requestAnimationFrame(() => {
+      if (showExplorer) panel.resize(navigationWidth);
+      else panel.collapse();
+    });
     const clear = () => { delete group.dataset.sidebarMoving; };
-    const timer = window.setTimeout(clear, 220);
-    return () => { window.clearTimeout(timer); clear(); };
-  }, [showExplorer, sidebarPanel]);
+    const timer = window.setTimeout(() => {
+      if (timelineMode && showExplorer) directoryPanel.current?.resize(directoryWidth);
+      clear();
+      timelineWidthsReady.current = timelineMode && showExplorer;
+    }, 220);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      clear();
+    };
+  }, [showExplorer, timelineMode, sidebarPanel, directoryPanel]);
   useLayoutEffect(() => {
     const panel = aiSidebarPanel.current!;
     const group = sidebarGroup.current!;
@@ -1110,85 +1154,146 @@ export function DesktopShell() {
   const toast = notice && <WorkspaceToast notice={notice} onReveal={path => run(() => desktop.revealFile(path))}
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
   const workspaceNotice = modal?.type !== "settings" && toast;
+  function rememberTimelineWidths(directory: number, timeline: number) {
+    sidebarWidth.current = directory;
+    timelineWidth.current = timeline;
+    persist("sidebar-width", directory);
+    persist("timeline-width", timeline);
+  }
+  const rowActions: RowActions = {
+    active: activeId, categories: library?.categories ?? [], readOnlyIds: [...readingIds, ...locked],
+    treeLocked: globalLock, openMode: documentOpenMode, onOpen: (id, mode) => run(() => open(id, mode)),
+    onRowAction: entryAction, onRenameEntry: renameEntry, onFolderError: showError, onMoveEntry: moveTreeEntry,
+  };
+  const hideSidebarButton = <Tool id="hide-sidebar" label="隐藏左侧栏" className="chrome-icon sidebar-toggle" onClick={toggleExplorer}>
+    <SidebarToggleIcon expanded />
+  </Tool>;
+  const sidebar = (
+    <div className="sidebar-workspace" inert={!showExplorer}>
+      <nav className="sidebar-chrome chrome-band" aria-label="工作区导航">
+        <div className="button-strip">
+          {destinations.map(([target, Icon, label]) => <Tool key={target} label={label} className="chrome-icon"
+            aria-current={target === section ? "page" : undefined} onClick={() => {
+              if (target === "search") { openSearch(); return; }
+              if (target === "folders" && section === "folders") revealFolder(null);
+              navigate(target);
+            }}>
+            <Icon size={18} strokeWidth={1.8} />
+          </Tool>)}
+        </div>
+        <WindowDragRegion onError={showError} />
+        {!timelineMode && hideSidebarButton}
+      </nav>
+      {section === "assets" ? <AssetPanel onImport={files => importImages(files, "library")} onConfigure={() => openSettings("images")}
+      canInsert={!reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id)}
+      canCover={!reading && Boolean(queue && queue.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id))}
+      onInsert={(id, name) => {
+        if (viewMode === "preview") view("edit");
+        if (active.current) handles.current.get(active.current)?.insert("\n" + imageMarkdown(id, name) + "\n");
+      }}
+      onCover={id => {
+        if (queue) {
+          queue.edit({ coverAssetId: id });
+          void queue.flush().then(saved => {
+            if (saved) setNotice({ type: "info", text: "已设置封面" });
+          });
+        }
+      }} />
+      : <Explorer {...rowActions} ref={explorerTree} section={section} library={library} page={page}
+        activeFolder={queue?.entry.deletedAt === null ? queue.snapshot().fields.categoryId : undefined}
+        timelineSelection={timelineSelection} onTimelineSelect={setTimelineSelection} includeTimelineChildren={includeTimelineChildren}
+        preserveActiveFolder={tabSelection?.restored}
+        onCreateCurrent={() => create()}
+        onToggleAll={expand => setExpandedFolders(expand ? (library?.categories ?? []).map(folder => folder.id) : [])}
+        onLocateCurrent={() => {
+          if (queue?.entry.deletedAt !== null) return;
+          const pinned = document.getElementById(`entry-row-${queue.entry.id}`);
+          if (pinned?.hasAttribute("data-tree-pinned")) pinned.scrollIntoView({ block: "nearest" });
+          else {
+            revealDirectory();
+            revealFolder(queue.snapshot().fields.categoryId);
+          }
+        }}
+        expanded={expandedFolders} revision={refreshCount} loading={folderLoading} pageSize={folderPageSize} caseSensitive={caseSensitive}
+        query={query} searchInputRef={searchInput} listError={listError} onRetry={refresh}
+        onQuery={value => { setQuery(value); setPage(null); }}
+        onCaseSensitive={value => { setCaseSensitive(value); setPage(null); }}
+        onFolder={section === "timeline" ? toggleFolderExpanded : toggleFolder}
+        onImportWechat={showWechatImport} onImportMarkdown={importMarkdown}
+        onCreate={create} onRevealFolder={revealFolder} onSaveFolder={saveFolder}
+        onReorderFolder={reorderFolder} onReorderEntry={reorderEntry}
+        onCategoryAction={categoryAction} onMore={more} />}
+    </div>
+  );
   return <Theme appearance={appearance === "system" ? systemDark ? "dark" : "light" : appearance} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
     <div className="workspace-shell" inert={Boolean(exitMessage)}>
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup}
-        onLayoutChanged={() => {
-          if (showExplorer) persist("sidebar-width", sidebarWidth.current);
+        resizeTargetMinimumSize={dividerHitTarget}
+        onLayoutChanged={layout => {
+          const group = sidebarGroup.current;
+          if (group && showExplorer && previousTimelineMode.current === timelineMode
+            && !group.dataset.sidebarMoving && !group.dataset.aiSidebarMoving) {
+            const available = group.clientWidth - dividerWidth * (showAiPanel ? 2 : 1);
+            const width = Math.round(available * layout.explorer / 100);
+            if (timelineMode && timelineWidthsReady.current && width >= minimumDirectoryWidth + minimumTimelineWidth + dividerWidth) {
+              const directory = Math.min(sidebarWidth.current, width - minimumTimelineWidth - dividerWidth);
+              rememberTimelineWidths(directory, width - directory - dividerWidth);
+            } else if (!timelineMode && width >= minimumDirectoryWidth) {
+              sidebarWidth.current = width;
+              persist("sidebar-width", width);
+            }
+          }
           if (showAiPanel) persist("ai-sidebar-width", aiSidebarWidth.current);
         }}>
-          <Panel id="explorer" defaultSize={initialSidebarSize} minSize="192px" collapsible collapsedSize="0px" panelRef={sidebarPanel}
+          <Panel id="explorer" defaultSize={initialSidebarSize}
+            minSize={timelineMode ? minimumDirectoryWidth + minimumTimelineWidth + dividerWidth : minimumDirectoryWidth}
+            collapsible collapsedSize="0px" panelRef={sidebarPanel}
             style={{ overflow: "hidden" }} groupResizeBehavior="preserve-pixel-size"
             onResize={size => {
               if (!showExplorer) return;
-              if (size.inPixels > 0) sidebarWidth.current = size.inPixels;
-              else if (!sidebarGroup.current?.dataset.sidebarMoving) setExplorerOverride(false);
+              if (sidebarGroup.current?.dataset.sidebarMoving) return;
+              if (!size.inPixels) setExplorerOverride(false);
             }}>
-            <div className="sidebar-workspace" inert={!showExplorer}>
-              <nav className="sidebar-chrome chrome-band" aria-label="工作区导航">
-                <div className="button-strip">
-                  {destinations.map(([target, Icon, label]) => <Tool key={target} label={label} className="chrome-icon"
-                    aria-current={target === section ? "page" : undefined} onClick={() => {
-                      if (target === "search") { openSearch(); return; }
-                      if (target === "folders" && section === "folders") revealFolder(null);
-                      navigate(target);
-                    }}>
-                    <Icon size={17} strokeWidth={1.65} />
-                  </Tool>)}
+            {timelineMode ? <Group id="navigation-panels" className="navigation-panels" orientation="horizontal"
+              resizeTargetMinimumSize={dividerHitTarget}
+              elementRef={timelineGroup} onLayoutChanged={layout => {
+                const groupWidth = timelineGroup.current?.offsetWidth;
+                if (!timelineWidthsReady.current || !showExplorer || !groupWidth || sidebarGroup.current?.dataset.aiSidebarMoving) return;
+                const available = groupWidth - dividerWidth;
+                const directory = Math.round(available * layout.directory / 100);
+                rememberTimelineWidths(directory, available - directory);
+              }}>
+              <Panel id="directory" defaultSize={initialSidebarWidth} minSize={minimumDirectoryWidth} panelRef={directoryPanel}
+                groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}>
+                {sidebar}
+              </Panel>
+              {showExplorer && <Separator className="divider sidebar-divider navigation-divider" disableDoubleClick aria-label="调整目录栏宽度" />}
+              <Panel id="timeline" minSize={minimumTimelineWidth} style={{ overflow: "hidden" }}>
+                <div className="timeline-workspace" inert={!showExplorer}>
+                  <Timeline root={timelineRoot} folder={timelineFolder} tag={timelineTag} untagged={timelineSelection?.kind === "untagged"} tags={library?.tags ?? []}
+                    onSelectTag={(id, keyboard) => {
+                      setTimelineSelection({ kind: "tag", id });
+                      explorerTree.current?.revealTimelineTag(id, keyboard && timelineTag?.id !== id);
+                    }}
+                    includeChildren={includeTimelineChildren} onIncludeChildren={setIncludeTimelineChildren}
+                    revision={refreshCount} actions={rowActions} sidebarToggle={hideSidebarButton} blankMenu={timelineFolder || timelineRoot ? {
+                      disabled: globalLock || !library,
+                      onCreate: () => create(currentFolder),
+                      onImportWechat: () => showWechatImport(currentFolder),
+                      onImportMarkdown: () => importMarkdown(currentFolder),
+                      onAddFolder: timelineFolder?.parentId ? undefined : () => explorerTree.current?.addFolder(currentFolder),
+                    } : null} />
                 </div>
-                <WindowDragRegion onError={showError} />
-                <Tool id="hide-sidebar" label="隐藏左侧栏" className="chrome-icon" onClick={toggleExplorer}><SidebarToggleIcon expanded /></Tool>
-              </nav>
-              {section === "assets" ? <AssetPanel onImport={files => importImages(files, "library")} onConfigure={() => openSettings("images")}
-              canInsert={!reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id)}
-              canCover={!reading && Boolean(queue && queue.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id))}
-              onInsert={(id, name) => {
-                if (viewMode === "preview") view("edit");
-                if (active.current) handles.current.get(active.current)?.insert("\n" + imageMarkdown(id, name) + "\n");
-              }}
-              onCover={id => {
-                if (queue) {
-                  queue.edit({ coverAssetId: id });
-                  void queue.flush().then(saved => {
-                    if (saved) setNotice({ type: "info", text: "已设置封面" });
-                  });
-                }
-              }} />
-              : <Explorer ref={explorerTree} section={section} library={library} page={page} active={activeId} readOnlyIds={[...readingIds, ...locked]}
-                activeFolder={queue?.entry.deletedAt === null ? queue.snapshot().fields.categoryId : undefined}
-                preserveActiveFolder={tabSelection?.restored}
-                onCreateCurrent={() => create()}
-                onToggleAll={expand => setExpandedFolders(expand ? (library?.categories ?? []).map(folder => folder.id) : [])}
-                onLocateCurrent={() => {
-                  if (queue?.entry.deletedAt !== null) return;
-                  const pinned = document.getElementById(`entry-row-${queue.entry.id}`);
-                  if (pinned?.hasAttribute("data-tree-pinned")) pinned.scrollIntoView({ block: "nearest" });
-                  else {
-                    revealDirectory();
-                    revealFolder(queue.snapshot().fields.categoryId);
-                  }
-                }}
-                treeLocked={globalLock}
-                expanded={expandedFolders} revision={refreshCount} loading={folderLoading} pageSize={folderPageSize} caseSensitive={caseSensitive}
-                query={query} searchInputRef={searchInput} listError={listError} onRetry={refresh}
-                onQuery={value => { setQuery(value); setPage(null); }}
-                onCaseSensitive={value => { setCaseSensitive(value); setPage(null); }}
-                onFolder={toggleFolder}
-                onImportWechat={showWechatImport} onImportMarkdown={importMarkdown}
-                onCreate={create} onRevealFolder={revealFolder} onSaveFolder={saveFolder} onFolderError={showError}
-                onReorderFolder={reorderFolder} onReorderEntry={reorderEntry} onRenameEntry={renameEntry} onMoveEntry={moveTreeEntry}
-                onCategoryAction={categoryAction}
-                openMode={documentOpenMode} onOpen={(id, mode) => run(() => open(id, mode))}
-                onRowAction={entryAction} onMore={more} />}
-            </div>
+              </Panel>
+            </Group> : sidebar}
           </Panel>
-          <Separator className="divider sidebar-divider" hidden={!showExplorer} disabled={!showExplorer}
-            disableDoubleClick aria-label="调整资源导航宽度" />
+          {showExplorer && <Separator className={`divider sidebar-divider${timelineMode ? " navigation-divider" : ""}`}
+            disableDoubleClick aria-label={timelineMode ? "调整文章时间流宽度" : "调整资源导航宽度"} />}
         <Panel id="writing" minSize="360px">
           <main className="main-workspace" aria-label="写作工作区">
             <header className="workbench-chrome chrome-band">
-              {!showExplorer && <Tool id="show-sidebar" className="chrome-icon restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
+              {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
               {sessions.length > 0 && <DocumentTabs sessions={sessions} activeId={activeId} readingIds={readingIds} lockedIds={locked}
                 categories={library?.categories ?? []} onMove={moveTreeEntry} onSwitch={switchTab} onClose={closeTab} onAction={tabAction}
@@ -1196,6 +1301,9 @@ export function DesktopShell() {
               {!focusMode && <CreateMenu onCreate={() => create()} onImportWechat={() => showWechatImport()}
                 onImportMarkdown={() => importMarkdown()} disabled={globalLock} />}
               <WindowDragRegion onError={showError} />
+              {!reading && !focusMode && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
+                label={showAiPanel ? "隐藏 AI 侧栏" : "显示 AI 侧栏"} aria-expanded={showAiPanel}
+                aria-controls="ai-sidebar" onClick={toggleAi}><SidebarToggleIcon side="right" expanded={showAiPanel} /></Tool>}
               {!showAiPanel && windowsTitleBar && <WindowControls onError={showError} />}
             </header>
             {queue ? <>
@@ -1234,8 +1342,8 @@ export function DesktopShell() {
             </div>}
           </main>
         </Panel>
-        <Separator className="divider ai-sidebar-divider" hidden={!showAiPanel} disabled={!showAiPanel}
-          disableDoubleClick aria-label="调整 AI 侧栏宽度" />
+        {showAiPanel && <Separator className="divider ai-sidebar-divider"
+          disableDoubleClick aria-label="调整 AI 侧栏宽度" />}
         <Panel id="ai-sidebar" defaultSize="0px" minSize="300px" maxSize="50%" collapsible collapsedSize="0px"
           panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
           onResize={size => {
@@ -1304,14 +1412,16 @@ export function DesktopShell() {
         track={trackAssetTask} onClose={closeModal} onImported={refresh} onOpen={id => {
         if (exit.current) return;
         closeModal();
-        if (section !== "imports") navigate("folders");
+        if (section !== "imports" && section !== "timeline") navigate("folders");
         run(() => open(id));
       }} />}
       {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} onClose={closeModal} />}
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
-      {modal?.type === "properties" && queue && <PropertiesDialog queue={queue} categories={library?.categories ?? []}
-        tagSuggestions={library?.tagSuggestions ?? []} locked={reading || globalLock || locked.includes(queue.entry.id)} onClose={closeModal} onOpen={id => run(() => open(id))} />}
+      {modal?.type === "properties" && <PropertiesDialog key={modal.id} id={modal.id} queue={queues.current.get(modal.id)}
+        categories={library?.categories ?? []} tagSuggestions={library?.tagSuggestions ?? []}
+        locked={globalLock || readingIds.includes(modal.id) || locked.includes(modal.id)}
+        onSave={(entry, change) => trackAssetTask(saveEntryFields(entry, change))} onClose={closeModal} onOpen={id => run(() => open(id))} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <Confirm title="删除文件夹" text={modal.target.parentId ? "其中的内容将移到上一级文件夹。" : "子文件夹也将删除，其中的内容将移到根目录。"}
         action="删除文件夹" onClose={closeModal} onConfirm={() => deleteCategory(modal.target)} />}
@@ -1326,6 +1436,7 @@ export function DesktopShell() {
 }
 
 function ActivePreview({ queue, projectLinks }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null }) {
-  const { fields, revision } = useSyncExternalStore(queue.subscribe, queue.snapshot);
+  const materialized = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
+  const { fields, revision } = useMemo(() => queue.capture(), [queue, materialized]);
   return <MarkdownPreview markdown={fields.contentMd} themeId={fields.themeId} revision={revision} projectLinks={projectLinks} />;
 }

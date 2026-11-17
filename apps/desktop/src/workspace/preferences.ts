@@ -32,6 +32,7 @@ const allowed = {
   "directory-pins-collapsed": (v: unknown) => typeof v === "boolean",
   "directory-collapsed": (v: unknown) => typeof v === "boolean",
   explorer: (v: unknown) => typeof v === "boolean",
+  "asset-large-tiles": (v: unknown) => typeof v === "boolean",
   "download-pasted-images": (v: unknown) => typeof v === "boolean",
   "links-to-footnotes": (v: unknown) => typeof v === "boolean",
   "expanded-folders": (v: unknown) => Array.isArray(v) && v.every(id => typeof id === "string"),

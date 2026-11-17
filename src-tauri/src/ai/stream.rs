@@ -32,6 +32,17 @@ struct Delta {
     content: Option<String>,
 }
 
+pub(super) fn finish_result(reason: &str) -> Result<()> {
+    let (code, message) = match reason {
+        "stop" => return Ok(()),
+        "length" => ("AI_TRUNCATED", "回复未完成，已达到模型输出长度限制"),
+        "content_filter" => ("AI_CONTENT_FILTER", "模型的内容过滤规则已中止生成"),
+        "tool_calls" | "function_call" => ("AI_TOOL_CALLS", "模型请求调用工具，生成已中止"),
+        _ => ("AI_RESPONSE", "模型以未知原因结束生成"),
+    };
+    Err(AppError::new(code, message))
+}
+
 pub(super) async fn read(
     response: reqwest::Response,
     emit: &mut (impl FnMut(ChatEvent) + Send),
@@ -48,10 +59,21 @@ pub(super) async fn read(
                 .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
         });
     if !is_sse {
-        return Ok(parse_provider_response(
-            Operation::Chat,
-            read_json(response).await?,
-        ));
+        let response = read_json(response).await?;
+        if let Some(choice) = response.choices.first()
+            && choice
+                .finish_reason
+                .as_deref()
+                .is_some_and(|reason| reason != "stop")
+            && let Some(text) = choice
+                .message
+                .content
+                .as_ref()
+                .filter(|text| !text.is_empty())
+        {
+            emit(ChatEvent::Delta { text: text.clone() });
+        }
+        return Ok(parse_provider_response(Operation::Chat, response));
     }
     let mut bytes = 0;
     let events = SseStream::from_bytes_stream(response.bytes_stream().map(|chunk| {
@@ -65,7 +87,7 @@ pub(super) async fn read(
     futures_util::pin_mut!(events);
     let mut reply = String::new();
     let mut usage = Usage::default();
-    let mut finished = false;
+    let mut completion = None;
     while let Some(event) = events.next().await {
         let event = match event {
             Ok(event) => event,
@@ -83,7 +105,6 @@ pub(super) async fn read(
             continue;
         };
         if data == "[DONE]" {
-            finished = true;
             break;
         }
         let Ok(chunk) = serde_json::from_str::<Chunk>(&data) else {
@@ -97,17 +118,20 @@ pub(super) async fn read(
                 reply.push_str(&text);
                 emit(ChatEvent::Delta { text });
             }
-            finished |= choice.finish_reason.is_some();
+            if let Some(reason) = choice.finish_reason.as_deref() {
+                completion.get_or_insert_with(|| finish_result(reason));
+            }
         }
     }
-    Ok((
-        if finished {
-            parse_result(Operation::Chat, &reply)
-        } else {
-            Err(response_error())
-        },
-        usage,
-    ))
+    let result = completion
+        .unwrap_or_else(|| {
+            Err(AppError::new(
+                "AI_STREAM_INTERRUPTED",
+                "回复未完成，模型响应提前结束",
+            ))
+        })
+        .and_then(|()| parse_result(Operation::Chat, &reply));
+    Ok((result, usage))
 }
 
 #[cfg(test)]
@@ -120,6 +144,98 @@ mod tests {
         routing::get,
     };
     use std::convert::Infallible;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn broken_http_body_keeps_the_text_already_emitted() {
+        let chunk = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"半段回复\"}}]}\n\n";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (received, emitted) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert!(socket.read(&mut [0; 1024]).await.unwrap() > 0);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{chunk}",
+                chunk.len() + 80
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            emitted.await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap()
+            .get(endpoint)
+            .send()
+            .await
+            .unwrap();
+        let mut partial = String::new();
+        let mut received = Some(received);
+        let (result, _) = read(response, &mut |event| {
+            if let ChatEvent::Delta { text } = event {
+                partial.push_str(&text);
+                received.take().unwrap().send(()).unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(result.err().unwrap().code(), "AI_NETWORK");
+        assert_eq!(partial, "半段回复");
+    }
+
+    #[tokio::test]
+    async fn transport_end_preserves_incomplete_status_and_partial_text() {
+        for (reason, done, expected) in [
+            (Some("length"), true, "AI_TRUNCATED"),
+            (Some("content_filter"), true, "AI_CONTENT_FILTER"),
+            (Some("tool_calls"), true, "AI_TOOL_CALLS"),
+            (None, true, "AI_STREAM_INTERRUPTED"),
+            (None, false, "AI_STREAM_INTERRUPTED"),
+        ] {
+            let chunk = serde_json::json!({ "choices": [
+                { "index": 0, "delta": { "content": "部分回复" }, "finish_reason": reason }
+            ] });
+            let body = format!(
+                "data: {chunk}\n\n{}",
+                if done { "data: [DONE]\n\n" } else { "" }
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server =
+                tokio::spawn(async move {
+                    axum::serve(listener, Router::new().route("/", get(move || async move {
+                    ([("content-type", "text/event-stream")], body)
+                }))).await.unwrap();
+                });
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(endpoint)
+                .send()
+                .await
+                .unwrap();
+            let mut partial = String::new();
+            let (result, _) = read(response, &mut |event| {
+                if let ChatEvent::Delta { text } = event {
+                    partial.push_str(&text);
+                }
+            })
+            .await
+            .unwrap();
+            server.abort();
+            assert_eq!(
+                result.err().unwrap().code(),
+                expected,
+                "finish reason {reason:?}"
+            );
+            assert_eq!(partial, "部分回复");
+        }
+    }
 
     #[tokio::test]
     async fn fragmented_utf8_sse_yields_deltas_and_records_usage() {

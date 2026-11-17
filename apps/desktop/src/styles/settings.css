@@ -6,8 +6,9 @@
   display: flex; flex-direction: column; height: min(700px, 84dvh); min-height: 0;
   overflow: hidden; padding: 0; border: var(--hairline); border-radius: 12px;
   background: var(--sand-2); box-shadow: var(--shadow-5); color: var(--text-main);
-  font-size: var(--workspace-font); animation: none;
+  font-size: var(--workspace-font); animation: none; user-select: none;
 }
+.settings-dialog :is(input, textarea) { user-select: text; }
 .settings-window-header {
   display: flex; flex: none; align-items: center; min-height: 36px; gap: 12px; padding: 0 8px 0 20px;
 }
@@ -60,6 +61,7 @@
 .setting-copy { min-width: 94px; display: grid; gap: 3px; color: var(--text-main); font-weight: var(--setting-title-weight); }
 .settings-pages :is(strong, b) { font-weight: var(--setting-title-weight); }
 .setting-hint { font-size: var(--small-font); line-height: 1.45; color: var(--text-muted); font-weight: 400; overflow-wrap: anywhere; }
+.setting-warning { color: var(--orange-11); }
 .setting-control { display: grid; justify-items: end; gap: 7px; min-width: 0; max-width: 62%; }
 .setting-control:has(> .rt-TextFieldRoot) { flex: 0 1 310px; }
 .setting-control:has(> .rt-SelectTrigger) { flex: 0 1 156px; }
@@ -95,7 +97,6 @@
   .mcp-settings .rt-Button { transition: none; }
   .mcp-settings .rt-Button:active { scale: none; }
 }
-.settings-check { display: flex; gap: 6px; align-items: center; font-size: var(--small-font); color: var(--text-muted); }
 .ai-settings { display: grid; gap: 14px; }
 .ai-settings-card { border: var(--hairline); border-radius: 8px; }
 .ai-settings-card > .setting-row { padding-block: 15px; }
@@ -141,17 +142,14 @@
 .ai-form-field { display: grid; align-content: start; gap: 4px; min-width: 0; }
 .ai-form-field > label { font-size: var(--small-font); font-weight: var(--setting-title-weight); }
 .ai-form-field > .rt-SelectTrigger { justify-self: start; max-width: 100%; }
-.ai-timeout { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: var(--small-font); }
 .ai-timeout > .rt-TextFieldRoot { width: 64px; }
-.ai-form-field > :is(.rt-TextFieldRoot, .rt-SelectTrigger):not(:focus-within),
-.ai-timeout > .rt-TextFieldRoot:not(:focus-within) { box-shadow: inset 0 0 0 0.5px var(--divider-color); }
+.ai-form-field > :is(.rt-TextFieldRoot, .rt-SelectTrigger):not(:focus-within) { box-shadow: inset 0 0 0 0.5px var(--divider-color); }
 .ai-model-actions { justify-content: flex-start; align-items: center; padding-bottom: 0; }
 .ai-target-pane > .settings-feedback { padding-bottom: 0; }
 @media (width < 760px) {
   .ai-agent-grid, .ai-model-fields { grid-template-columns: minmax(0, 1fr); }
   .ai-default-card .setting-control:has(> .rt-SelectTrigger) { flex: 1 0 100%; max-width: 100%; }
 }
-.image-storage-enabled { padding-block: 14px 5px; color: var(--text-main); }
 .image-storage-footer { flex-wrap: nowrap; align-items: center; min-height: 55px; }
 .image-storage-footer .rt-Button { flex: none; }
 .image-storage-feedback { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }

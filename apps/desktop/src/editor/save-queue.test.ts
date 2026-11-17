@@ -17,6 +17,94 @@ function pending() {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("SaveQueue", () => {
+  it("captures the newest editor revision once per commit and includes concurrent metadata", async () => {
+    const first = pending();
+    const commit = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce({ version: 6 });
+    const queue = new SaveQueue(entry, commit, () => {});
+    let localRevision = 0;
+    const read = vi.fn(() => ({ localRevision, markdown: `正文 ${localRevision}` }));
+    const unbind = queue.bindContentProvider(read);
+    for (let i = 0; i < 200; i++) queue.markContentDirty(++localRevision);
+    expect(read).not.toHaveBeenCalled();
+    expect(queue.snapshot().fields.contentMd).toBe("");
+    const saved = queue.flush();
+    queue.edit({ title: "新标题", categoryId: "folder" });
+    queue.markContentDirty(++localRevision);
+    expect(commit).toHaveBeenCalledExactlyOnceWith("article", 4, expect.objectContaining({ contentMd: "正文 200", title: "" }), "auto");
+    first.resolve({ version: 5 });
+    expect(await saved).toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenLastCalledWith("article", 5, expect.objectContaining({ contentMd: "正文 201", title: "新标题", categoryId: "folder" }), "auto");
+    expect(queue.snapshot()).toMatchObject({ revision: 202, savedRevision: 202, version: 6 });
+    unbind();
+    queue.dispose();
+  });
+
+  it("bounds the delay while typing and can save the final snapshot after the editor detaches", async () => {
+    vi.useFakeTimers();
+    const commit = vi.fn().mockResolvedValueOnce({ version: 5 }).mockResolvedValueOnce({ version: 6 });
+    const queue = new SaveQueue(entry, commit, () => {});
+    let localRevision = 0;
+    const read = vi.fn(() => ({ localRevision, markdown: `正文 ${localRevision}` }));
+    const unbind = queue.bindContentProvider(read);
+    for (let i = 0; i < 8; i++) {
+      queue.markContentDirty(++localRevision);
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    expect(commit).toHaveBeenCalledExactlyOnceWith("article", 4, expect.objectContaining({ contentMd: "正文 8" }), "auto");
+    queue.markContentDirty(++localRevision);
+    expect(queue.capture().fields.contentMd).toBe("正文 9");
+    expect(queue.snapshot().fields.contentMd).toBe("正文 8");
+    unbind();
+    expect(await queue.flush()).toBe(true);
+    expect(commit).toHaveBeenLastCalledWith("article", 5, expect.objectContaining({ contentMd: "正文 9" }), "auto");
+    queue.dispose();
+  });
+
+  it("coalesces new input during an automatic save until the next debounce interval", async () => {
+    vi.useFakeTimers();
+    const first = pending();
+    const commit = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce({ version: 6 });
+    const queue = new SaveQueue(entry, commit, () => {});
+    queue.edit({ contentMd: "一" });
+    await vi.advanceTimersByTimeAsync(750);
+    queue.edit({ contentMd: "二" });
+    await vi.advanceTimersByTimeAsync(100);
+    first.resolve({ version: 5 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(queue.snapshot()).toMatchObject({ revision: 2, savedRevision: 1 });
+    queue.edit({ contentMd: "三" });
+    await vi.advanceTimersByTimeAsync(749);
+    expect(commit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(commit).toHaveBeenLastCalledWith("article", 5, expect.objectContaining({ contentMd: "三" }), "auto");
+    expect(queue.snapshot()).toMatchObject({ revision: 3, savedRevision: 3 });
+    queue.dispose();
+  });
+
+  it("flushes the latest edits when closing at the end of an automatic save", async () => {
+    vi.useFakeTimers();
+    const first = pending();
+    const commit = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce({ version: 6 });
+    const queue = new SaveQueue(entry, commit, () => {});
+    queue.edit({ contentMd: "已开始写入" });
+    await vi.advanceTimersByTimeAsync(750);
+    queue.edit({ contentMd: "关闭前的最后一稿" });
+    let closing: Promise<boolean> | undefined;
+    const unsubscribe = queue.subscribe(() => {
+      if (queue.isSaving() || !queue.isDirty()) return;
+      unsubscribe();
+      closing = queue.flush();
+    });
+    first.resolve({ version: 5 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await closing).toBe(true);
+    expect(commit).toHaveBeenLastCalledWith("article", 5, expect.objectContaining({ contentMd: "关闭前的最后一稿" }), "auto");
+    expect(queue.snapshot()).toMatchObject({ revision: 2, savedRevision: 2, version: 6 });
+    queue.dispose();
+  });
+
   it("debounces typing and only commits the latest draft", async () => {
     vi.useFakeTimers();
     const commit = vi.fn().mockResolvedValue({ version: 5 });

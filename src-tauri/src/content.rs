@@ -4,6 +4,7 @@ pub mod taxonomy;
 mod tests;
 
 use crate::db::{AppError, Result, Workspace, id, now};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, params, params_from_iter, types::Value,
 };
@@ -13,6 +14,7 @@ use url::Url;
 
 const PAGE_SIZE: i64 = 60;
 const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id, e.pinned_order IS NOT NULL AS pinned";
+const ENTRY_TAG_NAMES: &str = "SELECT t.name FROM tags t JOIN entry_tags r ON r.tag_id=t.id WHERE r.entry_id=?1 ORDER BY t.normalized";
 
 #[derive(Clone, Copy, Deserialize, PartialEq, rmcp::schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -90,6 +92,15 @@ pub struct EntryRow {
     deleted_at: Option<i64>,
     category_id: Option<String>,
     pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<EntryPreview>,
+}
+
+#[derive(Serialize)]
+struct EntryPreview {
+    summary: String,
+    image: Option<String>,
+    tags: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -112,7 +123,11 @@ pub struct Filter {
     pub category_id: Option<String>,
     #[serde(default)]
     pub exact_category: bool,
+    #[serde(default)]
+    pub include_preview: bool,
     pub tag_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub untagged: bool,
     pub query: Option<String>,
     pub workspace_search: Option<search::WorkspaceSearch>,
     pub deleted: bool,
@@ -216,9 +231,10 @@ pub struct Revision {
 
 impl Workspace {
     pub fn entries(&self, filter: Filter) -> Result<Page> {
-        self.read(|conn| {
+        let (rows, next_offset) = self.read(|conn| {
             let mut values: Vec<Value> = Vec::new();
-            let mut sql = format!("SELECT {HEAD} FROM entries e WHERE e.deleted_at IS {}NULL",
+            let preview_columns = if filter.include_preview { ", e.summary, e.cover_asset_id, e.content_md" } else { "" };
+            let mut sql = format!("SELECT {HEAD}{preview_columns} FROM entries e WHERE e.deleted_at IS {}NULL",
                 if filter.deleted { "NOT " } else { "" });
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
@@ -245,6 +261,9 @@ impl Workspace {
             for tag in filter.tag_ids.into_iter().flatten() {
                 sql.push_str(" AND EXISTS (SELECT 1 FROM entry_tags WHERE entry_id = e.id AND tag_id = ?)");
                 values.push(tag.into());
+            }
+            if filter.untagged {
+                sql.push_str(" AND NOT EXISTS (SELECT 1 FROM entry_tags WHERE entry_id = e.id)");
             }
             if let Some(query) = filter.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                 if query.chars().count() >= 3 {
@@ -278,12 +297,38 @@ impl Workspace {
             let offset = filter.offset.max(0);
             values.push(offset.into());
             let mut statement = conn.prepare(&sql)?;
-            let mut items = statement.query_map(params_from_iter(values), entry_row)?
+            let mut tag_names = filter.include_preview.then(|| conn.prepare(ENTRY_TAG_NAMES)).transpose()?;
+            let mut items = statement.query_map(params_from_iter(values), |row| {
+                let entry = entry_row(row)?;
+                let preview = if let Some(tags) = &mut tag_names {
+                    let summary: String = row.get("summary")?;
+                    let cover: Option<String> = row.get("cover_asset_id")?;
+                    let markdown = if summary.trim().is_empty() || cover.is_none() {
+                        row.get("content_md")?
+                    } else {
+                        String::new()
+                    };
+                    let tags = tags.query_map([&entry.id], |row| row.get(0))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    Some((summary, cover, markdown, tags))
+                } else { None };
+                Ok((entry, preview))
+            })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let next_offset = (items.len() > limit as usize).then(|| offset + limit);
             items.truncate(limit as usize);
-            Ok(Page { items, next_offset })
-        })
+            Ok((items, next_offset))
+        })?;
+        let items = rows
+            .into_iter()
+            .map(|(mut row, preview)| {
+                if let Some((summary, cover, markdown, tags)) = preview {
+                    row.preview = Some(entry_preview(&summary, cover, &markdown, tags));
+                }
+                row
+            })
+            .collect();
+        Ok(Page { items, next_offset })
     }
 
     pub fn get_entry(&self, id: &str) -> Result<Entry> {
@@ -508,7 +553,91 @@ fn entry_row(row: &Row<'_>) -> rusqlite::Result<EntryRow> {
         deleted_at: row.get(5)?,
         category_id: row.get("category_id")?,
         pinned: row.get("pinned")?,
+        preview: None,
     })
+}
+
+fn entry_preview(
+    summary: &str,
+    cover: Option<String>,
+    markdown: &str,
+    tags: Vec<String>,
+) -> EntryPreview {
+    const SUMMARY_LENGTH: usize = 200;
+    let mut image = cover.map(|id| format!("asset://{id}"));
+    let mut summary = summary
+        .trim()
+        .chars()
+        .take(SUMMARY_LENGTH)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let needs_summary = summary.is_empty();
+    let find_image = image.is_none() && markdown.contains("![");
+    if !needs_summary && !find_image {
+        return EntryPreview {
+            summary,
+            image,
+            tags,
+        };
+    }
+    let markdown = if find_image {
+        markdown
+    } else {
+        &markdown[..markdown.floor_char_boundary(16_384)]
+    };
+    let mut image_depth = 0;
+    let mut in_code = false;
+    for event in Parser::new_ext(
+        markdown,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+    ) {
+        match event {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                image_depth += 1;
+                if image.is_none()
+                    && ["asset://", "http://", "https://"]
+                        .iter()
+                        .any(|prefix| dest_url.starts_with(prefix))
+                {
+                    image = Some(dest_url.into_string());
+                }
+            }
+            Event::End(TagEnd::Image) => image_depth -= 1,
+            Event::Start(Tag::CodeBlock(_)) => in_code = true,
+            Event::End(TagEnd::CodeBlock) => in_code = false,
+            Event::Text(text) | Event::Code(text)
+                if needs_summary
+                    && image_depth == 0
+                    && !in_code
+                    && summary.chars().count() < SUMMARY_LENGTH =>
+            {
+                summary.extend(text.chars().take(SUMMARY_LENGTH - summary.chars().count()));
+            }
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::End(TagEnd::Paragraph | TagEnd::Heading(_))
+                if needs_summary
+                    && !summary.is_empty()
+                    && !summary.ends_with(char::is_whitespace)
+                    && summary.chars().count() < SUMMARY_LENGTH =>
+            {
+                summary.push(' ');
+            }
+            _ => {}
+        }
+        if (!needs_summary || summary.chars().count() == SUMMARY_LENGTH)
+            && (image.is_some() || !find_image)
+        {
+            break;
+        }
+    }
+    EntryPreview {
+        summary: summary.split_whitespace().collect::<Vec<_>>().join(" "),
+        image,
+        tags,
+    }
 }
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
@@ -549,7 +678,7 @@ fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
             links: vec![],
         })
     })?;
-    let mut tags = conn.prepare("SELECT t.name FROM tags t JOIN entry_tags r ON r.tag_id=t.id WHERE r.entry_id=?1 ORDER BY t.normalized")?;
+    let mut tags = conn.prepare(ENTRY_TAG_NAMES)?;
     entry.fields.tags = tags
         .query_map([id], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;

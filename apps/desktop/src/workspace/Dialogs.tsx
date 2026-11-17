@@ -10,26 +10,70 @@ import { AssetThumb } from "./Assets";
 import { FolderSelect } from "./FolderSelect";
 import { addTag, TagInput } from "./TagInput";
 
-export function PropertiesDialog({ queue, categories, tagSuggestions, locked, onClose, onOpen }: {
-  queue: SaveQueue;
+interface PropertiesDialogProps {
+  id: string;
+  queue?: SaveQueue;
   categories: Category[];
   tagSuggestions: string[];
   locked: boolean;
+  onSave(entry: Entry, change: Partial<EntryFields>): Promise<void>;
   onClose(): void;
   onOpen(id: string): void;
+}
+
+export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDialogProps) {
+  const [open, setOpen] = useState(true);
+  const [loaded, setLoaded] = useState<Entry>();
+  const [loadError, setLoadError] = useState("");
+  useEffect(() => {
+    if (queue) return;
+    let current = true;
+    void desktop.entry(id).then(entry => {
+      if (current) setLoaded(entry);
+    }, error => {
+      if (current) setLoadError(errorMessage(error));
+    });
+    return () => { current = false; };
+  }, [id, queue]);
+  const entry = queue?.entry ?? loaded;
+
+  return <Dialog.Root open={open} onOpenChange={setOpen}>
+    <Dialog.Content maxWidth="360px" className="properties-panel" aria-describedby={undefined}
+      onCloseAutoFocus={event => {
+        if (open) return;
+        event.preventDefault();
+        onClose();
+      }} onEscapeKeyDown={event => {
+        if (event.target instanceof HTMLInputElement && event.target.getAttribute("aria-expanded") === "true") event.preventDefault();
+      }}>
+      <header className="properties-header">
+        <Dialog.Title>内容属性</Dialog.Title>
+        <Dialog.Close><button className="plain-button chrome-icon" type="button" aria-label="关闭内容属性"><X size={16} /></button></Dialog.Close>
+      </header>
+      {entry ? <PropertiesForm {...form} entry={entry} fields={queue?.snapshot().fields ?? entry} onClose={() => setOpen(false)} />
+        : <div className="properties-fields">
+          {loadError ? <p role="alert" className="inline-error">{loadError}</p> : <p role="status">正在读取内容属性…</p>}
+        </div>}
+    </Dialog.Content>
+  </Dialog.Root>;
+}
+
+function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen }: Omit<PropertiesDialogProps, "id" | "queue"> & {
+  entry: Entry;
+  fields: EntryFields;
 }) {
-  const { entry } = queue;
-  const { fields } = queue.snapshot();
   const [status, setStatus] = useState(fields.status);
   const [category, setCategory] = useState(fields.categoryId ?? "none");
   const [cover, setCover] = useState(fields.coverAssetId ?? null);
   const [tags, setTags] = useState(fields.tags);
   const [tagDraft, setTagDraft] = useState("");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const readOnly = locked || entry.deletedAt !== null;
   const hasSourceFields = entry.kind === "reference" || fields.source !== null;
-  function save(event: FormEvent<HTMLFormElement>) {
+  async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (readOnly || saving) return;
     const form = new FormData(event.currentTarget);
     const text = (key: string) => String(form.get(key) ?? "").trim();
     const sourceUrl = text("sourceUrl");
@@ -61,64 +105,61 @@ export function PropertiesDialog({ queue, categories, tagSuggestions, locked, on
         importedAt: fields.source?.importedAt ?? null,
       } : null;
     }
-    queue.edit(change);
-    void queue.flush({ retry: true });
-    onClose();
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(entry, change);
+      onClose();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
   }
 
-  return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
-    <Dialog.Content maxWidth="360px" className="properties-panel" aria-describedby={undefined} onEscapeKeyDown={event => {
-      if (event.target instanceof HTMLInputElement && event.target.getAttribute("aria-expanded") === "true") event.preventDefault();
-    }}>
-      <header className="properties-header">
-        <Dialog.Title>内容属性</Dialog.Title>
-        <Dialog.Close><button className="plain-button chrome-icon" type="button" aria-label="关闭内容属性"><X size={16} /></button></Dialog.Close>
-      </header>
-      <form className="properties-form" onSubmit={save}>
-        <div className="properties-fields">
-          <div className="form-pair">
-            <label>状态
-              <Select.Root size="2" value={status} onValueChange={value => setStatus(value as Entry["status"])} disabled={readOnly}>
-                <Select.Trigger aria-label="状态" />
-                <Select.Content>{statuses[entry.kind].map(value => <Select.Item value={value} key={value}>{statusLabels[value]}</Select.Item>)}</Select.Content>
-              </Select.Root>
-            </label>
-            <label>所在目录
-              <FolderSelect size="2" categories={categories} value={category} onChange={setCategory} label="所在目录" defaultLabel="根目录" disabled={readOnly} />
-            </label>
-          </div>
-          <TagInput tags={tags} onTags={setTags} draft={tagDraft} onDraft={setTagDraft} history={tagSuggestions} readOnly={readOnly} />
-          <label>摘要<TextArea size="2" name="summary" readOnly={readOnly} defaultValue={fields.summary} rows={3} /></label>
-          {hasSourceFields && <>
-            <label>原文链接<TextField.Root type="url" readOnly={readOnly} name="sourceUrl" defaultValue={fields.source?.url} /></label>
-            <div className="form-pair">
-              <label>作者<TextField.Root name="author" readOnly={readOnly} defaultValue={fields.source?.author} /></label>
-              <label>公众号<TextField.Root name="accountName" readOnly={readOnly} defaultValue={fields.source?.accountName} /></label>
-            </div>
-            <label>原文发布日期<TextField.Root name="originalDate" type="date" readOnly={readOnly}
-              defaultValue={fields.source?.originalPublishedAt == null ? "" : new Intl.DateTimeFormat("sv-SE").format(fields.source.originalPublishedAt)} /></label>
-            {fields.source?.importedAt && <span className="muted-text">收录于 {dateLabel(fields.source.importedAt)}</span>}
-          </>}
-          <label>发布链接<TextField.Root type="url" name="publishedUrl" readOnly={readOnly} defaultValue={fields.publishedUrl} /></label>
-          {cover && <div className="asset-details">
-            <span>封面</span><AssetThumb id={cover} name="文章封面" />
-            {!readOnly && <Button type="button" size="1" variant="soft" onClick={() => setCover(null)}>移除封面</Button>}
-          </div>}
-          {entry.links.length > 0 && <div className="linked-entries">
-            <span>关联内容</span>
-            {entry.links.map(link => <Button key={link.id} variant="soft" size="1" type="button" onClick={() => { onClose(); onOpen(link.id); }}>
-              {link.title || untitled}
-            </Button>)}
-          </div>}
-          {error && <p role="alert" className="inline-error">{error}</p>}
+  return <form className="properties-form" onSubmit={save}>
+    <div className="properties-fields">
+      <div className="form-pair">
+        <label>状态
+          <Select.Root size="2" value={status} onValueChange={value => setStatus(value as Entry["status"])} disabled={readOnly}>
+            <Select.Trigger aria-label="状态" />
+            <Select.Content>{statuses[entry.kind].map(value => <Select.Item value={value} key={value}>{statusLabels[value]}</Select.Item>)}</Select.Content>
+          </Select.Root>
+        </label>
+        <label>所在目录
+          <FolderSelect size="2" categories={categories} value={category} onChange={setCategory} label="所在目录" defaultLabel="根目录" disabled={readOnly} />
+        </label>
+      </div>
+      <TagInput tags={tags} onTags={setTags} draft={tagDraft} onDraft={setTagDraft} history={tagSuggestions} readOnly={readOnly} />
+      <label>摘要<TextArea size="2" name="summary" readOnly={readOnly} defaultValue={fields.summary} rows={3} /></label>
+      {hasSourceFields && <>
+        <label>原文链接<TextField.Root type="url" readOnly={readOnly} name="sourceUrl" defaultValue={fields.source?.url} /></label>
+        <div className="form-pair">
+          <label>作者<TextField.Root name="author" readOnly={readOnly} defaultValue={fields.source?.author} /></label>
+          <label>公众号<TextField.Root name="accountName" readOnly={readOnly} defaultValue={fields.source?.accountName} /></label>
         </div>
-        {!readOnly && <footer className="properties-footer">
-          <Dialog.Close><Button type="button" variant="soft" color="gray">取消</Button></Dialog.Close>
-          <Button type="submit">保存</Button>
-        </footer>}
-      </form>
-    </Dialog.Content>
-  </Dialog.Root>;
+        <label>原文发布日期<TextField.Root name="originalDate" type="date" readOnly={readOnly}
+          defaultValue={fields.source?.originalPublishedAt == null ? "" : new Intl.DateTimeFormat("sv-SE").format(fields.source.originalPublishedAt)} /></label>
+        {fields.source?.importedAt && <span className="muted-text">收录于 {dateLabel(fields.source.importedAt)}</span>}
+      </>}
+      <label>发布链接<TextField.Root type="url" name="publishedUrl" readOnly={readOnly} defaultValue={fields.publishedUrl} /></label>
+      {cover && <div className="asset-details">
+        <span>封面</span><AssetThumb id={cover} name="文章封面" />
+        {!readOnly && <Button type="button" size="1" variant="soft" onClick={() => setCover(null)}>移除封面</Button>}
+      </div>}
+      {entry.links.length > 0 && <div className="linked-entries">
+        <span>关联内容</span>
+        {entry.links.map(link => <Button key={link.id} variant="soft" size="1" type="button" onClick={() => { onClose(); onOpen(link.id); }}>
+          {link.title || untitled}
+        </Button>)}
+      </div>}
+      {error && <p role="alert" className="inline-error">{error}</p>}
+    </div>
+    {!readOnly && <footer className="properties-footer">
+      <Dialog.Close><Button type="button" variant="soft" color="gray">取消</Button></Dialog.Close>
+      <Button type="submit" loading={saving}>保存</Button>
+    </footer>}
+  </form>;
 }
 
 export function RevisionsDialog({ id, onClose, onCopy }: {

@@ -17,8 +17,9 @@ it("suggests historical tags and confirms each tag, including tags containing co
   document.body.append(container);
   const root = createRoot(container);
   try {
-    flushSync(() => root.render(<Theme><PropertiesDialog queue={queue} categories={[]}
-      tagSuggestions={["写作指南", "之前使用"]} locked={false} onClose={vi.fn()} onOpen={vi.fn()} /></Theme>));
+    flushSync(() => root.render(<Theme><PropertiesDialog id={entry.id} queue={queue} categories={[]}
+      tagSuggestions={["写作指南", "之前使用"]} locked={false} onClose={vi.fn()} onOpen={vi.fn()}
+      onSave={async (_, change) => { queue.edit(change); await queue.flush({ retry: true }); }} /></Theme>));
     const input = document.querySelector<HTMLInputElement>('input[role="combobox"]')!;
     const inputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     const change = (value: string) => flushSync(() => {

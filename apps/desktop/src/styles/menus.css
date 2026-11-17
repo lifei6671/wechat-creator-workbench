@@ -62,5 +62,5 @@
   overflow: auto;
 }
 .move-entry-submenu .rt-BaseMenuItem > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.move-entry-submenu .rt-BaseMenuItem.move-entry-child { padding-inline-start: 18px; }
+.move-entry-submenu .rt-BaseMenuItem.move-entry-child { padding-inline-start: calc(var(--base-menu-item-padding-left) + 12px); }
 .move-entry-submenu .rt-BaseMenuItem > .move-entry-current { margin-inline-start: auto; color: var(--accent-11); }

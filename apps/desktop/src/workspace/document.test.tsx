@@ -45,7 +45,9 @@ it("renames an inactive tab in place without implicitly selecting it", async () 
   flushSync(() => container.querySelector("#tab-two")!.dispatchEvent(new MouseEvent("contextmenu", {
     bubbles: true, cancelable: true, button: 2, clientX: 100, clientY: 18,
   })));
-  const action = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")].find(item => item.textContent === "重命名")!;
+  const items = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")];
+  expect(items.map(item => item.textContent)).not.toContain("打开所在目录");
+  const action = items.find(item => item.textContent === "重命名")!;
   flushSync(() => action.click());
   await vi.waitFor(() => expect(container.querySelector('.tab input[aria-label="重命名文档"]')).not.toBeNull());
   const name = container.querySelector<HTMLInputElement>('.tab input[aria-label="重命名文档"]')!;
@@ -189,8 +191,9 @@ it("keeps the source and publishing fields available on an imported note", () =>
     originalPublishedAt: null, importedAt: null };
   const queue = new SaveQueue(note, vi.fn().mockResolvedValue({ version: 2 }), vi.fn());
   try {
-    flushSync(() => root.render(<Theme><PropertiesDialog queue={queue} categories={[]} tagSuggestions={[]}
-      locked={false} onClose={vi.fn()} onOpen={vi.fn()} /></Theme>));
+    flushSync(() => root.render(<Theme><PropertiesDialog id={note.id} queue={queue} categories={[]} tagSuggestions={[]}
+      locked={false} onClose={vi.fn()} onOpen={vi.fn()}
+      onSave={async (_, change) => { queue.edit(change); await queue.flush({ retry: true }); }} /></Theme>));
     const source = document.querySelector<HTMLInputElement>('input[name="sourceUrl"]')!;
     const published = document.querySelector<HTMLInputElement>('input[name="publishedUrl"]')!;
     expect(source.value).toBe(note.source.url);

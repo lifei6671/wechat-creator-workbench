@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { Theme } from "@radix-ui/themes";
+import { useRef, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { EditorView } from "@milkdown/kit/prose/view";
 import { webcrypto } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { MarkdownEditor, type EditorCommand, type MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { MarkdownEditor as RichEditor, type EditorCommand, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
 import { parseWechat } from "../../../../packages/wechat-renderer";
 import { desktop, type AiHistoryItem, type AiStreamEvent, type AiThread } from "../desktop";
@@ -15,6 +16,19 @@ import { captureAiIntent, matchesAiTarget, type ChatSelection } from "../ai/cont
 import { messageTimeLabel } from "../labels";
 import { AiPanel } from "../workspace/AiPanel";
 import formatFixtures from "../../../../fixtures/wechat-format.json";
+
+// Formatting tests explicitly read each observed revision so the expected Markdown remains visible to assertions.
+function MarkdownEditor({ onChange, ref, ...props }: Omit<ComponentProps<typeof RichEditor>, "onDocumentChanged"> & {
+  onChange(id: string, revision: number, markdown: string): void;
+}) {
+  const editor = useRef<MarkdownEditorHandle>(null);
+  return <RichEditor {...props} onDocumentChanged={(id, revision) => onChange(id, revision, editor.current!.captureMarkdown().markdown)}
+    ref={value => {
+      editor.current = value;
+      if (typeof ref === "function") return ref(value);
+      if (ref) ref.current = value;
+    }} />;
+}
 
 const nativeHitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
 beforeAll(() => {
@@ -33,6 +47,94 @@ afterAll(() => {
   else Reflect.deleteProperty(document, "elementFromPoint");
   Reflect.deleteProperty(Range.prototype, "getClientRects");
   Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
+});
+
+it("notifies only document revisions and reads fresh Markdown for explicit document context", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const changed = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="snapshot" value={"## 正文\n\n现有内容"} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={changed} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    await select(container, 4, 4, handle!);
+    const before = handle!.captureMarkdown();
+    handle!.insert("末字");
+    const snapshot = handle!.captureMarkdown();
+    expect(snapshot.localRevision).toBeGreaterThan(before.localRevision);
+    expect(changed).toHaveBeenCalledExactlyOnceWith("snapshot", snapshot.localRevision);
+    expect(snapshot.markdown).toBe("## 正文\n\n现有内容末字");
+    expect(handle!.captureContext("document")?.original).toBe(snapshot.markdown);
+    expect(handle!.captureContext("section")?.original).toBe(snapshot.markdown);
+    handle!.command("selectAll");
+    handle!.command("selectAll");
+    const write = vi.fn().mockResolvedValue(undefined);
+    expect(handle!.clipboard("copy", { write, read: async () => "", onError: vi.fn() })).toBe(true);
+    expect(write).toHaveBeenCalledExactlyOnceWith(snapshot.markdown);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each([false, true])("locates the drop boundary in a 1000-block article and preserves undo (folded=%s)", async folded => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const paragraphs = Array.from({ length: 1000 }, (_, index) => `区块 ${index}`);
+  const body = (folded ? [...paragraphs.slice(0, 2), "## 长章节", ...paragraphs.slice(2)] : paragraphs).join("\n\n");
+  const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint")!;
+  const onChange = vi.fn();
+  const lookup = vi.spyOn(EditorView.prototype, "nodeDOM");
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="long-drag" value={body} active readOnly={false}
+      onChange={onChange} onBlur={() => {}} ref={editor => { handle = editor; }} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    if (folded) container.querySelector<HTMLButtonElement>(".rich-heading-fold")!.click();
+    const blocks = [...container.querySelectorAll<HTMLElement>(".ProseMirror > p")];
+    expect(blocks).toHaveLength(1000);
+    if (folded) {
+      expect(blocks.filter(block => block.hidden)).toHaveLength(998);
+      container.querySelector<HTMLElement>(".ProseMirror > h2")!.getBoundingClientRect = () => new DOMRect(25, 40, 400, 16);
+    }
+    let reads = 0;
+    blocks.forEach((block, index) => {
+      block.getBoundingClientRect = () => { reads++; return new DOMRect(25, index * 20, 400, 16); };
+    });
+    const scroller = container.querySelector<HTMLElement>(".editor-scroll")!;
+    scroller.getBoundingClientRect = () => new DOMRect(0, 0, 500, 20_000);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: (_x: number, y: number) => blocks[Math.floor(y / 20)] });
+    const grip = container.querySelector<HTMLElement>('[aria-label="拖动区块"]')!;
+    grip.setPointerCapture = vi.fn();
+    grip.hasPointerCapture = () => true;
+    grip.releasePointerCapture = vi.fn();
+    const move = (type: string, y: number) => new PointerEvent(type, {
+      bubbles: true, isPrimary: true, pointerId: 1, clientX: 50, clientY: y, cancelable: true,
+    });
+    blocks[0].dispatchEvent(move("pointermove", 2));
+    await vi.waitFor(() => expect(grip.parentElement?.dataset.show).toBe("true"));
+    grip.onpointerdown!(move("pointerdown", 2));
+    reads = 0;
+    lookup.mockClear();
+    for (let index = 890; index < 990; index++) grip.onpointermove!(move("pointermove", folded ? 32 : index * 20 + 2));
+    expect(reads).toBeLessThanOrEqual(1100);
+    if (folded) expect(lookup.mock.calls.length).toBeLessThanOrEqual(300);
+    const line = container.querySelector<HTMLElement>(".rich-block-drop-line")!;
+    expect(line.hidden).toBe(false);
+    expect(line.style.top).toBe(folded ? "40px" : "19780px");
+    grip.onpointerup!(move("pointerup", folded ? 32 : 989 * 20 + 2));
+    const paragraphsAfter = [...container.querySelectorAll(".ProseMirror > p")].map(block => block.textContent);
+    if (folded) expect(paragraphsAfter.slice(0, 3)).toEqual(["区块 1", "区块 0", "区块 2"]);
+    else expect(paragraphsAfter.slice(987, 990)).toEqual(["区块 988", "区块 0", "区块 989"]);
+    handle!.command("undo");
+    expect(container.querySelector(".ProseMirror > p")?.textContent).toBe("区块 0");
+  } finally {
+    lookup.mockRestore();
+    Object.defineProperty(document, "elementFromPoint", hitTest);
+    flushSync(() => root.unmount());
+    container.remove();
+  }
 });
 
 async function select(element: HTMLElement, from: number, to: number, handle: MarkdownEditorHandle) {
@@ -184,13 +286,15 @@ it("binds an AI rewrite to the original session and range and gives it a separat
   }
 });
 
-it("streams chat across article switches and restores chat and selected-range proposals", { timeout: 10_000 }, async () => {
+it("streams chat across article switches and restores chat and selected-range proposals", { timeout: 15_000 }, async () => {
   const entry: Entry = { id: "chat-draft", kind: "article", title: "标题", contentMd: "开头\n\n## 一\n\n这段正文\n\n## 二\n\n其他段落",
     status: "draft", categoryId: null, tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "",
     version: 1, updatedAt: 0, deletedAt: null, links: [] };
   const commit = vi.fn(async (_id: string, version: number) => ({ version: version + 1 }));
   const queue = new SaveQueue(entry, commit, () => {});
   const other = new SaveQueue({ ...entry, id: "another" }, commit, () => {});
+  const uncached = Array.from({ length: 4 }, (_, index) => new SaveQueue({ ...entry, id: `uncached-${index}`,
+    title: `缓存测试 ${index}` }, commit, () => {}));
   const threads = new Map<string, AiThread>();
   const messages = new Map<string, AiHistoryItem[]>();
   const entryThreads = new Map<string | null, string[]>();
@@ -276,9 +380,13 @@ it("streams chat across article switches and restores chat and selected-range pr
     click("发送消息");
   };
   const render = (current: SaveQueue, key: number, selectionRequest?: ChatSelection) => flushSync(() => root.render(<Theme>
-    {[queue, other].map(origin => <MarkdownEditor key={origin.sessionId}
-      ref={value => { if (value) editors.set(origin.entry.id, value); }} entryId={origin.entry.id} value={origin.entry.contentMd}
-      active={current === origin} readOnly={false} onChange={(_id, _revision, contentMd) => origin.edit({ contentMd })} onBlur={() => {}} />)}
+    {[queue, other].map(origin => <RichEditor key={origin.sessionId}
+      ref={value => {
+        if (!value) return;
+        editors.set(origin.entry.id, value);
+        return origin.bindContentProvider(value.captureMarkdown);
+      }} entryId={origin.entry.id} value={origin.entry.contentMd}
+      active={current === origin} readOnly={false} onDocumentChanged={(_id, revision) => origin.markContentDirty(revision)} onBlur={() => {}} />)}
     <AiPanel key={key} open queue={current} editor={editors.get(current.entry.id)} target={{ label: "测试模型" }} targetPicker={null}
       canChat canEdit selectionRequest={selectionRequest} canWrite={target => target === current} onClose={() => {}} onSettings={() => {}} />
   </Theme>));
@@ -313,6 +421,11 @@ it("streams chat across article switches and restores chat and selected-range pr
     await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加"));
     render(other, 1);
     expect(activePanel().textContent).not.toContain("可以加");
+    expect(scope).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("开始新对话"));
+    click("对话记录");
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("暂无对话"));
+    expect(scope).toHaveBeenCalledExactlyOnceWith(other.entry.id);
     finish({ reply: "可以加一条例子。" });
     await vi.waitFor(() => expect(messages.get("thread-" + entry.id)).toHaveLength(2));
     render(queue, 1);
@@ -340,20 +453,27 @@ it("streams chat across article switches and restores chat and selected-range pr
     expect(rewriteQuote?.textContent).toBe("这段正文");
     expect(rewriteQuote?.nextElementSibling?.textContent).toBe("只改选区");
     expect(rewriteQuote?.parentElement?.querySelector(".ai-user-actions")?.textContent).not.toContain("选区");
-    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    expect(queue.capture().fields.contentMd).toBe(entry.contentMd);
+    const beforeEviction = activePanel();
+    for (const current of uncached) {
+      render(current, 1);
+      await vi.waitFor(() => expect(activePanel()?.querySelector(".ai-context")?.textContent).toBe(current.entry.title));
+    }
+    await vi.waitFor(() => expect(beforeEviction.isConnected).toBe(false));
+    render(queue, 1);
     commit.mockRejectedValueOnce(new Error("磁盘写入失败"));
     await vi.waitFor(() => expect([...activePanel().querySelectorAll("button")].find(node => node.textContent === "接受修改")?.disabled).toBe(false));
     click("接受修改");
-    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd.replace("这段正文", "改写稿"));
+    expect(queue.capture().fields.contentMd).toBe(entry.contentMd.replace("这段正文", "改写稿"));
     expect(updateProposal).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(activePanel().textContent).toContain("正文已修改，保存失败"), { timeout: 2500 });
-    expect(queue.snapshot().fields.contentMd).toContain("改写稿");
+    expect(queue.capture().fields.contentMd).toContain("改写稿");
     expect(updateProposal).not.toHaveBeenCalled();
     await queue.flush({ retry: true });
     await vi.waitFor(() => expect(updateProposal).toHaveBeenCalledWith(generate.mock.calls.at(-1)![1].id, "applied"));
     expect(commit).toHaveBeenLastCalledWith(entry.id, 1, expect.objectContaining({ contentMd: expect.stringContaining("改写稿") }), "auto");
     editor.command("undo");
-    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    expect(queue.capture().fields.contentMd).toBe(entry.contentMd);
 
     await selectRange(0, 4);
     chooseRewrite();
@@ -369,7 +489,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     await queue.flush();
     await vi.waitFor(() => expect(updateProposal).toHaveBeenCalledWith(undoneProposal, "conflicted"));
     expect(updateProposal).not.toHaveBeenCalledWith(undoneProposal, "applied");
-    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    expect(queue.capture().fields.contentMd).toBe(entry.contentMd);
     click("对话记录");
     await vi.waitFor(() => expect(activePanel().textContent).toContain("暂无对话"));
     click("对话记录");
@@ -435,27 +555,34 @@ it("streams chat across article switches and restores chat and selected-range pr
 
     const restoredCount = generate.mock.calls.length;
     render(queue, 2);
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("开始新对话"));
+    click("对话记录");
+    await vi.waitFor(() => expect(activePanel().querySelectorAll(".ai-thread-list li")).toHaveLength(2));
+    click("怎么改？");
     await vi.waitFor(() => expect(activePanel().textContent).toContain("这是旧会话的续聊回复。"));
     expect(activePanel().textContent).toContain("精简措辞");
     expect(activePanel().textContent).toContain("原选区已失效");
     expect(generate).toHaveBeenCalledTimes(restoredCount);
-    expect(scope).toHaveBeenCalledWith(other.entry.id);
 
     const accepted = activePanel().querySelector('[aria-label="已接受"]')!.closest(".ai-suggestion")!;
     const regenerate = [...accepted.querySelectorAll("button")].find(button => button.textContent === "重新生成")!;
+    await selectRange(2, 2);
+    flushSync(() => regenerate.click());
+    expect(activePanel().querySelector('[role="alert"]')?.textContent).toBe("请在正文中选中文字");
+    expect(generate).toHaveBeenCalledTimes(restoredCount);
     await selectRange(2, 4);
     expect(regenerate.disabled).toBe(false);
     flushSync(() => regenerate.click());
     await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(restoredCount + 1));
-    expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", prompt: "只改选区", text: "这段正文" });
+    expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", prompt: "只改选区", text: "正文" });
     const regenerated = () => [...activePanel().querySelectorAll(".ai-suggestion")].at(-1)!;
     const discard = await vi.waitFor(() => {
       const button = [...regenerated().querySelectorAll("button")].find(item => item.textContent === "放弃");
       expect(button?.disabled).toBe(false);
       return button!;
     });
-    expect([...regenerated().querySelectorAll("button")].find(button => button.textContent === "接受修改")?.disabled).toBe(true);
-    expect(queue.snapshot().fields.contentMd).toBe(entry.contentMd);
+    expect([...regenerated().querySelectorAll("button")].find(button => button.textContent === "接受修改")?.disabled).toBe(false);
+    expect(queue.capture().fields.contentMd).toBe(entry.contentMd);
     flushSync(() => discard.click());
     await vi.waitFor(() => expect(regenerated().querySelector('.ai-proposal-title [aria-label="已放弃"] svg.lucide-x')).not.toBeNull());
     expect(regenerated().textContent).not.toContain("已放弃");
@@ -465,6 +592,8 @@ it("streams chat across article switches and restores chat and selected-range pr
     click("新对话");
     await vi.waitFor(() => expect(threads.get(firstThread)?.archived).toBe(true));
     render(queue, 3);
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("开始新对话"));
+    click("对话记录");
     await vi.waitFor(() => expect(activePanel().querySelectorAll(".ai-thread-list time")).toHaveLength(2));
     click("删除对话：另一轮对话");
     await vi.waitFor(() => expect(removeThread).toHaveBeenCalledWith("thread-" + entry.id + "-1"));
@@ -491,8 +620,15 @@ it("streams chat across article switches and restores chat and selected-range pr
     await vi.waitFor(() => expect(generate.mock.calls.at(-1)?.[1]).toMatchObject(attachedRequest));
     expect(activePanel().querySelector('blockquote[aria-label="所选内容"]')?.textContent).toBe("这段");
     expect(activePanel().querySelector(`[aria-label="${removeSelection}"]`)).toBeNull();
-    fail(new Error("模型暂时不可用"));
-    await vi.waitFor(() => expect(activePanel().textContent).toContain("模型暂时不可用"));
+    emit({ type: "delta", text: "截断前的内容" });
+    const partial = "截断前的内容，且最后一段通过命令返回";
+    fail({ code: "AI_TRUNCATED", message: "回复未完成，已达到模型输出长度限制", partial });
+    await vi.waitFor(() => expect(activePanel().textContent).toContain("回复未完成，已达到模型输出长度限制"));
+    emit({ type: "delta", text: "，且最后一段通过命令返回" });
+    const incompleteThread = generate.mock.calls.at(-1)![0];
+    await vi.waitFor(() => expect(messages.get(incompleteThread)?.at(-1)?.message.content)
+      .toEqual([{ type: "text", text: partial }]));
+    expect(activePanel().textContent).toContain(partial);
     click("重试");
     await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(count + 2));
     expect(generate.mock.calls.at(-1)?.[1]).toMatchObject(attachedRequest);
@@ -523,7 +659,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     await vi.waitFor(() => expect(latestProposalAction("放弃")?.disabled).toBe(false));
     flushSync(() => latestProposalAction("放弃")!.click());
     await vi.waitFor(() => expect(regenerated().querySelector('[aria-label="已放弃"]')).not.toBeNull());
-    await selectRange(2, 4);
+    await selectRange(4, 4);
     flushSync(() => latestProposalAction("重新生成")!.click());
     await vi.waitFor(() => expect(latestProposalAction("接受修改")?.disabled).toBe(false));
     expect(generate.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "rewrite", prompt: "精简这一处", text: "这段" });
@@ -532,6 +668,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     vi.restoreAllMocks();
     queue.dispose();
     other.dispose();
+    for (const cached of uncached) cached.dispose();
     flushSync(() => root.unmount());
     container.remove();
   }
@@ -851,6 +988,102 @@ it("expands replace from the find overlay and returns focus to the editor on Esc
     expect(document.activeElement).toBe(container.querySelector(".ProseMirror"));
   } finally {
     coordinates.mockRestore();
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("limits match decorations while navigation and replacement cover the entire document", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const body = Array.from({ length: 300 }, () => "第一处旧词，第二处旧词。").join("\n\n");
+  let handle: MarkdownEditorHandle | null = null;
+  const count = () => container.querySelector("output")?.textContent;
+  const click = (label: string) => flushSync(() => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
+  const enter = (label: string, value: string) => flushSync(() => {
+    const field = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  });
+  try {
+    flushSync(() => root.render(<Theme><RichEditor entryId="many-matches" value={body} readOnly={false}
+      ref={editor => { handle = editor; }} onDocumentChanged={() => {}} onBlur={() => {}} /></Theme>));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    flushSync(() => handle!.search());
+    enter("查找", "旧词");
+    expect(count()).toBe("1 / 600");
+    expect(container.querySelectorAll(".ProseMirror-search-match, .ProseMirror-active-search-match").length).toBeLessThanOrEqual(200);
+    click("上一处");
+    expect(count()).toBe("600 / 600");
+    expect(container.querySelector(".ProseMirror > p:last-child .ProseMirror-active-search-match")?.textContent).toBe("旧词");
+    click("展开替换");
+    enter("替换", "新词");
+    click("全部替换");
+    expect(handle!.captureMarkdown().markdown).toBe(body.replaceAll("旧词", "新词"));
+    expect(count()).toBe("无匹配");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("highlights regex lookahead and replaces an overlapping match selected by the search", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const click = (label: string) => flushSync(() => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
+  const enter = (label: string, value: string) => flushSync(() => {
+    const field = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  try {
+    flushSync(() => root.render(<Theme><RichEditor entryId="regex-search" value="foobar banana 😃" readOnly={false}
+      ref={editor => { handle = editor; }} onDocumentChanged={() => {}} onBlur={() => {}} /></Theme>));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    flushSync(() => handle!.search());
+    click("正则表达式");
+    enter("查找", "foo(?=bar)");
+    expect(container.querySelector(".ProseMirror-active-search-match")?.textContent).toBe("foo");
+    enter("查找", "(?=.)");
+    expect(container.querySelector("output")?.textContent).toMatch(/\/ 15$/);
+    click("关闭查找");
+    await select(container, 10, 10, handle!);
+    flushSync(() => handle!.search());
+    enter("查找", "ana");
+    expect(handle!.target()).toMatchObject({ from: 11, original: "ana" });
+    click("展开替换");
+    enter("替换", "X");
+    click("替换当前匹配");
+    expect(handle!.captureMarkdown().markdown).toBe("foobar banX 😃");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("recomputes following lines and link citations when a structured block is inserted at the top", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const lines = () => [...container.querySelectorAll<HTMLElement>(".rich-code-line-number")].map(node => Number(node.dataset.editorLine));
+  const citations = () => [...container.querySelectorAll(".rich-link-citation")].map(node => node.textContent);
+  try {
+    flushSync(() => root.render(<RichEditor entryId="structural-decorations"
+      value={"起始\n\n[后文](https://example.com/second)\n\n```js\nlet second = true;\n```"}
+      readOnly={false} lineNumbers convertLinks ref={editor => { handle = editor; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const prior = lines();
+    expect(prior).toHaveLength(1);
+    expect(citations()).toEqual(["[^1]"]);
+    await select(container, 0, 0, handle!);
+    handle!.insert("[前文](https://example.com/first)\n\n```js\nlet first = true;\nlet ready = true;\n```\n\n引言");
+    expect(lines()).toHaveLength(3);
+    expect(lines().at(-1)).toBeGreaterThan(prior[0]);
+    expect(citations()).toEqual(["[^1]", "[^2]"]);
+    expect(container.querySelector(".rich-link-notes")?.textContent).toContain("前文");
+    expect(container.querySelector(".rich-link-notes")?.textContent).toContain("后文");
+  } finally {
     flushSync(() => root.unmount());
     container.remove();
   }

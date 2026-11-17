@@ -27,7 +27,7 @@
 
 - `entries.content_md` 仍是正文的持久化来源；`.md` 文件仅作为导出文件。Milkdown/ProseMirror 文档树仅负责编辑期间的结构、选区和事务。
 - SQLite 由 Rust 应用服务统一写入；AI 不直接更新 `entries.content_md`，也不建立第二条保存管线。
-- 每篇文章通过现有 `SaveQueue` 执行约 750 毫秒防抖、串行保存和 `expectedVersion` 乐观锁。
+- 每篇文章通过 `SaveQueue` 串行保存并校验 `expectedVersion`。自动保存从最后一次修改起防抖 750 毫秒，连续编辑最长等待约 4 秒。
 - 自动保存不创建历史快照；手动关键版本、未来整篇替换前的历史遵循原有规则，每篇最多保留 **3 条**。普通选区改写使用 ProseMirror 撤销历史。
 - 兼容现有用户自配 OpenAI 风格模型接口及本机 Codex、Claude Code 命令行目标；继续使用操作系统凭据存储模型密钥。
 - 保留已有 S3 数据库单文件备份、S3 图床和本地 Streamable HTTP MCP 体系。新增 AI 聊天表自然进入 SQLite 数据库备份，不新增独立云服务。
@@ -142,7 +142,7 @@ interface AiEditorContext {
 实现原则：
 
 1. 失焦不会改变 ProseMirror 保存的选区；提交时从编辑器状态采集，之后固定本轮范围。把光标移回正文并清空选区时，不保留旧的选区作为默认目标。
-2. 使用已有 `target()` 和编辑器内部的 `publish`/解析逻辑提取内容；章节按 ProseMirror 标题节点定位，不另写一套 Markdown 正则分段器。
+2. 选区和章节按 ProseMirror 节点范围序列化。需要全文时调用 `captureMarkdown()`，从当前文档取得与本地修订号对应的 Markdown 快照。
 3. 发起请求时保存 `entryId`、编辑会话 `session`、`localRevision`、范围、Markdown 和原始结构化切片指纹。
 4. 模型收到的是正文数据，不是可信应用指令。保留 `ai.rs` 已有数据与系统指令分离约束。
 5. 快照只用于本轮请求及提案定位；SQLite 长期会话只保存可重放的文本内容和提案信息，不持久化前端 `symbol`。
@@ -181,7 +181,7 @@ interface AiEditProposal {
 2. 在侧栏显示 Markdown 行级差异。编辑器暂态高亮可按需补充；预览阶段不修改正文。
 3. 首期只支持整个提案一次接受，不开发逐字选择性合并。差异组件优先复用成熟 `diff` 库，核对现有依赖后引入。
 4. 用户点击「接受」时检查：文章未删除、原编辑会话仍存活、当前 `localRevision` 与发起时一致、目标范围结构切片与指纹一致，且编辑器可写。
-5. 将替换 Markdown 通过当前 Milkdown Schema 解析为切片，再调用现有 `replaceTarget()` 所封装的 ProseMirror 事务。应用后的 `onChange` 自然写入 `SaveQueue.edit()`。
+5. 将替换 Markdown 通过当前 Milkdown Schema 解析为切片，再调用 `replaceTarget()` 提交 ProseMirror 局部事务。`onDocumentChanged` 将修订号交给 `SaveQueue.markContentDirty()`，保存前再从编辑器读取这一版的 Markdown。提案状态随提交修订确认，保存前撤销通过文档结构比对识别。
 6. 维持 `replaceTarget()` 已有 `closeHistory` 撤销边界；接受后可一次撤销该次修改。
 7. 自动保存成功后更新提案状态。保存失败保留编辑器当前未保存正文和错误提示，由原有保存队列重试，不显示已持久化成功。
 8. 原文已改变或目标会话关闭时，提案仍可复制或重新生成，但不能写到后来选中的其他文章、其他段落。

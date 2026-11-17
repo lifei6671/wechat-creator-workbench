@@ -18,7 +18,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
-    io::Cursor,
+    io::{Cursor, Write},
     net::IpAddr,
     path::{Path, PathBuf},
     sync::{
@@ -39,6 +39,7 @@ pub struct Assets {
     activity: tokio::sync::watch::Sender<()>,
     upload_gate: Mutex<()>,
     thumbnails: Semaphore,
+    thumbnail_cache: Option<PathBuf>,
     uploads_stopped: CancellationToken,
     cleanup_stopped: CancellationToken,
     uncertain_upload: AtomicBool,
@@ -48,6 +49,7 @@ pub struct Assets {
 }
 
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(25);
+const THUMBNAIL_SIZE: u32 = 160;
 
 enum ImageOrigin<'a> {
     Attachment,
@@ -184,6 +186,7 @@ impl Assets {
             activity: tokio::sync::watch::channel(()).0,
             upload_gate: Mutex::new(()),
             thumbnails: Semaphore::new(2),
+            thumbnail_cache: None,
             uploads_stopped: CancellationToken::new(),
             cleanup_stopped: CancellationToken::new(),
             uncertain_upload: AtomicBool::new(false),
@@ -217,6 +220,11 @@ impl Assets {
             Ok(cache) => self.image_cache = Some(cache),
             Err(error) => eprintln!("Could not open the remote image cache: {error}"),
         }
+        self
+    }
+
+    pub fn with_thumbnail_cache(mut self, directory: PathBuf) -> Self {
+        self.thumbnail_cache = Some(directory);
         self
     }
 
@@ -300,7 +308,6 @@ impl Assets {
                 let parent = path.parent().expect("asset path has parent");
                 std::fs::create_dir_all(parent).map_err(local_error)?;
                 let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(local_error)?;
-                use std::io::Write;
                 temporary.write_all(bytes).map_err(local_error)?;
                 temporary.persist(&path).map_err(|e| local_error(e.error))?;
             }
@@ -383,12 +390,25 @@ impl Assets {
     }
 
     pub async fn thumbnail(&self, db: &Workspace, id: &str) -> Result<Vec<u8>> {
+        let file = db.read(|conn| by_id(conn, id))?;
+        let cached_path = self
+            .thumbnail_cache
+            .as_ref()
+            .zip(file.hash.as_ref())
+            .filter(|(_, hash)| {
+                hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .map(|(directory, hash)| directory.join(format!("v1-{THUMBNAIL_SIZE}-{hash}.png")));
+        if let Some(path) = &cached_path
+            && let Ok(bytes) = tokio::fs::read(path).await
+        {
+            return Ok(bytes);
+        }
         let _slot = self
             .thumbnails
             .acquire()
             .await
             .expect("thumbnail semaphore stays open");
-        let file = db.read(|conn| by_id(conn, id))?;
         let bytes = self.read_file(db, &file).await?;
         tauri::async_runtime::spawn_blocking(move || {
             let (format, _, _) = image_header(&bytes)?;
@@ -399,7 +419,7 @@ impl Assets {
                 .map_err(decode_error)?;
             let orientation = decoder.orientation().map_err(decode_error)?;
             let image = image::DynamicImage::from_decoder(decoder).map_err(decode_error)?;
-            let mut thumbnail = image.thumbnail(160, 160);
+            let mut thumbnail = image.thumbnail(THUMBNAIL_SIZE, THUMBNAIL_SIZE);
             thumbnail.apply_orientation(orientation);
             let mut output = Cursor::new(Vec::new());
             thumbnail
@@ -407,7 +427,17 @@ impl Assets {
                 .map_err(|error| {
                     AppError::new("IMAGE_FORMAT", format!("无法生成图片缩略图：{error}"))
                 })?;
-            Ok(output.into_inner())
+            let thumbnail = output.into_inner();
+            // A hosted copy can be re-encoded and have a different content hash.
+            if let Some(path) = cached_path
+                && file
+                    .hash
+                    .is_some_and(|hash| hash == format!("{:x}", Sha256::digest(&bytes)))
+                && let Err(error) = save_thumbnail(&path, &thumbnail)
+            {
+                eprintln!("Could not cache the asset thumbnail: {error}");
+            }
+            Ok(thumbnail)
         })
         .await
         .map_err(|error| AppError::new("ASSET_FILE", error.to_string()))?
@@ -805,6 +835,18 @@ fn upload_progress(db: &Workspace, markdown: &str) -> Result<Option<UploadProgre
         }
         Ok(pending.then_some(progress))
     })
+}
+
+fn save_thumbnail(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let directory = path.parent().expect("thumbnail cache file has a directory");
+    std::fs::create_dir_all(directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(bytes)?;
+    match temporary.persist_noclobber(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.error),
+    }
 }
 
 fn local_error(error: std::io::Error) -> AppError {
