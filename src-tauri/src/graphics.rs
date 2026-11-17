@@ -63,7 +63,49 @@ pub fn create_main_window(app: &tauri::App) -> std::result::Result<(), Box<dyn s
         );
         window = window.additional_browser_args(&format!("{args} --disable-gpu"));
     }
-    window.build()?;
+    let window = window.build()?;
+    set_window_small_icon(window.hwnd()?)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_window_small_icon(hwnd: windows::Win32::Foundation::HWND) -> windows::core::Result<()> {
+    use tauri::utils::platform::WINDOWS_APP_ICON_RESOURCE_ID;
+    use windows::{
+        Win32::{
+            Foundation::{HINSTANCE, LPARAM, WPARAM},
+            System::LibraryLoader::GetModuleHandleW,
+            UI::{
+                HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
+                WindowsAndMessaging::{
+                    ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXSMICON, SM_CYSMICON,
+                    SendMessageW, WM_SETICON,
+                },
+            },
+        },
+        core::PCWSTR,
+    };
+
+    // Loading the embedded icon preserves its native mask for shell consumers.
+    // The window is live and Windows owns the shared handle for this resource.
+    unsafe {
+        let instance = GetModuleHandleW(PCWSTR::null())?;
+        let dpi = GetDpiForWindow(hwnd);
+        let icon = LoadImageW(
+            Some(HINSTANCE(instance.0)),
+            PCWSTR::from_raw(usize::from(WINDOWS_APP_ICON_RESOURCE_ID) as *const u16),
+            IMAGE_ICON,
+            GetSystemMetricsForDpi(SM_CXSMICON, dpi),
+            GetSystemMetricsForDpi(SM_CYSMICON, dpi),
+            LR_SHARED,
+        )?;
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_SMALL as usize)),
+            Some(LPARAM(icon.0 as isize)),
+        );
+    }
     Ok(())
 }
 

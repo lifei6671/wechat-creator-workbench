@@ -6436,6 +6436,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "webp",
+ "windows",
  "zip",
 ]
 

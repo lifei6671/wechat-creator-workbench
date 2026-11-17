@@ -52,6 +52,7 @@ tauri-plugin-opener = "2"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
+windows = { version = "0.62", features = ["Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
