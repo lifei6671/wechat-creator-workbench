@@ -6,7 +6,7 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import { Button, Checkbox, ContextMenu, DropdownMenu, TextField, VisuallyHidden } from "@radix-ui/themes";
-import { ArrowUp, Check, ChevronDown, Copy, FileText, History, Plus, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Copy, FileText, History, PencilLine, Plus, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
 import { diffLines } from "diff";
 import type { MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { renderMarkdown } from "../../../../packages/markdown-core";
@@ -696,7 +696,7 @@ function ConversationList({ runtime, disabled, select, report }: {
           </div>
         </ContextMenu.Trigger>
         <ContextMenu.Content size="1">
-          <ContextMenu.Item onSelect={() => setEditing(id)}>重命名</ContextMenu.Item>
+          <ContextMenu.Item onSelect={() => setEditing(id)}><PencilLine size={15} />重命名</ContextMenu.Item>
         </ContextMenu.Content>
       </ContextMenu.Root>}
     </li>;

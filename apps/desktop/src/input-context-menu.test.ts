@@ -45,6 +45,9 @@ it("routes the native menu's clipboard actions to the selected input", async () 
     callbacks.get("粘贴")!();
     await vi.waitFor(() => expect(edit).toHaveBeenCalledWith("insertText", false, "替换文字"));
     expect(read).toHaveBeenCalledExactlyOnceWith(false);
+    input.setAttribute("data-canvas-text-editor", "");
+    expect(openMenu()).toBe(true);
+    expect(popup).toHaveBeenCalledTimes(2);
     expect(onError).not.toHaveBeenCalled();
   } finally {
     uninstall();

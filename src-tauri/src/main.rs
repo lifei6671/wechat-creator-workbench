@@ -7,6 +7,7 @@ mod clipboard;
 mod commands;
 mod content;
 mod db;
+mod github_import;
 mod graphics;
 mod mcp;
 mod secrets;
@@ -27,6 +28,7 @@ use backup::{
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
 use db::Workspace;
+use github_import::github_import;
 use graphics::gpu_acceleration;
 use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
@@ -87,6 +89,22 @@ fn main() {
             get_entry,
             create_entry,
             import_markdown,
+            list_collections,
+            save_collection,
+            delete_collection,
+            get_collection_canvas,
+            create_collection_node,
+            update_collection_node_text,
+            update_collection_node_color,
+            update_collection_node_geometry,
+            delete_collection_node,
+            convert_collection_text,
+            create_collection_edge,
+            update_collection_edge,
+            delete_collection_edge,
+            save_collection_viewport,
+            list_entry_collections,
+            github_import,
             save_entry,
             set_deleted,
             save_category,

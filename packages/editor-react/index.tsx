@@ -30,6 +30,8 @@ import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
 import "./editor.css";
 import { editorPerformance, measureEditorPerformance, recordEditorPerformance } from "./performance";
 import { inlineChangedBlocks, repairInlineStrong } from "./inline-changes";
+import type { WorkspaceSearchHit } from "../shared-types";
+import { locateSearchHit } from "./search-location";
 
 export type { EditorCommand } from "./commands";
 export type { ImageContext } from "./image-view";
@@ -57,8 +59,11 @@ type OutlineActions = ReturnType<typeof editorOutline>["actions"];
 export interface MarkdownEditorHandle extends OutlineActions {
   focus(): void;
   search(): void;
+  revealSearchHit(hit: WorkspaceSearchHit, showContext?: boolean): boolean;
+  clearSearchHit(): void;
   target(scope?: "document"): EditorTarget;
   captureMarkdown(): MarkdownSnapshot;
+  pendingEdits(): Promise<unknown> | undefined;
   captureDocumentMatch(): () => boolean;
   captureContext(scope: AiContextScope): AiEditorContext | null;
   selectionText(): string;
@@ -99,6 +104,7 @@ interface Props extends EditorImages {
   title?: ReactNode;
   onDocumentChanged(entryId: string, localRevision: number): void;
   onBlur(): void;
+  onEscape?(): void;
   onImages?(files: File[]): Promise<string>;
   onOpenLink?(url: string): Promise<void>;
 }
@@ -109,6 +115,7 @@ const revision = new PluginKey<number>("workbenchRevision");
 const documentLayout = new PluginKey("workbenchDocumentLayout");
 const pasteProgress = new PluginKey("workbenchPasteProgress");
 const searchHighlights = new PluginKey<DecorationSet>("workbenchSearchHighlights");
+const workspaceSearchHighlights = new PluginKey<DecorationSet>("workspaceSearchHighlights");
 const embeddedImage = /^data:(image\/(?:png|jpeg|gif|webp));base64,/i;
 
 async function readPaste(io: ClipboardIO, plainText?: boolean): Promise<ClipboardContent> {
@@ -521,6 +528,7 @@ export function MarkdownEditor(props: Props) {
     const element = host.current!;
     const session = Symbol(entryId);
     const pending = new Map<symbol, Range>();
+    const edits = new Set<Promise<void>>();
     const pastes = new Map<symbol, { offset: number; key: string }>();
     let pasteSequence = 0;
     const failedImages = new Set<() => void>();
@@ -581,13 +589,15 @@ export function MarkdownEditor(props: Props) {
         pastes.set(id, { offset: pasteOffset, key: `paste-${++pasteSequence}` });
         view.dispatch(view.state.tr.setMeta(pasteProgress, true));
       }
-      void operation().then(value => {
+      const edit = operation().then(value => {
         const mapped = pending.get(id);
         if (mapped && isWritable(view) && (!view.composing || duringComposition)) consume(mapped, value);
       }).catch(error => { if (!disposed) onError?.(error); }).finally(() => {
+        edits.delete(edit);
         pending.delete(id);
         if (pastes.delete(id) && !disposed) view.dispatch(view.state.tr.setMeta(pasteProgress, true));
       });
+      edits.add(edit);
     }
 
     function localizeImages(view: EditorView, images: PastedImage[], localize: (url: string) => Promise<string>,
@@ -737,6 +747,15 @@ export function MarkdownEditor(props: Props) {
           }, latest.current.onError);
         },
       })))
+      .use($prose(() => new Plugin({
+        props: { handleKeyDown(view, event) {
+          const { onEscape } = latest.current;
+          if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.keyCode === 229
+            || view.composing || !onEscape) return false;
+          onEscape();
+          return true;
+        } },
+      })))
       .use($view(codeBlockSchema.node, () => codeView))
       .use($view(tableSchema.node, ctx => (_node, view, getPos) => tableView(ctx, view, getPos)))
       .use($prose(ctx => new Plugin({
@@ -753,6 +772,15 @@ export function MarkdownEditor(props: Props) {
             ?? (tr.docChanged ? highlights.map(tr.mapping, tr.doc) : highlights),
         },
         props: { decorations: state => searchHighlights.getState(state) },
+      })))
+      .use($prose(() => new Plugin<DecorationSet>({
+        key: workspaceSearchHighlights,
+        state: {
+          init: () => DecorationSet.empty,
+          apply: (tr, highlights) => tr.getMeta(workspaceSearchHighlights) as DecorationSet | undefined
+            ?? (tr.docChanged || tr.selectionSet ? DecorationSet.empty : highlights),
+        },
+        props: { decorations: state => workspaceSearchHighlights.getState(state) },
       })))
       .use($prose(() => new Plugin({
         key: documentLayout,
@@ -847,10 +875,36 @@ export function MarkdownEditor(props: Props) {
       }, () => !disposed && latest.current.active !== false);
       const handle: MarkdownEditorHandle = {
         ...outline.actions,
+        pendingEdits: () => edits.size ? Promise.all(edits) : undefined,
         focus: () => view.focus(),
         search: () => {
           if (searchInput.current) searchInput.current.focus();
           else setSearchView(view);
+        },
+        revealSearchHit(hit, showContext = false) {
+          if (disposed || latest.current.active === false) return false;
+          const { state } = view;
+          const parse = editor.action(ctx => ctx.get(parserCtx));
+          const { markdown } = handle.captureMarkdown();
+          const expanded = showContext && hit.expanded ? locateSearchHit(state.doc, parse, markdown, hit.expanded) : null;
+          // A match in the wider snippet can fall inside Markdown syntax and prevent mapping the visible text.
+          const location = expanded?.ranges.length ? expanded : locateSearchHit(state.doc, parse, markdown, hit);
+          if (!location) return false;
+          setSearchView(null);
+          const highlights = location.ranges.map(({ from, to }) =>
+            Decoration.inline(from, to, { class: "workspace-search-highlight" }));
+          view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, location.position))
+            .setMeta(workspaceSearchHighlights, DecorationSet.create(state.doc, highlights)));
+          view.focus();
+          const viewport = scroll.current!;
+          const top = view.coordsAtPos(location.position).top;
+          viewport.scrollTop += top - viewport.getBoundingClientRect().top - Math.min(120, viewport.clientHeight / 4);
+          return true;
+        },
+        clearSearchHit() {
+          if (!disposed && workspaceSearchHighlights.getState(view.state) !== DecorationSet.empty) {
+            view.dispatch(view.state.tr.setMeta(workspaceSearchHighlights, DecorationSet.empty));
+          }
         },
         captureMarkdown() {
           const { doc } = view.state;

@@ -2,9 +2,9 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
-  ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, X,
+  ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
 } from "lucide-react";
-import type { Category, CategoryPlacement } from "../../../../packages/shared-types";
+import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { recordEditorPerformance } from "../../../../packages/editor-react/performance";
 import { footnoteId } from "../../../../packages/markdown-core";
@@ -19,15 +19,23 @@ import { loadLocalImage } from "./Publishing";
 import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./EditorContextMenu";
 import { InlineEntryTitle } from "./InlineEntryTitle";
 import { MoveEntryMenu } from "./MoveEntryMenu";
+import { AddToCollectionMenu } from "./CollectionMenu";
 import { usePointerDrag } from "./pointer-drag";
 
 export type ViewMode = "edit" | "preview";
 export type TabAction = "closeOthers" | "reading" | "properties" | "search"
   | "copyPath" | "history" | "export" | "delete" | "restore";
 
-export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, categories, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
+export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
+  collectionOptions = [], onAddToCollection, onSwitchCollection, onCloseCollection, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
   sessions: SaveQueue[];
   activeId: string | null;
+  collections?: Collection[];
+  activeCollectionId?: string;
+  collectionOptions?: Collection[];
+  onAddToCollection?(id: string, collection: Collection): void;
+  onSwitchCollection?(id: string): void;
+  onCloseCollection?(id: string): void;
   readingIds: string[];
   lockedIds: string[];
   categories: Category[];
@@ -110,7 +118,7 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
       cancelAnimationFrame(wheelFrame.current);
       wheelFrame.current = 0;
     };
-  }, [sessions.length]);
+  }, [sessions.length, collections.length]);
 
   useLayoutEffect(() => {
     const viewport = list.current!;
@@ -124,7 +132,7 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
       wheelFrame.current = 0;
       viewport.scrollLeft += distance;
     }
-  }, [activeId, edges.overflow]);
+  }, [activeId, activeCollectionId, edges.overflow]);
 
   function scroll(direction: -1 | 1) {
     const viewport = list.current!;
@@ -154,9 +162,14 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
     </div>}
     <div className="tabs" ref={list} role="tablist" aria-label="打开的内容" onKeyDown={navigate} {...drag.events}>
       {sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} active={activeId === queue.entry.id}
-        reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1}
+        tabbable={activeId === queue.entry.id || (!activeId && !activeCollectionId && queue === sessions[0])}
+        reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1 || collections.length > 0}
         dragging={drag.ghost?.id === queue.entry.id} placement={drag.hint?.id === queue.entry.id ? drag.hint.placement : undefined}
+        collectionOptions={collectionOptions} onAddToCollection={onAddToCollection}
         categories={categories} onMove={onMove} onSwitch={onSwitch} onClose={onClose} onAction={onAction} onRename={onRename} onError={onError} />)}
+      {collections.map(collection => <CollectionTab key={`collection:${collection.id}`} item={collection} active={activeCollectionId === collection.id}
+        tabbable={activeCollectionId === collection.id || (!activeId && !activeCollectionId && !sessions.length && collection === collections[0])}
+        onSwitch={() => onSwitchCollection?.(collection.id)} onClose={() => onCloseCollection?.(collection.id)} />)}
     </div>
     {edges.overflow && <div className="tab-scroll-slot">
       {edges.right && <Tool label="向右滚动标签页" className="chrome-icon tab-scroll" onClick={() => scroll(1)}><ChevronRight size={15} /></Tool>}
@@ -166,9 +179,36 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
   </div>;
 }
 
-function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, placement, categories, onMove, onSwitch, onClose, onAction, onRename, onError }: {
+function CollectionTab({ item, active, tabbable, onSwitch, onClose }: {
+  item: Collection; active: boolean; tabbable: boolean; onSwitch(): void; onClose(): void;
+}) {
+  return <ContextMenu.Root>
+    <ContextMenu.Trigger>
+      <div className="tab" role="presentation" data-active={active} onAuxClick={event => {
+        if (event.button === 1) { event.preventDefault(); onClose(); }
+      }}>
+        <Tooltip content={item.title}>
+          <button id={`collection-tab-${item.id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
+            aria-controls="collection-canvas-panel" tabIndex={tabbable ? 0 : -1} onClick={onSwitch}>
+            <Workflow size={14} aria-hidden="true" /><span>{item.title}</span>
+          </button>
+        </Tooltip>
+        <Tool className="chrome-icon tab-close" label={`关闭 ${item.title}`} onClick={onClose}><X size={14} /></Tool>
+      </div>
+    </ContextMenu.Trigger>
+    <ContextMenu.Content size="1" aria-label="专题标签操作">
+      <ContextMenu.Item onSelect={onClose}><X size={15} />关闭标签页</ContextMenu.Item>
+    </ContextMenu.Content>
+  </ContextMenu.Root>;
+}
+
+function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, dragging, placement, categories, collectionOptions,
+  onAddToCollection, onMove, onSwitch, onClose, onAction, onRename, onError }: {
   queue: SaveQueue;
   active: boolean;
+  tabbable: boolean;
+  collectionOptions: Collection[];
+  onAddToCollection?(id: string, collection: Collection): void;
   reading: boolean;
   locked: boolean;
   hasOtherTabs: boolean;
@@ -205,7 +245,7 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
       }}>
         <Tooltip content={title}>
           <button id={`tab-${id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
-            aria-controls="document-body" tabIndex={active ? 0 : -1} onClick={() => onSwitch(id)}>
+            aria-controls="document-body" tabIndex={tabbable ? 0 : -1} onClick={() => onSwitch(id)}>
             {dirty && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
             <span>{title}</span>
           </button>
@@ -226,6 +266,8 @@ function DocumentTab({ queue, active, reading, locked, hasOtherTabs, dragging, p
       <ContextMenu.Item onSelect={() => act("search")}><Search size={15} />{frozen || deletedAt !== null ? "查找" : "查找与替换"}</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("properties")}><FilePenLine size={15} />内容属性</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("history")}><History size={15} />历史版本</ContextMenu.Item>
+      {deletedAt === null && onAddToCollection && <AddToCollectionMenu collections={collectionOptions} disabled={locked}
+        onAdd={collection => onAddToCollection(id, collection)} />}
       <ContextMenu.Separator />
       {deletedAt === null && <>
         <ContextMenu.Item disabled={frozen} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={15} />重命名</ContextMenu.Item>

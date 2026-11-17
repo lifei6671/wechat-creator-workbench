@@ -3954,6 +3954,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark-to-cmark"
+version = "23.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fd139e09a9201c1f7c6832d637daead4460f969fa502de51986bfcb9f8da989"
+dependencies = [
+ "pulldown-cmark",
+ "unicase",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6398,6 +6408,7 @@ dependencies = [
  "arboard",
  "aws-sdk-s3",
  "axum",
+ "base64 0.23.1",
  "chrono",
  "clipboard-win",
  "futures-util",
@@ -6411,6 +6422,7 @@ dependencies = [
  "keyring",
  "lol_html",
  "pulldown-cmark",
+ "pulldown-cmark-to-cmark",
  "regex-lite",
  "reqwest",
  "rmcp",

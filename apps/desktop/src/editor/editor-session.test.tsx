@@ -49,6 +49,70 @@ afterAll(() => {
   Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
 });
 
+it("highlights the chosen workspace match in a folded section without editing the document", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const changed = vi.fn();
+  const line = "😀 这里的**高亮**出现在段落里，高亮再次出现。";
+  const prefix = `# 第一节\n\n${line}\n\n# 第二节\n\n`;
+  const body = prefix + line;
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="workspace-match" value={body} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={changed} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const sections = container.querySelectorAll<HTMLButtonElement>("button.rich-heading-fold");
+    sections[1].click();
+    const paragraphs = [...container.querySelectorAll(".ProseMirror > p")].filter(p => p.textContent?.includes("高亮"));
+    expect(paragraphs[1].hasAttribute("hidden")).toBe(true);
+    const matches = [...line.matchAll(/高亮|段落/g)].map(match => ({ start: match.index, end: match.index + match[0].length }));
+    expect(handle!.revealSearchHit({
+      line: 7, start: prefix.length, text: line, ranges: matches,
+      before: null, after: null, leading: false, trailing: false,
+    })).toBe(true);
+    expect(paragraphs[1].hasAttribute("hidden")).toBe(false);
+    expect([...paragraphs[1].querySelectorAll(".workspace-search-highlight")].map(match => match.textContent)).toEqual(["高亮", "段落", "高亮"]);
+    expect(paragraphs[0].querySelector(".workspace-search-highlight")).toBeNull();
+    expect(changed).not.toHaveBeenCalled();
+    expect(handle!.captureMarkdown().markdown).toBe(body);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("preserves the compact editor highlight when expanded matches interrupt Markdown syntax", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const changed = vi.fn();
+  const line = "`1` " + "x".repeat(220) + " [^1]";
+  const body = line + "\n\n[^1]: A note";
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="expanded-workspace-match" value={body} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={changed} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const markdown = handle!.captureMarkdown().markdown;
+    expect(markdown).toMatch(/^`1` x+ \[\^1\]/);
+    const end = markdown.indexOf("\n");
+    const reference = markdown.indexOf("[^1]") + 2;
+    const firstMatch = { start: 1, end: 2 };
+    expect(handle!.revealSearchHit({
+      line: 1, start: 0, text: markdown.slice(0, 180), ranges: [firstMatch],
+      leading: false, trailing: true, before: null, after: null,
+      expanded: {
+        start: 0, text: markdown.slice(0, end), leading: false, trailing: false,
+        ranges: [firstMatch, { start: reference, end: reference + 1 }],
+      },
+    }, true)).toBe(true);
+    expect([...container.querySelectorAll(".workspace-search-highlight")].map(match => match.textContent)).toEqual(["1"]);
+    expect(changed).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
 it("notifies only document revisions and reads fresh Markdown for explicit document context", async () => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
@@ -798,9 +862,13 @@ it("routes clipboard shortcuts to native callbacks and keeps async paste bound t
     expect(container.querySelector('.rich-paste-progress[role="status"]')?.textContent).toBe("正在粘贴…");
     expect(onChange).not.toHaveBeenCalled();
     handle!.insert("新文字");
+    const pending = handle!.pendingEdits();
+    expect(pending).toBeDefined();
     finish("![图](asset://asset)");
-    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith("first", 2, "新文字![图](asset://asset)原稿"));
-    await vi.waitFor(() => expect(container.querySelector(".rich-paste-progress")).toBeNull());
+    await pending;
+    expect(onChange).toHaveBeenLastCalledWith("first", 2, "新文字![图](asset://asset)原稿");
+    expect(container.querySelector(".rich-paste-progress")).toBeNull();
+    expect(handle!.pendingEdits()).toBeUndefined();
 
     shortcut("c");
     expect(clipboard.write).toHaveBeenCalledWith("新文字图原稿", expect.stringContaining("data-workbench-src"));
@@ -829,6 +897,25 @@ it("routes clipboard shortcuts to native callbacks and keeps async paste bound t
     expect(onChange).not.toHaveBeenCalled();
   } finally {
     detach();
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("routes Escape from the rich editor to its containing card", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const onEscape = vi.fn();
+  try {
+    flushSync(() => root.render(<RichEditor entryId="card" value="正文" readOnly={false}
+      onDocumentChanged={() => {}} onBlur={() => {}} onEscape={onEscape} />));
+    await vi.waitFor(() => expect(container.querySelector(".ProseMirror")).not.toBeNull());
+    const body = container.querySelector(".ProseMirror")!;
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true, cancelable: true }));
+    expect(onEscape).toHaveBeenCalledOnce();
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, isComposing: true, bubbles: true }));
+    expect(onEscape).toHaveBeenCalledOnce();
+  } finally {
     flushSync(() => root.unmount());
     container.remove();
   }

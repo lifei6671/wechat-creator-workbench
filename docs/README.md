@@ -12,6 +12,8 @@
 | [AI 写作助手技术方案](./ai-writing-assistant-technical-design.md) | assistant-ui 集成、Milkdown 上下文与改写、流式对话、SQLite 会话、实施步骤及验收矩阵 |
 | [Milkdown 超长文与 AI 编辑性能改造方案](./milkdown-long-document-performance-plan.md) | 本地源码审查、全文序列化与装饰热路径、AI 局部事务、保存一致性、基准压测与阶段任务 |
 | [Obsidian 成熟功能内置化技术方案](./obsidian-feature-integration-plan.md) | 长文大纲、格式规范化、素材增强、快捷采集、写作模板、选题看板、AI 体验与公众号发布的源码复用、任务分解及验收 |
+| [专题画布与 GitHub README 导入技术方案](./topic-canvas-technical-design.md) | React Flow 无限画布、文章引用、专题私有截图与文本、关系连线、SQLite 持久化、素材生命周期、README 导入与验收 |
+| [专题文本卡片所见即所得编辑增量技术方案](./topic-canvas-inline-editing-plan.md) | 基于已完成的专题画布，复用 Milkdown 实现原地富文本编辑、延迟快照、剪贴板路由及保存一致性 |
 
 ## 已确定的技术决策
 
@@ -21,6 +23,8 @@
 - **技术复用**：从 [Plainly](https://github.com/lifei6671/plainly) 选择性抽取 Markdown 渲染、主题注册、公众号排版与图片识别逻辑，不沿用其整套应用壳层。
 - **公众号**：富文本复制和图片持久性必须通过真实公众号草稿保存、重新打开验证。
 - **资料管理**：灵感、资料、文章三类内容，以素材、分类、标签和来源关联。
+- **专题画布**：专题以 React Flow 展示文章引用、截图和临时文案；文章引用全局内容库，图片和文本逻辑归属当前专题；画布节点与连线独立于正文编辑保存。
+- **GitHub 导入**：公开仓库默认 README 导入为 reference，保留来源元数据并可加入专题。
 - **备份与集成**：S3 图床独立于仅备份 SQLite 数据库的 S3 备份/恢复；本地 Streamable HTTP MCP 完整保留；用户自配模型接口。
 - **历史版本**：日常自动保存只更新当前正文；仅手动关键版本及 AI 整篇覆盖前保留历史，每篇最多 3 条。
 - **保存与异步操作**：每篇文章串行保存；AI 改写、异步插图和渲染结果绑定发起时的文章与输入，不覆盖后续修改或其他文章。

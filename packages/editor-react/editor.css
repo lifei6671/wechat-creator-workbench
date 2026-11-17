@@ -300,6 +300,7 @@ button.rich-slash-group { border: 0; background: transparent; cursor: pointer; }
 .rich-editor [data-markdown-task] { cursor: pointer; }
 .rich-editor .ProseMirror-search-match { background: var(--accent-4); }
 .rich-editor .ProseMirror-active-search-match { background: var(--accent-6); }
+.rich-editor .workspace-search-highlight { background: var(--amber-5); color: inherit; }
 
 .rich-editor .rich-markdown-syntax { color: var(--gray-10); font-weight: inherit; font-style: normal; user-select: none; }
 .rich-editor .rich-markdown-syntax::before { content: attr(data-markdown); }

@@ -39,14 +39,16 @@ export interface EntryRow {
   categoryId: string | null;
   pinned?: boolean;
   preview?: { summary: string; image: string | null; tags?: string[] };
+  searchMatches?: WorkspaceSearchMatches;
 }
 export interface Entry extends EntryRow, EntryFields {
   version: number;
   links: EntryRow[];
 }
 export const entrySortOrders = ["name", "nameDesc", "updated", "updatedAsc", "created", "createdAsc"] as const;
+export type EntrySortOrder = typeof entrySortOrders[number];
 export interface EntryFilter {
-  sort?: typeof entrySortOrders[number];
+  sort?: EntrySortOrder | "relevance";
   pinned?: boolean;
   kind?: EntryKind;
   categoryId?: string;
@@ -55,13 +57,34 @@ export interface EntryFilter {
   tagIds?: string[];
   untagged?: boolean;
   query?: string;
-  workspaceSearch?: { text: string; caseSensitive: boolean };
+  workspaceSearch?: { text: string; caseSensitive: boolean; matchPage?: { entryId: string; offset: number } };
   deleted: boolean;
   wechatImported?: boolean;
   offset: number;
   limit?: number;
 }
-export interface EntryPage { items: EntryRow[]; nextOffset: number | null }
+export interface WorkspaceSearchSnippet {
+  start: number;
+  text: string;
+  ranges: { start: number; end: number }[];
+  leading: boolean;
+  trailing: boolean;
+}
+export interface WorkspaceSearchHit extends WorkspaceSearchSnippet {
+  line: number;
+  expanded?: WorkspaceSearchSnippet;
+  before: string | null;
+  after: string | null;
+}
+export interface WorkspaceSearchMatches { version: number; items: WorkspaceSearchHit[]; total: number; nextOffset: number | null }
+export interface WorkspaceSearchInfo {
+  total: number;
+  clauses: {
+    field: "text" | "content" | "file" | "path" | "tag" | "line" | "section" | "status" | "summary" | "source" | "unknownProperty";
+    terms: string[];
+  }[];
+}
+export interface EntryPage { items: EntryRow[]; nextOffset: number | null; search?: WorkspaceSearchInfo }
 export type CategoryIcon =
   | "folder" | "lightbulb" | "book" | "file" | "bookmark" | "newspaper" | "archive" | "star"
   | "code" | "terminal" | "globe" | "link" | "image" | "camera" | "video" | "music"
@@ -84,4 +107,53 @@ export interface AppError {
   code: "DATABASE" | "INTEGRITY" | "INVALID_INPUT" | "NOT_FOUND" | "VERSION_CONFLICT" | "EXIT_PENDING" | "EXPORT_FAILED";
   message: string;
   currentVersion?: number;
+}
+export type CanvasPosition = { x: number; y: number };
+export type CanvasViewport = CanvasPosition & { zoom: number };
+export type CanvasGeometry = CanvasPosition & { width: number; height: number };
+
+export interface Collection {
+  id: string;
+  title: string;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+  viewport: CanvasViewport;
+  nodeCount: number;
+}
+
+export type CanvasNodeContent =
+  | { kind: "entry"; entryId: string }
+  | { kind: "image"; assetId: string }
+  | { kind: "text"; contentMd: string };
+
+export type CanvasCardColor = "red" | "orange" | "amber" | "green" | "blue" | "violet" | `#${string}`;
+
+export type CanvasNode = CanvasGeometry & {
+  id: string;
+  collectionId: string;
+  kind: CanvasNodeContent["kind"];
+  entryId: string | null;
+  assetId: string | null;
+  assetName?: string | null;
+  color: CanvasCardColor | null;
+  contentMd: string;
+  createdAt: number;
+  updatedAt: number;
+  entry: Pick<EntryRow, "title" | "kind" | "deletedAt"> & { summary: string; sourcePlatform: string | null } | null;
+};
+
+export interface CanvasEdge {
+  id: string;
+  collectionId: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  label: string;
+  createdAt: number;
+}
+
+export interface CollectionCanvas {
+  collection: Collection;
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
 }

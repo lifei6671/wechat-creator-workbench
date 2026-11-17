@@ -69,7 +69,7 @@ export function installInputContextMenu(onError: (error: unknown) => void) {
   function open(event: MouseEvent) {
     const field = event.target;
     if (!(field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement && fieldTypes.includes(field.type))
-      || field.matches(":disabled")) return;
+      || field.matches(":disabled, [data-canvas-text-editor]")) return;
     event.preventDefault();
     event.stopPropagation();
     field.focus({ preventScroll: true });

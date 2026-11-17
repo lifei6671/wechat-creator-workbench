@@ -1,9 +1,69 @@
 use super::*;
+use crate::content::collections::{NodeContent, Position};
 use std::io::Cursor;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+
+#[tokio::test]
+async fn topic_screenshots_are_hidden_and_retained_until_the_last_reference_is_removed() {
+    let (folder, db, assets) = setup();
+    let collection =
+        serde_json::to_value(db.save_collection(None, "研究图片", "").unwrap()).unwrap();
+    let collection_id = collection["id"].as_str().unwrap();
+    let bytes = png();
+    let asset = assets.import(&db, "screenshot.png", &bytes).unwrap();
+    db.create_collection_node(
+        collection_id,
+        NodeContent::Image {
+            asset_id: asset.clone(),
+        },
+        serde_json::from_value::<Position>(serde_json::json!({ "x": 0, "y": 0 })).unwrap(),
+    )
+    .unwrap();
+    assert!(assets.library(&db, 50).unwrap().items.is_empty());
+    assets.cleanup(&db).await.unwrap();
+    let url = format!("asset://{asset}");
+    assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
+
+    let assets = Assets::new(folder.path().join("assets"), &db).unwrap();
+    let entry = db
+        .create_external(
+            crate::content::Kind::Article,
+            crate::content::EntryPatch {
+                content_md: Some(format!("![图]({url})")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let library = assets.library(&db, 50).unwrap();
+    assert_eq!(library.page, 0);
+    assert_eq!(library.items[0].id, asset);
+    db.delete_collection(collection_id).unwrap();
+    assets.cleanup(&db).await.unwrap();
+    assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
+
+    let assets = Assets::new(folder.path().join("assets"), &db).unwrap();
+    let entry_id = serde_json::to_value(entry).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    db.update_external(
+        &entry_id,
+        1,
+        crate::content::EntryPatch {
+            content_md: Some(String::new()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assets.cleanup(&db).await.unwrap();
+    assert_eq!(
+        assets.read(&db, &url).await.unwrap_err().code(),
+        "ASSET_MISSING"
+    );
+}
 
 async fn serve_image(listener: TcpListener, bytes: Vec<u8>) {
     serve_image_response(&listener, "200 OK", "", &bytes).await;

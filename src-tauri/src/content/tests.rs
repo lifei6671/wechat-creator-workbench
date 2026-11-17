@@ -216,6 +216,7 @@ fn workspace_search_matches_persisted_scopes_before_pagination() {
             workspace_search: Some(search::WorkspaceSearch {
                 text: text.into(),
                 case_sensitive,
+                match_page: None,
             }),
             limit: NonZeroU32::new(1),
             ..Filter::default()
@@ -246,7 +247,185 @@ fn workspace_search_matches_persisted_scopes_before_pagination() {
     assert!(find("file:release", true).is_empty());
     assert!(find("file:café", true).is_empty());
     assert!(find("[来源]", false).is_empty());
+    assert!(find("Alpha [来源:]", false).is_empty());
+    assert_eq!(
+        find("Alpha [摘要:]", false),
+        std::slice::from_ref(&note.row.id)
+    );
     assert!(find("file:' OR 1=1 --", false).is_empty());
+}
+
+#[test]
+fn workspace_search_relevance_ranks_all_results_before_pagination() {
+    let db = memory();
+    let add = |title, body| {
+        db.create_entry(Kind::Article, Some(article(title, body)), None)
+            .unwrap()
+            .row
+            .id
+    };
+    let fewer = add("A", "检索 可用\n检索\n检索\n检索");
+    let more = add("Z", "检索 可用\n检索 可用");
+    let partial = add("关于检索", "检索");
+    let exact = add("检索", "正文");
+    let page = |text: &str, offset, limit| {
+        db.entries(Filter {
+            sort: Some(EntrySort::Relevance),
+            workspace_search: Some(search::WorkspaceSearch {
+                text: text.into(),
+                case_sensitive: false,
+                match_page: None,
+            }),
+            offset,
+            limit: NonZeroU32::new(limit),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let first = page("检索", 0, 1);
+    assert_eq!(first.search.unwrap().total, 4);
+    assert_eq!(first.next_offset, Some(1));
+    assert_eq!(first.items[0].id, exact);
+    let rest = page("检索", 1, 3);
+    assert_eq!(rest.next_offset, None);
+    assert_eq!(
+        rest.items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        [partial.as_str(), fewer.as_str(), more.as_str()]
+    );
+    let scoped = page("line:(检索 可用)", 0, 3);
+    assert_eq!(
+        scoped
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        [more.as_str(), fewer.as_str()]
+    );
+    assert_eq!(page("[状态]", 0, 1).items[0].id, fewer);
+}
+
+#[test]
+fn workspace_search_pages_distinct_lines_and_highlights_source_offsets() {
+    let db = memory();
+    let line = "😀 **高亮**出现在段落里，高亮再次出现。";
+    let prefix = "# 开头\r\n  高亮但不同一行  \r\n";
+    let body = format!(
+        "{prefix}{}段落但无第二关键词。",
+        format!("{line}\r\n").repeat(15)
+    );
+    let entry = db
+        .create_entry(Kind::Article, Some(article("研究入门", &body)), None)
+        .unwrap();
+    db.create_entry(
+        Kind::Article,
+        Some(article("高亮 段落", "不匹配的内容")),
+        None,
+    )
+    .unwrap();
+    let query = |text: &str, match_page| {
+        db.entries(Filter {
+            workspace_search: Some(search::WorkspaceSearch {
+                text: text.into(),
+                case_sensitive: false,
+                match_page,
+            }),
+            limit: NonZeroU32::new(1),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let result = query("line:(高亮 段落)", None);
+    assert_eq!(result.search.as_ref().unwrap().total, 1);
+    assert_eq!(result.items[0].id, entry.row.id);
+    let matches = serde_json::to_value(result.items[0].search_matches.as_ref().unwrap()).unwrap();
+    assert_eq!(matches["version"], entry.version);
+    assert_eq!(matches["total"], 15);
+    assert_eq!(matches["nextOffset"], 12);
+    let hit = &matches["items"][0];
+    assert_eq!(hit["line"], 3);
+    assert_eq!(hit["before"], "  高亮但不同一行  ");
+    assert_eq!(hit["text"], line);
+    assert!(hit.get("expanded").is_none());
+    assert_eq!(hit["start"], prefix.encode_utf16().count());
+    assert_eq!(hit["ranges"][0], serde_json::json!({"start":5,"end":7}));
+    assert_eq!(hit["ranges"].as_array().unwrap().len(), 3);
+    let page = query(
+        "line:(高亮 段落)",
+        Some(search::MatchPage {
+            entry_id: entry.row.id,
+            offset: 12,
+        }),
+    );
+    let page = page.items[0].search_matches.as_ref().unwrap();
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.next_offset, None);
+    assert_eq!(query("高亮 段落", None).search.unwrap().total, 2);
+    assert_eq!(query("content:(高亮 段落)", None).search.unwrap().total, 1);
+    assert!(query("line:()", None).items.is_empty());
+}
+
+#[test]
+fn workspace_search_expands_to_the_full_markdown_line_with_all_highlights() {
+    let db = memory();
+    let left = format!("  - **开头**{}", "前😀".repeat(130));
+    let line = format!(
+        "{left}**EdGe**{}{}[^尾词]  ",
+        "后😀".repeat(330),
+        " eDGE".repeat(610)
+    );
+    let body = format!("> 上一行\r\n{line}\r\n- 下一行");
+    db.create_entry(Kind::Article, Some(article("长行", &body)), None)
+        .unwrap();
+    let page = db
+        .entries(Filter {
+            workspace_search: Some(search::WorkspaceSearch {
+                text: "line:(edg dge 尾词)".into(),
+                case_sensitive: false,
+                match_page: None,
+            }),
+            ..Filter::default()
+        })
+        .unwrap();
+    let matches = serde_json::to_value(page.items[0].search_matches.as_ref().unwrap()).unwrap();
+    let hit = &matches["items"][0];
+    let expanded = &hit["expanded"];
+    let compact_text = hit["text"].as_str().unwrap();
+    let expanded_text = expanded["text"].as_str().unwrap();
+    assert_eq!(hit["line"], 2);
+    assert_eq!(hit["before"], "> 上一行");
+    assert_eq!(hit["after"], "- 下一行");
+    assert!(expanded_text.contains(compact_text));
+    assert!(!compact_text.contains("开头") && !compact_text.contains("尾词"));
+    assert_eq!(compact_text.chars().count(), 180);
+    assert_eq!(expanded_text, line);
+    assert_eq!(expanded["start"], "> 上一行\r\n".encode_utf16().count());
+    assert_eq!(expanded["leading"], false);
+    assert_eq!(expanded["trailing"], false);
+
+    let expanded_marks: Vec<_> = std::iter::once("EdGe")
+        .chain(std::iter::repeat_n("eDGE", 610))
+        .chain(std::iter::once("尾词"))
+        .collect();
+
+    let source: Vec<_> = body.encode_utf16().collect();
+    for (snippet, marks) in [(hit, &["EdGe"][..]), (expanded, expanded_marks.as_slice())] {
+        let start = snippet["start"].as_u64().unwrap() as usize;
+        let text = snippet["text"].as_str().unwrap();
+        assert_eq!(
+            String::from_utf16(&source[start..start + text.encode_utf16().count()]).unwrap(),
+            text
+        );
+        let ranges = snippet["ranges"].as_array().unwrap();
+        assert_eq!(ranges.len(), marks.len());
+        for (range, expected) in ranges.iter().zip(marks) {
+            let from = start + range["start"].as_u64().unwrap() as usize;
+            let to = start + range["end"].as_u64().unwrap() as usize;
+            assert_eq!(String::from_utf16(&source[from..to]).unwrap(), *expected);
+        }
+    }
 }
 
 #[test]

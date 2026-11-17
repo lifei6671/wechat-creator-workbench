@@ -11,6 +11,7 @@
 | [Radix UI Themes](https://github.com/radix-ui/themes) | MIT | 主题和可访问的界面控件 |
 | [Lucide](https://github.com/lucide-icons/lucide) | ISC（包含采用 MIT 的 Feather 图标） | 工作区图标 |
 | [react-resizable-panels](https://github.com/bvaughn/react-resizable-panels) | MIT | 可拖动及键盘可调整的分栏 |
+| [React Flow](https://github.com/xyflow/xyflow) | [MIT](https://github.com/xyflow/xyflow/blob/main/LICENSE)，Copyright (c) 2019-2025 webkid GmbH | 专题画布的节点、连线、缩放和拖放 |
 | [Milkdown](https://github.com/Milkdown/milkdown) / [ProseMirror](https://github.com/ProseMirror/prosemirror) | MIT | 富文本编辑、撤销、选区及 Markdown 转换 |
 | [prosemirror-search](https://github.com/ProseMirror/prosemirror-search) | MIT | 编辑区查找与替换 |
 | [remark-math](https://github.com/remarkjs/remark-math) | MIT | 编辑器解析 Markdown 数学公式 |
@@ -21,6 +22,8 @@
 P2 复用 [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust) 执行 S3 对象请求，使用 [keyring](https://github.com/hwchen/keyring-rs) 访问系统凭据库，使用 [image](https://github.com/image-rs/image) 校验图片头和尺寸，使用 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) 和 [lol-html](https://github.com/cloudflare/lol-html) 解析正文图像引用，使用 [zip](https://github.com/zip-rs/zip2) 生成带图归档。
 
 普通外链图片使用 [http-cache-semantics](https://github.com/kornelski/rusty-http-cache-semantics) 判定 HTTP 缓存有效期和重新校验所需的请求头，采用 [BSD-2-Clause 许可证](https://github.com/kornelski/rusty-http-cache-semantics/blob/main/LICENSE)。
+
+GitHub README 导入使用 [base64](https://github.com/marshallpierce/rust-base64)（MIT 或 Apache-2.0）解码，使用 [pulldown-cmark-to-cmark](https://github.com/Byron/pulldown-cmark-to-cmark)（Apache-2.0）将修改过链接的 Markdown 事件重新序列化。
 
 P3 复用 Plainly 的三套 Rico 微信主题和公众号表格处理规则。固定来源、版权、许可和修改范围见 [排版来源](packages/wechat-renderer/SOURCES.md)。
 

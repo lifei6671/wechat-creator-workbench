@@ -53,7 +53,24 @@ export function saveDocumentTabs(workspaceId: string, tabs: DocumentTabsPreferen
   persist(documentTabsKey(workspaceId), tabs);
 }
 
-const sections: readonly Section[] = ["folders", "timeline", "search", "assets", "trash", "imports"];
+export type CollectionTabsPreference = { ids: string[]; activeId?: string };
+const collectionTabsKey = (workspaceId: string) => `collection-tabs:${workspaceId}`;
+
+export function readCollectionTabs(workspaceId: string): CollectionTabsPreference {
+  const { ids, activeId } = record(readPreference(collectionTabsKey(workspaceId)));
+  if (Array.isArray(ids)) {
+    const open = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
+    return { ids: open, activeId: typeof activeId === "string" && open.includes(activeId) ? activeId : undefined };
+  }
+  const previous = readPreference(`active-collection:${workspaceId}`);
+  return typeof previous === "string" ? { ids: [previous], activeId: previous } : { ids: [] };
+}
+
+export function saveCollectionTabs(workspaceId: string, tabs: CollectionTabsPreference) {
+  persist(collectionTabsKey(workspaceId), tabs);
+}
+
+const sections: readonly Section[] = ["folders", "timeline", "search", "assets", "trash", "imports", "collections"];
 const layoutKey = "workspace-layout";
 
 type WorkspaceLayout = {

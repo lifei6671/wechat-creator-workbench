@@ -3,6 +3,21 @@ import { desktop } from "../desktop";
 
 type HandleEditorClipboard = (action: ClipboardAction, target: EventTarget | null, plainText?: boolean) => boolean;
 
+export async function editClipboardField(field: HTMLInputElement | HTMLTextAreaElement, action: ClipboardAction) {
+  const { selectionStart, selectionEnd, value } = field;
+  if (selectionStart === null || selectionEnd === null) return;
+  const sameSelection = () => document.activeElement === field && field.value === value
+    && field.selectionStart === selectionStart && field.selectionEnd === selectionEnd;
+  const editable = !field.readOnly && !field.disabled;
+  if (action === "paste" && editable) {
+    const result = await desktop.readClipboard(false);
+    if (result?.kind === "text" && result.text && sameSelection()) document.execCommand("insertText", false, result.text);
+  } else if (action !== "paste" && selectionStart !== selectionEnd) {
+    await desktop.copyText(value.slice(selectionStart, selectionEnd));
+    if (action === "cut" && editable && sameSelection()) document.execCommand("delete");
+  }
+}
+
 export function attachClipboard(editor: HandleEditorClipboard, onError: ClipboardIO["onError"]) {
   function handle(action: ClipboardAction, event: Event, plainText?: boolean) {
     event.preventDefault();
@@ -12,21 +27,7 @@ export function attachClipboard(editor: HandleEditorClipboard, onError: Clipboar
     const field = event.target;
     if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)
       && field.selectionStart !== null && field.selectionEnd !== null) {
-      const { selectionStart, selectionEnd, value } = field;
-      const sameSelection = () => document.activeElement === field && field.value === value
-        && field.selectionStart === selectionStart && field.selectionEnd === selectionEnd;
-      const editable = !field.readOnly && !field.disabled;
-      if (action === "paste" && editable) {
-        void desktop.readClipboard(false).then(result => {
-          if (result?.kind === "text" && result.text && sameSelection()) {
-            document.execCommand("insertText", false, result.text);
-          }
-        }).catch(onError);
-      } else if (action !== "paste" && selectionStart !== selectionEnd) {
-        void desktop.copyText(value.slice(selectionStart, selectionEnd)).then(() => {
-          if (action === "cut" && editable && sameSelection()) document.execCommand("delete");
-        }).catch(onError);
-      }
+      void editClipboardField(field, action).catch(onError);
     } else if (action === "copy") {
       const selection = document.getSelection()?.toString();
       if (selection) void desktop.copyText(selection).catch(onError);

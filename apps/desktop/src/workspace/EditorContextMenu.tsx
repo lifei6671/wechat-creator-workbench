@@ -23,13 +23,14 @@ export const editorDisplayItems = [
   ["convertLinks", "链接转脚注", FileCode2],
 ] as const;
 
-export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
+export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, onLeave, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
   readOnly: boolean;
-  display: EditorDisplay;
-  onDisplayChange(option: keyof EditorDisplay, checked: boolean): void;
+  display?: EditorDisplay;
+  onDisplayChange?(option: keyof EditorDisplay, checked: boolean): void;
   onError(error: unknown): void;
+  onLeave?(): void;
   canHost?(src: string): boolean;
   hostBusy?: boolean;
   uploadingSource?: string;
@@ -45,6 +46,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   const [invalid, setInvalid] = useState(false);
   const linkOrigin = useRef<MarkdownEditorHandle | null>(null);
   const afterMenuClose = useRef<(() => void) | null>(null);
+  const focusOutside = useRef(false);
   const uploadingImage = typeof menu === "object" && "kind" in menu && menu.src === uploadingSource && menu.isUploading();
 
   function command(action: EditorCommand, value?: string) {
@@ -54,10 +56,17 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   function finishContextAction(event: Event) {
     const action = afterMenuClose.current;
     afterMenuClose.current = null;
-    if (!action) return;
-    event.preventDefault();
-    action();
+    if (onLeave && !addLink) {
+      event.preventDefault();
+      if (focusOutside.current && !action) onLeave();
+      else if (!action) editor.current?.focus();
+    }
+    if (action) { event.preventDefault(); action(); }
   }
+  const menuFocus = {
+    onCloseAutoFocus: finishContextAction,
+    onInteractOutside: () => { focusOutside.current = true; },
+  };
 
   const convertLinkItem = !readOnly && linkContext && <ContextMenu.Item onSelect={() => { afterMenuClose.current = linkContext.convert; }}>
     <FileCode2 size={15} />将链接转为脚注
@@ -75,7 +84,10 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   }
 
   return <>
-    <ContextMenu.Root onOpenChange={open => { if (!open) editor.current?.contextCaret?.(false); }}>
+    <ContextMenu.Root onOpenChange={open => {
+      if (open) focusOutside.current = false;
+      else editor.current?.contextCaret?.(false);
+    }}>
       <ContextMenu.Trigger onContextMenu={event => {
         const target = event.target as Element;
         setLinkContext(null);
@@ -84,7 +96,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
           return;
         }
         const body = event.currentTarget.querySelector<HTMLElement>(".ProseMirror");
-        if (body && (event.button === 2 || event.ctrlKey) && !target.closest(".ProseMirror > *")) {
+        if (display && body && (event.button === 2 || event.ctrlKey) && !target.closest(".ProseMirror > *")) {
           const { left, right, width } = body.getBoundingClientRect();
           const { paddingLeft, paddingRight } = getComputedStyle(body);
           if (width && (event.clientX < left + parseFloat(paddingLeft) || event.clientX > right - parseFloat(paddingRight))) {
@@ -105,7 +117,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
       }}>
         <div className="editor-area">{children}</div>
       </ContextMenu.Trigger>
-      {typeof menu === "object" ? ("kind" in menu ? <ContextMenu.Content size="1" aria-label="图片操作">
+      {typeof menu === "object" ? ("kind" in menu ? <ContextMenu.Content size="1" aria-label="图片操作" {...menuFocus}>
         <ContextMenu.Item disabled={!menu.available} onSelect={() => { void desktop.copyImage(menu.src).catch(onError); }}><Copy size={15} />复制图片</ContextMenu.Item>
         <ContextMenu.Item disabled={!menu.available} onSelect={() => { void desktop.saveImage(menu.src).catch(onError); }}><FileDown size={15} />另存为</ContextMenu.Item>
         {!readOnly && (uploadingImage || (menu.isCurrent() && canHost?.(menu.src))) && <ContextMenu.Item disabled={uploadingImage || hostBusy}
@@ -114,17 +126,17 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
           {uploadingImage ? "正在上传…" : "上传到图床"}
         </ContextMenu.Item>}
         {!readOnly && <ContextMenu.Item onSelect={menu.remove}><ImageMinus size={15} />移除图片</ContextMenu.Item>}
-      </ContextMenu.Content> : <TableContextMenu table={menu} readOnly={readOnly} convertLinkItem={convertLinkItem} onCloseAutoFocus={finishContextAction}
+      </ContextMenu.Content> : <TableContextMenu table={menu} readOnly={readOnly} convertLinkItem={convertLinkItem} {...menuFocus}
         onAction={action => editor.current?.tableAction(action)} onClipboard={action => editor.current?.clipboard(action, clipboard)} />)
-      : menu === "object" ? <ContextMenu.Content size="1" aria-label="内容块操作">
+      : menu === "object" ? <ContextMenu.Content size="1" aria-label="内容块操作" {...menuFocus}>
         {!readOnly && <ContextMenu.Item onSelect={() => editor.current?.clipboard("cut", clipboard)}><Scissors size={15} />剪切</ContextMenu.Item>}
         <ContextMenu.Item onSelect={() => editor.current?.clipboard("copy", clipboard)}><Copy size={15} />复制</ContextMenu.Item>
       </ContextMenu.Content>
-      : menu === "display" ? <ContextMenu.Content size="1" className="editor-display-menu" aria-label="编辑区显示选项">
+      : menu === "display" && display ? <ContextMenu.Content size="1" className="editor-display-menu" aria-label="编辑区显示选项">
         {editorDisplayItems.map(([option, label, Icon]) => <ContextMenu.CheckboxItem key={option} checked={display[option]}
-          onCheckedChange={checked => onDisplayChange(option, checked)}><Icon size={15} />{label}</ContextMenu.CheckboxItem>)}
+          onCheckedChange={checked => onDisplayChange?.(option, checked)}><Icon size={15} />{label}</ContextMenu.CheckboxItem>)}
       </ContextMenu.Content> : <ContextMenu.Content size="1" className="body-context-menu"
-        onCloseAutoFocus={finishContextAction}
+        {...menuFocus}
         aria-label={menu === "code" ? "代码块操作" : menu === "cellText" ? "单元格文字操作" : "正文编辑操作"}>
         {!readOnly && menu !== "code" && <>
           {selected && onAddSelectionToChat && <ContextMenu.Item onSelect={() => {

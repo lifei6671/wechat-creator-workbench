@@ -94,6 +94,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0013_ai_conversations.sql"),
     include_str!("../migrations/0014_ai_current_thread.sql"),
     include_str!("../migrations/0015_entry_pins.sql"),
+    include_str!("../migrations/0016_collection_canvas.sql"),
+    include_str!("../migrations/0017_collection_node_color.sql"),
+    include_str!("../migrations/0018_collection_node_custom_color.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -376,6 +379,29 @@ pub fn workspace_id(conn: &Connection) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adding_custom_card_colors_preserves_existing_presets() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, 0, 17).unwrap();
+        conn.execute_batch(
+            "INSERT INTO collections(id,title,created_at,updated_at) VALUES ('topic','专题',0,0);
+             INSERT INTO collection_nodes(id,collection_id,kind,color,created_at,updated_at)
+             VALUES ('card','topic','text','blue',0,0);",
+        )
+        .unwrap();
+        migrate(&mut conn, 17, SCHEMA_VERSION).unwrap();
+        let (preset, custom): (String, Option<String>) = conn
+            .query_row(
+                "SELECT color, custom_color FROM collection_nodes WHERE id='card'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preset, "blue");
+        assert_eq!(custom, None);
+        assert_eq!(validate_backup_schema(&conn).unwrap(), SCHEMA_VERSION);
+    }
 
     #[test]
     fn adding_ai_chat_preserves_saved_job_details() {

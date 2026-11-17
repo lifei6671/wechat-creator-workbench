@@ -4,10 +4,115 @@ import { ContextMenu, Theme } from "@radix-ui/themes";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import type { EntryRow, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import { desktop } from "../desktop";
 import { CreateMenu, Explorer } from "./Explorer";
 import { MoveEntryMenu } from "./MoveEntryMenu";
-import { WorkspaceSearch } from "./WorkspaceSearch";
+import { SearchHitRow, WorkspaceSearch } from "./WorkspaceSearch";
+
+it("shows Markdown syntax and context indentation as literal text in search results", () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const text = "### **引用**[^1]";
+  const start = text.indexOf("引用");
+  const hit: WorkspaceSearchHit = {
+    line: 3, start: 12, text, ranges: [{ start, end: start + 2 }],
+    leading: false, trailing: false, before: "    上一行  ", after: "> 下一行",
+  };
+  const render = (showContext: boolean) => flushSync(() => root.render(<ul>
+    <SearchHitRow hit={hit} selected={false} showContext={showContext} onOpen={vi.fn()} />
+  </ul>));
+  try {
+    render(false);
+    expect(container.querySelector(".search-hit-context")).toBeNull();
+    render(true);
+    expect(container.querySelector("code.search-hit-text")?.textContent).toBe(text);
+    expect([...container.querySelectorAll(".search-hit-content code")].map(code => code.textContent))
+      .toEqual(["    上一行  ", text, "> 下一行"]);
+    expect(container.querySelector("mark")?.textContent).toBe("引用");
+    expect(container.querySelector("h3, strong")).toBeNull();
+  } finally {
+    flushSync(() => root.unmount());
+  }
+});
+
+it("expands a truncated search hit and preserves literal Markdown and highlights", () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const onOpen = vi.fn();
+  const expanded = {
+    start: 21, text: "😀 **前文** `引用` 和 [结尾]", leading: false, trailing: false,
+    ranges: [{ start: 11, end: 13 }, { start: 18, end: 20 }],
+  };
+  const hit: WorkspaceSearchHit = {
+    line: 4, start: 31, text: "`引用`", leading: true, trailing: true,
+    ranges: [{ start: 1, end: 3 }], before: null, after: null, expanded,
+  };
+  const render = (showContext: boolean) => flushSync(() => root.render(<ul>
+    <SearchHitRow hit={hit} selected showContext={showContext} onOpen={onOpen} />
+  </ul>));
+  try {
+    render(false);
+    expect(container.querySelector("code")?.textContent).toBe("…`引用`…");
+    const button = container.querySelector("button")!;
+    render(true);
+    expect(container.querySelector("button")).toBe(button);
+    expect(button.getAttribute("aria-current")).toBe("true");
+    expect(container.querySelector("code")?.textContent).toBe(expanded.text);
+    expect([...container.querySelectorAll("mark")].map(mark => mark.textContent)).toEqual(["引用", "结尾"]);
+    flushSync(() => button.click());
+    expect(onOpen).toHaveBeenCalledOnce();
+  } finally {
+    flushSync(() => root.unmount());
+  }
+});
+
+it("collapses each note independently through its leading disclosure button", () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const onOpen = vi.fn();
+  const onSearchHit = vi.fn();
+  const hit: WorkspaceSearchHit = { line: 7, start: 40, text: "### 引用", ranges: [{ start: 4, end: 6 }],
+    before: null, after: null, leading: false, trailing: false };
+  const items: EntryRow[] = ["第一篇", "第二篇"].map((title, index) => ({
+    id: String(index), title, kind: "article", status: "draft", updatedAt: 0, categoryId: null, deletedAt: null,
+    searchMatches: { version: 1, items: [hit], total: 1, nextOffset: null },
+  }));
+  try {
+    flushSync(() => root.render(<Theme><Explorer section="search" library={null} page={{ items, nextOffset: null }}
+      active={null} openMode="current" readOnlyIds={[]} treeLocked={false} expanded={[]} revision={0}
+      loading="paged" pageSize={30} query="line:(引用)" caseSensitive={false} searchInputRef={null} listError=""
+      onOpen={onOpen} onSearchHit={onSearchHit} onRetry={vi.fn()} onQuery={vi.fn()} onCaseSensitive={vi.fn()} onFolder={vi.fn()}
+      onCreate={vi.fn()} onImportWechat={vi.fn()} onImportMarkdown={vi.fn()} onRevealFolder={vi.fn()} onSaveFolder={vi.fn()}
+      onFolderError={vi.fn()} onReorderFolder={vi.fn()} onReorderEntry={vi.fn()} onRenameEntry={vi.fn()}
+      onMoveEntry={vi.fn()} onCategoryAction={vi.fn()} onRowAction={vi.fn()} onMore={vi.fn()} /></Theme>));
+    const notes = [...container.querySelectorAll(".search-note")];
+    const header = notes[0].querySelector(".search-note-header")!;
+    const first = header.firstElementChild as HTMLButtonElement;
+    const firstList = notes[0].querySelector(".search-hit-list");
+    const secondList = notes[1].querySelector(".search-hit-list");
+    expect(header.querySelector(".entry-row")?.textContent).toBe("第一篇");
+    expect(header.querySelector(".search-note-count")?.textContent).toBe("1");
+    expect(header.nextElementSibling).toBe(firstList);
+    expect(first.getAttribute("aria-controls")).toBe(firstList?.id);
+    flushSync(() => first.click());
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    expect(firstList?.hasAttribute("hidden")).toBe(true);
+    expect(secondList?.hasAttribute("hidden")).toBe(false);
+    flushSync(() => first.click());
+    expect(first.getAttribute("aria-expanded")).toBe("true");
+    expect(firstList?.hasAttribute("hidden")).toBe(false);
+    flushSync(() => notes[0].querySelector<HTMLButtonElement>(".entry-row")!.click());
+    flushSync(() => notes[1].querySelector<HTMLButtonElement>(".search-hit")!.click());
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith("0");
+    expect(onSearchHit).toHaveBeenCalledExactlyOnceWith("1", hit, 1, false);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});
 
 it("lists move destinations by folder hierarchy and selects the intended child", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -60,13 +165,13 @@ it("shows search syntax on field focus and keeps focus when the panel opens", as
     return <><WorkspaceSearch query={query} onQuery={onQuery} caseSensitive={false} onCaseSensitive={vi.fn()} inputRef={null} />
       <button type="button" data-outside>工作区</button></>;
   }
-  const operators = () => document.querySelector<HTMLElement>('[aria-label="搜索语法"]');
+  const operators = () => document.querySelector<HTMLElement>('.search-operators[aria-label="搜索语法"]');
   try {
     flushSync(() => root.render(<Theme><Search /></Theme>));
     const input = container.querySelector<HTMLInputElement>('[aria-label="搜索笔记"]')!;
     expect(input).not.toBeNull();
     expect(document.activeElement).toBe(input);
-    expect(operators()?.querySelectorAll("button")).toHaveLength(6);
+    expect(operators()?.querySelectorAll("button")).toHaveLength(7);
     flushSync(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
     expect(document.activeElement).toBe(operators()?.querySelector("button"));
     flushSync(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
@@ -120,9 +225,11 @@ it("offers the same creation commands and inserts a search operator at an editab
   const root = createRoot(container);
   const onImportMarkdown = vi.fn();
   function Search() {
-    const [query, onQuery] = useState("测试");
+    const [query, onQuery] = useState("section:(开始 Edge)");
     const [caseSensitive, onCaseSensitive] = useState(false);
-    return <WorkspaceSearch {...{ query, onQuery, caseSensitive, onCaseSensitive }} inputRef={null} />;
+    const [display, onDisplayChange] = useState({ collapse: false, context: false, explain: false });
+    return <WorkspaceSearch {...{ query, onQuery, caseSensitive, onCaseSensitive, display, onDisplayChange }} inputRef={null}
+      searchInfo={{ total: 0, clauses: [{ field: "section", terms: ["开始", "Edge"] }] }} />;
   }
   try {
     flushSync(() => root.render(<Theme><Search /><CreateMenu onCreate={vi.fn()} onImportWechat={vi.fn()} onImportMarkdown={onImportMarkdown} /></Theme>));
@@ -132,10 +239,31 @@ it("offers the same creation commands and inserts a search operator at an editab
     const field = container.querySelector<HTMLInputElement>('input[aria-label="搜索笔记"]')!;
     flushSync(() => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
     flushSync(() => button("搜索选项").click());
+    const settings = container.querySelector(".workspace-search-settings")!;
+    expect([...settings.querySelectorAll("label")].map(label => label.textContent)).toEqual(["折叠搜索结果", "显示更多上下文", "说明搜索含义"]);
+    expect(document.querySelector(".search-operators")).toBeNull();
+    const context = settings.querySelectorAll<HTMLButtonElement>('[role="switch"]')[1];
+    flushSync(() => context.click());
+    expect(context.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector(".search-explanation")).toBeNull();
+    const explain = settings.querySelectorAll<HTMLButtonElement>('[role="switch"]')[2];
+    flushSync(() => explain.click());
+    const tree = container.querySelector(".search-explanation")!;
+    expect(tree.nextElementSibling).toBe(settings);
+    const scope = tree.querySelector(":scope > li")!;
+    expect(scope.firstChild?.textContent).toBe("匹配章节:");
+    const group = scope.querySelector(":scope > ul > li")!;
+    expect(group.firstChild?.textContent).toBe("匹配所有:");
+    expect([...group.querySelectorAll(":scope > ul > li")].map(leaf => leaf.textContent))
+      .toEqual(['匹配文本: "开始"', '匹配文本: "Edge"']);
+    flushSync(() => explain.click());
+    expect(container.querySelector(".search-explanation")).toBeNull();
+    flushSync(() => button("搜索选项").click());
+    flushSync(() => button("搜索语法").click());
     const scoped = [...document.querySelectorAll<HTMLButtonElement>(".search-operator")].find(option => option.textContent!.startsWith("section:"))!;
     flushSync(() => scoped.click());
     await vi.waitFor(() => expect(document.activeElement).toBe(field));
-    expect(field.value).toBe("测试 section:()");
+    expect(field.value).toBe("section:(开始 Edge) section:()");
     expect(field.selectionStart).toBe(field.value.length - 1);
     flushSync(() => button("新建内容").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     const items = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")];

@@ -212,7 +212,7 @@ export function AssetThumb({ id, name, thumbnail }: { id: string; name: string; 
     : <div className="asset-thumbnail asset-placeholder">{result ? "图片缺失" : "正在加载图片…"}</div>;
 }
 
-function useAssetImage(url: string | null, small = false) {
+export function useAssetImage(url: string | null, small = false) {
   const [result, setResult] = useState<{ url: string; src?: string } | null>(null);
   useEffect(() => {
     if (!url) return;

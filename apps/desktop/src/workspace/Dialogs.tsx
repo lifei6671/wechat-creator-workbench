@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Button, Dialog, Select, TextArea, TextField } from "@radix-ui/themes";
 import { X } from "lucide-react";
-import type { Category, Entry, EntryFields, Revision } from "../../../../packages/shared-types";
+import type { Category, Collection, Entry, EntryFields, Revision } from "../../../../packages/shared-types";
 import { statuses } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, statusLabels, untitled } from "../labels";
@@ -19,6 +19,7 @@ interface PropertiesDialogProps {
   onSave(entry: Entry, change: Partial<EntryFields>): Promise<void>;
   onClose(): void;
   onOpen(id: string): void;
+  onOpenCollection?(id: string): void;
 }
 
 export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDialogProps) {
@@ -58,7 +59,7 @@ export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDial
   </Dialog.Root>;
 }
 
-function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen }: Omit<PropertiesDialogProps, "id" | "queue"> & {
+function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen, onOpenCollection }: Omit<PropertiesDialogProps, "id" | "queue"> & {
   entry: Entry;
   fields: EntryFields;
 }) {
@@ -69,6 +70,16 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
   const [tagDraft, setTagDraft] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collectionError, setCollectionError] = useState("");
+  const showCollections = Boolean(onOpenCollection);
+  useEffect(() => {
+    if (!showCollections) return;
+    let live = true;
+    void desktop.entryCollections(entry.id).then(result => { if (live) setCollections(result); },
+      error => { if (live) setCollectionError(errorMessage(error)); });
+    return () => { live = false; };
+  }, [entry.id, showCollections]);
   const readOnly = locked || entry.deletedAt !== null;
   const hasSourceFields = entry.kind === "reference" || fields.source !== null;
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -136,7 +147,7 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
         <label>原文链接<TextField.Root type="url" readOnly={readOnly} name="sourceUrl" defaultValue={fields.source?.url} /></label>
         <div className="form-pair">
           <label>作者<TextField.Root name="author" readOnly={readOnly} defaultValue={fields.source?.author} /></label>
-          <label>公众号<TextField.Root name="accountName" readOnly={readOnly} defaultValue={fields.source?.accountName} /></label>
+          <label>来源平台<TextField.Root name="accountName" readOnly={readOnly} defaultValue={fields.source?.accountName} /></label>
         </div>
         <label>原文发布日期<TextField.Root name="originalDate" type="date" readOnly={readOnly}
           defaultValue={fields.source?.originalPublishedAt == null ? "" : new Intl.DateTimeFormat("sv-SE").format(fields.source.originalPublishedAt)} /></label>
@@ -153,6 +164,12 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
           {link.title || untitled}
         </Button>)}
       </div>}
+      {collections.length > 0 && onOpenCollection && <div className="linked-entries">
+        <span>所属专题</span>
+        {collections.map(collection => <Button key={collection.id} variant="soft" size="1" type="button"
+          onClick={() => { onClose(); onOpenCollection(collection.id); }}>{collection.title}</Button>)}
+      </div>}
+      {collectionError && <p role="alert" className="inline-error">无法读取所属专题。{collectionError}</p>}
       {error && <p role="alert" className="inline-error">{error}</p>}
     </div>
     {!readOnly && <footer className="properties-footer">

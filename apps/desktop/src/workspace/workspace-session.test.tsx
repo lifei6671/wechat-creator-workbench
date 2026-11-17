@@ -4,11 +4,12 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
-import type { Entry, EntryPage } from "../../../../packages/shared-types";
+import type { Collection, Entry, EntryPage } from "../../../../packages/shared-types";
 import { desktop, type AiHistoryItem, type AiStreamEvent } from "../desktop";
 import { AiPanel } from "./AiPanel";
 import { DesktopShell } from "./DesktopShell";
 import type { DocumentEditor } from "./Document";
+import type { CollectionCanvas } from "./CollectionCanvas";
 import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./preferences";
 import { SaveQueue } from "../editor/save-queue";
 import * as markdown from "../../../../packages/markdown-core";
@@ -16,9 +17,18 @@ import * as markdown from "../../../../packages/markdown-core";
 vi.mock(import("./Document"), async importOriginal => ({
   ...await importOriginal(),
   DocumentEditor: ({ queue, display, onDisplayChange }: ComponentProps<typeof DocumentEditor>) => (
-    <button data-document={queue.entry.id} data-links={display.convertLinks}
+    <button data-document={queue.entry.id} data-links={display.convertLinks} data-body={queue.snapshot().fields.contentMd}
       onClick={() => onDisplayChange("convertLinks", !display.convertLinks)}>切换链接脚注</button>
   ),
+}));
+
+vi.mock(import("./CollectionCanvas"), () => ({
+  CollectionCanvas: ({ collection, onLoadArticle, onSaveArticle }: ComponentProps<typeof CollectionCanvas>) => <>
+    <h1 data-canvas={collection.id}>{collection.title}</h1>
+    {collection.id === "canvas-edit" && <button type="button" id="save-canvas-article" onClick={() => {
+      void onLoadArticle("article-one").then(entry => onSaveArticle(entry.id, entry.version, { ...entry, contentMd: "## 从画布保存" }, "auto"));
+    }}>保存卡片</button>}
+  </>,
 }));
 
 const workspaceId = "session-test";
@@ -38,6 +48,7 @@ beforeEach(() => {
     { id: "expanded", parentId: null, sortOrder: 1, name: "已展开", icon: "folder" },
   ] });
   vi.spyOn(desktop, "entries").mockImplementation(async filter => ({ items: filter.pinned || filter.categoryId ? [] : [entry("manual")], nextOffset: null }));
+  vi.spyOn(desktop, "collections").mockResolvedValue([]);
   vi.spyOn(desktop, "imageStorageTarget").mockResolvedValue(null);
   vi.spyOn(desktop, "mcpStatus").mockResolvedValue({ running: false, config: { enabled: false, port: 8787, permission: "read" }, error: null });
   vi.spyOn(desktop, "restoreNotice").mockResolvedValue(null);
@@ -60,6 +71,203 @@ afterEach(() => {
 function openTabs() {
   return [...container.querySelectorAll('[role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
+
+it("creates and renames topics inline in the directory sidebar", async () => {
+  const existing = { id: "existing", title: "未命名", description: "已有描述", createdAt: 0, updatedAt: 0,
+    viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 };
+  vi.spyOn(desktop, "collections").mockResolvedValue([existing]);
+  const save = vi.spyOn(desktop, "saveCollection").mockImplementation(async (id, title, description) => ({
+    ...existing, id: id ?? "created", title, description,
+  }));
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  const input = () => container.querySelector<HTMLInputElement>('#collection-list input[aria-label="专题名称"]');
+  const key = (key: string) => flushSync(() => input()!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+  const changeName = (value: string) => flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value);
+    input()!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector("#folder-row-closed")).not.toBeNull());
+  click("#hide-sidebar");
+  click('[aria-label="命令面板"]');
+  const command = [...document.querySelectorAll<HTMLButtonElement>('.command-row')].find(option => option.textContent === "新建专题")!;
+  flushSync(() => command.click());
+  await vi.waitFor(() => expect(input()).not.toBeNull());
+  expect(container.querySelector("#show-sidebar")).toBeNull();
+  expect(input()!.value).toBe("未命名 2");
+  expect(input()!.closest("li")).toBe(container.querySelector("#collection-list")?.lastElementChild);
+  expect(document.activeElement).toBe(input());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  key("Escape");
+  expect(input()).toBeNull();
+  expect(save).not.toHaveBeenCalled();
+
+  const newContent = container.querySelector<HTMLButtonElement>('[aria-label="新建内容"]')!;
+  flushSync(() => newContent.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  const menuCreate = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "新建专题")!;
+  flushSync(() => menuCreate.click());
+  await vi.waitFor(() => expect(document.activeElement).toBe(input()));
+  key("Escape");
+  expect(save).not.toHaveBeenCalled();
+
+  click('.tree-section-title[aria-controls="collection-list"]');
+  click("#add-collection");
+  expect(input()).not.toBeNull();
+  changeName("新专题");
+  key("Enter");
+  await vi.waitFor(() => expect(container.querySelector('[data-canvas="created"]')?.textContent).toBe("新专题"));
+  expect(save).toHaveBeenCalledExactlyOnceWith(null, "新专题", "");
+  expect(container.querySelector("#collection-row-created")?.getAttribute("aria-current")).toBe("true");
+  expect([...container.querySelectorAll("#collection-list .entry-row")].map(row => row.id)).toEqual([
+    "collection-row-existing", "collection-row-created",
+  ]);
+  expect(container.querySelector("#collection-tab-created")?.getAttribute("aria-selected")).toBe("true");
+
+  const existingRow = container.querySelector("#collection-row-existing")!;
+  flushSync(() => existingRow.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  const rename = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "重命名")!;
+  flushSync(() => rename.click());
+  await vi.waitFor(() => expect(input()).not.toBeNull());
+  expect(input()!.value).toBe("未命名");
+  changeName("重命名专题");
+  flushSync(() => container.querySelector<HTMLButtonElement>("#collection-row-created")!.focus());
+  await vi.waitFor(() => expect(container.querySelector("#collection-row-existing")?.textContent).toBe("重命名专题"));
+  expect(save).toHaveBeenLastCalledWith("existing", "重命名专题", "已有描述");
+  expect(container.querySelector("#collection-row-created")?.getAttribute("aria-current")).toBe("true");
+});
+
+it("waits for the topic name committed on blur before closing the workspace", async () => {
+  let requestExit!: () => void;
+  vi.mocked(desktop.onExit).mockImplementation(async callback => { requestExit = callback; return () => {}; });
+  vi.spyOn(desktop, "collections").mockResolvedValue([]);
+  let resolveSave!: (collection: Collection) => void;
+  const pending = new Promise<Collection>(resolve => { resolveSave = resolve; });
+  const save = vi.spyOn(desktop, "saveCollection").mockReturnValue(pending);
+  const beginExit = vi.spyOn(desktop, "beginExit").mockResolvedValue(undefined);
+  const finishExit = vi.spyOn(desktop, "finishExit").mockResolvedValue(undefined);
+  saveWorkspaceLayout({ section: "collections", explorerOverride: true, timelineDirectory: "shown", focusMode: false, aiOpen: false });
+  flushSync(() => root.render(<DesktopShell />));
+  const create = container.querySelector<HTMLButtonElement>("#add-collection")!;
+  await vi.waitFor(() => expect(create.disabled).toBe(false));
+  flushSync(() => create.click());
+  expect(document.activeElement?.getAttribute("aria-label")).toBe("专题名称");
+  flushSync(() => requestExit());
+  await vi.waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith(null, "未命名", ""));
+  expect(beginExit).not.toHaveBeenCalled();
+  resolveSave({ id: "saved-on-exit", title: "未命名", description: "", createdAt: 0, updatedAt: 0,
+    viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 });
+  await vi.waitFor(() => expect(finishExit).toHaveBeenCalledOnce());
+  expect(beginExit).toHaveBeenCalledOnce();
+});
+
+it("switches between and restores open topic and article tabs", async () => {
+  const topics = ["topic-one", "topic-two"].map(id => ({ id, title: id, description: "", createdAt: 0, updatedAt: 0,
+    viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 }));
+  vi.mocked(desktop.collections).mockResolvedValue(topics);
+  saveDocumentTabs(workspaceId, { ids: ["article-one"], activeId: "article-one" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  const active = () => container.querySelector('[role="tab"][aria-selected="true"]')?.id;
+  const render = () => flushSync(() => root.render(<DesktopShell />));
+  render();
+  await vi.waitFor(() => expect(active()).toBe("tab-article-one"));
+  click('.sidebar-chrome [aria-label="专题"]');
+  await vi.waitFor(() => expect(container.querySelector("#collection-row-topic-one")).not.toBeNull());
+  click("#collection-row-topic-one");
+  await vi.waitFor(() => expect(active()).toBe("collection-tab-topic-one"));
+  click("#collection-row-topic-two");
+  await vi.waitFor(() => expect(active()).toBe("collection-tab-topic-two"));
+  click("#tab-article-one");
+  await vi.waitFor(() => expect(active()).toBe("tab-article-one"));
+  expect(container.querySelector("#collection-tab-topic-one")).not.toBeNull();
+
+  flushSync(() => root.unmount());
+  root = createRoot(container);
+  render();
+  await vi.waitFor(() => expect(container.querySelector("#collection-tab-topic-two")).not.toBeNull());
+  expect(active()).toBe("tab-article-one");
+  click("#collection-tab-topic-one");
+  expect(active()).toBe("collection-tab-topic-one");
+  click('[aria-label="关闭 topic-one"]');
+  expect(active()).toBe("collection-tab-topic-two");
+  click('[aria-label="关闭 topic-two"]');
+  expect(active()).toBe("tab-article-one");
+  expect(container.querySelector('[id^="collection-tab-"]')).toBeNull();
+
+  click('.sidebar-chrome [aria-label="专题"]');
+  click("#collection-row-topic-one");
+  click("#tab-article-one");
+  click('[aria-label="关闭 article-one"]');
+  await vi.waitFor(() => expect(active()).toBe("collection-tab-topic-one"));
+});
+
+it("keeps the canvas active after saving and refreshes the original article tab", async () => {
+  const topic: Collection = { id: "canvas-edit", title: "专题", description: "", createdAt: 0, updatedAt: 0,
+    viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 1 };
+  vi.mocked(desktop.collections).mockResolvedValue([topic]);
+  const article = { ...entry("article-one"), contentMd: "原正文", version: 7 };
+  vi.spyOn(desktop, "entry").mockResolvedValue(article);
+  const save = vi.spyOn(desktop, "save").mockResolvedValue({ version: 8 });
+  saveDocumentTabs(workspaceId, { ids: [article.id], activeId: article.id });
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('[data-document="article-one"]')?.getAttribute("data-body")).toBe("原正文"));
+  click('.sidebar-chrome [aria-label="专题"]');
+  click("#collection-row-canvas-edit");
+  await vi.waitFor(() => expect(container.querySelector("#save-canvas-article")).not.toBeNull());
+  click("#save-canvas-article");
+  await vi.waitFor(() => expect(container.querySelector('[data-document="article-one"]')?.getAttribute("data-body")).toBe("## 从画布保存"));
+  expect(save).toHaveBeenCalledExactlyOnceWith(article.id, 7, expect.objectContaining({ contentMd: "## 从画布保存" }), "auto");
+  expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("collection-tab-canvas-edit");
+  click("#tab-article-one");
+  expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("tab-article-one");
+});
+
+it("adds an article from its context menu without opening the topic", async () => {
+  const topic = { id: "reading-list", title: "待研究", description: "", createdAt: 0, updatedAt: 0,
+    viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 };
+  vi.mocked(desktop.collections).mockResolvedValue([topic]);
+  vi.spyOn(desktop, "collectionCanvas").mockResolvedValue({ collection: topic, nodes: [], edges: [] });
+  const add = vi.spyOn(desktop, "createCollectionNode").mockResolvedValue({
+    id: "reference", collectionId: topic.id, kind: "entry", entryId: "manual", assetId: null, color: null, contentMd: "", entry: null,
+    x: 24, y: 24, width: 320, height: 144, createdAt: 0, updatedAt: 0,
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  const row = await vi.waitFor(() => {
+    const target = container.querySelector("#entry-row-manual");
+    expect(target).not.toBeNull();
+    return target!;
+  });
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "加入专题")!;
+  flushSync(() => { item.focus(); item.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
+  const destination = await vi.waitFor(() => {
+    const option = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === topic.title);
+    expect(option).toBeDefined();
+    return option!;
+  });
+  flushSync(() => destination.click());
+  await vi.waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith(topic.id, { kind: "entry", entryId: "manual" }, { x: 24, y: 24 }));
+  await vi.waitFor(() => expect(container.textContent).toContain("已加入「待研究」"));
+  expect(container.querySelector("#collection-tab-reading-list")).toBeNull();
+});
+
+it("restores pending article tabs while the user opens a topic", async () => {
+  const topic = { id: "topic", title: "专题", description: "", createdAt: 0, updatedAt: 0,
+    viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 };
+  vi.mocked(desktop.collections).mockResolvedValue([topic]);
+  saveDocumentTabs(workspaceId, { ids: ["pending-article"], activeId: "pending-article" });
+  let resolveEntry!: (value: Entry) => void;
+  const load = vi.spyOn(desktop, "entry").mockReturnValue(new Promise<Entry>(resolve => { resolveEntry = resolve; }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(load).toHaveBeenCalledWith("pending-article"));
+  flushSync(() => container.querySelector<HTMLButtonElement>('.sidebar-chrome [aria-label="专题"]')!.click());
+  await vi.waitFor(() => expect(container.querySelector("#collection-row-topic")).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#collection-row-topic")!.click());
+  resolveEntry(entry("pending-article"));
+  await vi.waitFor(() => expect(container.querySelector("#tab-pending-article")).not.toBeNull());
+  expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("collection-tab-topic");
+});
 
 it.each([
   ["current", ["first", "manual"]],
@@ -496,7 +704,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
 
   openMenu(".timeline-entries");
   expect(menu()?.getAttribute("aria-label")).toBe("文章区操作");
-  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "新建目录"]);
+  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "导入 GitHub README", "新建目录"]);
   flushSync(() => menuItems().find(item => item.textContent === "新建笔记")!.click());
   await vi.waitFor(() => expect(create).toHaveBeenCalledExactlyOnceWith("article", expect.objectContaining({ categoryId: "closed" })));
   openMenu(".timeline-content");
@@ -519,7 +727,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
   expect(container.querySelector<HTMLButtonElement>("#add-root-folder")!.disabled).toBe(true);
   await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("子目录"));
   openMenu(".timeline-content");
-  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown"]);
+  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "导入 GitHub README"]);
   flushSync(() => menuItems().find(item => item.textContent === "导入 Markdown")!.click());
   await vi.waitFor(() => expect(importMarkdown).toHaveBeenLastCalledWith("child"));
 });

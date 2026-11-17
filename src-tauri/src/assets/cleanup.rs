@@ -221,6 +221,21 @@ fn remove_file(path: &Path) -> Result<()> {
 }
 
 pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    let (mut ids, mut hashes) = entry_references(conn)?;
+    let mut screenshots = conn.prepare(
+        "SELECT DISTINCT a.id,a.sha256 FROM collection_nodes n JOIN assets a ON a.id=n.asset_id",
+    )?;
+    for item in screenshots.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })? {
+        let (id, hash) = item?;
+        ids.insert(id);
+        hashes.extend(hash);
+    }
+    Ok((ids, hashes))
+}
+
+pub(super) fn entry_references(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let mut urls = BTreeSet::new();
     let mut derived = BTreeSet::new();
     let mut bodies = conn.prepare(

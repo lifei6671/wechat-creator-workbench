@@ -1,4 +1,4 @@
-.workspace-tooltip {
+.workspace-tooltip.radix-themes {
   --tooltip-bg: var(--gray-12);
   z-index: 10;
   max-width: min(360px, calc(100vw - 16px));
@@ -12,7 +12,7 @@
   user-select: none;
 }
 
-.workspace-tooltip:where(.dark, .dark-theme) {
+.workspace-tooltip.radix-themes:is(.dark, .dark-theme) {
   --tooltip-bg: var(--gray-4);
   color: var(--gray-12);
   box-shadow: var(--shadow-2);

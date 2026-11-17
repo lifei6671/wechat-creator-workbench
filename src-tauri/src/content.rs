@@ -1,3 +1,4 @@
+pub mod collections;
 mod search;
 pub mod taxonomy;
 #[cfg(test)]
@@ -94,6 +95,8 @@ pub struct EntryRow {
     pinned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     preview: Option<EntryPreview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_matches: Option<search::Matches>,
 }
 
 #[derive(Serialize)]
@@ -140,6 +143,7 @@ pub struct Filter {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EntrySort {
+    Relevance,
     Name,
     NameDesc,
     Updated,
@@ -153,6 +157,8 @@ pub enum EntrySort {
 pub struct Page {
     items: Vec<EntryRow>,
     next_offset: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search: Option<search::SearchInfo>,
 }
 
 #[derive(Deserialize)]
@@ -230,11 +236,45 @@ pub struct Revision {
 }
 
 impl Workspace {
+    pub fn github_reference(&self, url: &str) -> Result<Option<(String, bool)>> {
+        self.read_running(|conn| github_reference(conn, url))
+    }
+
+    pub fn import_github_reference(
+        &self,
+        url: String,
+        title: String,
+        markdown: String,
+        category_id: Option<String>,
+    ) -> Result<(String, bool, bool)> {
+        self.write(|tx| {
+            if let Some((entry_id, deleted)) = github_reference(tx, &url)? {
+                return Ok((entry_id, true, deleted));
+            }
+            let kind = Kind::Reference;
+            let mut fields = Fields::empty(kind);
+            fields.title = title;
+            fields.content_md = markdown;
+            fields.category_id = category_id;
+            fields.source = Some(Source {
+                url,
+                author: String::new(),
+                account_name: "GitHub".into(),
+                original_published_at: None,
+                imported_at: None,
+            });
+            let entry = insert_entry(tx, kind, fields, None)?;
+            Ok((entry.row.id, false, false))
+        })
+    }
+
     pub fn entries(&self, filter: Filter) -> Result<Page> {
-        let (rows, next_offset) = self.read(|conn| {
+        let search = filter.workspace_search.map(search::WorkspaceSearch::parse);
+        let (rows, next_offset, total) = self.read(|conn| {
             let mut values: Vec<Value> = Vec::new();
             let preview_columns = if filter.include_preview { ", e.summary, e.cover_asset_id, e.content_md" } else { "" };
-            let mut sql = format!("SELECT {HEAD}{preview_columns} FROM entries e WHERE e.deleted_at IS {}NULL",
+            let search_columns = if search.is_some() { ", e.version AS search_version, COUNT(*) OVER() AS search_total" } else { "" };
+            let mut sql = format!("SELECT {HEAD}{preview_columns}{search_columns} FROM entries e WHERE e.deleted_at IS {}NULL",
                 if filter.deleted { "NOT " } else { "" });
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
@@ -276,11 +316,15 @@ impl Workspace {
                     values.push(literal.into());
                 }
             }
-            if let Some(search) = filter.workspace_search {
+            if let Some(search) = &search {
                 search.apply(conn, &mut sql, &mut values)?;
             }
             if filter.pinned == Some(true) {
                 sql.push_str(" ORDER BY e.pinned_order, e.id LIMIT ? OFFSET ?");
+            } else if let (Some(EntrySort::Relevance), Some(search)) = (&filter.sort, &search) {
+                search.register_relevance(conn)?;
+                sql.push_str(" ORDER BY workspace_title_rank(e.title) DESC, workspace_line_count(e.content_md) DESC,
+                    e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?");
             } else {
                 sql.push_str(match filter.sort {
                 Some(EntrySort::Name) => " ORDER BY e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?",
@@ -289,7 +333,7 @@ impl Workspace {
                 Some(EntrySort::Created) => " ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
                 Some(EntrySort::CreatedAsc) => " ORDER BY e.created_at ASC, e.id DESC LIMIT ? OFFSET ?",
                 None if filter.exact_category && !filter.deleted => " ORDER BY e.folder_sort_order ASC NULLS LAST, e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
-                Some(EntrySort::Updated) | None => " ORDER BY e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
+                Some(EntrySort::Updated | EntrySort::Relevance) | None => " ORDER BY e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
                 });
             }
             let limit = filter.limit.map_or(PAGE_SIZE, |limit| i64::from(limit.get()));
@@ -298,6 +342,7 @@ impl Workspace {
             values.push(offset.into());
             let mut statement = conn.prepare(&sql)?;
             let mut tag_names = filter.include_preview.then(|| conn.prepare(ENTRY_TAG_NAMES)).transpose()?;
+            let mut search_body = search.as_ref().map(|_| conn.prepare_cached("SELECT content_md FROM entries WHERE id=?1")).transpose()?;
             let mut items = statement.query_map(params_from_iter(values), |row| {
                 let entry = entry_row(row)?;
                 let preview = if let Some(tags) = &mut tag_names {
@@ -312,23 +357,38 @@ impl Workspace {
                         .collect::<rusqlite::Result<_>>()?;
                     Some((summary, cover, markdown, tags))
                 } else { None };
-                Ok((entry, preview))
+                let search_result = if let Some(body) = &mut search_body {
+                    let body: String = body.query_row([&entry.id], |row| row.get(0))?;
+                    Some((body, row.get::<_, i64>("search_version")?, row.get::<_, i64>("search_total")?))
+                } else { None };
+                Ok((entry, preview, search_result))
             })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let next_offset = (items.len() > limit as usize).then(|| offset + limit);
+            let total = items.first().and_then(|(_, _, result)| result.as_ref().map(|(_, _, total)| *total)).unwrap_or(0);
             items.truncate(limit as usize);
-            Ok((items, next_offset))
+            Ok((items, next_offset, total))
         })?;
         let items = rows
             .into_iter()
-            .map(|(mut row, preview)| {
+            .map(|(mut row, preview, search_result)| {
                 if let Some((summary, cover, markdown, tags)) = preview {
                     row.preview = Some(entry_preview(&summary, cover, &markdown, tags));
+                }
+                if let (Some(query), Some((body, version, _))) = (&search, search_result) {
+                    row.search_matches = Some(query.matches(&body, version));
                 }
                 row
             })
             .collect();
-        Ok(Page { items, next_offset })
+        Ok(Page {
+            items,
+            next_offset,
+            search: search.map(|query| search::SearchInfo {
+                total,
+                clauses: query.clauses,
+            }),
+        })
     }
 
     pub fn get_entry(&self, id: &str) -> Result<Entry> {
@@ -359,11 +419,16 @@ impl Workspace {
         source_entry_id: Option<String>,
     ) -> Result<Entry> {
         self.write(|tx| {
-            let base = source_entry_id.as_deref().map(|source_id| get_entry(tx, source_id)).transpose()?;
+            let base = source_entry_id
+                .as_deref()
+                .map(|source_id| get_entry(tx, source_id))
+                .transpose()?;
             if let Some(base) = &base
-                && (kind != Kind::Article || base.row.kind == "article" || base.row.deleted_at.is_some())
+                && (kind != Kind::Article
+                    || base.row.kind == "article"
+                    || base.row.deleted_at.is_some())
             {
-                    return Err(AppError::invalid("只能从待整理的旧笔记创建发布副本"));
+                return Err(AppError::invalid("只能从待整理的旧笔记创建发布副本"));
             }
             let fields = fields.unwrap_or_else(|| {
                 let mut fields = Fields::empty(kind);
@@ -373,22 +438,7 @@ impl Workspace {
                 }
                 fields
             });
-            let timestamp = now();
-            let entry_id = id();
-            let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp)?;
-            tx.execute(
-                "INSERT INTO entries (id, kind, title, content_md, status, category_id, source_id, summary,
-                                      created_at, updated_at, published_at, published_url, cover_asset_id, theme_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13)",
-                params![entry_id, kind.key(), fields.title, fields.content_md, fields.status,
-                        fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id],
-            )?;
-            crate::assets::references::sync_entry(tx, &entry_id, &fields.content_md)?;
-            taxonomy::replace_tags(tx, &entry_id, &fields.tags)?;
-            if let Some(source_entry_id) = source_entry_id {
-                tx.execute("INSERT INTO entry_links VALUES (?1, ?2)", params![entry_id, source_entry_id])?;
-            }
-            get_entry(tx, &entry_id)
+            insert_entry(tx, kind, fields, source_entry_id.as_deref())
         })
     }
 
@@ -554,6 +604,7 @@ fn entry_row(row: &Row<'_>) -> rusqlite::Result<EntryRow> {
         category_id: row.get("category_id")?,
         pinned: row.get("pinned")?,
         preview: None,
+        search_matches: None,
     })
 }
 
@@ -692,6 +743,45 @@ fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
         .query_map([id], entry_row)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(entry)
+}
+
+fn github_reference(conn: &Connection, url: &str) -> Result<Option<(String, bool)>> {
+    Ok(conn
+        .query_row(
+            "SELECT e.id,e.deleted_at IS NOT NULL FROM entries e JOIN sources s ON s.id=e.source_id
+         WHERE RTRIM(s.source_url, '/') = ?1 COLLATE NOCASE
+         ORDER BY e.deleted_at IS NOT NULL,e.created_at,e.id LIMIT 1",
+            [url],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+fn insert_entry(
+    tx: &Transaction<'_>,
+    kind: Kind,
+    fields: Fields,
+    source_entry_id: Option<&str>,
+) -> Result<Entry> {
+    let timestamp = now();
+    let entry_id = id();
+    let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp)?;
+    tx.execute(
+        "INSERT INTO entries (id, kind, title, content_md, status, category_id, source_id, summary,
+                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13)",
+        params![entry_id, kind.key(), fields.title, fields.content_md, fields.status,
+                fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id],
+    )?;
+    crate::assets::references::sync_entry(tx, &entry_id, &fields.content_md)?;
+    taxonomy::replace_tags(tx, &entry_id, &fields.tags)?;
+    if let Some(source_entry_id) = source_entry_id {
+        tx.execute(
+            "INSERT INTO entry_links VALUES (?1, ?2)",
+            params![entry_id, source_entry_id],
+        )?;
+    }
+    get_entry(tx, &entry_id)
 }
 
 fn validate_fields(

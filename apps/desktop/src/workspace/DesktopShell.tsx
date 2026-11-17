@@ -1,8 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { Button, Theme } from "@radix-ui/themes";
-import { FilePenLine, FileText, Folder, Image, List, Search } from "lucide-react";
+import { FilePenLine, FileText, Folder, Image, List, Search, Workflow } from "lucide-react";
 import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizable-panels";
-import type { Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
+import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type UploadProgress } from "../desktop";
@@ -13,8 +13,8 @@ import { commandKey, untitled } from "../labels";
 import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
-import { readDocumentTabs, readWorkspaceLayout, readWorkspaceNavigation, saveDocumentTabs, saveWorkspaceLayout,
-  saveWorkspaceNavigation, workspacePreferences, type DocumentOpenMode, type DocumentOptions, type TimelineDirectory } from "./preferences";
+import { readCollectionTabs, readDocumentTabs, readWorkspaceLayout, readWorkspaceNavigation, saveCollectionTabs, saveDocumentTabs, saveWorkspaceLayout,
+  saveWorkspaceNavigation, workspacePreferences, type CollectionTabsPreference, type DocumentOpenMode, type DocumentOptions, type TimelineDirectory } from "./preferences";
 import { Confirm, PropertiesDialog, RevisionsDialog } from "./Dialogs";
 import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
 import { StatusBar } from "./StatusBar";
@@ -30,9 +30,14 @@ import { AssetPanel, canHostImage, ImageStorageSettings, imageMarkdown } from ".
 import { Timeline } from "./Timeline";
 import { WindowControls, WindowDragRegion } from "./WindowTitle";
 import { ImageViewer, PublishImagesDialog, WechatImportDialog, renderForPublication } from "./Publishing";
+import { GitHubImportDialog } from "./CollectionDialogs";
+import { CollectionExplorer } from "./CollectionExplorer";
+import type { CollectionCanvasHandle } from "./CollectionCanvas";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
+import "./collection-canvas.css";
 
 const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
+const CollectionCanvas = lazy(() => import("./CollectionCanvas").then(module => ({ default: module.CollectionCanvas })));
 const minimumDirectoryWidth = 192;
 const minimumTimelineWidth = 416;
 const minimumWritingWidth = 360;
@@ -47,13 +52,14 @@ type Modal =
   | { type: "properties" | "revisions"; id: string }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
-  | { type: "wechatImport"; categoryId: string | null }
+  | { type: "wechatImport" | "githubImport"; categoryId: string | null }
+  | { type: "deleteCollection"; collection: Collection }
   | { type: "imageViewer"; src: string; alt: string }
   | { type: "publishImages"; images: RenderedWechat["images"] };
 
 const destinations = [
   ["folders", Folder, "内容目录"], ["timeline", List, "文章时间流"], ["search", Search, "全文搜索"], ["assets", Image, "素材库"],
-  ["imports", FileText, "已导入的公众号文章"],
+  ["imports", FileText, "已导入的公众号文章"], ["collections", Workflow, "专题"],
 ] as const;
 
 function useMedia(query: string) {
@@ -72,6 +78,41 @@ export function DesktopShell() {
   const [section, setSection] = useState<Section>(initialLayout.section);
   const [library, setLibrary] = useState<Library | null>(null);
   const workspaceId = library?.workspaceId;
+  const collectionMode = section === "collections";
+  const [collections, setCollections] = useState<Collection[] | null>(null);
+  const [collectionTabs, setCollectionTabs] = useState<CollectionTabsPreference | null>(null);
+  const activeCollectionId = collectionTabs?.activeId;
+  const [collectionsError, setCollectionsError] = useState("");
+  const [collectionsRetry, setCollectionsRetry] = useState(0);
+  const [collectionsCollapsed, setCollectionsCollapsed] = useState(() => useStoredInitial("collection-list-collapsed", false));
+  const [collectionDraft, setCollectionDraft] = useState<{ id?: string }>();
+  const activeCollection = collections?.find(item => item.id === activeCollectionId);
+  const openCollections = collectionTabs?.ids.flatMap(id => collections?.find(item => item.id === id) ?? []) ?? [];
+  const collectionCanvas = useRef<CollectionCanvasHandle>(null);
+  const [canvasReload, setCanvasReload] = useState<{ id: string; version: number }>();
+  const collectionListRevision = useRef(0);
+  const collectionWrites = useRef(new Set<Promise<unknown>>());
+  useEffect(() => {
+    if (!workspaceId) return;
+    let live = true;
+    const revision = collectionListRevision.current;
+    setCollectionsError("");
+    void desktop.collections().then(items => {
+      if (!live || revision !== collectionListRevision.current) return;
+      const stored = readCollectionTabs(workspaceId);
+      const available = new Set(items.map(item => item.id));
+      setCollectionTabs(current => {
+        const previous = current ?? stored;
+        const ids = previous.ids.filter(id => available.has(id));
+        return { ids, activeId: ids.includes(previous.activeId ?? "") ? previous.activeId : ids[0] };
+      });
+      setCollections(items);
+    }, error => { if (live && revision === collectionListRevision.current) setCollectionsError(errorMessage(error)); });
+    return () => { live = false; };
+  }, [collectionsRetry, workspaceId]);
+  useEffect(() => {
+    if (workspaceId && collectionTabs && collections) saveCollectionTabs(workspaceId, collectionTabs);
+  }, [workspaceId, collectionTabs, collections]);
   const [navigationWorkspace, setNavigationWorkspace] = useState<string>();
   const [page, setPage] = useState<EntryPage | null>(null);
   const [categoryId, setCategoryId] = useState<string>();
@@ -88,6 +129,10 @@ export function DesktopShell() {
   const [expandedFolders, setExpandedFolders] = useState(() => useStoredInitial<string[]>("expanded-folders", []));
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
+  const [searchSort, setSearchSort] = useState(() => useStoredInitial<NonNullable<EntryFilter["sort"]>>("workspace-search-sort", "name"));
+  const [searchJump, setSearchJump] = useState<{ entryId: string; hit: WorkspaceSearchHit; version: number; showContext: boolean }>();
+  const [selectedSearchHit, setSelectedSearchHit] = useState<{ entryId: string; start: number }>();
+  const searchIntent = useRef(0);
   const [listError, setListError] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -160,7 +205,7 @@ export function DesktopShell() {
   const explorer = explorerOverride ?? defaultExplorer;
   const reading = activeId !== null && readingIds.includes(activeId);
   const timelineTooNarrow = useMedia(`(width < ${minimumTimelineWidth + minimumWritingWidth + minimumAiWidth + 2 * dividerWidth}px)`);
-  const showAiPanel = aiOpen && !focusMode && !reading && (aiOverride !== null || tabsRestored || tabSessions !== null)
+  const showAiPanel = aiOpen && !collectionMode && !focusMode && !reading && (aiOverride !== null || tabsRestored || tabSessions !== null)
     && (!timelineMode || !explorer || !timelineTooNarrow);
   const loadAgentModels = showAiPanel && aiSettings?.preferences.enabled === true && aiSettings.agents.some(agent => agent.installed);
   useEffect(() => {
@@ -175,9 +220,10 @@ export function DesktopShell() {
   const queues = useRef(new Map<string, SaveQueue>());
   const active = useRef<string | null>(null);
   const handles = useRef(new Map<string, MarkdownEditorHandle>());
-  const [, refreshEditorHandles] = useState(0);
+  const [editorHandlesRevision, refreshEditorHandles] = useState(0);
   const pendingEditorFocus = useRef<string | null>(null);
   const selecting = useRef(0);
+  const viewIntent = useRef(0);
   const writing = useRef(new Set<Promise<unknown>>());
   const locking = useRef(new Set<string>());
   const exit = useRef<{ cancelled: boolean; restoring: boolean } | null>(null);
@@ -231,6 +277,8 @@ export function DesktopShell() {
   const filteredSection = section === "search" || section === "trash" || section === "imports";
   const filter: EntryFilter = {
     workspaceSearch: section === "search" ? { text: searchText, caseSensitive } : undefined,
+    sort: section === "search" ? searchSort : undefined,
+    limit: section === "search" ? 30 : undefined,
     deleted: section === "trash", wechatImported: section === "imports", offset: 0,
   };
   const liveFilter = useEffectEvent(() => filter);
@@ -246,7 +294,23 @@ export function DesktopShell() {
       });
     }, searchText.length > 0 ? 160 : 0);
     return () => { ++filterEpoch.current; clearTimeout(timer); };
-  }, [caseSensitive, section, searchText, filteredSection, refreshCount]);
+  }, [caseSensitive, section, searchText, searchSort, filteredSection, refreshCount]);
+
+  useLayoutEffect(() => {
+    if (!searchJump || activeId !== searchJump.entryId || viewMode !== "edit" || collectionMode) return;
+    const editor = handles.current.get(searchJump.entryId);
+    const queue = queues.current.get(searchJump.entryId);
+    if (!editor || !queue) return;
+    if (queue.isDirty()) {
+      showError("正文有尚未保存的修改，保存后可定位新结果");
+    } else if (queue.snapshot().version !== searchJump.version || !editor.revealSearchHit(searchJump.hit, searchJump.showContext)) {
+      setRefreshCount(count => count + 1);
+      showError("笔记已更新，请点击刷新后的匹配行");
+    } else {
+      setSelectedSearchHit({ entryId: searchJump.entryId, start: searchJump.hit.start });
+    }
+    setSearchJump(undefined);
+  }, [searchJump, activeId, viewMode, collectionMode, editorHandlesRevision, showError]);
 
   useEffect(() => { persist("expanded-folders", expandedFolders); }, [expandedFolders]);
   useEffect(() => { persist("editor-display", editorDisplay); }, [editorDisplay]);
@@ -334,7 +398,7 @@ export function DesktopShell() {
     const epoch = filterEpoch.current;
     void desktop.entries({ ...filter, offset }).then(result => {
       if (epoch === filterEpoch.current) setPage(previous => previous?.nextOffset === offset
-        ? { items: [...previous.items, ...result.items], nextOffset: result.nextOffset } : previous);
+        ? { ...result, items: [...previous.items, ...result.items] } : previous);
     }, error => { if (epoch === filterEpoch.current) setListError(errorMessage(error)); });
   }
 
@@ -352,13 +416,12 @@ export function DesktopShell() {
       const images: string[] = [];
       const errors: string[] = [];
       for (const file of files) {
-        if (exit.current) break;
         try { images.push(imageMarkdown(await desktop.assetImport(file, origin), file.name)); }
         catch (error) { errors.push(`${file.name || "图片"}：${errorMessage(error)}`); }
       }
       if (errors.length) showError(errors.join("；"));
       else if (images.length) setNotice({ type: "info", text: `已导入 ${images.length} 张图片` });
-      return images.length && !exit.current ? "\n" + images.join("\n") + "\n" : "";
+      return images.length ? "\n" + images.join("\n") + "\n" : "";
     })();
     return trackAssetTask(job);
   }
@@ -367,6 +430,12 @@ export function DesktopShell() {
     writing.current.add(job);
     return job.finally(() => writing.current.delete(job));
   }
+
+  const trackCollectionWrite = useCallback(<T,>(job: Promise<T>) => {
+    collectionWrites.current.add(job);
+    return job.finally(() => collectionWrites.current.delete(job));
+  }, []);
+  const waitForCollectionWrites = useCallback(() => Promise.allSettled(collectionWrites.current), []);
 
   const localizeImage = (url: string) => trackAssetTask(desktop.localizeImage(url));
   const editorClipboard: ClipboardIO = {
@@ -377,7 +446,7 @@ export function DesktopShell() {
     async read(plainText = false) {
       if (exit.current) return "";
       const result = await trackAssetTask(desktop.readClipboard(!plainText, !plainText));
-      if (!result || exit.current) return "";
+      if (!result) return "";
       if (result.kind === "text") return result.text;
       if (result.kind === "html") return { html: result.html, text: result.text };
       if (result.errors.length) showError(result.errors.join("；"));
@@ -415,16 +484,23 @@ export function DesktopShell() {
 
   async function open(id: string, mode = documentOpenMode) {
     const ticket = ++selecting.current;
-    const replacing = mode === "current" && active.current ? queues.current.get(active.current) : undefined;
+    const view = ++viewIntent.current;
+    const superseded = () => ticket !== selecting.current || view !== viewIntent.current || exit.current;
+    const replacing = !collectionMode && mode === "current" && active.current ? queues.current.get(active.current) : undefined;
+    if (collectionMode) {
+      await waitForCollectionWrites();
+      await collectionCanvas.current?.flush();
+      if (superseded()) return;
+    }
     if (!queues.current.has(id)) {
       const entry = await desktop.entry(id);
-      if (ticket !== selecting.current || exit.current) return;
+      if (superseded()) return;
       while (replacing && queues.current.get(replacing.entry.id) === replacing && !queues.current.has(id)) {
         const currentId = replacing.entry.id;
         if (locking.current.has(currentId)) throw new Error("当前标签页正在处理，请稍后再试");
         if (active.current === currentId) commitBreadcrumb();
         const saved = await replacing.flush();
-        if (ticket !== selecting.current || exit.current) return;
+        if (superseded()) return;
         if (queues.current.get(currentId) !== replacing || queues.current.has(id)) break;
         if (!saved) { select(currentId); return; }
         if (active.current === currentId) commitBreadcrumb();
@@ -435,14 +511,21 @@ export function DesktopShell() {
       }
       if (!queues.current.has(id)) install(entry);
     }
+    if (collectionMode) switchSection("folders");
     revealFolder(queues.current.get(id)!.snapshot().fields.categoryId);
     if (active.current === id) document.getElementById(`tab-${id}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     select(id);
   }
 
-  function switchTab(id: string) {
-    ++selecting.current;
-    select(id);
+  function switchTab(id: string, onSwitched?: () => void) {
+    const view = ++viewIntent.current;
+    afterCanvasSaved(() => {
+      if (view !== viewIntent.current) return;
+      ++selecting.current;
+      if (collectionMode) switchSection("folders");
+      select(id);
+      onSwitched?.();
+    });
   }
 
   function reorderTab(id: string, anchor: string, placement: CategoryPlacement) {
@@ -473,7 +556,11 @@ export function DesktopShell() {
     const index = next.indexOf(id);
     forgetTab(id);
     setSessions([...queues.current.values()]);
-    if (id === active.current) select(next[index + 1] ?? next[index - 1] ?? null);
+    if (id === active.current) {
+      const neighbor = next[index + 1] ?? next[index - 1];
+      select(neighbor ?? null);
+      if (!neighbor && !collectionMode && activeCollectionId) switchSection("collections");
+    }
   }
 
   async function withEntryLock(id: string, operation: () => Promise<void>) {
@@ -506,10 +593,34 @@ export function DesktopShell() {
     }
   }
 
-  function navigate(next: Section) {
-    if ((section === "folders" || section === "timeline") && next !== section) {
+  function afterCanvasSaved(action: () => void) {
+    const canvas = collectionCanvas.current;
+    if (!canvas) { action(); return; }
+    void waitForCollectionWrites().then(() => canvas.flush()).then(() => {
+      if (!exit.current) action();
+    }, showError);
+  }
+
+  function navigate(next: Section, onNavigated?: () => void) {
+    const view = ++viewIntent.current;
+    const apply = () => {
+      if (view !== viewIntent.current) return;
+      switchSection(next);
+      onNavigated?.();
+    };
+    if (next === "collections") apply();
+    else afterCanvasSaved(apply);
+  }
+
+  function switchSection(next: Section) {
+    if (next === "collections" && !collectionMode) {
+      commitBreadcrumb();
+      if (active.current) void queues.current.get(active.current)?.flush();
+    }
+    if ((section === "folders" || section === "timeline" || collectionMode) && next !== section) {
       const field = document.activeElement;
       if (field instanceof HTMLElement && field.closest(".folder-inline, .folder-icon-picker, .entry-inline")) field.blur();
+      if (collectionMode) setCollectionDraft(undefined);
     }
     setSection(next);
     setFocusMode(false);
@@ -517,6 +628,52 @@ export function DesktopShell() {
     if (next !== section) {
       setPage(null); setListError("");
     }
+  }
+
+  function chooseCollection(id: string) {
+    setCollectionTabs(current => {
+      const ids = current?.ids ?? [];
+      return { ids: ids.includes(id) ? ids : [...ids, id], activeId: id };
+    });
+  }
+
+  function openCollection(id: string) {
+    const view = ++viewIntent.current;
+    afterCanvasSaved(() => {
+      if (view !== viewIntent.current) return;
+      chooseCollection(id);
+      switchSection("collections");
+    });
+  }
+
+  function removeCollectionTab(id: string) {
+    setCollectionTabs(current => {
+      if (!current?.ids.includes(id)) return current;
+      const index = current.ids.indexOf(id);
+      const ids = current.ids.filter(tab => tab !== id);
+      return { ids, activeId: current.activeId === id ? (ids[index] ?? ids[index - 1]) : current.activeId };
+    });
+  }
+
+  function closeCollectionTab(id: string) {
+    if (!collectionMode || activeCollectionId !== id) { removeCollectionTab(id); return; }
+    const view = ++viewIntent.current;
+    afterCanvasSaved(() => {
+      removeCollectionTab(id);
+      if (view === viewIntent.current && collectionTabs?.ids.length === 1 && active.current) switchSection("folders");
+    });
+  }
+
+  function collapseCollections(collapsed: boolean) {
+    setCollectionsCollapsed(collapsed);
+    persist("collection-list-collapsed", collapsed);
+  }
+
+  function createCollection() {
+    if (globalLock || exit.current) return;
+    navigate("collections");
+    collapseCollections(false);
+    setCollectionDraft(current => current && !current.id ? current : {});
   }
 
   function view(mode: ViewMode) {
@@ -532,8 +689,43 @@ export function DesktopShell() {
   }
 
   function openSearch() {
-    navigate("search");
-    requestAnimationFrame(() => searchInput.current?.focus());
+    navigate("search", () => requestAnimationFrame(() => searchInput.current?.focus()));
+  }
+
+  function invalidateSearch(clearHighlight: boolean) {
+    ++filterEpoch.current;
+    setPage(null);
+    setListError("");
+    if (clearHighlight) {
+      ++searchIntent.current;
+      if (selectedSearchHit) handles.current.get(selectedSearchHit.entryId)?.clearSearchHit();
+      setSelectedSearchHit(undefined);
+      setSearchJump(undefined);
+    }
+  }
+
+  function openSearchHit(entryId: string, hit: WorkspaceSearchHit, version: number, showContext: boolean) {
+    run(async () => {
+      const ticket = selecting.current + 1;
+      const view = viewIntent.current + 1;
+      const intent = ++searchIntent.current;
+      const isCurrent = () => intent === searchIntent.current && ticket === selecting.current && view === viewIntent.current &&
+        active.current === entryId && !exit.current;
+      await open(entryId);
+      if (!isCurrent()) return;
+      const queue = queues.current.get(entryId)!;
+      if (!queue.isDirty() && queue.snapshot().version < version) {
+        const latest = await desktop.entry(entryId);
+        if (!isCurrent() || queues.current.get(entryId) !== queue) return;
+        if (!queue.isDirty()) {
+          handles.current.delete(entryId);
+          queue.dispose();
+          install(latest);
+        }
+      }
+      updateDocumentOptions(entryId, { view: "edit" });
+      setSearchJump({ entryId, hit, version, showContext });
+    });
   }
 
   function toggleExplorer(event: MouseEvent<HTMLButtonElement>) {
@@ -689,6 +881,84 @@ export function DesktopShell() {
 
   const currentFolder = section === "timeline" ? timelineFolder?.id ?? null : section === "folders" ? categoryId ?? null : null;
 
+  function showGitHubImport(categoryId: string | null = currentFolder) {
+    showModal({ type: "githubImport", categoryId });
+  }
+
+  function saveCollection(collection: Collection | undefined, title: string, description: string) {
+    const pending = waitForCollectionWrites();
+    const canvas = collectionCanvas.current;
+    return trackCollectionWrite((async () => {
+      await pending;
+      await canvas?.flush();
+      const saved = await desktop.saveCollection(collection?.id ?? null, title, description);
+      collectionListRevision.current++;
+      setCollections(current => collection ? current?.map(item => item.id === saved.id ? saved : item) ?? [] : [...(current ?? []), saved]);
+      if (!collection) chooseCollection(saved.id);
+    })());
+  }
+
+  async function deleteCollection(collection: Collection) {
+    await collectionCanvas.current?.flush();
+    await waitForCollectionWrites();
+    await trackCollectionWrite(desktop.deleteCollection(collection.id));
+    collectionListRevision.current++;
+    setCollections(current => current?.filter(item => item.id !== collection.id) ?? []);
+    removeCollectionTab(collection.id);
+  }
+
+  function onOpenCollectionEntry(id: string) {
+    run(() => open(id, "new-tab"));
+  }
+
+  async function loadCollectionArticle(id: string) {
+    if (locking.current.has(id)) throw new Error("文章正在处理，请稍后再试");
+    const queue = queues.current.get(id);
+    if (queue && !await queue.flush()) throw queue.saveError();
+    const entry = await desktop.entry(id);
+    if (entry.deletedAt !== null) throw new Error("文章已移入回收站");
+    return entry;
+  }
+
+  async function saveCollectionArticle(id: string, version: number, fields: EntryFields, mode: SaveMode): Promise<SaveResult> {
+    if (locking.current.has(id)) throw new Error("文章正在处理，请稍后再试");
+    let saved: SaveResult;
+    await withEntryLock(id, async () => {
+      const tab = queues.current.get(id);
+      if (tab && !await tab.flush()) throw tab.saveError();
+      saved = await desktop.save(id, version, fields, mode);
+      if (tab && queues.current.get(id) === tab) {
+        tab.dispose();
+        install({ ...tab.entry, ...fields, version: saved.version });
+      }
+    });
+    return saved!;
+  }
+
+  function addToCollection(entryId: string, collection: Collection) {
+    if (globalLock || exit.current) return;
+    const pending = waitForCollectionWrites();
+    const isCurrentCanvas = collectionMode && activeCollectionId === collection.id;
+    const live = isCurrentCanvas ? collectionCanvas.current : null;
+    run(() => trackCollectionWrite((async () => {
+      await pending;
+      if (live && collectionCanvas.current === live) await live.addEntry(entryId);
+      else {
+        const canvas = await desktop.collectionCanvas(collection.id);
+        const { x, y, zoom } = canvas.collection.viewport;
+        const position = { x: Math.round(-x / zoom) + 24, y: Math.round(-y / zoom) + 24 };
+        const nodes = [...canvas.nodes].sort((first, second) => first.y - second.y);
+        for (const node of nodes) {
+          if (node.x < position.x + 336 && node.x + node.width + 16 > position.x &&
+            node.y < position.y + 160 && node.y + node.height + 16 > position.y) position.y = node.y + node.height + 16;
+        }
+        await desktop.createCollectionNode(collection.id, { kind: "entry", entryId }, position);
+        if (isCurrentCanvas) setCanvasReload(previous => ({ id: collection.id, version: (previous?.version ?? 0) + 1 }));
+      }
+      setNotice({ type: "info", text: `已加入「${collection.title}」` });
+    })()));
+  }
+
   function create(parent: string | null = currentFolder) {
     run(async () => {
       const fields = parent ? {
@@ -788,8 +1058,10 @@ export function DesktopShell() {
     const trigger = document.getElementById(`tab-${id}`);
     switch (action) {
       case "closeOthers":
-        switchTab(id);
-        run(() => closeTabs([...queues.current.keys()].filter(other => other !== id)));
+        switchTab(id, () => {
+          setCollectionTabs({ ids: [] });
+          run(() => closeTabs([...queues.current.keys()].filter(other => other !== id)));
+        });
         break;
       case "reading":
         switchTab(id);
@@ -917,6 +1189,7 @@ export function DesktopShell() {
     setBackupFeedback(null);
     try {
       const result = await trackAssetTask((async () => {
+        await collectionCanvas.current?.flush();
         const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
         if (!saved.every(Boolean)) throw new Error("有稿件尚未保存，请处理后重新备份");
         return await desktop.createBackup();
@@ -952,6 +1225,7 @@ export function DesktopShell() {
     try {
       await trackAssetTask((async () => {
         if (action === "export") {
+          await collectionCanvas.current?.flush();
           const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
           if (!saved.every(Boolean)) throw new Error("有稿件尚未保存，请处理后重新导出");
           const path = await desktop.exportWorkspace(workspacePreferences());
@@ -1091,18 +1365,21 @@ export function DesktopShell() {
 
   const commands: PaletteCommand[] = [
     { name: "新建笔记", keys: commandKey + "N", run: () => create() },
+    { name: "新建专题", run: createCollection },
     { name: "导入公众号文章", run: () => showWechatImport() },
     { name: "导入 Markdown", run: () => importMarkdown() },
+    { name: "导入 GitHub README", run: () => showGitHubImport() },
     { name: "设置", run: () => openSettings() },
     { name: "MCP 服务设置", run: () => openSettings("mcp") },
     { name: "AI 代理设置", run: showModel },
     { name: "数据库备份", run: openBackups },
-    ...(!reading ? [{ name: "切换 AI 助手", run: toggleAi }] : []),
+    ...(!reading && !collectionMode ? [{ name: "切换 AI 助手", run: toggleAi }] : []),
     { name: "全文搜索", keys: commandKey + "Shift+F", run: openSearch },
     { name: "打开内容目录", run: () => navigate("folders") },
+    { name: "打开专题", run: () => navigate("collections") },
     { name: "打开回收站", run: () => navigate("trash") },
   ];
-  if (selected) commands.push(
+  if (selected && !collectionMode) commands.push(
     { name: reading ? "退出阅读模式" : "进入阅读模式", run: toggleReading },
     { name: "切换编辑视图", run: cycleView },
     { name: "查找与替换", keys: commandKey + "F", run: actions.onSearch },
@@ -1117,15 +1394,15 @@ export function DesktopShell() {
     if (!mod) return;
     const key = event.key.toLowerCase();
     if (event.altKey) {
-      if (shortcut !== "alt-v" || event.code !== "KeyV" || event.shiftKey || !selected) return;
+      if (shortcut !== "alt-v" || event.code !== "KeyV" || event.shiftKey || !selected || collectionMode) return;
       event.preventDefault(); cycleView(); return;
     }
     const command = key === "k" && !event.shiftKey ? actions.onPalette
       : key === "n" && !event.shiftKey ? () => create()
-        : key === "s" && !event.shiftKey ? actions.onSave
+        : key === "s" && !event.shiftKey && !collectionMode ? actions.onSave
           : key === "f" && event.shiftKey ? openSearch
-            : key === "f" && selected ? actions.onSearch
-              : key === "m" && event.shiftKey && shortcut === "shift-m" && selected ? cycleView : undefined;
+            : key === "f" && selected && !collectionMode ? actions.onSearch
+              : key === "m" && event.shiftKey && shortcut === "shift-m" && selected && !collectionMode ? cycleView : undefined;
     if (command) { event.preventDefault(); if (!event.repeat) command(); }
   });
 
@@ -1137,6 +1414,9 @@ export function DesktopShell() {
     (document.activeElement as HTMLElement | null)?.blur();
     setExitMessage(attempt.restoring ? "正在保存并停止工作区…" : "正在保存并退出…");
     try {
+      const failedWrite = (await waitForCollectionWrites()).find(write => write.status === "rejected");
+      if (failedWrite) throw failedWrite.reason;
+      await collectionCanvas.current?.flush();
       await desktop.beginExit();
       await Promise.allSettled(writing.current);
       const all = [...queues.current.values()];
@@ -1176,8 +1456,13 @@ export function DesktopShell() {
   }
   const closingEvent = useEffectEvent(() => finishWorkspace());
   const clipboardEvent = useEffectEvent((action: ClipboardAction, target: EventTarget | null, plainText?: boolean) => {
+    if (exit.current) return false;
+    if (collectionMode) {
+      const canvas = collectionCanvas.current;
+      return (canvas?.articleClipboard(action, target, plainText) ?? false) || (action === "paste" && (canvas?.paste(target) ?? false));
+    }
     const activeId = active.current;
-    if (!activeId || exit.current) return false;
+    if (!activeId) return false;
     return handles.current.get(activeId)?.clipboard(action, editorClipboard, target, plainText) ?? false;
   });
 
@@ -1364,6 +1649,7 @@ export function DesktopShell() {
     active: activeId, categories: library?.categories ?? [], readOnlyIds: [...readingIds, ...locked],
     treeLocked: globalLock, openMode: documentOpenMode, onOpen: (id, mode) => run(() => open(id, mode)),
     onRowAction: entryAction, onRenameEntry: renameEntry, onFolderError: showError, onMoveEntry: moveTreeEntry,
+    collectionOptions: collections ?? [], onAddToCollection: addToCollection,
   };
   const hideSidebarButton = <Tool id="hide-sidebar" label="隐藏左侧栏" className="chrome-icon sidebar-toggle" onClick={toggleExplorer}>
     <SidebarToggleIcon expanded />
@@ -1390,7 +1676,14 @@ export function DesktopShell() {
           {!timelineMode && hideSidebarButton}
         </>}
       </nav>
-      {section === "assets" ? <AssetPanel onImport={files => importImages(files, "library")} onConfigure={() => openSettings("images")}
+      {section === "collections" ? <CollectionExplorer items={collections} activeId={activeCollectionId} error={collectionsError}
+        locked={globalLock} collapsed={collectionsCollapsed} draft={collectionDraft} onToggle={() => collapseCollections(!collectionsCollapsed)}
+        onSelect={id => { if (id !== activeCollectionId) openCollection(id); }} onCreate={createCollection} onRename={id => setCollectionDraft({ id })}
+        onDelete={collection => showModal({ type: "deleteCollection", collection }, document.getElementById(`collection-row-${collection.id}`))}
+        onSave={(collection, title) => saveCollection(collection, title, collection?.description ?? "")}
+        onCloseEditor={() => setCollectionDraft(current => current === collectionDraft ? undefined : current)} onError={showError}
+        onRetry={() => setCollectionsRetry(value => value + 1)} />
+      : section === "assets" ? <AssetPanel onImport={files => importImages(files, "library")} onConfigure={() => openSettings("images")}
       canInsert={!reading && queue?.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id)}
       canCover={!reading && Boolean(queue && queue.entry.deletedAt === null && !globalLock && !locked.includes(queue.entry.id))}
       onInsert={(id, name) => {
@@ -1423,10 +1716,12 @@ export function DesktopShell() {
         }}
         expanded={expandedFolders} revision={refreshCount} loading={folderLoading} pageSize={folderPageSize} caseSensitive={caseSensitive}
         query={query} searchInputRef={searchInput} listError={listError} onRetry={refresh}
-        onQuery={value => { setQuery(value); setPage(null); }}
-        onCaseSensitive={value => { setCaseSensitive(value); setPage(null); }}
+        searchSort={searchSort} selectedSearchHit={selectedSearchHit} onSearchHit={openSearchHit}
+        onSearchSort={sort => { setSearchSort(sort); persist("workspace-search-sort", sort); invalidateSearch(false); }}
+        onQuery={value => { if (value !== query) { setQuery(value); invalidateSearch(true); } }}
+        onCaseSensitive={value => { if (value !== caseSensitive) { setCaseSensitive(value); invalidateSearch(true); } }}
         onFolder={section === "timeline" ? toggleFolderExpanded : toggleFolder}
-        onImportWechat={showWechatImport} onImportMarkdown={importMarkdown}
+        onImportWechat={showWechatImport} onImportMarkdown={importMarkdown} onImportGitHub={showGitHubImport}
         onCreate={create} onRevealFolder={revealFolder} onSaveFolder={saveFolder}
         onReorderFolder={reorderFolder} onReorderEntry={reorderEntry}
         onCategoryAction={categoryAction} onMore={more} />}
@@ -1529,6 +1824,7 @@ export function DesktopShell() {
                       onCreate: () => create(currentFolder),
                       onImportWechat: () => showWechatImport(currentFolder),
                       onImportMarkdown: () => importMarkdown(currentFolder),
+                      onImportGitHub: () => showGitHubImport(currentFolder),
                       onAddFolder: timelineFolder?.parentId ? undefined : () => explorerTree.current?.addFolder(currentFolder),
                     } : null} />
               </div>
@@ -1542,17 +1838,42 @@ export function DesktopShell() {
             <header className="workbench-chrome chrome-band">
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
-              {sessions.length > 0 && <DocumentTabs sessions={sessions} activeId={activeId} readingIds={readingIds} lockedIds={locked}
+              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} activeId={collectionMode ? null : activeId}
+                collections={openCollections} activeCollectionId={collectionMode ? activeCollectionId : undefined}
+                onSwitchCollection={openCollection} onCloseCollection={closeCollectionTab} collectionOptions={collections ?? []}
+                onAddToCollection={addToCollection} readingIds={readingIds} lockedIds={locked}
                 categories={library?.categories ?? []} onMove={moveTreeEntry} onSwitch={switchTab} onClose={closeTab} onAction={tabAction}
                 onReorder={reorderTab} onRename={renameEntry} onError={showError} />}
               {!focusMode && <CreateMenu onCreate={() => create()} onImportWechat={() => showWechatImport()}
-                onImportMarkdown={() => importMarkdown()} disabled={globalLock} />}
+                onImportMarkdown={() => importMarkdown()} onImportGitHub={() => showGitHubImport()}
+                onCreateCollection={createCollection} disabled={globalLock} />}
               <WindowDragRegion onError={showError} />
-              {!reading && !focusMode && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
+              {!reading && !focusMode && !collectionMode && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
                 label={showAiPanel ? "隐藏 AI 侧栏" : "显示 AI 侧栏"} aria-expanded={showAiPanel}
                 aria-controls="ai-sidebar" onClick={toggleAi}><SidebarToggleIcon side="right" expanded={showAiPanel} /></Tool>}
               {!showAiPanel && windowsTitleBar && <WindowControls onError={showError} />}
             </header>
+            {collectionMode && <>
+              {activeCollection ? <Suspense fallback={<div id="collection-canvas-panel" role="tabpanel"
+                aria-labelledby={`collection-tab-${activeCollection.id}`} className="document-body collection-state"><span role="status">正在打开专题…</span></div>}>
+                <CollectionCanvas key={`${activeCollection.id}:${canvasReload?.id === activeCollection.id ? canvasReload.version : 0}`}
+                  collection={activeCollection} dark={appearance === "system" ? systemDark : appearance === "dark"}
+                  revision={refreshCount} articleLocked={globalLock} clipboard={editorClipboard}
+                  canvasRef={collectionCanvas} track={trackCollectionWrite} waitForWrites={waitForCollectionWrites}
+                  onOpenEntry={onOpenCollectionEntry}
+                  onLoadArticle={loadCollectionArticle} onSaveArticle={saveCollectionArticle} onArticleImages={importImages}
+                  onDelete={() => showModal({ type: "deleteCollection", collection: activeCollection })}
+                  onEntryCreated={refresh} onError={showError} />
+              </Suspense> : <div className="document-body">
+                <div className="workbench-empty">
+                  <Workflow size={25} strokeWidth={1.4} />
+                  <h2>{collectionsError ? "无法读取专题" : !collections ? "正在读取专题…" : collections.length ? "选择专题" : "还没有专题"}</h2>
+                  {collections?.length === 0 && <Button size="2" variant="soft" disabled={globalLock || Boolean(collectionsError)} onClick={createCollection}>新建专题</Button>}
+                </div>
+              </div>}
+              {workspaceNotice}
+            </>}
+            <div className="workbench-document" hidden={collectionMode}>
             {queue ? <>
               <DocumentToolbar queue={queue} categories={library?.categories ?? []} actions={actions}
                 locked={globalLock || locked.includes(queue.entry.id)}
@@ -1562,7 +1883,7 @@ export function DesktopShell() {
                 id="document-body" role="tabpanel" aria-labelledby={`tab-${activeId}`}>
                 <div className="editor-stack" hidden={viewMode === "preview"}>
                   {sessions.map(session => <DocumentEditor key={session.sessionId}
-                    queue={session} active={activeId === session.entry.id} reading={readingIds.includes(session.entry.id)}
+                    queue={session} active={!collectionMode && activeId === session.entry.id} reading={readingIds.includes(session.entry.id)}
                     display={displayFor(session.entry.id)} onDisplayChange={(option, checked) => updateEditorDisplay(session.entry.id, option, checked)}
                     locked={Boolean(exitMessage) || globalLock || locked.includes(session.entry.id)} clipboard={editorClipboard}
                     handle={handle => registerEditor(session.entry.id, handle)}
@@ -1580,7 +1901,7 @@ export function DesktopShell() {
                     actions.onOutline(false);
                     document.getElementById("document-action-trigger")?.focus();
                   }} />}
-                {workspaceNotice}
+                {!collectionMode && workspaceNotice}
               </div>
               <DocumentSaveError key={queue.sessionId} queue={queue} actions={actions} />
             </> : <div className="document-body">
@@ -1592,8 +1913,9 @@ export function DesktopShell() {
                   <Button size="2" variant="soft" color="gray" onClick={() => showWechatImport()}>导入公众号文章</Button>
                 </div>
               </div>
-              {workspaceNotice}
+              {!collectionMode && workspaceNotice}
             </div>}
+            </div>
           </main>
         </Panel>
         {showAiPanel && <Separator className="divider ai-sidebar-divider"
@@ -1608,7 +1930,7 @@ export function DesktopShell() {
           </div>
         </Panel>
       </Group>
-      <StatusBar queue={queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
+      <StatusBar queue={collectionMode ? undefined : queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
         mcpRunning={mcpStatus?.running} onMcp={trigger => openSettings("mcp", trigger)} backupProgress={backupWorking}
         migrationProgress={migrationWorking} assetRevision={assetsRevision} imageStorageEnabled={Boolean(imageTarget)}
         imageUpload={imageUpload?.sessionId === queue?.sessionId ? imageUpload : null} onError={showError}
@@ -1669,13 +1991,23 @@ export function DesktopShell() {
         if (section !== "imports" && section !== "timeline") navigate("folders");
         run(() => open(id));
       }} />}
+      {modal?.type === "githubImport" && <GitHubImportDialog onClose={closeModal} onImport={url => trackAssetTask((async () => {
+        const result = await desktop.importGitHub(url, modal.categoryId);
+        if (result.deleted) throw new Error("该仓库已收录，请先从回收站恢复");
+        await open(result.entryId, "new-tab");
+        refresh();
+        setNotice({ type: "info", text: result.existing ? "已打开收录的 README" : "已导入 GitHub README" });
+      })())} />}
+      {modal?.type === "deleteCollection" && <Confirm title="删除专题" text={`将删除「${modal.collection.title}」中的卡片和连线。引用的文章会保留。`}
+        action="删除专题" onClose={closeModal} onConfirm={() => deleteCollection(modal.collection)} />}
       {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} onClose={closeModal} />}
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
       {modal?.type === "properties" && <PropertiesDialog key={modal.id} id={modal.id} queue={queues.current.get(modal.id)}
         categories={library?.categories ?? []} tagSuggestions={library?.tagSuggestions ?? []}
         locked={globalLock || readingIds.includes(modal.id) || locked.includes(modal.id)}
-        onSave={(entry, change) => trackAssetTask(saveEntryFields(entry, change))} onClose={closeModal} onOpen={id => run(() => open(id))} />}
+        onSave={(entry, change) => trackAssetTask(saveEntryFields(entry, change))} onClose={closeModal} onOpen={id => run(() => open(id))}
+        onOpenCollection={openCollection} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <Confirm title="删除文件夹" text={modal.target.parentId ? "其中的内容将移到上一级文件夹。" : "子文件夹也将删除，其中的内容将移到根目录。"}
         action="删除文件夹" onClose={closeModal} onConfirm={() => deleteCategory(modal.target)} />}

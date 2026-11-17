@@ -1,20 +1,23 @@
 import { useRef, useState } from "react";
 
-export function InlineEntryTitle({ title, placeholder, onSave, onClose, onError }: {
+export function InlineEntryTitle({ title, initialTitle = title, label = "重命名文档", placeholder, required = false, onSave, onClose, onError }: {
   title: string;
+  initialTitle?: string;
+  label?: string;
   placeholder: string;
+  required?: boolean;
   onSave(title: string): Promise<void>;
   onClose(restoreFocus: boolean): void;
   onError(error: unknown): void;
 }) {
-  const [draft, setDraft] = useState(title);
+  const [draft, setDraft] = useState(initialTitle);
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
 
   function save(restoreFocus: boolean) {
     if (pending.current) return;
     const name = draft.trim();
-    if (name === title) { onClose(restoreFocus); return; }
+    if (name === title || (required && !name)) { onClose(restoreFocus); return; }
     pending.current = true;
     setSaving(true);
     void onSave(name).then(() => onClose(restoreFocus), error => {
@@ -24,7 +27,7 @@ export function InlineEntryTitle({ title, placeholder, onSave, onClose, onError 
     });
   }
 
-  return <input className="entry-inline-name" aria-label="重命名文档" placeholder={placeholder} autoFocus
+  return <input className="entry-inline-name" aria-label={label} placeholder={placeholder} autoFocus
     value={draft} readOnly={saving} onChange={event => setDraft(event.target.value)}
     onFocus={event => event.currentTarget.select()} onBlur={() => save(false)} onKeyDown={event => {
       if (event.nativeEvent.isComposing || event.keyCode === 229 || saving) return;

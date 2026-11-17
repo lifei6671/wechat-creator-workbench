@@ -306,3 +306,127 @@ mod tests {
         }
     }
 }
+
+use crate::content::collections::{
+    CanvasEdge, CanvasNode, Collection, CollectionCanvas, NodeContent, NodeGeometry, Position,
+    Viewport,
+};
+
+#[tauri::command]
+pub async fn list_collections(state: State<'_, Workspace>) -> Result<Vec<Collection>> {
+    state.list_collections()
+}
+
+#[tauri::command]
+pub async fn save_collection(
+    state: State<'_, Workspace>,
+    id: Option<String>,
+    title: String,
+    description: String,
+) -> Result<Collection> {
+    state.save_collection(id.as_deref(), &title, &description)
+}
+
+#[tauri::command]
+pub async fn delete_collection(state: State<'_, Workspace>, id: String) -> Result<()> {
+    state.delete_collection(&id)
+}
+
+#[tauri::command]
+pub async fn get_collection_canvas(
+    state: State<'_, Workspace>,
+    collection_id: String,
+) -> Result<CollectionCanvas> {
+    state.collection_canvas(&collection_id)
+}
+
+#[tauri::command]
+pub async fn create_collection_node(
+    state: State<'_, Workspace>,
+    collection_id: String,
+    content: NodeContent,
+    position: Position,
+) -> Result<CanvasNode> {
+    state.create_collection_node(&collection_id, content, position)
+}
+
+#[tauri::command]
+pub async fn update_collection_node_text(
+    state: State<'_, Workspace>,
+    node_id: String,
+    content_md: String,
+) -> Result<()> {
+    state.update_collection_node_text(&node_id, &content_md)
+}
+
+#[tauri::command]
+pub async fn update_collection_node_color(
+    state: State<'_, Workspace>,
+    node_id: String,
+    color: Option<String>,
+) -> Result<()> {
+    state.update_collection_node_color(&node_id, color.as_deref())
+}
+
+#[tauri::command]
+pub async fn update_collection_node_geometry(
+    state: State<'_, Workspace>,
+    updates: Vec<NodeGeometry>,
+) -> Result<()> {
+    state.update_collection_node_geometry(updates)
+}
+
+#[tauri::command]
+pub async fn delete_collection_node(state: State<'_, Workspace>, node_id: String) -> Result<()> {
+    state.delete_collection_node(&node_id)
+}
+
+#[tauri::command]
+pub async fn convert_collection_text(
+    state: State<'_, Workspace>,
+    node_id: String,
+) -> Result<CanvasNode> {
+    state.convert_collection_text(&node_id)
+}
+
+#[tauri::command]
+pub async fn create_collection_edge(
+    state: State<'_, Workspace>,
+    collection_id: String,
+    source_node_id: String,
+    target_node_id: String,
+    label: String,
+) -> Result<CanvasEdge> {
+    state.create_collection_edge(collection_id, source_node_id, target_node_id, label)
+}
+
+#[tauri::command]
+pub async fn update_collection_edge(
+    state: State<'_, Workspace>,
+    edge_id: String,
+    label: String,
+) -> Result<()> {
+    state.update_collection_edge(&edge_id, &label)
+}
+
+#[tauri::command]
+pub async fn delete_collection_edge(state: State<'_, Workspace>, edge_id: String) -> Result<()> {
+    state.delete_collection_edge(&edge_id)
+}
+
+#[tauri::command]
+pub async fn save_collection_viewport(
+    state: State<'_, Workspace>,
+    collection_id: String,
+    viewport: Viewport,
+) -> Result<()> {
+    state.save_collection_viewport(&collection_id, viewport)
+}
+
+#[tauri::command]
+pub async fn list_entry_collections(
+    state: State<'_, Workspace>,
+    entry_id: String,
+) -> Result<Vec<Collection>> {
+    state.list_entry_collections(&entry_id)
+}

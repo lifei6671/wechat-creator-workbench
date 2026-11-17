@@ -1,22 +1,23 @@
-import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
-import { Button, ContextMenu, DropdownMenu, HoverCard, Spinner } from "@radix-ui/themes";
+import { useCallback, useEffect, useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
+import { Button, ContextMenu, DropdownMenu, HoverCard, Select, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
   FolderOpen, FolderPlus, History, Link, PencilLine, Pin, PinOff, Plus, SquareArrowOutUpRight, Tag, Tags, Trash2,
 } from "lucide-react";
-import type { Category, CategoryIcon, CategoryPlacement, EntryFilter, EntryPage, EntryRow, Library } from "../../../../packages/shared-types";
+import type { Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 import { folderIcons } from "./folder-icons";
 import { MoveEntryMenu } from "./MoveEntryMenu";
+import { AddToCollectionMenu } from "./CollectionMenu";
 import { FolderInline } from "./FolderInline";
 import { InlineEntryTitle } from "./InlineEntryTitle";
 import { useExplorerDrag } from "./explorer-drag";
 import type { DocumentOpenMode } from "./preferences";
-import { WorkspaceSearch } from "./WorkspaceSearch";
+import { SearchHitRow, WorkspaceSearch, searchDisplayDefaults, searchDisplayKey } from "./WorkspaceSearch";
 
-export type Section = "folders" | "timeline" | "search" | "assets" | "trash" | "imports";
+export type Section = "folders" | "timeline" | "search" | "assets" | "trash" | "imports" | "collections";
 export type TimelineSelection = { kind: "folder" | "tag"; id: string } | { kind: "root" | "untagged" };
 export type CategoryAction = "delete" | "up" | "down";
 export type EntryRowAction = "delete" | "restore" | "duplicate" | "pin" | "unpin" | "copyTitle" | "copyPath" | "history" | "export" | "properties";
@@ -25,28 +26,42 @@ interface CreateActions {
   onCreate(): void;
   onImportWechat(): void;
   onImportMarkdown(): void;
+  onImportGitHub?(): void;
+  onCreateCollection?(): void;
   disabled?: boolean;
 }
 
-function CreateItems({ Item, onCreate, onImportWechat, onImportMarkdown, disabled }: CreateActions & {
+function CreateItems({ Item, onCreate, onImportWechat, onImportMarkdown, onImportGitHub, onCreateCollection, disabled }: CreateActions & {
   Item: typeof DropdownMenu.Item | typeof ContextMenu.Item;
 }) {
   return <>
     <Item disabled={disabled} onSelect={onCreate}><FilePenLine size={15} />新建笔记</Item>
+    {onCreateCollection && <Item disabled={disabled} onSelect={onCreateCollection}><Plus size={15} />新建专题</Item>}
     <Item disabled={disabled} onSelect={onImportWechat}><Link size={15} />导入公众号文章</Item>
     <Item disabled={disabled} onSelect={onImportMarkdown}><FileUp size={15} />导入 Markdown</Item>
+    {onImportGitHub && <Item disabled={disabled} onSelect={onImportGitHub}><Link size={15} />导入 GitHub README</Item>}
   </>;
 }
 
 export function CreateMenu(actions: CreateActions) {
+  const { onCreateCollection } = actions;
+  const createAfterMenu = useRef<(() => void) | null>(null);
   return <DropdownMenu.Root>
     <Tooltip content="新建内容"><DropdownMenu.Trigger>
       <button type="button" className="plain-button chrome-icon add-tab" aria-label="新建内容">
         <Plus size={17} />
       </button>
     </DropdownMenu.Trigger></Tooltip>
-    <DropdownMenu.Content align="start" size="1">
-      <CreateItems Item={DropdownMenu.Item} {...actions} />
+    <DropdownMenu.Content align="start" size="1" onCloseAutoFocus={event => {
+      const create = createAfterMenu.current;
+      if (!create) return;
+      createAfterMenu.current = null;
+      event.preventDefault();
+      create();
+    }}>
+      <CreateItems Item={DropdownMenu.Item} {...actions} onCreateCollection={onCreateCollection && (() => {
+        createAfterMenu.current = onCreateCollection;
+      })} />
     </DropdownMenu.Content>
   </DropdownMenu.Root>;
 }
@@ -83,7 +98,7 @@ export interface ExplorerHandle {
 
 interface ExplorerProps {
   ref?: Ref<ExplorerHandle>;
-  section: Exclude<Section, "assets">;
+  section: Exclude<Section, "assets" | "collections">;
   library: Library | null;
   page: EntryPage | null;
   active: string | null;
@@ -105,6 +120,10 @@ interface ExplorerProps {
   caseSensitive: boolean;
   query: string;
   searchInputRef: Ref<HTMLInputElement>;
+  searchSort?: EntryFilter["sort"];
+  selectedSearchHit?: { entryId: string; start: number };
+  onSearchSort?(sort: NonNullable<EntryFilter["sort"]>): void;
+  onSearchHit?(entryId: string, hit: WorkspaceSearchHit, version: number, showContext: boolean): void;
   listError: string;
   onRetry(): void;
   onQuery(query: string): void;
@@ -113,6 +132,7 @@ interface ExplorerProps {
   onCreate(categoryId: string | null): void;
   onImportWechat(categoryId: string | null): void;
   onImportMarkdown(categoryId: string | null): void;
+  onImportGitHub?(categoryId: string | null): void;
   onRevealFolder(id: string): void;
   onSaveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon): Promise<void>;
   onFolderError(error: unknown): void;
@@ -120,6 +140,8 @@ interface ExplorerProps {
   onReorderEntry(id: string, anchor: string, placement: CategoryPlacement): void;
   onRenameEntry(id: string, title: string): Promise<void>;
   onMoveEntry(id: string, categoryId: string | null): void;
+  collectionOptions?: Collection[];
+  onAddToCollection?(id: string, collection: Collection): void;
   onCategoryAction(category: Category, action: CategoryAction): void;
   openMode: DocumentOpenMode;
   onOpen(id: string, mode?: DocumentOpenMode): void;
@@ -127,7 +149,7 @@ interface ExplorerProps {
   onMore(): void;
 }
 
-export type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "treeLocked" | "openMode" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError" | "onMoveEntry"> & {
+export type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "treeLocked" | "openMode" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError" | "onMoveEntry" | "collectionOptions" | "onAddToCollection"> & {
   categories: Category[];
 };
 
@@ -136,7 +158,7 @@ const entryDate = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
 });
 
-function TreeSection({ id, title, collapsed, onToggle, onExpanded, pinned, icon, children }: {
+export function TreeSection({ id, title, collapsed, onToggle, onExpanded, pinned, icon, children }: {
   id: string; title: string; collapsed: boolean; onToggle(): void; onExpanded?(): void;
   pinned?: boolean; icon?: ReactNode; children: ReactNode;
 }) {
@@ -162,7 +184,7 @@ export function Explorer(props: ExplorerProps) {
   const [pinsCollapsed, setPinsCollapsed] = useState(() => useStoredInitial("directory-pins-collapsed", false));
   const [directoryCollapsed, setDirectoryCollapsed] = useState(() => useStoredInitial("directory-collapsed", false));
   const [tagsCollapsed, setTagsCollapsed] = useState(() => useStoredInitial("directory-tags-collapsed", false));
-  const [sort, setSort] = useState(() => useStoredInitial<"manual" | NonNullable<EntryFilter["sort"]>>("directory-sort", "manual"));
+  const [sort, setSort] = useState(() => useStoredInitial<"manual" | EntrySortOrder>("directory-sort", "manual"));
   const [autoLocate, setAutoLocate] = useState(() => useStoredInitial("directory-auto-locate", false));
   const markLoading = useCallback((id: string, pending: boolean) => {
     setLoadingFolders(current => pending ? [...current, id] : current.filter(folder => folder !== id));
@@ -213,6 +235,7 @@ export function Explorer(props: ExplorerProps) {
     } else props.onLocateCurrent?.();
   }, [isTree, locate, locatePinned, props.onLocateCurrent]);
   const isSearch = section === "search";
+  const [searchDisplay, setSearchDisplay] = useState(() => useStoredInitial(searchDisplayKey, searchDisplayDefaults));
   const listLabel = isSearch ? "全文搜索" : section === "imports" ? "公众号导入" : "回收站";
   const drag = useExplorerDrag(categories, sort === "manual", props.onReorderFolder, props.onReorderEntry, props.onMoveEntry);
   const DragIcon = drag.ghost?.kind === "folder" ? FolderOpen : FileText;
@@ -375,8 +398,29 @@ export function Explorer(props: ExplorerProps) {
         }}>{foldersExpanded && !directoryCollapsed ? <ChevronsDownUp size={16} /> : <ChevronsUpDown size={16} />}</Tool>
       {props.directoryTrailingAction}
     </div>}
-    {isSearch && <WorkspaceSearch inputRef={props.searchInputRef} query={query} caseSensitive={props.caseSensitive}
-      onQuery={props.onQuery} onCaseSensitive={props.onCaseSensitive} />}
+    {isSearch && <>
+      <WorkspaceSearch inputRef={props.searchInputRef} query={query} caseSensitive={props.caseSensitive} searchInfo={page?.search}
+        onQuery={props.onQuery} onCaseSensitive={props.onCaseSensitive} display={searchDisplay} onDisplayChange={value => {
+          setSearchDisplay(value);
+          persist(searchDisplayKey, value);
+        }} />
+      {query.trim() && <div className="workspace-search-summary">
+        <span aria-live="polite">{page ? `${page.search?.total ?? page.items.length} 篇笔记` : ""}</span>
+        <Select.Root size="1" value={props.searchSort ?? "name"}
+          onValueChange={value => props.onSearchSort?.(value as NonNullable<EntryFilter["sort"]>)}>
+          <Select.Trigger aria-label="搜索结果排序" variant="ghost" />
+          <Select.Content>
+            <Select.Item value="relevance">相关性</Select.Item>
+            <Select.Item value="name">标题 A–Z</Select.Item>
+            <Select.Item value="nameDesc">标题 Z–A</Select.Item>
+            <Select.Item value="updated">最近修改</Select.Item>
+            <Select.Item value="updatedAsc">最早修改</Select.Item>
+            <Select.Item value="created">最近创建</Select.Item>
+            <Select.Item value="createdAsc">最早创建</Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </div>}
+    </>}
     {!isTree && !isSearch && <div className="section-bar explorer-title"><h1>{listLabel}</h1></div>}
 
     <div className="explorer-scroll explorer-list-scroll" data-root-drop={drag.hint?.id === null || undefined}>
@@ -436,7 +480,12 @@ export function Explorer(props: ExplorerProps) {
         {isSearch && !query.trim() ? null : props.listError ? <ListError message={props.listError} onRetry={props.onRetry} />
           : !page ? <li className="explorer-empty">正在载入…</li>
             : !page.items.length ? <li className="explorer-empty">{isSearch ? "没有匹配的内容" : section === "imports" ? "暂无导入文章" : "回收站为空"}</li>
-              : page.items.map(row => <ContentRow key={row.id} row={row} actions={rowActions} detail={!isSearch} />)}
+              : page.items.map(row => isSearch && row.searchMatches && props.onSearchHit
+                ? <SearchNote key={JSON.stringify([row.id, row.searchMatches.version, query, props.caseSensitive, searchDisplay.collapse])}
+                  row={row} matches={row.searchMatches} actions={rowActions}
+                  search={{ text: query, caseSensitive: props.caseSensitive }} selected={props.selectedSearchHit}
+                  collapsed={searchDisplay.collapse} showContext={searchDisplay.context} onOpenHit={props.onSearchHit} onRefresh={props.onRetry} />
+                : <ContentRow key={row.id} row={row} actions={rowActions} detail={!isSearch} />)}
         {page?.nextOffset != null && !props.listError && <li><Button size="1" variant="ghost" className="load-more" onClick={props.onMore}>加载更多</Button></li>}
       </ul>}
     </div>
@@ -447,12 +496,13 @@ export function Explorer(props: ExplorerProps) {
     disabled: props.treeLocked || !library,
     onCreate: () => props.onCreate(null), onImportWechat: () => props.onImportWechat(null),
     onImportMarkdown: () => props.onImportMarkdown(null), onAddFolder: () => addFolder(null),
+    onImportGitHub: props.onImportGitHub && (() => props.onImportGitHub!(null)),
   }}>
     {content}
   </BlankAreaMenu> : content;
 }
 
-function ListError({ message, onRetry }: { message: string; onRetry(): void }) {
+export function ListError({ message, onRetry }: { message: string; onRetry(): void }) {
   return <li className="explorer-empty" role="alert">
     <span>{message}</span><Button size="1" variant="soft" onClick={onRetry}>重试</Button>
   </li>;
@@ -537,9 +587,60 @@ function FolderEntries({ categoryId, pinnedIds, revision, limit, markLoading, ac
   </>;
 }
 
-export function ContentRow({ row, actions, detail = false, pinned, draggable, dragging, placement, timeline }: {
+function SearchNote({ row, matches, actions, search, selected, collapsed, showContext, onOpenHit, onRefresh }: {
+  row: EntryRow;
+  matches: WorkspaceSearchMatches;
+  actions: RowActions;
+  search: NonNullable<EntryFilter["workspaceSearch"]>;
+  selected?: { entryId: string; start: number };
+  collapsed: boolean;
+  showContext: boolean;
+  onOpenHit(entryId: string, hit: WorkspaceSearchHit, version: number, showContext: boolean): void;
+  onRefresh(): void;
+}) {
+  const [open, setOpen] = useState(!collapsed);
+  const [extra, setExtra] = useState<WorkspaceSearchMatches>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const listId = useId();
+  const next = extra ? extra.nextOffset : matches.nextOffset;
+  async function more() {
+    if (next === null || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const request = await desktop.entries({ deleted: false, offset: 0,
+        workspaceSearch: { ...search, matchPage: { entryId: row.id, offset: next } } });
+      const page = request.items[0]?.searchMatches;
+      if (!page || page.version !== matches.version) {
+        setError("笔记已更新，正在刷新结果");
+        onRefresh();
+        return;
+      }
+      setExtra(current => ({ ...page, items: [...(current?.items ?? []), ...page.items] }));
+    } catch (error) { setError(errorMessage(error)); }
+    finally { setLoading(false); }
+  }
+  return <ContentRow row={row} actions={actions} search={matches.total ? {
+    toggle: <button className="plain-button search-note-toggle" type="button" aria-expanded={open}
+      aria-controls={listId} aria-label={`${open ? "折叠" : "展开"} ${row.title || untitled} 的 ${matches.total} 行匹配`}
+      onClick={() => setOpen(current => !current)}><ChevronDown size={14} aria-hidden="true" /></button>,
+    count: matches.total,
+    results: <ul id={listId} hidden={!open} className="search-hit-list">
+      {open && <>
+        {[...matches.items, ...(extra?.items ?? [])].map(hit => <SearchHitRow key={hit.start} hit={hit} showContext={showContext}
+          selected={selected?.entryId === row.id && selected.start === hit.start} onOpen={() => onOpenHit(row.id, hit, matches.version, showContext)} />)}
+        {error && <li className="inline-error" role="alert">{error}</li>}
+        {next !== null && <li><Button className="load-more-hits" size="1" variant="ghost" loading={loading} onClick={() => void more()}>更多匹配行</Button></li>}
+      </>}
+    </ul>,
+  } : undefined} />;
+}
+
+export function ContentRow({ row, actions, detail = false, pinned, draggable, dragging, placement, timeline, search }: {
   row: EntryRow; actions: RowActions; detail?: boolean; pinned?: boolean; draggable?: boolean; dragging?: boolean; placement?: CategoryPlacement;
   timeline?: { id: string; content: ReactNode };
+  search?: { toggle: ReactNode; count: number; results: ReactNode };
 }) {
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -569,12 +670,11 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
       data-tree-draggable={draggable || undefined} data-tree-pinned={pinned || undefined} data-dragging={dragging || undefined}
       data-menu-target={menuOpen || undefined}
       aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)}>
-      {pinned ? <Pin size={15} /> : <FileText size={15} />}<span className="entry-title">{title}</span>
+      {!search && (pinned ? <Pin size={15} /> : <FileText size={15} />)}<span className="entry-title">{title}</span>
       {detail && <span className="entry-meta"><span>{statusLabels[row.status]}</span><time dateTime={new Date(row.updatedAt).toISOString()}>{dateLabel(row.updatedAt)}</time></span>}
     </button>}
   </ContextMenu.Trigger>;
-  return <li className={timeline ? "timeline-item" : !detail ? "tree-item" : undefined} data-placement={placement}>
-    {renaming ? <div className={timeline ? "entry-inline timeline-entry" : detail ? "entry-inline entry-detail" : "entry-inline tree-entry"}>
+  const rowContent = renaming ? <div className={timeline ? "entry-inline timeline-entry" : detail ? "entry-inline entry-detail" : "entry-inline tree-entry"}>
       <FileText size={15} /><InlineEntryTitle title={row.title} placeholder={untitled} onError={actions.onFolderError}
         onSave={name => actions.onRenameEntry(row.id, name)} onClose={restore => {
           setRenaming(false);
@@ -623,6 +723,8 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
           <ContextMenu.Item onSelect={() => act("duplicate")}><Files size={14} />创建副本</ContextMenu.Item>
           <MoveEntryMenu categories={actions.categories} current={row.categoryId ?? null} disabled={reading || actions.treeLocked}
             onMove={folder => actions.onMoveEntry(row.id, folder)} />
+          {actions.onAddToCollection && <AddToCollectionMenu collections={actions.collectionOptions ?? []} disabled={actions.treeLocked}
+            onAdd={collection => actions.onAddToCollection?.(row.id, collection)} />}
         </>}
         <ContextMenu.Separator />
         <ContextMenu.Item onSelect={() => act("copyTitle")}><Copy size={14} />复制标题</ContextMenu.Item>
@@ -638,6 +740,13 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
           <ContextMenu.Item onSelect={() => act("properties")}><FilePenLine size={14} />内容属性</ContextMenu.Item>
         </>}
       </ContextMenu.Content>
-    </ContextMenu.Root>}
+    </ContextMenu.Root>;
+  return <li className={timeline ? "timeline-item" : search ? "tree-item search-note" : !detail ? "tree-item" : undefined} data-placement={placement}>
+    {search ? <div className="search-note-header">
+      {search.toggle}
+      {rowContent}
+      <span className="search-note-count" aria-hidden="true">{search.count}</span>
+    </div> : rowContent}
+    {search?.results}
   </li>;
 }

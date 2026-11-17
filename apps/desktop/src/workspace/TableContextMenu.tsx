@@ -6,16 +6,18 @@ import {
 } from "lucide-react";
 import type { ClipboardAction, TableAction, TableContext } from "../../../../packages/editor-react";
 
-export function TableContextMenu({ table, readOnly, onAction, onClipboard, convertLinkItem, onCloseAutoFocus }: {
+export function TableContextMenu({ table, readOnly, onAction, onClipboard, convertLinkItem, onCloseAutoFocus, onInteractOutside }: {
   table: TableContext;
   readOnly: boolean;
   onAction(action: TableAction): void;
   onClipboard(action: ClipboardAction): void;
   convertLinkItem?: ReactNode;
   onCloseAutoFocus?(event: Event): void;
+  onInteractOutside?(): void;
 }) {
   const { row, column, rows, columns } = table;
-  if (table.selectedCells) return <ContextMenu.Content size="1" className="table-context-menu" aria-label="单元格选区操作">
+  if (table.selectedCells) return <ContextMenu.Content size="1" className="table-context-menu" aria-label="单元格选区操作"
+    onCloseAutoFocus={onCloseAutoFocus} onInteractOutside={onInteractOutside}>
     {!readOnly && <ContextMenu.Item onSelect={() => onClipboard("cut")}><Scissors size={15} />剪切单元格</ContextMenu.Item>}
     <ContextMenu.Item onSelect={() => onClipboard("copy")}><Copy size={15} />复制单元格</ContextMenu.Item>
     {!readOnly && <>
@@ -28,7 +30,8 @@ export function TableContextMenu({ table, readOnly, onAction, onClipboard, conve
       <ContextMenu.Item onSelect={() => onAction("clearCells")}><Eraser size={15} />清空选中的单元格</ContextMenu.Item>
     </>}
   </ContextMenu.Content>;
-  return <ContextMenu.Content size="1" className="table-context-menu" aria-label="表格操作" onCloseAutoFocus={onCloseAutoFocus}>
+  return <ContextMenu.Content size="1" className="table-context-menu" aria-label="表格操作"
+    onCloseAutoFocus={onCloseAutoFocus} onInteractOutside={onInteractOutside}>
     {!readOnly && <>
       {convertLinkItem}
       <ContextMenu.Sub>

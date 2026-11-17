@@ -352,22 +352,41 @@ impl Assets {
         db.read(|conn| {
             let active = Profile::active(conn)?;
             let active_id = active.as_ref().map(|p| p.id.as_str());
-            let count: u32 = conn.query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))?;
+            let has_screenshots: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM collection_nodes WHERE asset_id IS NOT NULL)",
+                [], |row| row.get(0),
+            )?;
+            let (ids, hashes) = if has_screenshots {
+                let (ids, hashes) = cleanup::entry_references(conn)?;
+                (serde_json::json!(ids).to_string(), serde_json::json!(hashes).to_string())
+            } else {
+                ("[]".into(), "[]".into())
+            };
+            let visible = "WHERE NOT EXISTS (SELECT 1 FROM collection_nodes WHERE asset_id=a.id)
+                 OR a.retain_on_exit=1
+                 OR a.id IN (SELECT value FROM json_each(:ids))
+                 OR a.sha256 IN (SELECT value FROM json_each(:hashes))
+                 OR a.sha256 IN (SELECT sha256 FROM assets WHERE retain_on_exit=1)";
+            let count: u32 = conn.query_row(&format!("SELECT COUNT(*) FROM assets a {visible}"),
+                rusqlite::named_params! {":ids": ids, ":hashes": hashes}, |row| row.get(0))?;
             let last_page = count.saturating_sub(1) / PAGE_SIZE;
             let page = page.min(last_page);
-            let mut query = conn.prepare(
+            let mut query = conn.prepare(&format!(
                 "SELECT a.id,a.name,a.width,a.height,a.bytes,
                         CASE WHEN j.status<>'completed' THEN j.status END,j.error,c.error,
                         CASE WHEN l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL THEN l.public_url END
                  FROM assets a
-                 LEFT JOIN asset_locations l ON l.sha256=a.sha256 AND l.storage_profile_id=?1
+                 LEFT JOIN asset_locations l ON l.sha256=a.sha256 AND l.storage_profile_id=:profile
                  LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE kind='upload' AND sha256=a.sha256
-                    AND storage_profile_id=?1 ORDER BY created_at DESC, id DESC LIMIT 1)
+                    AND storage_profile_id=:profile ORDER BY created_at DESC, id DESC LIMIT 1)
                  LEFT JOIN jobs c ON c.id=(SELECT id FROM jobs WHERE kind='cleanup' AND sha256=a.sha256
                     AND status='failed' ORDER BY updated_at DESC, id DESC LIMIT 1)
-                 ORDER BY a.created_at DESC, a.id DESC LIMIT ?2 OFFSET ?3",
-            )?;
-            let items = query.query_map(params![active_id, PAGE_SIZE, page * PAGE_SIZE], |r| Ok(AssetRow {
+                 {visible} ORDER BY a.created_at DESC, a.id DESC LIMIT :limit OFFSET :offset",
+            ))?;
+            let items = query.query_map(rusqlite::named_params! {
+                ":profile": active_id, ":limit": PAGE_SIZE, ":offset": page * PAGE_SIZE,
+                ":ids": ids, ":hashes": hashes,
+            }, |r| Ok(AssetRow {
                 id: r.get(0)?, name: r.get(1)?, width: r.get(2)?, height: r.get(3)?, bytes: r.get(4)?,
                 upload_status: r.get(5)?, upload_error: r.get(6)?, cleanup_error: r.get(7)?, public_url: r.get(8)?,
             }))?.collect::<rusqlite::Result<_>>()?;

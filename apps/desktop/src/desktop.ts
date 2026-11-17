@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { SourceFragment } from "../../../packages/wechat-renderer";
 import type {
+  CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
   Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult,
 } from "../../../packages/shared-types";
 
@@ -72,6 +73,30 @@ export const desktop = {
   library: (includeArticleCounts = false) => invoke<Library>("library", { includeArticleCounts }),
   entries: (filter: EntryFilter) => invoke<EntryPage>("entries", { filter }),
   entry: (id: string) => invoke<Entry>("get_entry", { id }),
+  collections: () => invoke<Collection[]>("list_collections"),
+  saveCollection: (id: string | null, title: string, description: string) =>
+    invoke<Collection>("save_collection", { id, title, description }),
+  deleteCollection: (id: string) => invoke<void>("delete_collection", { id }),
+  collectionCanvas: (collectionId: string) => invoke<CollectionCanvas>("get_collection_canvas", { collectionId }),
+  createCollectionNode: (collectionId: string, content: CanvasNodeContent, position: CanvasPosition) =>
+    invoke<CanvasNode>("create_collection_node", { collectionId, content, position }),
+  updateCollectionNodeText: (nodeId: string, contentMd: string) =>
+    invoke<void>("update_collection_node_text", { nodeId, contentMd }),
+  updateCollectionNodeColor: (nodeId: string, color: CanvasCardColor | null) =>
+    invoke<void>("update_collection_node_color", { nodeId, color }),
+  updateCollectionNodeGeometry: (updates: (CanvasGeometry & { nodeId: string })[]) =>
+    invoke<void>("update_collection_node_geometry", { updates }),
+  deleteCollectionNode: (nodeId: string) => invoke<void>("delete_collection_node", { nodeId }),
+  convertCollectionText: (nodeId: string) => invoke<CanvasNode>("convert_collection_text", { nodeId }),
+  createCollectionEdge: (collectionId: string, sourceNodeId: string, targetNodeId: string, label: string) =>
+    invoke<CanvasEdge>("create_collection_edge", { collectionId, sourceNodeId, targetNodeId, label }),
+  updateCollectionEdge: (edgeId: string, label: string) => invoke<void>("update_collection_edge", { edgeId, label }),
+  deleteCollectionEdge: (edgeId: string) => invoke<void>("delete_collection_edge", { edgeId }),
+  saveCollectionViewport: (collectionId: string, viewport: CanvasViewport) =>
+    invoke<void>("save_collection_viewport", { collectionId, viewport }),
+  entryCollections: (entryId: string) => invoke<Collection[]>("list_entry_collections", { entryId }),
+  importGitHub: (url: string, categoryId: string | null) =>
+    invoke<{ entryId: string; existing: boolean; deleted: boolean }>("github_import", { url, categoryId }),
   create: (kind: EntryKind, fields?: EntryFields, sourceEntryId?: string) => invoke<Entry>("create_entry", { kind, fields, sourceEntryId }),
   save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode) =>
     invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode }),
