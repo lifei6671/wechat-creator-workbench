@@ -1,10 +1,17 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type MouseEvent } from "react";
 import { Popover } from "@radix-ui/themes";
 import { Check } from "lucide-react";
 import type { Category, CategoryIcon } from "../../../../packages/shared-types";
 import { errorMessage } from "../desktop";
 import { Tooltip } from "../ui";
 import { folderIcons } from "./folder-icons";
+
+function focusIconButton(event: MouseEvent<HTMLButtonElement>) {
+  if (event.button !== 0) return;
+  // WKWebView blurs the editor without focusing a clicked button.
+  event.preventDefault();
+  event.currentTarget.focus();
+}
 
 export function FolderInline({ target, defaultName, onSave, onError, onClose }: {
   target?: Category;
@@ -57,13 +64,14 @@ export function FolderInline({ target, defaultName, onSave, onError, onClose }: 
       event.stopPropagation();
     }}>
       <Popover.Root>
-        <Popover.Trigger><button type="button" className="plain-button folder-inline-icon" aria-label="选择目录图标" disabled={saving}><Icon size={16} /></button></Popover.Trigger>
+        <Popover.Trigger><button type="button" className="plain-button folder-inline-icon" aria-label="选择目录图标"
+          disabled={saving} onMouseDown={focusIconButton}><Icon size={16} /></button></Popover.Trigger>
         <Popover.Content ref={picker} aria-label="目录图标" className="folder-icon-picker" size="1" align="start" sideOffset={6}
           onInteractOutside={event => { if (!row.current?.contains(event.target as Node)) save(false); }}>
           <div className="folder-icon-choices">
             {Object.entries(folderIcons).map(([value, [Option, label]]) => <Tooltip key={value} content={label}>
               <button type="button" className="plain-button folder-icon-choice" aria-label={label} aria-pressed={value === icon}
-                onClick={() => setIcon(value as CategoryIcon)}><Option size={16} strokeWidth={1.65} />
+                onMouseDown={focusIconButton} onClick={() => setIcon(value as CategoryIcon)}><Option size={16} strokeWidth={1.65} />
                 {value === icon && <Check className="folder-icon-check" size={10} />}
               </button>
             </Tooltip>)}

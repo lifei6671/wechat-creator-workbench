@@ -473,10 +473,20 @@ it("creates folders inline and sends the indicated folder reorder and entry move
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "项目资料");
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    flushSync(() => root.querySelector<HTMLButtonElement>('[aria-label="选择目录图标"]')!.click());
+    function clickFolderIcon(button: HTMLButtonElement) {
+      flushSync(() => {
+        // WKWebView clears focus before click when a mouse press targets a button.
+        if (button.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))) {
+          (document.activeElement as HTMLElement).blur();
+        }
+      });
+      flushSync(() => button.click());
+    }
+    clickFolderIcon(root.querySelector<HTMLButtonElement>('[aria-label="选择目录图标"]')!);
     const icon = document.querySelector<HTMLButtonElement>('[aria-label="项目"][aria-pressed]')!;
     expect(document.querySelectorAll(".folder-icon-choice")).toHaveLength(32);
-    flushSync(() => icon.click());
+    clickFolderIcon(icon);
+    expect(document.activeElement).toBe(icon);
     expect(icon.getAttribute("aria-pressed")).toBe("true");
     expect(onSaveFolder).not.toHaveBeenCalled();
     flushSync(() => root.querySelector<HTMLButtonElement>("#folder-row-one")!.focus());
@@ -497,6 +507,20 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     flushSync(() => iconTrigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(childName.isConnected).toBe(false);
     expect(onSaveFolder).toHaveBeenCalledTimes(1);
+
+    open("#folder-row-two");
+    flushSync(() => menu().find(item => item.textContent === "编辑名称和图标")!.click());
+    await vi.waitFor(() => expect(root.querySelector('input[aria-label="目录名称"]')).not.toBeNull());
+    const editedName = root.querySelector<HTMLInputElement>('input[aria-label="目录名称"]')!;
+    clickFolderIcon(root.querySelector<HTMLButtonElement>('[aria-label="选择目录图标"]')!);
+    const star = document.querySelector<HTMLButtonElement>('[aria-label="星标"][aria-pressed]')!;
+    clickFolderIcon(star);
+    expect(star.getAttribute("aria-pressed")).toBe("true");
+    expect(editedName.value).toBe("二");
+    expect(onSaveFolder).toHaveBeenCalledTimes(1);
+    flushSync(() => root.querySelector<HTMLButtonElement>("#folder-row-one")!.focus());
+    expect(onSaveFolder).toHaveBeenLastCalledWith("two", null, "二", "star");
+    await vi.waitFor(() => expect(editedName.isConnected).toBe(false));
 
     mount("paged", 1);
     await vi.waitFor(() => expect(position("another-entry")).toBeNull());
