@@ -61,6 +61,7 @@
   min-width: 172px; max-width: min(300px, calc(100vw - 16px));
   overflow: auto;
 }
-.move-entry-submenu .rt-BaseMenuItem > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+:is(.move-entry-submenu, .add-to-collection-submenu) .rt-BaseMenuItem > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .move-entry-submenu .rt-BaseMenuItem.move-entry-child { padding-inline-start: calc(var(--base-menu-item-padding-left) + 12px); }
-.move-entry-submenu .rt-BaseMenuItem > .move-entry-current { margin-inline-start: auto; color: var(--accent-11); }
+.move-entry-submenu .rt-BaseMenuItem > .move-entry-current,
+.add-to-collection-submenu .rt-BaseMenuItem > .collection-entry-current { margin-inline-start: auto; color: var(--accent-11); }

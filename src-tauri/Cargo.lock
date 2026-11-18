@@ -6448,6 +6448,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "webp",
+ "webview2-com",
  "windows",
  "zip",
 ]

@@ -1,6 +1,7 @@
 use super::{Fields, Kind, entry_preview, insert_entry};
+use crate::canvas_webview::parse_web_url;
 use crate::db::{AppError, Result, Workspace, id, now};
-use rusqlite::{Connection, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
 const COLLECTIONS: &str = "SELECT c.id,c.title,c.description,c.created_at,c.updated_at,
@@ -10,7 +11,7 @@ const COLLECTIONS: &str = "SELECT c.id,c.title,c.description,c.created_at,c.upda
 const NODES: &str = "SELECT n.id,n.collection_id,n.kind,n.entry_id,n.asset_id,n.content_md,
     n.x,n.y,n.width,n.height,n.created_at,n.updated_at,e.title,e.kind,e.summary,e.deleted_at,s.account_name,
     CASE WHEN TRIM(e.summary)='' AND e.deleted_at IS NULL THEN SUBSTR(e.content_md,1,1024) ELSE '' END,
-    a.name,COALESCE(n.custom_color,n.color)
+    a.name,COALESCE(n.custom_color,n.color),n.external_url
     FROM collection_nodes n LEFT JOIN entries e ON e.id=n.entry_id LEFT JOIN sources s ON s.id=e.source_id
     LEFT JOIN assets a ON a.id=n.asset_id";
 
@@ -66,6 +67,7 @@ pub enum NodeContent {
     Entry { entry_id: String },
     Image { asset_id: String },
     Text { content_md: String },
+    Web { url: String },
 }
 
 #[derive(Serialize)]
@@ -88,6 +90,7 @@ pub struct CanvasNode {
     asset_id: Option<String>,
     asset_name: Option<String>,
     content_md: String,
+    external_url: Option<String>,
     color: Option<String>,
     #[serde(flatten)]
     geometry: Geometry,
@@ -205,7 +208,7 @@ impl Workspace {
             changed(tx.execute(
                 "UPDATE collections SET updated_at=?2 WHERE id=?1", params![collection_id, now()],
             )?)?;
-            let (kind, entry_id, asset_id, markdown, height) = match content {
+            let (kind, entry_id, asset_id, markdown, external_url, width, height) = match content {
                 NodeContent::Entry { ref entry_id } => {
                     let available: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM entries WHERE id=?1 AND deleted_at IS NULL)",
@@ -214,7 +217,7 @@ impl Workspace {
                     if !available {
                         return Err(AppError::invalid("找不到可添加的文章"));
                     }
-                    ("entry", Some(entry_id), None, "", 144)
+                    ("entry", Some(entry_id), None, "", None, 320, 144)
                 }
                 NodeContent::Image { ref asset_id } => {
                     let exists: bool = tx.query_row(
@@ -227,17 +230,21 @@ impl Workspace {
                         "DELETE FROM jobs WHERE kind='cleanup' AND status<>'completed'
                          AND sha256=(SELECT sha256 FROM assets WHERE id=?1)", [asset_id],
                     )?;
-                    ("image", None, Some(asset_id), "", 224)
+                    ("image", None, Some(asset_id), "", None, 320, 224)
                 }
-                NodeContent::Text { ref content_md } => ("text", None, None, content_md.as_str(), 200),
+                NodeContent::Text { ref content_md } => ("text", None, None, content_md.as_str(), None, 320, 200),
+                NodeContent::Web { ref url } => {
+                    parse_web_url(url)?;
+                    ("web", None, None, "", Some(url), 420, 280)
+                }
             };
             let node_id = id();
             tx.execute(
                 "INSERT INTO collection_nodes
-                 (id,collection_id,kind,entry_id,asset_id,content_md,x,y,height,created_at,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
+                 (id,collection_id,kind,entry_id,asset_id,content_md,external_url,x,y,width,height,created_at,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
                 params![node_id, collection_id, kind, entry_id, asset_id, markdown,
-                        position.x, position.y, height, now()],
+                        external_url, position.x, position.y, width, height, now()],
             )?;
             node(tx, &node_id)
         })
@@ -294,8 +301,18 @@ impl Workspace {
         })
     }
 
-    pub fn delete_collection_node(&self, node_id: &str) -> Result<()> {
-        self.write(|tx| changed(tx.execute("DELETE FROM collection_nodes WHERE id=?1", [node_id])?))
+    pub fn delete_collection_node(&self, node_id: &str) -> Result<Option<String>> {
+        self.write(|tx| {
+            let collection = tx
+                .query_row(
+                    "SELECT collection_id FROM collection_nodes WHERE id=?1 AND kind='web'",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            changed(tx.execute("DELETE FROM collection_nodes WHERE id=?1", [node_id])?)?;
+            Ok(collection)
+        })
     }
 
     pub fn convert_collection_text(&self, node_id: &str) -> Result<CanvasNode> {
@@ -451,6 +468,7 @@ fn node_row(row: &Row<'_>) -> rusqlite::Result<CanvasNode> {
         asset_name: row.get(18)?,
         content_md: row.get(5)?,
         color: row.get(19)?,
+        external_url: row.get(20)?,
         geometry: Geometry {
             position: Position {
                 x: row.get(6)?,

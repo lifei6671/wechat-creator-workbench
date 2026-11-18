@@ -220,8 +220,16 @@ fn remove_file(path: &Path) -> Result<()> {
     }
 }
 
+const ENTRY_BODIES: &str =
+    "SELECT content_md FROM entries UNION ALL SELECT content_md FROM entry_revisions";
+
 pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
-    let (mut ids, mut hashes) = entry_references(conn)?;
+    let (mut ids, mut hashes) = markdown_references(
+        conn,
+        &format!(
+            "{ENTRY_BODIES} UNION ALL SELECT content_md FROM collection_nodes WHERE kind='text'"
+        ),
+    )?;
     let mut screenshots = conn.prepare(
         "SELECT DISTINCT a.id,a.sha256 FROM collection_nodes n JOIN assets a ON a.id=n.asset_id",
     )?;
@@ -236,11 +244,16 @@ pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSe
 }
 
 pub(super) fn entry_references(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    markdown_references(conn, ENTRY_BODIES)
+}
+
+fn markdown_references(
+    conn: &Connection,
+    sql: &str,
+) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let mut urls = BTreeSet::new();
     let mut derived = BTreeSet::new();
-    let mut bodies = conn.prepare(
-        "SELECT content_md FROM entries UNION ALL SELECT content_md FROM entry_revisions",
-    )?;
+    let mut bodies = conn.prepare(sql)?;
     for body in bodies.query_map([], |row| row.get::<_, String>(0))? {
         let body = body?;
         urls.extend(references::urls(&body)?);
@@ -315,6 +328,40 @@ fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_cards_retain_images_and_derived_assets_until_the_last_reference_is_removed() {
+        let (_dir, db, assets) = super::super::tests::setup();
+        let bytes = super::super::tests::png();
+        let asset = assets.import(&db, "专题.png", &bytes).unwrap();
+        let derived = assets.derive(&db, "math-inline", "x^2", &bytes).unwrap();
+        let file = db.read(|conn| super::super::by_id(conn, &asset)).unwrap();
+        let hash = file.hash.unwrap();
+        let derived_hash = db
+            .read(|conn| super::super::by_id(conn, &derived))
+            .unwrap()
+            .hash
+            .unwrap();
+        db.write(|tx| {
+            tx.execute("INSERT INTO collections(id,title,created_at,updated_at) VALUES ('topic','专题',0,0)", [])?;
+            tx.execute("INSERT INTO collection_nodes(id,collection_id,kind,created_at,updated_at) VALUES ('note','topic','text',0,0)", [])?;
+            tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
+            tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,uploaded_at) VALUES (?1,'s','topic.png',1)", [&hash])?;
+            tx.execute("INSERT INTO asset_urls VALUES ('https://images.example.test/topic.png',?1,'s')", [&hash])?;
+            tx.execute("UPDATE collection_nodes SET content_md=?1", [format!("![专题](asset://{asset})")])?;
+            assert!(referenced(tx)?.0.contains(&asset));
+            assert!(referenced(tx)?.1.contains(&hash));
+            assert!(!entry_references(tx)?.0.contains(&asset));
+            tx.execute("UPDATE collection_nodes SET content_md='![图床](https://images.example.test/topic.png)'", [])?;
+            assert!(referenced(tx)?.1.contains(&hash));
+            tx.execute("UPDATE collection_nodes SET content_md='公式 $x^2$'", [])?;
+            assert!(referenced(tx)?.1.contains(&derived_hash));
+            tx.execute("DELETE FROM collection_nodes WHERE id='note'", [])?;
+            assert!(!referenced(tx)?.1.contains(&derived_hash));
+            assert!(!referenced(tx)?.1.contains(&hash));
+            Ok(())
+        }).unwrap();
+    }
 
     #[test]
     fn derived_images_follow_the_source_in_current_and_historical_bodies() {

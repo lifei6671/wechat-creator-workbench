@@ -266,8 +266,8 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
       <ContextMenu.Item onSelect={() => act("search")}><Search size={15} />{frozen || deletedAt !== null ? "查找" : "查找与替换"}</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("properties")}><FilePenLine size={15} />内容属性</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("history")}><History size={15} />历史版本</ContextMenu.Item>
-      {deletedAt === null && onAddToCollection && <AddToCollectionMenu collections={collectionOptions} disabled={locked}
-        onAdd={collection => onAddToCollection(id, collection)} />}
+      {deletedAt === null && onAddToCollection && <AddToCollectionMenu entryId={id} collections={collectionOptions} disabled={locked}
+        onAdd={collection => onAddToCollection(id, collection)} onError={onError} />}
       <ContextMenu.Separator />
       {deletedAt === null && <>
         <ContextMenu.Item disabled={frozen} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={15} />重命名</ContextMenu.Item>

@@ -723,8 +723,8 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
           <ContextMenu.Item onSelect={() => act("duplicate")}><Files size={14} />创建副本</ContextMenu.Item>
           <MoveEntryMenu categories={actions.categories} current={row.categoryId ?? null} disabled={reading || actions.treeLocked}
             onMove={folder => actions.onMoveEntry(row.id, folder)} />
-          {actions.onAddToCollection && <AddToCollectionMenu collections={actions.collectionOptions ?? []} disabled={actions.treeLocked}
-            onAdd={collection => actions.onAddToCollection?.(row.id, collection)} />}
+          {actions.onAddToCollection && <AddToCollectionMenu entryId={row.id} collections={actions.collectionOptions ?? []} disabled={actions.treeLocked}
+            onAdd={collection => actions.onAddToCollection?.(row.id, collection)} onError={actions.onFolderError} />}
         </>}
         <ContextMenu.Separator />
         <ContextMenu.Item onSelect={() => act("copyTitle")}><Copy size={14} />复制标题</ContextMenu.Item>

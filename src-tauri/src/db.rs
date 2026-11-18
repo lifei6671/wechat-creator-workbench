@@ -97,6 +97,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0016_collection_canvas.sql"),
     include_str!("../migrations/0017_collection_node_color.sql"),
     include_str!("../migrations/0018_collection_node_custom_color.sql"),
+    include_str!("../migrations/0019_collection_node_web.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -400,6 +401,54 @@ mod tests {
             .unwrap();
         assert_eq!(preset, "blue");
         assert_eq!(custom, None);
+        assert_eq!(validate_backup_schema(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn adding_web_cards_preserves_canvas_nodes_edges_and_foreign_keys() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        migrate(&mut conn, 0, 18).unwrap();
+        conn.execute_batch(
+            "INSERT INTO collections(id,title,created_at,updated_at) VALUES ('topic','专题',0,0);
+             INSERT INTO entries(id,kind,title,content_md,status,created_at,updated_at)
+                 VALUES ('doc','article','文章','','draft',0,0);
+             INSERT INTO assets(id,kind,sha256,created_at) VALUES ('asset','original','hash',0);
+             INSERT INTO collection_nodes(id,collection_id,kind,entry_id,asset_id,content_md,x,width,color,custom_color,created_at,updated_at)
+                 VALUES ('article','topic','entry','doc',NULL,'',12,384,'blue',NULL,0,0),
+                        ('screenshot','topic','image',NULL,'asset','',20,240,NULL,'#abcdef',0,0),
+                        ('note','topic','text',NULL,NULL,'# 文本',30,320,NULL,NULL,0,0);
+             INSERT INTO collection_edges(id,collection_id,source_node_id,target_node_id,label,created_at)
+                 VALUES ('first','topic','article','screenshot','参考',0), ('second','topic','screenshot','note','笔记',0);",
+        ).unwrap();
+        migrate(&mut conn, 18, SCHEMA_VERSION).unwrap();
+        let preserved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM collection_nodes WHERE external_url IS NULL AND (
+                 (id='article' AND entry_id='doc' AND x=12 AND width=384 AND color='blue') OR
+                 (id='screenshot' AND asset_id='asset' AND custom_color='#abcdef') OR
+                 (id='note' AND content_md='# 文本'))",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved, 3);
+        let edges: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM collection_edges WHERE label IN ('参考','笔记')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edges, 2);
+        conn.execute_batch("DELETE FROM collection_nodes WHERE id='screenshot';")
+            .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM collection_edges", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
         assert_eq!(validate_backup_schema(&conn).unwrap(), SCHEMA_VERSION);
     }
 

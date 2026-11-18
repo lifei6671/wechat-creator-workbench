@@ -47,6 +47,10 @@ const dividerWidth = 1;
 const dividerHitTarget = { fine: 16, coarse: 24 };
 const directoryTransitionMs = 200;
 
+function hasWorkspaceSize(group: HTMLDivElement | null): group is HTMLDivElement {
+  return Boolean(group?.clientWidth && group.clientHeight);
+}
+
 type Modal =
   | { type: "palette" | "reload" }
   | { type: "properties" | "revisions"; id: string }
@@ -250,6 +254,7 @@ export function DesktopShell() {
   const navigationWidth = useRef(initialNavigationWidth);
   const timelineWidth = useRef(initialTimelineWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
+  const layoutSuspended = useRef(false);
   const timelineLayoutReady = useRef(false);
   const directoryDrag = useRef<{ pointerId: number; startX: number; width: number; articleWidth: number; currentWidth: number }>(null);
   const directoryTransition = useRef(0);
@@ -487,9 +492,10 @@ export function DesktopShell() {
     const view = ++viewIntent.current;
     const superseded = () => ticket !== selecting.current || view !== viewIntent.current || exit.current;
     const replacing = !collectionMode && mode === "current" && active.current ? queues.current.get(active.current) : undefined;
+    const canvas = collectionMode ? collectionCanvas.current : null;
     if (collectionMode) {
       await waitForCollectionWrites();
-      await collectionCanvas.current?.flush();
+      await canvas?.flush();
       if (superseded()) return;
     }
     if (!queues.current.has(id)) {
@@ -510,6 +516,11 @@ export function DesktopShell() {
         install(entry, replacing);
       }
       if (!queues.current.has(id)) install(entry);
+      if (canvas) {
+        // The outgoing canvas stays editable while the article is loading.
+        await canvas.flush();
+        if (superseded()) return;
+      }
     }
     if (collectionMode) switchSection("folders");
     revealFolder(queues.current.get(id)!.snapshot().fields.categoryId);
@@ -813,7 +824,7 @@ export function DesktopShell() {
     group.dataset.timelineDirectoryMoving = "true";
     directoryTransition.current = window.setTimeout(() => {
       stopDirectoryTransition();
-      if (timelineLayoutReady.current && group.clientWidth) rememberTimelineWidth(timelineNavigationWidth());
+      if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group)) rememberTimelineWidth(timelineNavigationWidth());
     }, directoryTransitionMs + 20);
     changeDirectoryMode(hidden ? "shown" : "manual");
     timelineWidth.current = width;
@@ -888,13 +899,18 @@ export function DesktopShell() {
   function saveCollection(collection: Collection | undefined, title: string, description: string) {
     const pending = waitForCollectionWrites();
     const canvas = collectionCanvas.current;
+    const view = viewIntent.current;
     return trackCollectionWrite((async () => {
       await pending;
       await canvas?.flush();
       const saved = await desktop.saveCollection(collection?.id ?? null, title, description);
       collectionListRevision.current++;
       setCollections(current => collection ? current?.map(item => item.id === saved.id ? saved : item) ?? [] : [...(current ?? []), saved]);
-      if (!collection) chooseCollection(saved.id);
+      if (!collection && view === viewIntent.current && !exit.current) {
+        try { await canvas?.flush(); }
+        catch (error) { showError(error); return; }
+        if (view === viewIntent.current && !exit.current) chooseCollection(saved.id);
+      }
     })());
   }
 
@@ -1459,7 +1475,7 @@ export function DesktopShell() {
     if (exit.current) return false;
     if (collectionMode) {
       const canvas = collectionCanvas.current;
-      return (canvas?.articleClipboard(action, target, plainText) ?? false) || (action === "paste" && (canvas?.paste(target) ?? false));
+      return (canvas?.clipboard(action, target, plainText) ?? false) || (action === "paste" && (canvas?.paste(target) ?? false));
     }
     const activeId = active.current;
     if (!activeId) return false;
@@ -1529,11 +1545,41 @@ export function DesktopShell() {
   const queue = selected;
   const showExplorer = explorer && !focusMode;
   const showTimelineDirectory = showExplorer && timelineMode && timelineDirectory === "shown";
+  const restorePanelSizes = useEffectEvent((group: HTMLDivElement) => {
+    const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showAiPanel));
+    const navigationLimit = available - minimumWritingWidth - (showAiPanel ? minimumAiWidth : 0);
+    const navigation = showExplorer ? Math.min(preferredNavigationWidth(), navigationLimit) : 0;
+    const aiLimit = Math.min(available / 2, available - minimumWritingWidth - navigation);
+    const ai = showAiPanel ? Math.min(aiSidebarWidth.current, aiLimit) : 0;
+    workspacePanels.current!.setLayout({
+      navigation: navigation / available * 100,
+      writing: (available - navigation - ai) / available * 100,
+      "ai-sidebar": ai / available * 100,
+    });
+  });
+  useLayoutEffect(() => {
+    const group = sidebarGroup.current!;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Windows can report its minimized taskbar size while the WebView is still visible.
+      if (!hasWorkspaceSize(group)) {
+        layoutSuspended.current = true;
+      } else if (layoutSuspended.current && !frame) frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!hasWorkspaceSize(group)) return;
+        restorePanelSizes(group);
+        layoutSuspended.current = false;
+      });
+    });
+    observer.observe(group);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, []);
   useLayoutEffect(() => {
     const panel = sidebarPanel.current!;
     const group = sidebarGroup.current!;
     const target = preferredNavigationWidth();
     timelineLayoutReady.current = false;
+    if (!hasWorkspaceSize(group)) return;
     if (!showExplorer && panel.isCollapsed()) return;
 
     let frame = 0;
@@ -1549,12 +1595,13 @@ export function DesktopShell() {
     };
     frame = requestAnimationFrame(() => {
       resize = requestAnimationFrame(() => {
+        if (!hasWorkspaceSize(group)) { clear(); return; }
         if (showExplorer) panel.resize(target);
         else panel.collapse();
         settled = requestAnimationFrame(() => {
           delete group.dataset.sidebarRestoring;
           timelineLayoutReady.current = timelineMode && showExplorer;
-          if (timelineLayoutReady.current && group.clientWidth) rememberTimelineWidth(timelineNavigationWidth());
+          if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group)) rememberTimelineWidth(timelineNavigationWidth());
         });
       });
     });
@@ -1572,9 +1619,11 @@ export function DesktopShell() {
   useLayoutEffect(() => {
     const panel = aiSidebarPanel.current!;
     const group = sidebarGroup.current!;
+    if (!hasWorkspaceSize(group)) return;
     if (showAiPanel !== panel.isCollapsed()) return;
     group.dataset.aiSidebarMoving = "true";
     const frame = requestAnimationFrame(() => {
+      if (!hasWorkspaceSize(group)) return;
       if (showAiPanel && !showExplorer && group.clientWidth > dividerWidth) {
         const available = group.clientWidth - dividerWidth;
         const aiShare = Math.min(50, aiSidebarWidth.current / available * 100);
@@ -1590,7 +1639,7 @@ export function DesktopShell() {
     const clear = () => { delete group.dataset.aiSidebarMoving; };
     const timer = window.setTimeout(() => {
       clear();
-      if (showAiPanel) {
+      if (showAiPanel && !layoutSuspended.current && hasWorkspaceSize(group)) {
         const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
         rememberAiWidth(available * workspacePanels.current!.getLayout()["ai-sidebar"] / 100);
       }
@@ -1734,12 +1783,12 @@ export function DesktopShell() {
         resizeTargetMinimumSize={dividerHitTarget}
         onLayoutChange={layout => {
           const group = sidebarGroup.current;
-          if (timelineLayoutReady.current && group?.clientWidth && !group.dataset.timelineDirectoryMoving
+          if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group) && !group.dataset.timelineDirectoryMoving
             && !directoryDrag.current) fitTimelineDirectory(timelineNavigationWidth(layout));
         }}
         onLayoutChanged={layout => {
           const group = sidebarGroup.current;
-          if (!group?.clientWidth || group.dataset.timelineDirectoryMoving) return;
+          if (layoutSuspended.current || !hasWorkspaceSize(group) || group.dataset.timelineDirectoryMoving) return;
           const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showAiPanel));
           const moving = group.dataset.sidebarMoving || group.dataset.sidebarRestoring || group.dataset.aiSidebarMoving;
           if (showAiPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
@@ -1758,7 +1807,8 @@ export function DesktopShell() {
             style={{ overflow: "hidden" }} groupResizeBehavior="preserve-pixel-size"
             onResize={(size, _id, previous) => {
               if (!timelineMode && showExplorer && previous?.inPixels && !size.inPixels
-                && !sidebarGroup.current?.dataset.sidebarRestoring) setExplorerOverride(false);
+                && !layoutSuspended.current && hasWorkspaceSize(sidebarGroup.current)
+                && !sidebarGroup.current.dataset.sidebarRestoring) setExplorerOverride(false);
             }}>
             {timelineMode ? <div className="timeline-navigation">
               <div id="timeline-directory" style={{ flexBasis: showTimelineDirectory ? directoryWidth : 0 }}>
@@ -1833,7 +1883,7 @@ export function DesktopShell() {
           {showExplorer && <Separator className={`divider sidebar-divider${timelineMode ? " navigation-divider" : ""}`}
             disableDoubleClick aria-label={timelineMode ? "调整文章时间流宽度" : "调整资源导航宽度"}
             onPointerDown={timelineMode ? stopDirectoryTransition : undefined} />}
-        <Panel id="writing" minSize={minimumWritingWidth}>
+        <Panel id="writing" minSize={minimumWritingWidth} style={{ overflow: "hidden" }}>
           <main className="main-workspace" aria-label="写作工作区">
             <header className="workbench-chrome chrome-band">
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
@@ -1858,7 +1908,7 @@ export function DesktopShell() {
                 aria-labelledby={`collection-tab-${activeCollection.id}`} className="document-body collection-state"><span role="status">正在打开专题…</span></div>}>
                 <CollectionCanvas key={`${activeCollection.id}:${canvasReload?.id === activeCollection.id ? canvasReload.version : 0}`}
                   collection={activeCollection} dark={appearance === "system" ? systemDark : appearance === "dark"}
-                  revision={refreshCount} articleLocked={globalLock} clipboard={editorClipboard}
+                  revision={refreshCount} articleLocked={globalLock} previewBlocked={Boolean(modal || exitMessage)} clipboard={editorClipboard}
                   canvasRef={collectionCanvas} track={trackCollectionWrite} waitForWrites={waitForCollectionWrites}
                   onOpenEntry={onOpenCollectionEntry}
                   onLoadArticle={loadCollectionArticle} onSaveArticle={saveCollectionArticle} onArticleImages={importImages}
@@ -1923,7 +1973,8 @@ export function DesktopShell() {
         <Panel id="ai-sidebar" defaultSize="0px" minSize={minimumAiWidth} maxSize="50%" collapsible collapsedSize="0px"
           panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
           onResize={(size, _id, previous) => {
-            if (showAiPanel && previous?.inPixels && !size.inPixels && !sidebarGroup.current?.dataset.aiSidebarMoving) setAiOpen(false);
+            if (showAiPanel && previous?.inPixels && !size.inPixels && !layoutSuspended.current
+              && hasWorkspaceSize(sidebarGroup.current) && !sidebarGroup.current.dataset.aiSidebarMoving) setAiOpen(false);
           }}>
           <div className="ai-sidebar" inert={!showAiPanel}>
             {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}

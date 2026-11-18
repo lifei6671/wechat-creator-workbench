@@ -13,7 +13,7 @@
 | [Milkdown 超长文与 AI 编辑性能改造方案](./milkdown-long-document-performance-plan.md) | 本地源码审查、全文序列化与装饰热路径、AI 局部事务、保存一致性、基准压测与阶段任务 |
 | [Obsidian 成熟功能内置化技术方案](./obsidian-feature-integration-plan.md) | 长文大纲、格式规范化、素材增强、快捷采集、写作模板、选题看板、AI 体验与公众号发布的源码复用、任务分解及验收 |
 | [专题画布与 GitHub README 导入技术方案](./topic-canvas-technical-design.md) | React Flow 无限画布、文章引用、专题私有截图与文本、关系连线、SQLite 持久化、素材生命周期、README 导入与验收 |
-| [专题文本卡片所见即所得编辑增量技术方案](./topic-canvas-inline-editing-plan.md) | 基于已完成的专题画布，复用 Milkdown 实现原地富文本编辑、延迟快照、剪贴板路由及保存一致性 |
+| [专题画布文本编辑与网页预览增量技术方案](./topic-canvas-inline-editing-plan.md) | 文本卡片 Milkdown 编辑、保存与素材引用，以及粘贴外部链接生成网页卡片并在画布内浏览原网页 |
 
 ## 已确定的技术决策
 

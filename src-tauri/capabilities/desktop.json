@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
@@ -72,6 +72,10 @@
     "allow-save-collection",
     "allow-delete-collection",
     "allow-get-collection-canvas",
+    "allow-canvas-webview",
+    "allow-canvas-webview-page",
+    "allow-canvas-webview-snapshot",
+    "allow-canvas-preview-cache-read",
     "allow-create-collection-node",
     "allow-update-collection-node-text",
     "allow-update-collection-node-color",

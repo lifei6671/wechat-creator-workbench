@@ -64,6 +64,13 @@ type ClipboardContents = { kind: "text"; text: string }
   | { kind: "html"; html: string; text: string | null }
   | { kind: "images"; images: { id: string; name: string }[]; errors: string[] };
 
+type WebPreviewBounds = CanvasGeometry & { clip: CanvasGeometry; layoutWidth: number };
+export type CanvasPreviewKey = { collectionId: string; nodeId: string; url: string };
+export type CanvasWebPage = { url: string; x: number; y: number };
+type CanvasWebview = { action: "open"; url: string; session: number; bounds: WebPreviewBounds; zoom: number }
+  | { action: "bounds"; bounds: WebPreviewBounds | null; zoom: number; resume: boolean; restoreScroll?: boolean }
+  | { action: "cover"; rememberScroll?: boolean } | { action: "reveal" | "close" };
+
 export const windowsTitleBar = /Win/.test(navigator.platform);
 export const nativeWindow = () => getCurrentWindow();
 
@@ -78,6 +85,18 @@ export const desktop = {
     invoke<Collection>("save_collection", { id, title, description }),
   deleteCollection: (id: string) => invoke<void>("delete_collection", { id }),
   collectionCanvas: (collectionId: string) => invoke<CollectionCanvas>("get_collection_canvas", { collectionId }),
+  canvasWebview: (preview: CanvasWebview) => invoke<boolean>("canvas_webview", { preview }),
+  canvasWebviewPage: (session: number, restore?: CanvasWebPage) =>
+    invoke<CanvasWebPage | null>("canvas_webview_page", { session, restore }),
+  canvasWebviewSnapshot: (rememberScroll: boolean, cache?: CanvasPreviewKey) =>
+    invoke<ArrayBuffer>("canvas_webview_snapshot", { rememberScroll, cache }),
+  canvasPreviewCacheRead: (key: CanvasPreviewKey) => invoke<ArrayBuffer>("canvas_preview_cache_read", { key }),
+  onCanvasWebState: (callback: (event: "loading" | "loaded" | "escape") => void, session: number) =>
+    listen<{ session: number; event: "loading" | "loaded" | "escape" }>("canvas-web-state", ({ payload }) => {
+      if (payload.session === session) callback(payload.event);
+    }),
+  onCanvasWebTitle: (callback: (session: number, title: string) => void) =>
+    listen<{ session: number; title: string }>("canvas-web-title", ({ payload }) => callback(payload.session, payload.title)),
   createCollectionNode: (collectionId: string, content: CanvasNodeContent, position: CanvasPosition) =>
     invoke<CanvasNode>("create_collection_node", { collectionId, content, position }),
   updateCollectionNodeText: (nodeId: string, contentMd: string) =>

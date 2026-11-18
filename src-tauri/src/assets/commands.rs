@@ -174,10 +174,10 @@ pub struct ActiveImageStorage {
 
 #[tauri::command]
 pub fn image_storage_settings(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     db: State<'_, Workspace>,
 ) -> Result<ImageStorageSettings> {
-    if window.label() != "main" {
+    if webview.label() != "main" {
         return Err(AppError::invalid("请在主窗口打开图床设置"));
     }
     let (profile, enabled) = Assets::settings_profile(&db)?;

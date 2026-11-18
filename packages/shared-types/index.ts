@@ -125,7 +125,8 @@ export interface Collection {
 export type CanvasNodeContent =
   | { kind: "entry"; entryId: string }
   | { kind: "image"; assetId: string }
-  | { kind: "text"; contentMd: string };
+  | { kind: "text"; contentMd: string }
+  | { kind: "web"; url: string };
 
 export type CanvasCardColor = "red" | "orange" | "amber" | "green" | "blue" | "violet" | `#${string}`;
 
@@ -138,6 +139,7 @@ export type CanvasNode = CanvasGeometry & {
   assetName?: string | null;
   color: CanvasCardColor | null;
   contentMd: string;
+  externalUrl: string | null;
   createdAt: number;
   updatedAt: number;
   entry: Pick<EntryRow, "title" | "kind" | "deletedAt"> & { summary: string; sourcePlatform: string | null } | null;

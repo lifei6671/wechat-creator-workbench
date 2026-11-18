@@ -3,7 +3,7 @@ import { Theme } from "@radix-ui/themes";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
+import { useImperativeHandle, type ComponentProps } from "react";
 import type { Collection, Entry, EntryPage } from "../../../../packages/shared-types";
 import { desktop, type AiHistoryItem, type AiStreamEvent } from "../desktop";
 import { AiPanel } from "./AiPanel";
@@ -22,13 +22,20 @@ vi.mock(import("./Document"), async importOriginal => ({
   ),
 }));
 
+const { flushCanvas } = vi.hoisted(() => ({ flushCanvas: vi.fn<() => Promise<void>>() }));
+
 vi.mock(import("./CollectionCanvas"), () => ({
-  CollectionCanvas: ({ collection, onLoadArticle, onSaveArticle }: ComponentProps<typeof CollectionCanvas>) => <>
+  CollectionCanvas: ({ collection, onLoadArticle, onSaveArticle, onOpenEntry, canvasRef }: ComponentProps<typeof CollectionCanvas>) => {
+    useImperativeHandle(collection.id === "canvas-open" ? canvasRef : null,
+      () => ({ flush: flushCanvas, addEntry: async () => {}, clipboard: () => false, paste: () => false }));
+    return <>
     <h1 data-canvas={collection.id}>{collection.title}</h1>
+    {collection.id === "canvas-open" && <button type="button" id="open-canvas-article" onClick={() => onOpenEntry("from-canvas")}>打开文章</button>}
     {collection.id === "canvas-edit" && <button type="button" id="save-canvas-article" onClick={() => {
       void onLoadArticle("article-one").then(entry => onSaveArticle(entry.id, entry.version, { ...entry, contentMd: "## 从画布保存" }, "auto"));
     }}>保存卡片</button>}
-  </>,
+    </>;
+  },
 }));
 
 const workspaceId = "session-test";
@@ -71,6 +78,61 @@ afterEach(() => {
 function openTabs() {
   return [...container.querySelectorAll('[role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
+
+it("keeps the writing pane itself from showing a scrollbar", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["article-one"], activeId: "article-one" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(openTabs()).toContain("article-one"));
+  const writingPane = container.querySelector(".main-workspace")!.parentElement!;
+  expect(getComputedStyle(writingPane).overflow).toBe("hidden");
+});
+
+it("preserves the open sidebar when the minimized workspace temporarily has no height", async () => {
+  let reportNavigationSize!: () => void;
+  vi.stubGlobal("ResizeObserver", class {
+    readonly callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) { this.callback = callback; }
+    observe(target: Element) {
+      if (target.id !== "navigation") return;
+      reportNavigationSize = () => {
+        const size = [{ inlineSize: navigationWidth, blockSize: workspaceHeight }];
+        this.callback([{
+          target, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size,
+          contentRect: new DOMRectReadOnly(0, 0, navigationWidth, workspaceHeight),
+        }], this);
+      };
+    }
+    unobserve() {}
+    disconnect() {}
+  });
+  saveWorkspaceLayout({ section: "folders", explorerOverride: true, timelineDirectory: "shown", focusMode: false, aiOpen: false });
+  let workspaceHeight = 800;
+  let navigationWidth = 430;
+  flushSync(() => root.render(<DesktopShell />));
+  const group = container.querySelector<HTMLDivElement>(".workspace-panels")!;
+  const navigation = container.querySelector<HTMLDivElement>("#navigation")!;
+  Object.defineProperties(group, {
+    clientWidth: { get: () => workspaceHeight ? 1360 : 144 },
+    clientHeight: { get: () => workspaceHeight },
+  });
+  Object.defineProperty(navigation, "offsetWidth", { get: () => navigationWidth });
+  await vi.waitFor(() => expect(group.dataset.sidebarRestoring).toBeUndefined());
+  flushSync(reportNavigationSize);
+
+  workspaceHeight = navigationWidth = 0;
+  flushSync(reportNavigationSize);
+  workspaceHeight = 800;
+  navigationWidth = 430;
+  flushSync(reportNavigationSize);
+  expect(container.querySelector("#hide-sidebar")).not.toBeNull();
+  expect(JSON.parse(localStorage.getItem("workspace-layout")!).explorerOverride).toBe(true);
+
+  navigationWidth = 0;
+  flushSync(reportNavigationSize);
+  expect(container.querySelector("#show-sidebar")).not.toBeNull();
+  expect(JSON.parse(localStorage.getItem("workspace-layout")!).explorerOverride).toBe(false);
+});
 
 it("creates and renames topics inline in the directory sidebar", async () => {
   const existing = { id: "existing", title: "未命名", description: "已有描述", createdAt: 0, updatedAt: 0,
@@ -223,13 +285,40 @@ it("keeps the canvas active after saving and refreshes the original article tab"
   expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("tab-article-one");
 });
 
-it("adds an article from its context menu without opening the topic", async () => {
+it("flushes the still-editable canvas again after loading an article", async () => {
+  const topic: Collection = { id: "canvas-open", title: "专题", description: "", createdAt: 0, updatedAt: 0, nodeCount: 1,
+    viewport: { x: 0, y: 0, zoom: 1 } };
+  vi.mocked(desktop.collections).mockResolvedValue([topic]);
+  let open!: (value: Entry) => void, finishSave!: () => void;
+  const load = vi.spyOn(desktop, "entry").mockReturnValue(new Promise<Entry>(resolve => { open = resolve; }));
+  flushCanvas.mockReset().mockResolvedValueOnce().mockReturnValueOnce(new Promise<void>(resolve => { finishSave = resolve; }));
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  const active = () => container.querySelector('[role="tab"][aria-selected="true"]')?.id;
+  flushSync(() => root.render(<DesktopShell />));
+  click('.sidebar-chrome [aria-label="专题"]');
+  await vi.waitFor(() => expect(container.querySelector("#collection-row-canvas-open")).not.toBeNull());
+  click("#collection-row-canvas-open");
+  await vi.waitFor(() => expect(active()).toBe("collection-tab-canvas-open"));
+  await vi.waitFor(() => expect(container.querySelector("#open-canvas-article")).not.toBeNull());
+  click("#open-canvas-article");
+  await vi.waitFor(() => expect(load).toHaveBeenCalledWith("from-canvas"));
+  expect(flushCanvas).toHaveBeenCalledTimes(1);
+  open(entry("from-canvas"));
+  await vi.waitFor(() => expect(flushCanvas).toHaveBeenCalledTimes(2));
+  expect(active()).toBe("collection-tab-canvas-open");
+  finishSave();
+  await vi.waitFor(() => expect(active()).toBe("tab-from-canvas"));
+});
+
+it("marks joined topics and updates the menu after adding an article without opening the topic", async () => {
   const topic = { id: "reading-list", title: "待研究", description: "", createdAt: 0, updatedAt: 0,
     viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 };
-  vi.mocked(desktop.collections).mockResolvedValue([topic]);
+  const joined = { ...topic, id: "research", title: "数据采集", nodeCount: 1 };
+  vi.mocked(desktop.collections).mockResolvedValue([joined, topic]);
+  const memberships = vi.spyOn(desktop, "entryCollections").mockResolvedValue([joined]);
   vi.spyOn(desktop, "collectionCanvas").mockResolvedValue({ collection: topic, nodes: [], edges: [] });
   const add = vi.spyOn(desktop, "createCollectionNode").mockResolvedValue({
-    id: "reference", collectionId: topic.id, kind: "entry", entryId: "manual", assetId: null, color: null, contentMd: "", entry: null,
+    id: "reference", collectionId: topic.id, kind: "entry", entryId: "manual", assetId: null, color: null, contentMd: "", externalUrl: null, entry: null,
     x: 24, y: 24, width: 320, height: 144, createdAt: 0, updatedAt: 0,
   });
   flushSync(() => root.render(<DesktopShell />));
@@ -238,18 +327,33 @@ it("adds an article from its context menu without opening the topic", async () =
     expect(target).not.toBeNull();
     return target!;
   });
-  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
-  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "加入专题")!;
-  flushSync(() => { item.focus(); item.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
+  const openSubmenu = () => {
+    flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "加入专题")!;
+    flushSync(() => { item.focus(); item.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
+  };
+  const option = (title: string) => [...document.querySelectorAll<HTMLElement>('.add-to-collection-submenu [role="menuitem"]')]
+    .find(item => item.textContent === title);
+  expect(memberships).not.toHaveBeenCalled();
+  openSubmenu();
+  await vi.waitFor(() => expect(option(joined.title)?.getAttribute("aria-label")).toBe("数据采集（已加入）"));
+  expect(memberships).toHaveBeenCalledExactlyOnceWith("manual");
+  expect(option(joined.title)?.querySelector(".collection-entry-current")).not.toBeNull();
   const destination = await vi.waitFor(() => {
-    const option = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === topic.title);
-    expect(option).toBeDefined();
-    return option!;
+    const item = option(topic.title);
+    expect(item).toBeDefined();
+    expect(item!.querySelector(".collection-entry-current")).toBeNull();
+    return item!;
   });
   flushSync(() => destination.click());
   await vi.waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith(topic.id, { kind: "entry", entryId: "manual" }, { x: 24, y: 24 }));
   await vi.waitFor(() => expect(container.textContent).toContain("已加入「待研究」"));
   expect(container.querySelector("#collection-tab-reading-list")).toBeNull();
+  memberships.mockResolvedValue([joined, topic]);
+  openSubmenu();
+  await vi.waitFor(() => expect(option(topic.title)?.getAttribute("aria-label")).toBe("待研究（已加入）"));
+  expect(option(topic.title)?.querySelector(".collection-entry-current")).not.toBeNull();
+  expect(memberships).toHaveBeenCalledTimes(2);
 });
 
 it("restores pending article tabs while the user opens a topic", async () => {

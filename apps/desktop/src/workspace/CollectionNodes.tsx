@@ -1,7 +1,7 @@
 import { createContext, memo, useContext, useLayoutEffect, useRef, type CSSProperties } from "react";
 import { Handle, NodeResizer, NodeToolbar, Position, useStore, type Node, type NodeProps } from "@xyflow/react";
 import { Popover } from "@radix-ui/themes";
-import { Focus, Palette, SquarePen, Trash2 } from "lucide-react";
+import { Copy, ExternalLink, FilePlus2, Focus, Palette, SquarePen, Trash2 } from "lucide-react";
 import type { CanvasCardColor, CanvasGeometry, CanvasNode, Entry } from "../../../../packages/shared-types";
 import type { ClipboardIO, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { renderMarkdown } from "../../../../packages/markdown-core";
@@ -11,20 +11,28 @@ import { Tool, Tooltip } from "../ui";
 import { useAssetImage } from "./Assets";
 import type { SaveQueue } from "../editor/save-queue";
 import { CollectionArticleEditor, CollectionArticlePreview } from "./CollectionArticle";
-import { CollectionTextEditor } from "./CollectionEditorScope";
+import { CanvasTextEditor } from "./CanvasTextEditor";
+import { useCanvasPreviewImages, type CanvasPreviewCache } from "./CanvasPreviewCache";
 
-export type FlowNode = Node<CanvasNode, "card"> & { width: number; height: number };
+export type FlowNode = Node<CanvasNode & { pageTitle?: string }, "card"> & { width: number; height: number };
 export const CollectionNodeContext = createContext<{
   editingId: string | null;
+  activeWebNodeId: string | null;
+  webPreviews: CanvasPreviewCache;
   convertingId: string | null;
   edit(id: string): void;
   remove(id: string): void;
   focus(id: string): void;
   color(id: string, color: CanvasCardColor | null): void;
   fitImage(id: string, width: number, height: number): void;
-  changeText(id: string, text: string): void;
+  registerTextEditor(id: string, handle: MarkdownEditorHandle | null): void;
+  markTextDirty(id: string, revision: number): void;
+  saveText(id: string): void;
   finishText(id: string): void;
+  copyText(id: string): void;
+  convertText(id: string): void;
   resize(id: string, geometry: CanvasGeometry): void;
+  setWebSlot(slot: HTMLDivElement | null): void;
   loadArticle(id: string): Promise<Entry>;
   articleQueue?: SaveQueue;
   articleLocked: boolean;
@@ -43,7 +51,8 @@ const CanvasCard = memo(function CanvasCard({ id, data, selected, width, height 
   const actions = useContext(CollectionNodeContext)!;
   const entry = data.entry;
   const title = entry?.title || untitled;
-  const caption = data.kind === "entry" ? title : data.kind === "image" ? data.assetName || "图片" : undefined;
+  const caption = data.externalUrl ? data.pageTitle || new URL(data.externalUrl).hostname
+    : data.kind === "entry" ? title : data.kind === "image" ? data.assetName || "图片" : undefined;
   const editing = actions.editingId === id;
   const imageEditing = data.kind === "image" && editing;
   const canEdit = data.kind === "text" ? id !== actions.convertingId : data.kind === "entry" && !actions.articleLocked && entry?.deletedAt === null;
@@ -52,11 +61,11 @@ const CanvasCard = memo(function CanvasCard({ id, data, selected, width, height 
   return <article ref={card} className={`collection-card${editing ? " nodrag" : ""}`} data-kind={data.kind} data-editing={editing}
     style={cardColorStyle(data.color)}
     data-color={data.color ?? undefined} data-selected={selected} tabIndex={imageEditing ? -1 : undefined} aria-label={imageEditing ? "调整图片大小" : undefined} onDoubleClick={event => {
-    if (editing || (event.target as Element).closest("a")) return;
+    if (editing || data.kind === "web" || (event.target as Element).closest("a")) return;
     event.stopPropagation();
     actions.edit(id);
   }}>
-    {selected && <CardTools id={id} data={data} hasCaption={Boolean(caption)} canEdit={canEdit && !editing} />}
+    {selected && <CardTools id={id} data={data} hasCaption={Boolean(caption)} canEdit={canEdit && !editing} editing={editing} />}
     <NodeResizer isVisible={imageEditing || (selected && !editing)} keepAspectRatio={data.kind === "image"}
       minWidth={data.kind === "image" ? Math.min(96, width ?? 96) : 160}
       minHeight={data.kind === "image" ? Math.min(64, height ?? 64) : 96} maxWidth={1200} maxHeight={1000}
@@ -71,14 +80,32 @@ const CanvasCard = memo(function CanvasCard({ id, data, selected, width, height 
       : entry?.deletedAt === null ? <CollectionArticlePreview id={data.entryId} title={title} source={entry.sourcePlatform} load={actions.loadArticle} onError={actions.onError} />
       : <div className="collection-card-body muted-text">{entry ? "已移入回收站" : "找不到文章"}</div>)}
     {data.assetId && <CollectionImage id={data.assetId} name={caption ?? "图片"} onSize={(w, h) => actions.fitImage(id, w, h)} />}
+    {data.externalUrl && <WebCardPreview id={id} url={data.externalUrl} cache={actions.webPreviews}
+      slot={actions.activeWebNodeId === id ? actions.setWebSlot : undefined} />}
     {data.kind === "text" && (editing
-      ? <CollectionTextEditor value={data.contentMd} onChange={value => actions.changeText(id, value)}
-        onLeave={() => actions.finishText(id)} onError={actions.onError} />
+      ? <CanvasTextEditor id={id} markdown={data.contentMd} clipboard={actions.clipboard} locked={actions.articleLocked}
+        register={actions.registerTextEditor} dirty={actions.markTextDirty} save={actions.saveText} finish={actions.finishText}
+        onImages={actions.onArticleImages} onError={actions.onError} />
       : <TextPreview markdown={data.contentMd} onError={actions.onError} />)}
   </article>;
 });
 
 export const collectionNodeTypes = { card: CanvasCard };
+
+function WebCardPreview({ id, url, cache, slot }: {
+  id: string; url: string; cache: CanvasPreviewCache; slot?: (element: HTMLDivElement | null) => void;
+}) {
+  const { image, incoming } = useCanvasPreviewImages(cache, id, url);
+  const hostname = new URL(url).hostname;
+  return <div className="collection-web-preview">
+    {[image, slot ? incoming : undefined].map(source => source && <img key={source} className="collection-web-image"
+      src={source} alt={source === incoming ? "" : hostname} draggable={false}
+      data-fading={source === incoming || undefined}
+      onAnimationEnd={() => { if (source === incoming) cache.finish(id, url, source); }} />)}
+    {!image && <span className="collection-web-placeholder">{hostname}</span>}
+    {slot && <div className="collection-web-viewport" aria-label="网页预览" data-preview-node={id} ref={slot} />}
+  </div>;
+}
 
 const cardColors = [[null, "默认"], ["red", "红色"], ["orange", "橙色"], ["amber", "黄色"], ["green", "绿色"], ["blue", "蓝色"], ["violet", "紫色"]] as const;
 
@@ -87,7 +114,7 @@ function cardColorStyle(color: CanvasCardColor | null): CSSProperties | undefine
   return { "--card-color": color.startsWith("#") ? color : `var(--${color}-9)` } as CSSProperties;
 }
 
-function CardTools({ id, data, hasCaption, canEdit }: { id: string; data: CanvasNode; hasCaption: boolean; canEdit: boolean }) {
+function CardTools({ id, data, hasCaption, canEdit, editing }: { id: string; data: CanvasNode; hasCaption: boolean; canEdit: boolean; editing: boolean }) {
   const actions = useContext(CollectionNodeContext)!;
   const zoom = useStore(state => state.transform[2]);
   const customColor = data.color?.startsWith("#") ? data.color : undefined;
@@ -116,7 +143,12 @@ function CardTools({ id, data, hasCaption, canEdit }: { id: string; data: Canvas
       </Popover.Content>
     </Popover.Root>
     <Tool label="聚焦当前卡片（Shift + 2）" color="gray" onClick={() => actions.focus(id)}><Focus size={18} strokeWidth={1.75} /></Tool>
-    {data.kind !== "image" && <Tool label="编辑" color="gray" disabled={!canEdit} onClick={() => actions.edit(id)}><SquarePen size={18} strokeWidth={1.75} /></Tool>}
+    {data.externalUrl && <Tool label="在系统浏览器打开" color="gray" onClick={() => void desktop.openLink(data.externalUrl!).catch(actions.onError)}><ExternalLink size={18} strokeWidth={1.75} /></Tool>}
+    {(data.kind === "text" || data.kind === "entry") && <Tool label="编辑" color="gray" disabled={!canEdit} onClick={() => actions.edit(id)}><SquarePen size={18} strokeWidth={1.75} /></Tool>}
+    {data.kind === "text" && editing && <>
+      <Tool label="复制 Markdown" color="gray" onClick={() => actions.copyText(id)}><Copy size={18} strokeWidth={1.75} /></Tool>
+      <Tool label="创建原创文章" color="gray" disabled={actions.convertingId !== null} onClick={() => actions.convertText(id)}><FilePlus2 size={18} strokeWidth={1.75} /></Tool>
+    </>}
   </NodeToolbar>;
 }
 

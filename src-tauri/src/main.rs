@@ -3,6 +3,8 @@
 mod ai;
 mod assets;
 mod backup;
+mod canvas_preview_cache;
+mod canvas_webview;
 mod clipboard;
 mod commands;
 mod content;
@@ -25,6 +27,8 @@ use backup::{
     backup_restore_notice, backup_settings, backup_take_preferences, backup_use_image_storage,
     backup_workspaces,
 };
+use canvas_preview_cache::canvas_preview_cache_read;
+use canvas_webview::{canvas_webview, canvas_webview_page, canvas_webview_snapshot};
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
 use db::Workspace;
@@ -38,7 +42,7 @@ use wechat_import::{Imports, wechat_import, wechat_import_jobs, wechat_retry_ima
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main")
+            if let Some(window) = app.get_window("main")
                 && let Err(error) = window.unminimize().and_then(|()| window.set_focus())
             {
                 eprintln!("Could not focus workspace: {error}");
@@ -71,6 +75,7 @@ fn main() {
             app.manage(AiService::new(&db)?);
             app.manage(db);
             app.manage(McpServer::default());
+            app.manage(canvas_webview::PreviewState::default());
             #[cfg(windows)]
             graphics::create_main_window(app)?;
             let handle = app.handle().clone();
@@ -93,6 +98,10 @@ fn main() {
             save_collection,
             delete_collection,
             get_collection_canvas,
+            canvas_webview,
+            canvas_webview_page,
+            canvas_webview_snapshot,
+            canvas_preview_cache_read,
             create_collection_node,
             update_collection_node_text,
             update_collection_node_color,

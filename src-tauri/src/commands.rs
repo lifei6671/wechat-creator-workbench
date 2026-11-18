@@ -328,8 +328,14 @@ pub async fn save_collection(
 }
 
 #[tauri::command]
-pub async fn delete_collection(state: State<'_, Workspace>, id: String) -> Result<()> {
-    state.delete_collection(&id)
+pub async fn delete_collection(
+    app: AppHandle,
+    state: State<'_, Workspace>,
+    id: String,
+) -> Result<()> {
+    state.delete_collection(&id)?;
+    crate::canvas_preview_cache::delete(&app, &id, None).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -377,8 +383,15 @@ pub async fn update_collection_node_geometry(
 }
 
 #[tauri::command]
-pub async fn delete_collection_node(state: State<'_, Workspace>, node_id: String) -> Result<()> {
-    state.delete_collection_node(&node_id)
+pub async fn delete_collection_node(
+    app: AppHandle,
+    state: State<'_, Workspace>,
+    node_id: String,
+) -> Result<()> {
+    if let Some(collection_id) = state.delete_collection_node(&node_id)? {
+        crate::canvas_preview_cache::delete(&app, &collection_id, Some(&node_id)).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
