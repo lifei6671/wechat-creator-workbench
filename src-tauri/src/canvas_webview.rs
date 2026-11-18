@@ -14,7 +14,13 @@ use tauri::{
 };
 use url::Url;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::{stack_view, update_view};
+
 const LABEL: &str = "canvas-web-preview";
+const SUPPORTS_SNAPSHOT: bool = cfg!(any(windows, target_os = "macos"));
 
 #[derive(Default)]
 pub(crate) struct PreviewState {
@@ -136,15 +142,16 @@ pub(crate) async fn canvas_webview(
             let rect = bounds.bounds.rect()?;
             let clip = bounds.clip.rect()?;
             let layout_width = bounds.layout_width;
-            #[cfg(windows)]
-            let initial_rect = Rect {
-                position: LogicalPosition::new(-10000, -10000).into(),
-                size: rect.size,
+            let initial_rect = if SUPPORTS_SNAPSHOT {
+                Rect {
+                    position: LogicalPosition::new(-10000, -10000).into(),
+                    size: rect.size,
+                }
+            } else {
+                clipped_rect(rect, clip)
             };
-            #[cfg(not(windows))]
-            let initial_rect = clipped_rect(rect, clip);
             if let Some(child) = child {
-                child.close().map_err(preview_error)?;
+                close_view(child).await?;
             }
             state.session.store(0, Ordering::Release);
             let child = window
@@ -185,24 +192,26 @@ pub(crate) async fn canvas_webview(
                     watch_escape(&child, session)?;
                     stack_view(child.clone(), true).await?;
                 }
+                #[cfg(target_os = "macos")]
+                macos::attach(&child, session).await?;
                 update_view(
                     child.clone(),
                     rect,
                     clip,
                     layout_width,
                     zoom,
-                    !cfg!(windows),
+                    !SUPPORTS_SNAPSHOT,
                     state.scale.clone(),
                 )
                 .await
             }
             .await;
             if result.is_err() {
-                child.close().map_err(preview_error)?;
+                close_view(child).await?;
             } else {
                 state.session.store(session, Ordering::Release);
             }
-            return result.map(|()| cfg!(windows));
+            return result.map(|()| SUPPORTS_SNAPSHOT);
         }
         Preview::Bounds {
             bounds,
@@ -252,14 +261,20 @@ pub(crate) async fn canvas_webview(
             return Ok(false);
         }
         Preview::Close => {
-            let closed = child.map_or(Ok(()), |child| child.close());
-            if closed.is_ok() {
-                state.session.store(0, Ordering::Release);
+            if let Some(child) = child {
+                close_view(child).await?;
             }
-            closed
+            state.session.store(0, Ordering::Release);
+            return Ok(false);
         }
     };
     operation.map(|()| false).map_err(preview_error)
+}
+
+async fn close_view(child: tauri::Webview) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    macos::detach(&child).await?;
+    child.close().map_err(preview_error)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -389,7 +404,7 @@ async fn stack_view(child: tauri::Webview, covered: bool) -> Result<()> {
         .map_err(|error| AppError::new("WEB_PREVIEW", format!("网页预览覆盖中断：{error}")))?
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 async fn stack_view(child: tauri::Webview, covered: bool) -> Result<()> {
     if covered { child.hide() } else { child.show() }.map_err(preview_error)
 }
@@ -502,7 +517,7 @@ async fn update_view(
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 async fn update_view(
     child: tauri::Webview,
     rect: Rect,
@@ -522,7 +537,6 @@ async fn update_view(
     Ok(())
 }
 
-#[cfg(not(windows))]
 fn clipped_rect(rect: Rect, clip: Rect) -> Rect {
     let origin = rect.position.to_logical::<f64>(1.0);
     let offset = clip.position.to_logical::<f64>(1.0);
@@ -555,89 +569,23 @@ pub(crate) async fn canvas_webview_snapshot(
     remember_scroll: Option<bool>,
     cache: Option<PreviewKey>,
 ) -> Result<Response> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (window, remember_scroll, cache);
         Ok(Response::new(Vec::<u8>::new()))
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        use std::{cell::RefCell, rc::Rc};
-        use webview2_com::{
-            CapturePreviewCompletedHandler,
-            Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
-        };
-        use windows::Win32::{
-            System::Com::{STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET},
-            UI::Shell::SHCreateMemStream,
-        };
         let Some(child) = window.get_webview(LABEL) else {
             return Ok(Response::new(Vec::<u8>::new()));
         };
         if remember_scroll.unwrap_or(true) {
             remember_position(&child)?;
         }
-        let (send, receive) = tokio::sync::oneshot::channel();
-        child
-            .with_webview(move |view| {
-                let sender = Rc::new(RefCell::new(Some(send)));
-                let complete = sender.clone();
-                // SAFETY: The controller and stream are used on the WebView2 UI thread.
-                let start = unsafe {
-                    (|| -> windows::core::Result<()> {
-                        let stream = SHCreateMemStream(None)
-                            .ok_or_else(windows::core::Error::from_thread)?;
-                        let captured = stream.clone();
-                        let handler =
-                            CapturePreviewCompletedHandler::create(Box::new(move |status| {
-                                let result = (|| -> windows::core::Result<Vec<u8>> {
-                                    status?;
-                                    let mut stat = STATSTG::default();
-                                    captured.Stat(&mut stat, STATFLAG_NONAME)?;
-                                    captured.Seek(0, STREAM_SEEK_SET, None)?;
-                                    let length = u32::try_from(stat.cbSize)
-                                        .map_err(|_| windows::core::Error::from_thread())?;
-                                    let mut bytes = vec![0; length as usize];
-                                    let mut read = 0;
-                                    captured
-                                        .Read(bytes.as_mut_ptr().cast(), length, Some(&mut read))
-                                        .ok()?;
-                                    bytes.truncate(read as usize);
-                                    Ok(bytes)
-                                })();
-                                if let Some(send) = complete.borrow_mut().take() {
-                                    let _ = send.send(result.map_err(|error| {
-                                        AppError::new(
-                                            "WEB_PREVIEW",
-                                            format!("无法生成网页缩放画面：{error}"),
-                                        )
-                                    }));
-                                }
-                                Ok(())
-                            }));
-                        view.controller().CoreWebView2()?.CapturePreview(
-                            COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
-                            &stream,
-                            &handler,
-                        )
-                    })()
-                };
-                if let Err(error) = start
-                    && let Some(send) = sender.borrow_mut().take()
-                {
-                    let _ = send.send(Err(AppError::new(
-                        "WEB_PREVIEW",
-                        format!("无法生成网页缩放画面：{error}"),
-                    )));
-                }
-            })
-            .map_err(preview_error)?;
-        let png = tokio::time::timeout(std::time::Duration::from_millis(750), receive)
-            .await
-            .map_err(|_| AppError::new("WEB_PREVIEW", "生成网页缩放画面超时"))?
-            .map_err(|error| {
-                AppError::new("WEB_PREVIEW", format!("网页缩放画面已取消：{error}"))
-            })??;
+        #[cfg(windows)]
+        let png = capture_webview(&child).await?;
+        #[cfg(target_os = "macos")]
+        let png = macos::capture(&child).await?;
         let app = window.app_handle().clone();
         tauri::async_runtime::spawn_blocking(move || {
             if !contains_page_pixels(&png) {
@@ -655,7 +603,78 @@ pub(crate) async fn canvas_webview_snapshot(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
+async fn capture_webview(child: &tauri::Webview) -> Result<Vec<u8>> {
+    use std::{cell::RefCell, rc::Rc};
+    use webview2_com::{
+        CapturePreviewCompletedHandler,
+        Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+    };
+    use windows::Win32::{
+        System::Com::{STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET},
+        UI::Shell::SHCreateMemStream,
+    };
+    let (send, receive) = tokio::sync::oneshot::channel();
+    child
+        .with_webview(move |view| {
+            let sender = Rc::new(RefCell::new(Some(send)));
+            let complete = sender.clone();
+            // SAFETY: The controller and stream are used on the WebView2 UI thread.
+            let start = unsafe {
+                (|| -> windows::core::Result<()> {
+                    let stream =
+                        SHCreateMemStream(None).ok_or_else(windows::core::Error::from_thread)?;
+                    let captured = stream.clone();
+                    let handler = CapturePreviewCompletedHandler::create(Box::new(move |status| {
+                        let result = (|| -> windows::core::Result<Vec<u8>> {
+                            status?;
+                            let mut stat = STATSTG::default();
+                            captured.Stat(&mut stat, STATFLAG_NONAME)?;
+                            captured.Seek(0, STREAM_SEEK_SET, None)?;
+                            let length = u32::try_from(stat.cbSize)
+                                .map_err(|_| windows::core::Error::from_thread())?;
+                            let mut bytes = vec![0; length as usize];
+                            let mut read = 0;
+                            captured
+                                .Read(bytes.as_mut_ptr().cast(), length, Some(&mut read))
+                                .ok()?;
+                            bytes.truncate(read as usize);
+                            Ok(bytes)
+                        })();
+                        if let Some(send) = complete.borrow_mut().take() {
+                            let _ = send.send(result.map_err(|error| {
+                                AppError::new(
+                                    "WEB_PREVIEW",
+                                    format!("无法生成网页缩放画面：{error}"),
+                                )
+                            }));
+                        }
+                        Ok(())
+                    }));
+                    view.controller().CoreWebView2()?.CapturePreview(
+                        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                        &stream,
+                        &handler,
+                    )
+                })()
+            };
+            if let Err(error) = start
+                && let Some(send) = sender.borrow_mut().take()
+            {
+                let _ = send.send(Err(AppError::new(
+                    "WEB_PREVIEW",
+                    format!("无法生成网页缩放画面：{error}"),
+                )));
+            }
+        })
+        .map_err(preview_error)?;
+    tokio::time::timeout(std::time::Duration::from_millis(750), receive)
+        .await
+        .map_err(|_| AppError::new("WEB_PREVIEW", "生成网页缩放画面超时"))?
+        .map_err(|error| AppError::new("WEB_PREVIEW", format!("网页缩放画面已取消：{error}")))?
+}
+
+#[cfg(any(windows, target_os = "macos", test))]
 fn contains_page_pixels(png: &[u8]) -> bool {
     use image::GenericImageView;
 

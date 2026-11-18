@@ -6,6 +6,11 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::align_main_titlebar;
+
 fn marker_path(app: &AppHandle) -> Result<PathBuf> {
     app.path()
         .app_local_data_dir()

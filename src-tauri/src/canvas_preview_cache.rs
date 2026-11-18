@@ -1,11 +1,11 @@
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use crate::db::Workspace;
 use crate::db::{AppError, Result};
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use rusqlite::params;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use std::{fs, io::Write};
 use std::{
     io,
@@ -52,12 +52,12 @@ pub(crate) async fn canvas_preview_cache_read(app: AppHandle, key: PreviewKey) -
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn save(app: &AppHandle, key: &PreviewKey, png: &[u8]) -> Result<()> {
     save_existing(&app.state::<Workspace>(), &cache_root(app)?, key, png)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn save_existing(db: &Workspace, root: &Path, key: &PreviewKey, png: &[u8]) -> Result<()> {
     // Serialize with node deletion so a late native capture cannot recreate an evicted cache.
     db.read(|conn| {

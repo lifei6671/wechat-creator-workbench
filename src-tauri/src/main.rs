@@ -88,6 +88,8 @@ fn main() {
             app.manage(canvas_webview::PreviewState::default());
             #[cfg(windows)]
             graphics::create_main_window(app)?;
+            #[cfg(target_os = "macos")]
+            graphics::align_main_titlebar(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle

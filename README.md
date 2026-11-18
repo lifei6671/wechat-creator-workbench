@@ -2,18 +2,27 @@
 
 面向微信公众号创作者的本地桌面应用。支持公开公众号文章导入、Markdown 写作、Plainly 排版、公众号富文本复制、素材库、S3 图床和带图导出。
 
-开发环境：Node.js 24.19.0、pnpm 12.5.1、Rust 1.98.0。Windows 需要 VS C++ 生成工具和 WebView2；macOS 需要 Xcode Command Line Tools。
+开发环境为 Node.js 24.19.0、pnpm 12.5.1 和 Rust 1.98.0。Windows 需要 VS C++ 生成工具和 WebView2。macOS 版面向 macOS 14 及以上，构建需要 Xcode Command Line Tools。
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-- `pnpm typecheck` 检查 TypeScript，`pnpm test` 运行前端单元测试。
+- `pnpm typecheck` 检查 TypeScript，`pnpm test` 运行前端单元测试。首次进行全仓类型检查前，先运行 `npm ci --prefix apps/sync-server` 安装同步服务的依赖。
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` 验证迁移和内容服务。
 - `pnpm tauri build --debug --no-bundle` 生成用于本机验证的桌面程序；`pnpm build` 构建桌面安装包。
 
 正文和素材记录保存在系统应用数据目录下的 `workspace/content.db`，图片文件保存在 `workspace/assets/`。从「资料库」可导入公众号链接，写作区可选择主题、复制公众号富文本或导出排版 HTML。没有图床时，复制正文后可按助手中的编号逐张复制或保存图片。
+
+### macOS 通用安装包
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+APPLE_SIGNING_IDENTITY=- pnpm build --target universal-apple-darwin --bundles app,dmg
+```
+
+`src-tauri/target/universal-apple-darwin/release/bundle/` 下的 `.app` 和 `.dmg` 同时包含 Apple Silicon 和 Intel 架构。示例使用临时签名，供本机验证。对外分发时使用 Developer ID 签名并完成 Apple 公证。
 
 ## S3 数据库备份
 
@@ -29,6 +38,13 @@ Windows PowerShell 中从剪贴板加载刚复制的令牌，然后为 [Codex CL
 
 ```powershell
 $env:WECHAT_WORKBENCH_MCP_TOKEN = (Get-Clipboard).Trim()
+codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
+```
+
+macOS 终端可用 `pbpaste` 读取刚复制的令牌。
+
+```sh
+export WECHAT_WORKBENCH_MCP_TOKEN="$(pbpaste)"
 codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
 ```
 

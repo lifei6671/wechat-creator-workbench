@@ -5,7 +5,7 @@ import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizab
 import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
-import { desktop, errorMessage, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncApplied, type UploadProgress } from "../desktop";
+import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncApplied, type UploadProgress } from "../desktop";
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
@@ -41,7 +41,7 @@ import "./collection-canvas.css";
 
 const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
 const CollectionCanvas = lazy(() => import("./CollectionCanvas").then(module => ({ default: module.CollectionCanvas })));
-const minimumDirectoryWidth = 192;
+const minimumDirectoryWidth = macTitleBar ? 300 : 192;
 const minimumTimelineWidth = 416;
 const minimumWritingWidth = 360;
 const minimumNavigationWidth = 337;
@@ -1900,7 +1900,7 @@ export function DesktopShell() {
   );
   return <Theme appearance={appearance === "system" ? systemDark ? "dark" : "light" : appearance} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
-    <div className="workspace-shell" inert={Boolean(exitMessage)}>
+    <div className="workspace-shell" data-mac-titlebar={macTitleBar || undefined} inert={Boolean(exitMessage)}>
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup} groupRef={workspacePanels}
         resizeTargetMinimumSize={dividerHitTarget}
         onLayoutChange={layout => {

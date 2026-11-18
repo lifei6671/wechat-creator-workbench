@@ -90,6 +90,7 @@ type CanvasWebview = { action: "open"; url: string; session: number; bounds: Web
   | { action: "cover"; rememberScroll?: boolean } | { action: "reveal" | "close" };
 
 export const windowsTitleBar = /Win/.test(navigator.platform);
+export const macTitleBar = /Mac/.test(navigator.platform);
 export const nativeWindow = () => getCurrentWindow();
 
 export const desktop = {

@@ -1,11 +1,11 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
-import { nativeWindow, windowsTitleBar } from "../desktop";
+import { macTitleBar, nativeWindow, windowsTitleBar } from "../desktop";
 import { Tooltip } from "../ui";
 
 export function WindowDragRegion({ onError }: { onError(error: unknown): void }) {
   function drag(event: MouseEvent<HTMLElement>) {
-    if (!windowsTitleBar || event.button !== 0) return;
+    if (!(windowsTitleBar || macTitleBar) || event.button !== 0) return;
     if (event.detail === 2) void nativeWindow().toggleMaximize().catch(onError);
     else void nativeWindow().startDragging().catch(onError);
   }

@@ -31,6 +31,10 @@
   padding-inline: 10px 4px; border-bottom-color: var(--gray-a4);
   --chrome-selected: var(--sand-a4);
 }
+[data-mac-titlebar] :is(.sidebar-chrome, .workbench-chrome:has(> .restore-sidebar)) {
+  padding-inline-start: 80px;
+}
+[data-mac-titlebar] .ai-panel-trigger[aria-expanded="false"] { margin-inline-end: 12px; }
 .sidebar-chrome > .button-strip { gap: 4px; }
 @container sidebar-chrome (width < 210px) {
   .sidebar-chrome > .button-strip { gap: 3px; }
@@ -512,6 +516,7 @@ button.outline-expand { cursor: pointer; }
 .ai-chat-header:has(> .window-controls) { padding-inline-end: 0; }
 .ai-chat-header h2 { margin: 0; padding: 4px 8px; border-radius: 6px; background: var(--sand-4); font-size: var(--workspace-font); font-weight: 550; }
 .ai-chat-header-tools { margin-inline-start: auto; display: flex; align-items: center; gap: 10px; }
+[data-mac-titlebar] .ai-chat-header-tools > button:last-child { margin-inline-end: 4px; }
 .ai-chat-header-tools > [aria-pressed="true"] { color: var(--text-main); background: var(--chrome-selected); }
 @container (max-width: 325px) {
   .ai-chat-header { gap: 4px; }
