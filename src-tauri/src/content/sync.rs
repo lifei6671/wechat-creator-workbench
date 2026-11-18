@@ -1,0 +1,113 @@
+use super::{Fields, Kind, get_entry, taxonomy, validate_fields};
+use crate::db::{AppError, Result, now};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
+
+pub fn preserve_local_revision(conn: &Connection, id: &str) -> Result<()> {
+    super::record_revision(conn, id, "manual", now())
+}
+
+pub fn snapshot(conn: &Connection, id: &str) -> Result<Option<Value>> {
+    let Some((folder, pin, imported, deleted)) = conn.query_row(
+        "SELECT folder_sort_order,pinned_order,wechat_imported,deleted_at FROM entries WHERE id=?1",
+        [id],
+        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?,
+                   row.get::<_, bool>(2)?, row.get::<_, Option<i64>>(3)?)),
+    ).optional()? else { return Ok(None); };
+    let entry = get_entry(conn, id)?;
+    let mut data = serde_json::to_value(entry).map_err(invalid)?;
+    let fields = data.as_object_mut().expect("entries serialize as objects");
+    for key in ["id", "version", "links", "pinned"] {
+        fields.remove(key);
+    }
+    fields.insert("folderSortOrder".into(), json!(folder));
+    fields.insert("pinnedOrder".into(), json!(pin));
+    fields.insert("wechatImported".into(), json!(imported));
+    fields.insert("deletedAt".into(), json!(deleted));
+    for (key, sql) in [
+        (
+            "sourceEntryIds",
+            "SELECT source_entry_id FROM entry_links WHERE article_id=?1 ORDER BY source_entry_id",
+        ),
+        (
+            "assetIds",
+            "SELECT asset_id FROM entry_assets WHERE entry_id=?1 ORDER BY asset_id",
+        ),
+    ] {
+        let list = conn
+            .prepare(sql)?
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        fields.insert(key.into(), json!(list));
+    }
+    Ok(Some(data))
+}
+
+pub fn apply(conn: &Connection, id: &str, payload: &Value, deleted: Option<i64>) -> Result<()> {
+    let kind = match payload["kind"].as_str() {
+        Some("article") => Kind::Article,
+        Some("idea") => Kind::Idea,
+        Some("reference") => Kind::Reference,
+        _ => return Err(AppError::invalid("云端条目的类型无效")),
+    };
+    let mut data = payload.clone();
+    if let Some(obj) = data.as_object_mut() {
+        let defaults = Fields::empty(kind);
+        for (key, value) in [
+            ("status", json!(defaults.status)),
+            ("tags", json!([])),
+            ("summary", json!("")),
+            ("publishedUrl", json!("")),
+        ] {
+            obj.entry(key).or_insert(value);
+        }
+        if let Some(source) = obj.get_mut("source").and_then(Value::as_object_mut) {
+            source.entry("author").or_insert(json!(""));
+            source.entry("accountName").or_insert(json!(""));
+        }
+    }
+    let fields: Fields = serde_json::from_value(data).map_err(invalid)?;
+    let saved = payload["updatedAt"].as_i64().unwrap_or_else(now);
+    let source = validate_fields(conn, id, kind, &fields, saved)?;
+    conn.execute(
+        "INSERT INTO entries (id,kind,title,content_md,status,category_id,source_id,summary,cover_asset_id,theme_id,
+            created_at,updated_at,published_at,published_url,deleted_at,pinned_order,wechat_imported)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+         ON CONFLICT(id) DO UPDATE SET title=excluded.title,content_md=excluded.content_md,
+            status=excluded.status,category_id=excluded.category_id,source_id=excluded.source_id,summary=excluded.summary,
+            cover_asset_id=excluded.cover_asset_id,theme_id=excluded.theme_id,updated_at=excluded.updated_at,
+            published_at=excluded.published_at,published_url=excluded.published_url,deleted_at=excluded.deleted_at,
+            pinned_order=excluded.pinned_order,wechat_imported=excluded.wechat_imported,version=entries.version+1",
+        params![id,kind.key(),fields.title,fields.content_md,fields.status,fields.category_id,source,fields.summary,
+            fields.cover_asset_id,fields.theme_id,payload["createdAt"].as_i64().unwrap_or(saved),saved,
+            fields.published_at,fields.published_url,deleted,payload["pinnedOrder"].as_i64(),
+            payload["wechatImported"].as_bool().unwrap_or(false)],
+    )?;
+    conn.execute(
+        "UPDATE entries SET folder_sort_order=?2 WHERE id=?1",
+        params![id, payload["folderSortOrder"].as_i64()],
+    )?;
+    taxonomy::replace_tags(conn, id, &fields.tags)?;
+    crate::assets::references::sync_entry(conn, id, &fields.content_md)?;
+    Ok(())
+}
+
+pub fn apply_links(conn: &Connection, id: &str, payload: &Value) -> Result<()> {
+    conn.execute("DELETE FROM entry_links WHERE article_id=?1", [id])?;
+    if let Some(ids) = payload["sourceEntryIds"].as_array() {
+        for source in ids {
+            let source = source
+                .as_str()
+                .ok_or_else(|| AppError::invalid("云端条目的来源关联无效"))?;
+            conn.execute(
+                "INSERT INTO entry_links VALUES (?1,?2)",
+                params![id, source],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn invalid(_: serde_json::Error) -> AppError {
+    AppError::new("SYNC_PAYLOAD", "条目内容无法转换为同步数据")
+}

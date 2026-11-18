@@ -13,6 +13,7 @@ mod github_import;
 mod graphics;
 mod mcp;
 mod secrets;
+mod sync;
 mod wechat_import;
 
 use ai::conversations::*;
@@ -35,6 +36,14 @@ use db::Workspace;
 use github_import::github_import;
 use graphics::gpu_acceleration;
 use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
+use sync::contents::{
+    sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
+    sync_resolve, sync_run,
+};
+use sync::{
+    sync_connect, sync_create_pairing, sync_devices, sync_generate_secret, sync_revoke_device,
+    sync_status,
+};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 use wechat_import::{Imports, wechat_import, wechat_import_jobs, wechat_retry_images};
@@ -75,6 +84,7 @@ fn main() {
             app.manage(AiService::new(&db)?);
             app.manage(db);
             app.manage(McpServer::default());
+            app.manage(sync::SyncConnection::new()?);
             app.manage(canvas_webview::PreviewState::default());
             #[cfg(windows)]
             graphics::create_main_window(app)?;
@@ -158,6 +168,19 @@ fn main() {
             mcp_status,
             mcp_save,
             mcp_token,
+            sync_status,
+            sync_connect,
+            sync_devices,
+            sync_create_pairing,
+            sync_revoke_device,
+            sync_generate_secret,
+            sync_run,
+            sync_activity,
+            sync_apply,
+            sync_rebuild_stage,
+            sync_rebuild_apply,
+            sync_conflicts,
+            sync_resolve,
             ai_settings,
             ai_agent_versions,
             ai_agent_models,

@@ -32,6 +32,24 @@ export interface WechatImportJob {
 }
 export interface McpConfig { enabled: boolean; port: number; permission: "read" | "write" }
 export interface McpStatus { config: McpConfig; running: boolean; error: string | null }
+export interface SyncBinding { url: string; instanceId: string; epoch: string; deviceId: string; paused: boolean }
+export interface SyncDevice { deviceId: string; name: string; createdAt: number; revokedAt: number | null }
+export interface SyncDevices { currentDeviceId: string; devices: SyncDevice[] }
+export interface SyncPairing { pairingToken: string; expiresAt: number }
+export type SyncConnectMethod = "claim" | "pair";
+export type SyncResolution = "cloud" | "local" | "copy";
+export interface SyncApplied { changedEntries: string[]; changedCollections: string[] }
+export interface SyncConflict {
+  entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge";
+  entityId: string;
+  reason: string;
+  local: { title?: string; name?: string; contentMd?: string; label?: string } | null;
+  remote: { title?: string; name?: string; contentMd?: string; label?: string } | null;
+  resolvable: boolean;
+  canKeepLocal: boolean;
+  remoteRevision: number | null;
+  localGeneration: number | null;
+}
 export type AiAgent = "codex" | "claude_code";
 export type AiModelKind = "local" | "custom";
 export type AiTarget = { kind: "agent"; id: AiAgent } | { kind: "model"; id: string };
@@ -142,6 +160,21 @@ export const desktop = {
   retryWechatImages: (entry: string) => invoke<WechatImportJob>("wechat_retry_images", { entry }),
   wechatGraphics: (markdown: string) => invoke<SourceFragment[]>("wechat_graphics", { markdown }),
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
+  syncStatus: () => invoke<SyncBinding | null>("sync_status"),
+  syncConnect: (url: string, name: string, method: SyncConnectMethod, code: string, rebuild?: boolean) =>
+    invoke<SyncBinding>("sync_connect", { url, name, method, code, rebuild }),
+  syncDevices: () => invoke<SyncDevices>("sync_devices"),
+  syncCreatePairing: () => invoke<SyncPairing>("sync_create_pairing"),
+  syncRevokeDevice: (deviceId: string) => invoke<void>("sync_revoke_device", { deviceId }),
+  syncGenerateSecret: () => invoke<string>("sync_generate_secret"),
+  syncRun: () => invoke<void>("sync_run"),
+  syncActivity: () => invoke<{ pending: boolean; incoming: boolean } | null>("sync_activity"),
+  syncApply: () => invoke<SyncApplied>("sync_apply"),
+  syncRebuildStage: () => invoke<void>("sync_rebuild_stage"),
+  syncRebuildApply: () => invoke<SyncApplied & { recoveryArchive: string }>("sync_rebuild_apply"),
+  syncConflicts: () => invoke<SyncConflict[]>("sync_conflicts"),
+  syncResolve: (entityType: SyncConflict["entityType"], entityId: string, choice: SyncResolution, remoteRevision: number, localGeneration: number) =>
+    invoke<SyncApplied>("sync_resolve", { entityType, entityId, choice, remoteRevision, localGeneration }),
   onMcpStatusChanged: (callback: () => void) => listen("mcp-status-changed", callback),
   saveMcp: (config: McpConfig) => invoke<McpStatus>("mcp_save", { config }),
   mcpToken: (rotate: boolean) => invoke<void>("mcp_token", { rotate }),

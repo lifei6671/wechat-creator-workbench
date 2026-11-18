@@ -21,6 +21,7 @@ export interface CollectionCanvasHandle {
   paste(target: EventTarget | null): boolean;
   clipboard(action: ClipboardAction, target: EventTarget | null, plainText?: boolean): boolean;
   flush(): Promise<void>;
+  canApplySync(): boolean;
   addEntry(entryId: string): Promise<void>;
 }
 
@@ -113,6 +114,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   }, [articleRequests]);
   const [guides, setGuides] = useState<ReturnType<typeof alignCollectionNodes>>();
   const draggedIds = useRef(new Set<string>());
+  const activePointers = useRef(new Set<number>());
   const selectingCards = useRef(false);
   const explicitEdgeSelection = useRef(false);
   const [convertingId, setConvertingId] = useState<string | null>(null);
@@ -384,6 +386,19 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   useEffect(() => () => image?.dispose(), [image]);
 
   useEffect(() => {
+    const finishPointer = (event: PointerEvent) => { activePointers.current.delete(event.pointerId); };
+    const loseFocus = () => activePointers.current.clear();
+    window.addEventListener("pointerup", finishPointer, true);
+    window.addEventListener("pointercancel", finishPointer, true);
+    window.addEventListener("blur", loseFocus);
+    return () => {
+      window.removeEventListener("pointerup", finishPointer, true);
+      window.removeEventListener("pointercancel", finishPointer, true);
+      window.removeEventListener("blur", loseFocus);
+    };
+  }, []);
+
+  useEffect(() => {
     if (loadedRevision.current === revision) return;
     let live = true;
     void desktop.collectionCanvas(collectionId).then(result => {
@@ -472,6 +487,8 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   }
   useImperativeHandle(canvasRef, () => ({
     paste, flush, addEntry: async entryId => { await addNode({ kind: "entry", entryId }); },
+    canApplySync: () => !activePointers.current.size && !dialog && !image &&
+      !activeArticleEdit.current?.queue.isDirty() && !activeArticleEdit.current?.queue.isSaving(),
     clipboard: (action, target, plainText) => (textEditor.current?.handle ?? articleEditor.current)?.clipboard(action, clipboard, target, plainText) ?? false,
   }));
 
@@ -696,10 +713,11 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
     setDialog({ type: "edge", edge });
   }
 
-  return <div id="collection-canvas-panel" role="tabpanel" aria-labelledby={`collection-tab-${collectionId}`} className="document-body collection-workspace">
+  return <div id="collection-canvas-panel" role="tabpanel" aria-labelledby={`collection-tab-${collectionId}`} className="document-body collection-workspace" inert={articleLocked}>
     <ContextMenu.Root>
     <ContextMenu.Trigger>
     <div className="collection-flow" tabIndex={0} ref={area} aria-label="专题画布"
+      onPointerDownCapture={event => { activePointers.current.add(event.pointerId); }}
       onContextMenuCapture={event => {
         const element = event.target as Element;
         if (!event.currentTarget.contains(element) || element.closest(".collection-inline-editor")) return;

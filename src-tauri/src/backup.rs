@@ -9,7 +9,7 @@ use crate::{
 };
 use restore::{Files, PendingRestore, RestoreNotice, file_error};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{Backup, Secret, Settings, Target, UploadResult};
 use tauri::{AppHandle, Emitter, State};
 use tempfile::NamedTempFile;
@@ -33,6 +33,20 @@ impl Backups {
                 notice,
             },
         ))
+    }
+
+    pub(crate) fn archive_sync_recovery(&self, workspace: &str) -> Result<PathBuf> {
+        let directory = self.files.database.with_file_name("sync-recovery");
+        std::fs::create_dir_all(&directory).map_err(file_error)?;
+        let output = directory.join(format!("workspace-{}.zip", id()));
+        migration::export_recovery(&self.files.database, &self.files.stage, workspace, &output)?;
+        Ok(output)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_workspace_archive_for_test(&self, path: &Path) -> Result<()> {
+        let pending = migration::prepare(path, &self.files.stage, &self.files.incoming)?;
+        self.files.write_marker(&pending)
     }
 }
 
@@ -183,6 +197,7 @@ pub async fn backup_discard_restore(backups: State<'_, Backups>, ticket: String)
 pub async fn backup_export_workspace(
     app: AppHandle,
     db: State<'_, Workspace>,
+    assets: State<'_, crate::assets::Assets>,
     backups: State<'_, Backups>,
     preferences: std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Result<Option<String>> {
@@ -198,6 +213,7 @@ pub async fn backup_export_workspace(
     else {
         return Ok(None);
     };
+    assets.prepare_synced_workspace_export(&db).await?;
     let database = backups.files.database.clone();
     let stage = backups.files.stage.clone();
     let saved = tokio::task::spawn_blocking(move || {

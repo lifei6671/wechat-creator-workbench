@@ -6,6 +6,7 @@ mod import_markdown;
 pub mod publishing;
 pub mod references;
 pub(crate) mod s3;
+pub(crate) mod sync;
 pub(crate) mod upload_format;
 
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
@@ -567,11 +568,17 @@ impl Assets {
                 Err(error) => return Err(local_error(error)),
             }
         }
-        let (profile, location) = db.read(|conn| {
-            let location = hosted_location(conn, file)?
-                .ok_or_else(|| AppError::new("ASSET_MISSING", "找不到本地图片或可用的图床副本"))?;
-            Ok((Profile::read(conn, &location.profile_id)?, location))
+        let hosted = db.read(|conn| {
+            hosted_location(conn, file)?
+                .map(|location| Ok((Profile::read(conn, &location.profile_id)?, location)))
+                .transpose()
         })?;
+        let Some((profile, location)) = hosted else {
+            return self
+                .read_synced_file(db, file)
+                .await?
+                .ok_or_else(|| AppError::new("ASSET_MISSING", "找不到本地图片或可用的远端副本"));
+        };
         let result = match profile.provider() {
             Ok(store) => store.get(&location.key).await,
             Err(error) => Err(error),

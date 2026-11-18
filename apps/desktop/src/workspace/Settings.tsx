@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
-import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { desktop, errorMessage, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import type { ViewMode } from "./Document";
@@ -20,6 +20,7 @@ const groups = [
     { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Codex Claude" },
   ] },
   { label: "存储", items: [
+    { id: "sync", label: "同步", icon: RefreshCw, keywords: "多设备 自托管 服务地址 Cloudflare VPS 配对 认领 设备" },
     { id: "images", label: "S3 图床", icon: Cloud, keywords: "素材 图片 公开访问地址 S3 端点 区域 桶名 对象前缀 访问密钥 ID 秘密访问密钥 R2" },
     { id: "backups", label: "数据库备份", icon: DatabaseBackup, keywords: "SQLite S3 R2 还原 恢复 备份桶 工作区 S3 端点 区域 桶名 对象前缀 访问密钥 ID 秘密访问密钥" },
   ] },
@@ -27,7 +28,7 @@ const groups = [
 
 export type SettingsPage = typeof groups[number]["items"][number]["id"];
 const allPages = groups.flatMap(group => [...group.items]);
-const deferredPages = ["images", "backups"] as const;
+const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync"];
 
 function settingsSection(viewport: HTMLElement, page: SettingsPage) {
   return viewport.querySelector<HTMLElement>(`#settings-section-${page}`)!;
@@ -126,7 +127,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
         <div className="settings-pages" ref={attachScrollArea} onScroll={event => trackScroll(event.currentTarget)}>
           {allPages.map(({ id, label }) => <section className="settings-page" key={id} id={`settings-section-${id}`} aria-labelledby={`settings-${id}`}>
             <h2 id={`settings-${id}`} className="settings-page-title" tabIndex={-1}>{label}</h2>
-            {(id !== "images" && id !== "backups") || loaded.includes(id) ? renderPage(id)
+            {!deferredPages.includes(id) || loaded.includes(id) ? renderPage(id)
               : <div className="settings-card"><p className="settings-feedback muted-text">正在读取设置…</p></div>}
           </section>)}
         </div>
@@ -137,15 +138,15 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
 }
 
 export function SettingRow({ id, label, hint, warning, children }: {
-  id?: string; label: string; hint: string; warning?: string; children(hintId: string): ReactNode;
+  id?: string; label: string; hint?: string; warning?: string; children(hintId: string): ReactNode;
 }) {
   const generatedId = useId();
   const hintId = id ? `${id}-hint` : generatedId;
   return <div className="setting-row"><div className="setting-copy">
     {id ? <label htmlFor={id}>{label}</label> : <span>{label}</span>}
-    <span id={hintId} className="setting-hint">
+    {(hint || warning) && <span id={hintId} className="setting-hint">
       {hint}{warning && <> <span className="setting-warning">{warning}</span></>}
-    </span>
+    </span>}
   </div><div className="setting-control">{children(hintId)}</div></div>;
 }
 

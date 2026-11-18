@@ -43,8 +43,51 @@ pub(super) fn export(
     output: &Path,
     preferences: &BTreeMap<String, serde_json::Value>,
 ) -> Result<()> {
+    write_archive(database, stage, workspace, output, preferences, false)
+}
+
+pub(super) fn export_recovery(
+    database: &Path,
+    stage: &Path,
+    workspace: &str,
+    output: &Path,
+) -> Result<()> {
+    write_archive(database, stage, workspace, output, &BTreeMap::new(), true)
+}
+
+fn write_archive(
+    database: &Path,
+    stage: &Path,
+    workspace: &str,
+    output: &Path,
+    preferences: &BTreeMap<String, serde_json::Value>,
+    recovery: bool,
+) -> Result<()> {
     let draft = NamedTempFile::new_in(stage).map_err(file_error)?;
     make_snapshot(database, draft.path(), workspace)?;
+    let root = database.with_file_name("assets");
+    if recovery {
+        let snapshot = Connection::open(draft.path())?;
+        let mut cached = snapshot.prepare(
+            "SELECT DISTINCT a.relative_path FROM assets a JOIN sync_revisions r
+              ON r.entity_type='asset' AND r.entity_id=a.id
+             WHERE a.relative_path IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=a.id)",
+        )?;
+        let paths = cached
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for path in paths {
+            if !root.join(&path).try_exists().map_err(file_error)? {
+                snapshot.execute(
+                    "UPDATE assets SET relative_path=NULL WHERE relative_path=?1
+                     AND EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=assets.id)
+                     AND NOT EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=assets.id)",
+                    [&path],
+                )?;
+            }
+        }
+    }
     if !preferences.is_empty() {
         let snapshot =
             Connection::open_with_flags(draft.path(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
@@ -59,7 +102,6 @@ pub(super) fn export(
     let mut packed = NamedTempFile::new_in(parent).map_err(file_error)?;
     let mut archive = ZipWriter::new(packed.as_file_mut());
     write_entry(&mut archive, "content.db", draft.path())?;
-    let root = database.with_file_name("assets");
     for (path, hash, hosted) in assets(draft.path())? {
         let source = root.join(&path);
         if hosted && !source.try_exists().map_err(file_error)? {

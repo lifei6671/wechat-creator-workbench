@@ -27,7 +27,7 @@ const { flushCanvas } = vi.hoisted(() => ({ flushCanvas: vi.fn<() => Promise<voi
 vi.mock(import("./CollectionCanvas"), () => ({
   CollectionCanvas: ({ collection, onLoadArticle, onSaveArticle, onOpenEntry, canvasRef }: ComponentProps<typeof CollectionCanvas>) => {
     useImperativeHandle(collection.id === "canvas-open" ? canvasRef : null,
-      () => ({ flush: flushCanvas, addEntry: async () => {}, clipboard: () => false, paste: () => false }));
+      () => ({ flush: flushCanvas, canApplySync: () => true, addEntry: async () => {}, clipboard: () => false, paste: () => false }));
     return <>
     <h1 data-canvas={collection.id}>{collection.title}</h1>
     {collection.id === "canvas-open" && <button type="button" id="open-canvas-article" onClick={() => onOpenEntry("from-canvas")}>打开文章</button>}
@@ -308,6 +308,47 @@ it("flushes the still-editable canvas again after loading an article", async () 
   expect(active()).toBe("collection-tab-canvas-open");
   finishSave();
   await vi.waitFor(() => expect(active()).toBe("tab-from-canvas"));
+});
+
+it("flushes the open canvas before replay and reloads a remotely changed canvas opened during replay", async () => {
+  const topic: Collection = { id: "canvas-open", title: "旧标题", description: "", createdAt: 0, updatedAt: 0, nodeCount: 1,
+    viewport: { x: 30, y: 25, zoom: 0.9 } };
+  const other = { ...topic, id: "canvas-edit", title: "另一个专题" };
+  vi.mocked(desktop.collections).mockResolvedValue([topic, other]);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const activity = vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);
+  vi.spyOn(desktop, "syncRun").mockResolvedValue();
+  let finishReplay!: () => void;
+  const replay = new Promise<void>(resolve => { finishReplay = resolve; });
+  const apply = vi.spyOn(desktop, "syncApply").mockImplementation(async () => {
+    await replay;
+    vi.mocked(desktop.collections).mockResolvedValue([topic, { ...other, title: "云端标题" }]);
+    return { changedCollections: [other.id], changedEntries: [] };
+  });
+  let finishSave!: () => void;
+  flushCanvas.mockReset().mockReturnValue(new Promise<void>(resolve => { finishSave = resolve; }));
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(activity).toHaveBeenCalled());
+  click('.sidebar-chrome [aria-label="专题"]');
+  await vi.waitFor(() => expect(container.querySelector("#collection-row-canvas-open")).not.toBeNull());
+  click("#collection-row-canvas-open");
+  await vi.waitFor(() => expect(container.querySelector('[data-canvas="canvas-open"]')).not.toBeNull());
+  activity.mockResolvedValue({ pending: false, incoming: true });
+  window.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => expect(flushCanvas).toHaveBeenCalledOnce());
+  expect(apply).not.toHaveBeenCalled();
+  finishSave();
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  click("#collection-row-canvas-edit");
+  const canvas = () => container.querySelector('[data-canvas="canvas-edit"]');
+  await vi.waitFor(() => expect(canvas()?.textContent).toBe("另一个专题"));
+  const original = canvas();
+  finishReplay();
+  await vi.waitFor(() => expect(canvas()?.textContent).toBe("云端标题"));
+  expect(canvas()).not.toBe(original);
+  expect(apply).toHaveBeenCalledOnce();
 });
 
 it("marks joined topics and updates the menu after adding an article without opening the topic", async () => {

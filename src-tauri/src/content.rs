@@ -1,5 +1,6 @@
 pub mod collections;
 mod search;
+pub(crate) mod sync;
 pub mod taxonomy;
 #[cfg(test)]
 mod tests;

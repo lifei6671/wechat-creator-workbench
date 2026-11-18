@@ -262,6 +262,7 @@ impl Workspace {
                 tx.query_row("SELECT parent_id FROM categories WHERE id=?1", [id], |r| {
                     r.get(0)
                 })?;
+            crate::sync::record_category_delete(tx, id)?;
             let moved = tx
                 .prepare(
                     "UPDATE entries SET category_id=?2, version=version+1, updated_at=?3
@@ -278,6 +279,7 @@ impl Workspace {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             tx.execute("DELETE FROM categories WHERE parent_id=?1", [id])?;
             tx.execute("DELETE FROM categories WHERE id=?1", [id])?;
+            crate::sync::finish_category_delete(tx)?;
             Ok(moved)
         })
     }

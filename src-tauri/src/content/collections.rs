@@ -4,6 +4,8 @@ use crate::db::{AppError, Result, Workspace, id, now};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod sync;
+
 const COLLECTIONS: &str = "SELECT c.id,c.title,c.description,c.created_at,c.updated_at,
     c.viewport_x,c.viewport_y,c.viewport_zoom,
     (SELECT COUNT(*) FROM collection_nodes WHERE collection_id=c.id) FROM collections c";
@@ -160,7 +162,9 @@ impl Workspace {
 
     pub fn delete_collection(&self, collection_id: &str) -> Result<()> {
         self.write(|tx| {
-            changed(tx.execute("DELETE FROM collections WHERE id=?1", [collection_id])?)
+            crate::sync::contents::record_canvas_delete(tx, collection_id, true)?;
+            changed(tx.execute("DELETE FROM collections WHERE id=?1", [collection_id])?)?;
+            crate::sync::contents::finish_canvas_delete(tx)
         })
     }
 
@@ -310,7 +314,9 @@ impl Workspace {
                     |row| row.get(0),
                 )
                 .optional()?;
+            crate::sync::contents::record_canvas_delete(tx, node_id, false)?;
             changed(tx.execute("DELETE FROM collection_nodes WHERE id=?1", [node_id])?)?;
+            crate::sync::contents::finish_canvas_delete(tx)?;
             Ok(collection)
         })
     }

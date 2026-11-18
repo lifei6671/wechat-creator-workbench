@@ -82,6 +82,39 @@ fn online_backup_includes_uncheckpointed_wal_and_produces_a_standalone_database(
 }
 
 #[test]
+fn stage_pauses_saved_sync_binding() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("snapshot.sqlite");
+    let db = Workspace::open(&path).unwrap();
+    let workspace = db.read(workspace_id).unwrap();
+    db.write(|tx| {
+        tx.execute(
+            "INSERT INTO sync_binding VALUES (1,'https://sync.example.test/','instance','epoch','device',0)",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+    prepare_file(
+        &path,
+        &PendingRestore {
+            workspace,
+            name: "snapshot.sqlite".into(),
+            migration: None,
+        },
+    )
+    .unwrap();
+    let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let binding: (String, bool) = conn
+        .query_row("SELECT device_id,paused FROM sync_binding", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(binding, ("device".into(), true));
+}
+
+#[test]
 fn stage_migrates_old_schema_and_pauses_restored_jobs() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("legacy.sqlite");

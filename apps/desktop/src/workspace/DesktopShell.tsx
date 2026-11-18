@@ -5,7 +5,7 @@ import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizab
 import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
-import { desktop, errorMessage, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type UploadProgress } from "../desktop";
+import { desktop, errorMessage, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncApplied, type UploadProgress } from "../desktop";
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
@@ -22,6 +22,9 @@ import type { EditorDisplay } from "./EditorContextMenu";
 import { Outline } from "./Outline";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section, type TimelineSelection } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
+import { SyncSettings } from "./SyncSettings";
+import { startSyncScheduler } from "./sync-scheduler";
+import { flushSync } from "react-dom";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
@@ -93,7 +96,14 @@ export function DesktopShell() {
   const activeCollection = collections?.find(item => item.id === activeCollectionId);
   const openCollections = collectionTabs?.ids.flatMap(id => collections?.find(item => item.id === id) ?? []) ?? [];
   const collectionCanvas = useRef<CollectionCanvasHandle>(null);
-  const [canvasReload, setCanvasReload] = useState<{ id: string; version: number }>();
+  const [canvasRevisions, setCanvasRevisions] = useState(() => new Map<string, number>());
+  function reloadCanvases(ids: string[]) {
+    setCanvasRevisions(current => {
+      const next = new Map(current);
+      for (const id of ids) next.set(id, (next.get(id) ?? 0) + 1);
+      return next;
+    });
+  }
   const collectionListRevision = useRef(0);
   const collectionWrites = useRef(new Set<Promise<unknown>>());
   useEffect(() => {
@@ -267,6 +277,118 @@ export function DesktopShell() {
   const searchInput = useRef<HTMLInputElement>(null);
   const focusOrigin = useRef<HTMLElement | null>(null);
   const refresh = () => setRefreshCount(count => count + 1);
+  const syncing = useRef(false);
+  const [automaticSyncError, setAutomaticSyncError] = useState("");
+
+  async function flushWorkspaceForSync() {
+    const failed = (await waitForCollectionWrites()).find(write => write.status === "rejected");
+    if (failed) throw failed.reason;
+    await collectionCanvas.current?.flush();
+    const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
+    if (saved.some(result => !result)) throw new Error("有文稿未能保存，请处理后重试同步");
+  }
+
+  async function applySync(operation: () => Promise<SyncApplied>) {
+    flushSync(() => setGlobalLock(true));
+    try {
+      await flushWorkspaceForSync();
+      const { changedEntries, changedCollections } = await operation();
+      const reopened = await Promise.all([...new Set(changedEntries)].flatMap(id => {
+        const queue = queues.current.get(id);
+        return queue ? [desktop.entry(id).then(entry => ({ queue, entry }))] : [];
+      }));
+      for (const { queue, entry } of reopened) {
+        if (!queue.isDirty() && queues.current.get(entry.id) === queue) install(entry, queue);
+      }
+      if (changedCollections.length) {
+        collectionListRevision.current += 1;
+        setCollectionsRetry(value => value + 1);
+        reloadCanvases(changedCollections);
+      }
+      refresh();
+      setAssetsRevision(revision => revision + 1);
+    } finally {
+      setGlobalLock(false);
+    }
+  }
+
+  async function withSync<T>(operation: () => Promise<T>) {
+    if (syncing.current || globalLock || exit.current) throw new Error("工作区正在处理其他操作");
+    syncing.current = true;
+    try {
+      return await operation();
+    } finally {
+      syncing.current = false;
+    }
+  }
+
+  async function runSync() {
+    await withSync(async () => {
+      await flushWorkspaceForSync();
+      const applyIncoming = async () => {
+        if (!exit.current && (await desktop.syncActivity())?.incoming) await applySync(desktop.syncApply);
+      };
+      try {
+        await desktop.syncRun();
+      } catch (error) {
+        // Earlier pages can already be ready to apply. Keep the exchange error visible.
+        await applyIncoming().catch(() => {});
+        throw error;
+      }
+      await applyIncoming();
+    });
+    setAutomaticSyncError("");
+  }
+
+  async function rebuildSync() {
+    const archive = await withSync(async () => {
+      await desktop.syncRebuildStage();
+      if (exit.current) throw new Error("工作区正在关闭");
+      let archive = "";
+      await applySync(async () => {
+        const result = await desktop.syncRebuildApply();
+        archive = result.recoveryArchive;
+        return result;
+      });
+      return archive;
+    });
+    setAutomaticSyncError("");
+    return archive;
+  }
+
+  const isAutomaticSyncActive = useEffectEvent(() => !syncing.current && !globalLock && !modal && !exit.current &&
+    navigator.onLine && document.visibilityState === "visible" && document.hasFocus());
+  const runAutomaticSync = useEffectEvent(() => withSync(desktop.syncRun));
+  const canApplyAutomatically = useEffectEvent(() => isAutomaticSyncActive() &&
+    (collectionCanvas.current?.canApplySync() ?? true) &&
+    !document.activeElement?.closest("[contenteditable=true],textarea,input,select") &&
+    ![...queues.current.values()].some(queue => queue.isDirty() || queue.isSaving()));
+  const applyAutomaticSync = useEffectEvent(async () => {
+    if (!canApplyAutomatically()) return false;
+    if (!(await desktop.syncActivity())?.incoming) return true;
+    if (!canApplyAutomatically()) return false;
+    await withSync(() => applySync(desktop.syncApply));
+    return true;
+  });
+  useEffect(() => {
+    if (!workspaceId) return;
+    const scheduler = startSyncScheduler({
+      isActive: () => isAutomaticSyncActive(),
+      read: desktop.syncActivity,
+      run: () => runAutomaticSync(),
+      apply: () => applyAutomaticSync(),
+      report: error => setAutomaticSyncError(error ? errorMessage(error) : ""),
+    });
+    window.addEventListener("focus", scheduler.wake);
+    window.addEventListener("online", scheduler.wake);
+    document.addEventListener("visibilitychange", scheduler.wake);
+    return () => {
+      scheduler.dispose();
+      window.removeEventListener("focus", scheduler.wake);
+      window.removeEventListener("online", scheduler.wake);
+      document.removeEventListener("visibilitychange", scheduler.wake);
+    };
+  }, [workspaceId]);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
   useEffect(() => installInputContextMenu(showError), [showError]);
   function updateDocumentOptions(id: string, patch: DocumentOptions) {
@@ -969,7 +1091,7 @@ export function DesktopShell() {
             node.y < position.y + 160 && node.y + node.height + 16 > position.y) position.y = node.y + node.height + 16;
         }
         await desktop.createCollectionNode(collection.id, { kind: "entry", entryId }, position);
-        if (isCurrentCanvas) setCanvasReload(previous => ({ id: collection.id, version: (previous?.version ?? 0) + 1 }));
+        if (isCurrentCanvas) reloadCanvases([collection.id]);
       }
       setNotice({ type: "info", text: `已加入「${collection.title}」` });
     })()));
@@ -1906,9 +2028,9 @@ export function DesktopShell() {
             {collectionMode && <>
               {activeCollection ? <Suspense fallback={<div id="collection-canvas-panel" role="tabpanel"
                 aria-labelledby={`collection-tab-${activeCollection.id}`} className="document-body collection-state"><span role="status">正在打开专题…</span></div>}>
-                <CollectionCanvas key={`${activeCollection.id}:${canvasReload?.id === activeCollection.id ? canvasReload.version : 0}`}
+                <CollectionCanvas key={`${activeCollection.id}:${canvasRevisions.get(activeCollection.id) ?? 0}`}
                   collection={activeCollection} dark={appearance === "system" ? systemDark : appearance === "dark"}
-                  revision={refreshCount} articleLocked={globalLock} previewBlocked={Boolean(modal || exitMessage)} clipboard={editorClipboard}
+                  revision={refreshCount} articleLocked={globalLock} previewBlocked={Boolean(modal || exitMessage || globalLock)} clipboard={editorClipboard}
                   canvasRef={collectionCanvas} track={trackCollectionWrite} waitForWrites={waitForCollectionWrites}
                   onOpenEntry={onOpenCollectionEntry}
                   onLoadArticle={loadCollectionArticle} onSaveArticle={saveCollectionArticle} onArticleImages={importImages}
@@ -2004,6 +2126,9 @@ export function DesktopShell() {
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
+          if (page === "sync") return <SyncSettings onSync={runSync} onRebuild={rebuildSync} automaticError={automaticSyncError}
+            onResolve={(entityType, entityId, choice, remoteRevision, localGeneration) =>
+              applySync(() => desktop.syncResolve(entityType, entityId, choice, remoteRevision, localGeneration))} />;
           if (page === "images") return <ImageStorageSettings track={trackAssetTask} />;
           if (page === "backups") return <BackupPanel busy={backupWorking !== null || migrationWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}
             listRevision={backupListRevision} prepared={preparedBackup?.migration ? null : preparedBackup} onCreate={createBackup} onRestore={prepareBackup}

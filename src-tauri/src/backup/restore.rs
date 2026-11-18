@@ -225,6 +225,7 @@ pub(super) fn prepare_file(path: &Path, pending: &PendingRestore) -> Result<()> 
     db.entries(Filter::default())?;
     db.library()?;
     db.write(|tx| {
+        tx.execute("UPDATE sync_binding SET paused=1", [])?;
         tx.execute("DELETE FROM jobs WHERE kind='cleanup'", [])?;
         tx.execute(
             "UPDATE jobs SET status='failed', error='恢复数据库后可手动重试', updated_at=?1

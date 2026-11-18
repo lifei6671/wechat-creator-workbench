@@ -98,6 +98,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0017_collection_node_color.sql"),
     include_str!("../migrations/0018_collection_node_custom_color.sql"),
     include_str!("../migrations/0019_collection_node_web.sql"),
+    include_str!("../migrations/0020_sync.sql"),
+    include_str!("../migrations/0021_content_sync.sql"),
+    include_str!("../migrations/0022_canvas_sync.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -379,6 +382,28 @@ pub fn workspace_id(conn: &Connection) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn canvas_migration_enrolls_existing_items_without_resetting_the_sync_cursor() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::migrate(&mut conn, 0, 21).unwrap();
+        conn.execute_batch(
+            "UPDATE sync_progress SET capture=1,initialized=1,cursor=41;
+             INSERT INTO collections (id,title,created_at,updated_at) VALUES ('topic','专题',1,1);
+             INSERT INTO collection_nodes (id,collection_id,kind,created_at,updated_at) VALUES
+                ('card-a','topic','text',1,1),('card-b','topic','text',1,1);
+             INSERT INTO collection_edges VALUES ('edge','topic','card-a','card-b','备注',1);",
+        )
+        .unwrap();
+        super::migrate(&mut conn, 21, super::SCHEMA_VERSION).unwrap();
+        let (cursor, pending): (i64, i64) = conn
+            .query_row(
+                "SELECT cursor,(SELECT count(*) FROM sync_dirty) FROM sync_progress",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((cursor, pending), (41, 4));
+    }
     use super::*;
 
     #[test]

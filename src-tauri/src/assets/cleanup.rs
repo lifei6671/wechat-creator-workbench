@@ -7,6 +7,7 @@ struct Group {
     hash: String,
     paths: Vec<String>,
     targets: Vec<(Profile, String)>,
+    keep_sync_asset: bool,
 }
 
 impl Assets {
@@ -34,7 +35,15 @@ impl Assets {
         }
 
         let groups = db.maintenance(|tx| {
-            let (references, mut retained) = referenced(tx)?;
+            let (mut references, mut retained) = referenced(tx)?;
+            let mut synced = tx.prepare(
+                "SELECT a.id FROM assets a WHERE
+                   EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=a.id)
+                   OR EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=a.id)",
+            )?;
+            for asset in synced.query_map([], |row| row.get::<_, String>(0))? {
+                references.insert(asset?);
+            }
             let mut pinned = tx.prepare(
                 "SELECT DISTINCT sha256 FROM assets WHERE retain_on_exit=1 AND sha256 IS NOT NULL",
             )?;
@@ -133,13 +142,17 @@ impl Assets {
             if self.cleanup_stopped.is_cancelled() {
                 return Err(AppError::new("CLEANUP_CANCELLED", "剩余素材清理已取消"));
             }
-            for path in &group.paths {
-                remove_file(&self.root.join(path))?;
+            if !group.keep_sync_asset {
+                for path in &group.paths {
+                    remove_file(&self.root.join(path))?;
+                }
             }
             db.maintenance(|tx| {
                 tx.execute("DELETE FROM jobs WHERE sha256=?1 AND kind='upload' AND status<>'completed'", [hash])?;
-                tx.execute("DELETE FROM jobs WHERE kind='import_image' AND asset_id IN (SELECT id FROM assets WHERE sha256=?1)", [hash])?;
-                tx.execute("DELETE FROM assets WHERE sha256=?1", [hash])?;
+                if !group.keep_sync_asset {
+                    tx.execute("DELETE FROM jobs WHERE kind='import_image' AND asset_id IN (SELECT id FROM assets WHERE sha256=?1)", [hash])?;
+                    tx.execute("DELETE FROM assets WHERE sha256=?1", [hash])?;
+                }
                 tx.execute("DELETE FROM asset_locations WHERE sha256=?1", [hash])?;
                 tx.execute("UPDATE jobs SET status='completed',error=NULL,updated_at=?2 WHERE kind='cleanup' AND sha256=?1", params![hash, now()])?;
                 Ok(())
@@ -304,6 +317,12 @@ fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> 
         "SELECT DISTINCT relative_path FROM assets WHERE sha256=?1 AND relative_path IS NOT NULL",
     )?;
     let mut locations = conn.prepare("SELECT storage_profile_id,object_key FROM asset_locations WHERE sha256=?1 AND deleted_at IS NULL ORDER BY storage_profile_id")?;
+    let mut synced = conn.prepare(
+        "SELECT EXISTS(SELECT 1 FROM assets a WHERE a.sha256=?1 AND (
+             EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=a.id)
+             OR EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=a.id)
+        ))",
+    )?;
     let mut result = Vec::new();
     for hash in hashes.into_iter().filter(|hash| !retained.contains(hash)) {
         let files = paths
@@ -316,10 +335,15 @@ fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> 
             let (profile, key) = row?;
             targets.push((Profile::read(conn, &profile)?, key));
         }
+        let keep_sync_asset = synced.query_row([&hash], |row| row.get(0))?;
+        if keep_sync_asset && targets.is_empty() {
+            continue;
+        }
         result.push(Group {
             hash,
             paths: files,
             targets,
+            keep_sync_asset,
         });
     }
     Ok(result)
@@ -455,6 +479,41 @@ mod tests {
             assert!(!referenced(tx)?.1.contains(&hash));
             Ok(())
         }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn public_cleanup_preserves_the_sync_asset() {
+        let (_dir, db, assets) = super::super::tests::setup();
+        let id = assets
+            .import(&db, "图片.png", &super::super::tests::png())
+            .unwrap();
+        let file = db.read(|conn| super::super::by_id(conn, &id)).unwrap();
+        let hash = file.hash.unwrap();
+        db.write(|tx| {
+            tx.execute("INSERT INTO sync_revisions VALUES ('asset',?1,1,0)", [&id])?;
+            tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
+            tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,uploaded_at) VALUES (?1,'s','key',1)", [&hash])?;
+            Ok(())
+        }).unwrap();
+        let mut pending = db.read(|conn| groups(conn, &BTreeSet::new())).unwrap();
+        let group = pending.pop().unwrap();
+        assert!(group.keep_sync_asset);
+        assert!(
+            assets
+                .remove_group(&db, &group, async |_, key| {
+                    assert_eq!(key, "key");
+                    Ok(())
+                })
+                .await
+                .unwrap()
+        );
+        assert!(assets.root.join(file.path.unwrap()).is_file());
+        assert!(db.read(|conn| super::super::by_id(conn, &id)).is_ok());
+        assert!(
+            db.read(|conn| groups(conn, &BTreeSet::new()))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ tauri-plugin-window-state = "2"
 rusqlite = { version = "0.39", features = ["backup", "bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
+getrandom = "0.4"
 url = "2"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "rustls"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }

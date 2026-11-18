@@ -16,6 +16,7 @@ const viewportControl = vi.hoisted(() => ({
   get: vi.fn(() => ({ x: 12, y: 24, zoom: 1 })),
   set: vi.fn(async (_view: { x: number; y: number; zoom: number }, _options: { duration: number }) => true),
 }));
+const flowEvents = vi.hoisted(() => ({ nodes: (_changes: NodeChange<FlowNode>[]) => {} }));
 
 vi.mock("@xyflow/react", async importOriginal => {
   const flow = await importOriginal<typeof import("@xyflow/react")>();
@@ -31,7 +32,9 @@ vi.mock("@xyflow/react", async importOriginal => {
       onNodesChange(changes: NodeChange<FlowNode>[]): void;
       onEdgesChange(changes: EdgeChange[]): void;
       onNodeClick(event: React.MouseEvent): void;
-    }) => <div><button type="button" onClick={onPaneClick}>空白画布</button>{nodes.map(node =>
+    }) => {
+      flowEvents.nodes = onNodesChange;
+      return <div><button type="button" onClick={onPaneClick}>空白画布</button>{nodes.map(node =>
       <div key={node.id} data-node={node.id} onClick={event => {
         onNodesChange(nodes.flatMap(item => {
           const selected = item.id === node.id ? !(event.ctrlKey && node.selected) : Boolean(event.ctrlKey && item.selected);
@@ -42,7 +45,8 @@ vi.mock("@xyflow/react", async importOriginal => {
         <nodeTypes.card id={node.id} data={node.data} selected={node.selected ?? false} width={node.width} height={node.height} />
       </div>)}{edges.map(edge => <button key={edge.id} data-edge={edge.id} onClick={() => {
         onEdgesChange([{ type: "select", id: edge.id, selected: true }]);
-      }}>{edge.id}</button>)}</div>,
+      }}>{edge.id}</button>)}</div>;
+    },
   };
 });
 
@@ -108,6 +112,24 @@ async function mountCanvas(read = vi.fn().mockResolvedValue(""), edit = true, no
     type(markdown: string) { editor()!.textContent = markdown; editor()!.dispatchEvent(new Event("input", { bubbles: true })); },
     unmount() { flushSync(() => root.unmount()); container.remove(); vi.restoreAllMocks(); } };
 }
+
+it("holds sync replay during a canvas gesture and saves final card geometry once", async () => {
+  const canvas = await mountCanvas(undefined, false);
+  const save = vi.spyOn(desktop, "updateCollectionNodeGeometry").mockResolvedValue();
+  const panel = canvas.container.querySelector(".collection-flow")!;
+  try {
+    panel.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 12 }));
+    expect(canvas.api.canApplySync()).toBe(false);
+    flushSync(() => flowEvents.nodes([{ type: "position", id: card.id, dragging: true, position: { x: 5, y: 6 } }]));
+    expect(save).not.toHaveBeenCalled();
+    flushSync(() => flowEvents.nodes([{ type: "position", id: card.id, dragging: false, position: { x: 50, y: 60 } }]));
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 12 }));
+    expect(canvas.api.canApplySync()).toBe(true);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith([
+      { nodeId: card.id, x: 50, y: 60, width: 320, height: 200 },
+    ]));
+  } finally { canvas.unmount(); }
+});
 
 it("waits for a pending paste and keeps the editor available when the final save fails", async () => {
   const clipboard = deferred<string>();

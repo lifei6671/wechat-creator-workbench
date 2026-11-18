@@ -8,6 +8,7 @@ import { desktop, type AiSettings } from "../desktop";
 import { ModelSettings } from "./AiSettings";
 import { MigrationPanel } from "./Migration";
 import { McpSettings, S3Fields, SettingsDialog } from "./Settings";
+import { SyncSettings } from "./SyncSettings";
 
 let enterSection: (section: HTMLElement) => void;
 beforeEach(() => {
@@ -28,6 +29,86 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+it("shows the bound sync device and copies a pairing code without displaying it", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const pairingToken = "f".repeat(64);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test/", deviceId: "previous", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({
+    currentDeviceId: "local",
+    devices: [{ deviceId: "local", name: "工作电脑", createdAt: 0, revokedAt: null }],
+  });
+  vi.spyOn(desktop, "syncCreatePairing").mockResolvedValue({ pairingToken, expiresAt: Date.now() + 600_000 });
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
+  const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("工作电脑"));
+    expect(container.textContent).toContain("设备已绑定");
+    expect(container.textContent).toContain("当前设备");
+    const button = [...container.querySelectorAll("button")].find(item => item.textContent === "复制配对码")!;
+    flushSync(() => button.click());
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(pairingToken));
+    expect(container.textContent).not.toContain(pairingToken);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("offers re-pairing against the saved instance when its device credential was revoked", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test/", deviceId: "revoked", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockRejectedValue({ code: "SYNC_CREDENTIAL", message: "同步设备凭据已失效" });
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("需重新配对"));
+    expect(container.querySelector<HTMLInputElement>("#sync-bound-url")?.readOnly).toBe(true);
+    expect(container.querySelector('label[for="sync-code"]')?.textContent).toBe("配对码");
+    expect(container.textContent).not.toContain("复制配对码");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("keeps a local canvas edit by sending the displayed conflict version", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const resolve = vi.fn().mockResolvedValue(undefined);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValueOnce([{
+    entityType: "collection_node", entityId: "note", reason: "两端修改了同一张卡片",
+    local: { contentMd: "本地" }, remote: { contentMd: "云端" },
+    resolvable: false, canKeepLocal: true, remoteRevision: 3, localGeneration: 8,
+  }]).mockResolvedValue([]);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={resolve} onRebuild={vi.fn()} /></Theme>));
+    const keep = await vi.waitFor(() => {
+      const button = [...container.querySelectorAll("button")].find(item => item.textContent === "保留本地版本");
+      expect(button).toBeDefined();
+      return button!;
+    });
+    flushSync(() => keep.click());
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith("collection_node", "note", "local", 3, 8));
+    await vi.waitFor(() => expect(container.textContent).toContain("本地版本已排队上传"));
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
 });
 
 it("associates visible help and warnings with the settings controls they describe", () => {
@@ -99,7 +180,7 @@ it("filters settings by field names and retains entered values while switching c
 
 it("opens at the requested section, tracks the scroll position and loads storage sections when reached", async () => {
   const offsets: Record<string, number> = {
-    appearance: 0, shortcuts: 460, model: 720, mcp: 980, images: 1250, backups: 1620,
+    appearance: 0, shortcuts: 460, migration: 600, model: 720, mcp: 980, sync: 1180, images: 1250, backups: 1620,
   };
   vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
     return offsets[this.id.replace("settings-section-", "")] ?? 0;
@@ -116,6 +197,7 @@ it("opens at the requested section, tracks the scroll position and loads storage
     expect(active()).toBe("AI 代理");
     expect(document.activeElement?.id).toBe("settings-model");
     expect(renderPage).not.toHaveBeenCalledWith("backups");
+    expect(renderPage).not.toHaveBeenCalledWith("sync");
 
     const backupAnchor = document.querySelector<HTMLButtonElement>('[aria-controls="settings-section-backups"]')!;
     flushSync(() => backupAnchor.click());
@@ -128,6 +210,11 @@ it("opens at the requested section, tracks the scroll position and loads storage
     viewport.scrollTop = 1120;
     viewport.dispatchEvent(new Event("scroll"));
     await vi.waitFor(() => expect(active()).toBe("MCP 服务"));
+    viewport.scrollTop = 1200;
+    viewport.dispatchEvent(new Event("scroll"));
+    await vi.waitFor(() => expect(active()).toBe("同步"));
+    flushSync(() => enterSection(document.getElementById("settings-section-sync")!));
+    expect(renderPage).toHaveBeenCalledWith("sync");
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event("scroll"));
     await vi.waitFor(() => expect(active()).toBe("通用"));
