@@ -40,6 +40,8 @@ export async function runContract(base, setupSecret) {
   const meta = await ok(200, "meta");
   assert.equal(meta.protocolVersion, 1);
   assert.equal(meta.canvasSync, true);
+  assert.equal(meta.connectionRecovery, true);
+  assert.equal(meta.workspaceAccess, true);
   assert.equal(meta.claimed, false);
   await ok(401, "devices");
   await ok(401, "setup/claim", "POST", {}, { setupSecret: "0".repeat(64), name: "invalid" });
@@ -56,16 +58,18 @@ export async function runContract(base, setupSecret) {
   });
   const a = headers(claimRequests[firstIndex].deviceToken);
   assert.equal((await ok(409, "devices/" + first.deviceId, "DELETE", a)).error, "device_required");
-  const pairing = await ok(201, "pairings", "POST", a);
-  const redeemRequests = ["peer A", "peer B"].map((name) => ({
-    pairingToken: pairing.pairingToken, name, deviceToken: deviceToken(),
-  }));
-  const redeems = await Promise.all(redeemRequests.map((input) => request("pairings/redeem", "POST", {}, input)));
-  assert.deepEqual(redeems.map(({ status }) => status).sort(), [201, 401]);
-  const secondIndex = redeems.findIndex(({ status }) => status === 201);
-  const second = redeems[secondIndex].body;
-  assert.deepEqual(await ok(201, "pairings/redeem", "POST", {}, redeemRequests[secondIndex]), second);
-  const b = headers(redeemRequests[secondIndex].deviceToken);
+  const previousAccess = await ok(201, "access-key", "POST", a);
+  const { accessKey } = await ok(201, "access-key", "POST", a);
+  await ok(401, "devices/join", "POST", {}, {
+    accessKey: previousAccess.accessKey, name: "expired key", deviceToken: deviceToken(),
+  });
+  const joinRequest = { accessKey, name: "peer", deviceToken: deviceToken() };
+  const [second, retried] = await Promise.all([
+    ok(201, "devices/join", "POST", {}, joinRequest),
+    ok(201, "devices/join", "POST", {}, joinRequest),
+  ]);
+  assert.deepEqual(retried, second);
+  const b = headers(joinRequest.deviceToken);
   assert.equal((await ok(200, "devices", "GET", b)).devices.length, 2);
   await ok(200, "sync/seed", "POST", a, { action: "begin" });
   await ok(200, "sync/seed", "POST", a, { action: "begin" });
@@ -165,7 +169,7 @@ export async function runContract(base, setupSecret) {
   const credited = entry("credited-a", "引用内容");
   credited.payload.source = { url: "https://example.test/credited" };
   assert.equal((await push(a, operation(credited)))[0].status, "applied");
-  assert.equal((await push(b, operation({ ...credited, entityId: "credited-b" })))[0].reason, "source_url_conflict");
+  assert.equal((await push(b, operation({ ...credited, entityId: "credited-b" })))[0].status, "applied");
   const trash = entry("trash", "在离线时移入回收站", 0, "trash-folder");
   const [trashed] = await push(a, operation(category("trash-folder", "Trash notes"), { ...trash, operation: "delete" }));
   assert.equal(trashed.status, "applied");
@@ -240,8 +244,32 @@ export async function runContract(base, setupSecret) {
   assert.equal(remainder.changes.length, 1);
   assert.equal(remainder.hasMore, false);
   assert.equal((await ok(409, "sync/pull?cursor=99999", "GET", a)).error, "reset_required");
+  const peerKey = await ok(201, "recovery-key", "POST", b);
   await ok(204, "devices/" + second.deviceId, "DELETE", a);
   await ok(401, "blobs/" + hash, "GET", b);
   await ok(401, "sync/pull", "GET", b);
-  return { instanceId: meta.serverInstanceId, credentials: a, retainedHash: hash, pageBytes: wide.bytes };
+  const draftBeforeRecovery = await ok(200, "sync/entities/entry/draft", "GET", a);
+  await ok(401, "recovery-key", "POST");
+  const oldKey = await ok(201, "recovery-key", "POST", a);
+  const { recoveryKey } = await ok(201, "recovery-key", "POST", a);
+  const recoveryInput = (key) => ({ recoveryKey: key, name: "重新安装", deviceToken: deviceToken() });
+  for (const key of [oldKey.recoveryKey, peerKey.recoveryKey, setupSecret]) {
+    assert.equal((await ok(401, "recover", "POST", {}, recoveryInput(key))).error, "invalid_recovery_key");
+  }
+  const attempts = [recoveryInput(recoveryKey), recoveryInput(recoveryKey)];
+  const recovered = await Promise.all(attempts.map(input => request("recover", "POST", {}, input)));
+  assert.deepEqual(recovered.map(result => result.status).sort(), [200, 401]);
+  const winner = recovered.findIndex(result => result.status === 200);
+  assert.equal(recovered[winner].body.deviceId, first.deviceId);
+  await ok(401, "recover", "POST", {}, attempts[winner]);
+  await ok(401, "devices", "GET", a);
+  await ok(401, "recovery-key", "POST", a);
+  const recoveredHeaders = headers(attempts[winner].deviceToken);
+  const deviceList = await ok(200, "devices", "GET", recoveredHeaders);
+  assert.deepEqual(deviceList.devices.filter(device => !device.revokedAt).map(device => device.deviceId), [first.deviceId]);
+  assert.equal(deviceList.devices.find(device => device.deviceId === first.deviceId).name, "重新安装");
+  assert.deepEqual(await ok(200, "meta"), { ...meta, claimed: true, seedStatus: "ready" });
+  assert.deepEqual(await ok(200, "sync/entities/entry/draft", "GET", recoveredHeaders), draftBeforeRecovery);
+  assert.equal(digest(await ok(200, "blobs/" + hash, "GET", recoveredHeaders)), hash);
+  return { instanceId: meta.serverInstanceId, credentials: recoveredHeaders, retainedHash: hash, pageBytes: wide.bytes };
 }

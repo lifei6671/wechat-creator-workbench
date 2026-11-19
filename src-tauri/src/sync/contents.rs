@@ -20,6 +20,8 @@ const INLINE_BYTES: usize = 64 * 1024;
 const MAX_ENTITY_BYTES: usize = 512 * 1024;
 const MAX_GROUP: usize = 256;
 
+mod merge;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -146,7 +148,7 @@ struct Remote<'a> {
 
 impl<'a> Remote<'a> {
     async fn open(db: &Workspace, sync: &'a SyncConnection) -> Result<Self> {
-        let (base, token) = connected(db, sync).await?;
+        let (base, token, _) = connected(db, sync).await?;
         let binding = Binding::read(db)?.ok_or_else(|| AppError::invalid("请先连接同步服务"))?;
         Ok(Self {
             sync,
@@ -677,17 +679,22 @@ fn progress(db: &Workspace) -> Result<(bool, bool, i64, Option<i64>)> {
 
 fn queue_existing(db: &Workspace) -> Result<()> {
     db.write(|tx| {
-        tx.execute_batch(
-            "INSERT INTO sync_dirty SELECT 'asset',id,1,NULL FROM assets;
-             INSERT INTO sync_dirty SELECT 'category',id,1,NULL FROM categories;
-             INSERT INTO sync_dirty SELECT 'entry',id,1,NULL FROM entries;
-             INSERT INTO sync_dirty SELECT 'collection',id,1,NULL FROM collections;
-             INSERT INTO sync_dirty SELECT 'collection_node',id,1,NULL FROM collection_nodes;
-             INSERT INTO sync_dirty SELECT 'collection_edge',id,1,NULL FROM collection_edges;
-             UPDATE sync_progress SET capture=1,seeding=1",
-        )?;
+        queue_local_items(tx)?;
+        tx.execute("UPDATE sync_progress SET capture=1,seeding=1", [])?;
         Ok(())
     })
+}
+
+fn queue_local_items(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO sync_dirty SELECT 'asset',id,1,NULL FROM assets;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'category',id,1,NULL FROM categories;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'entry',id,1,NULL FROM entries;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'collection',id,1,NULL FROM collections;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'collection_node',id,1,NULL FROM collection_nodes;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'collection_edge',id,1,NULL FROM collection_edges;",
+    )?;
+    Ok(())
 }
 
 fn empty_local(conn: &Connection) -> Result<bool> {
@@ -706,7 +713,7 @@ fn empty_local(conn: &Connection) -> Result<bool> {
     )?)
 }
 
-fn require_empty(conn: &Connection) -> Result<()> {
+pub(super) fn require_empty(conn: &Connection) -> Result<()> {
     if empty_local(conn)? {
         return Ok(());
     }
@@ -714,11 +721,6 @@ fn require_empty(conn: &Connection) -> Result<()> {
         "SYNC_LOCAL_DATA",
         "本地和云端都有内容，请使用空工作区同步云端数据",
     ))
-}
-
-async fn bootstrap(db: &Workspace, remote: &Remote<'_>) -> Result<()> {
-    db.read(require_empty)?;
-    download_baseline(db, remote).await
 }
 
 async fn download_baseline(db: &Workspace, remote: &Remote<'_>) -> Result<()> {
@@ -860,7 +862,7 @@ async fn exchange(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Res
             })?;
         } else {
             if staged.is_none() {
-                bootstrap(db, &remote).await?;
+                download_baseline(db, &remote).await?;
             }
             return Ok(());
         }
@@ -958,12 +960,17 @@ fn apply_order(conn: &Connection, entity: &Entity) -> Result<u8> {
 pub struct Applied {
     changed_entries: Vec<String>,
     changed_collections: std::collections::BTreeSet<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merge_archive: Option<String>,
 }
 
 impl Applied {
     fn extend(&mut self, other: Self) {
         self.changed_entries.extend(other.changed_entries);
         self.changed_collections.extend(other.changed_collections);
+        if other.merge_archive.is_some() {
+            self.merge_archive = other.merge_archive;
+        }
     }
 }
 
@@ -997,6 +1004,13 @@ fn generation(conn: &Connection, key: &Key) -> Result<Option<i64>> {
 }
 
 fn apply_received(db: &Workspace) -> Result<Applied> {
+    apply_received_with_backup(db, None)
+}
+
+fn apply_received_with_backup(
+    db: &Workspace,
+    backups: Option<&crate::backup::Backups>,
+) -> Result<Applied> {
     db.write(|tx| {
         if tx.query_row("SELECT paused FROM sync_binding WHERE id=1", [], |row| {
             row.get::<_, bool>(0)
@@ -1011,11 +1025,17 @@ fn apply_received(db: &Workspace) -> Result<Applied> {
         tx.execute("UPDATE sync_progress SET capture=0", [])?;
         let mut changed = Applied::default();
         if let Some(cursor) = bootstrap {
-            require_empty(tx)?;
-            // The built-in directory rows are pristine here. Replacing them as a set
-            // avoids unique-name collisions when the cloud has renamed two directories.
-            tx.execute("DELETE FROM categories", [])?;
-            changed.extend(apply_baseline(tx)?);
+            if empty_local(tx)? {
+                // The built-in directory rows are pristine. Replacing them as a set
+                // avoids unique-name collisions when the cloud has renamed two directories.
+                tx.execute("DELETE FROM categories", [])?;
+                changed.extend(apply_baseline(tx)?);
+            } else {
+                let backups = backups.ok_or_else(|| AppError::new(
+                    "SYNC_BACKUP", "首次合并需要先备份本地工作区",
+                ))?;
+                changed.extend(merge::baseline(tx, backups)?);
+            }
             tx.execute("DELETE FROM sync_bootstrap", [])?;
             tx.execute(
                 "UPDATE sync_progress SET initialized=1,bootstrap_cursor=NULL,cursor=?1",
@@ -1103,8 +1123,8 @@ fn matching_canvas_delete(conn: &Connection, entity: &Entity) -> Result<bool> {
     Ok(!in_outbox(conn, &entity.key)?)
 }
 
-fn apply_baseline(conn: &Connection) -> Result<Applied> {
-    let mut entities = conn.prepare(
+fn ordered_baseline(conn: &Connection) -> Result<rusqlite::Statement<'_>> {
+    Ok(conn.prepare(
         "SELECT payload_json FROM sync_bootstrap ORDER BY CASE
            WHEN entity_type='asset' THEN 0
            WHEN entity_type='category' AND payload_json->>'$.payload.parentId' IS NULL THEN 1
@@ -1115,7 +1135,11 @@ fn apply_baseline(conn: &Connection) -> Result<Applied> {
            WHEN entity_type='collection_edge' THEN 6
            WHEN entity_type='collection_node' THEN 7
            ELSE 8 END, entity_id",
-    )?;
+    )?)
+}
+
+fn apply_baseline(conn: &Connection) -> Result<Applied> {
+    let mut entities = ordered_baseline(conn)?;
     let mut changed = Applied::default();
     for row in entities.query_map([], |row| row.get::<_, String>(0))? {
         let entity: Entity = serde_json::from_str(&row?).map_err(invalid_response)?;
@@ -1129,6 +1153,19 @@ fn apply_baseline(conn: &Connection) -> Result<Applied> {
         changed.changed_entries.push(entity.key.entity_id);
     }
     Ok(changed)
+}
+
+fn release_asset_aliases(conn: &Connection) -> Result<()> {
+    // The local alias keeps its ID and original bytes for existing references.
+    conn.execute(
+        "UPDATE assets SET source_key=NULL WHERE kind='derived' AND EXISTS(
+            SELECT 1 FROM sync_bootstrap b WHERE b.entity_type='asset' AND b.entity_id<>assets.id
+              AND b.payload_json->>'$.payload.kind'='derived'
+              AND b.payload_json->>'$.payload.sha256'=assets.sha256
+              AND b.payload_json->>'$.payload.sourceKey'=assets.source_key
+          )", [],
+    )?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1160,7 +1197,7 @@ async fn recovery_remote<'a>(db: &Workspace, sync: &'a SyncConnection) -> Result
         .ok_or_else(|| AppError::invalid("同步连接未暂停"))?;
     let base = super::service_url(&binding.url)?;
     let meta = sync.meta(&base).await?;
-    let reauth = || AppError::new("SYNC_REAUTH", "请重新配对此设备，再建立同步基线");
+    let reauth = || AppError::new("SYNC_REAUTH", "请重新连接此设备，再建立同步基线");
     if !binding.matches(&meta) {
         return Err(reauth());
     }
@@ -1183,7 +1220,7 @@ async fn stage_recovery(db: &Workspace, sync: &SyncConnection) -> Result<()> {
     match download_baseline(db, &remote).await {
         Err(error) if error.code() == "SYNC_CREDENTIAL" => Err(AppError::new(
             "SYNC_REAUTH",
-            "请重新配对此设备，再建立同步基线",
+            "请重新连接此设备，再建立同步基线",
         )),
         result => result,
     }
@@ -1243,17 +1280,8 @@ fn replace_baseline(db: &Workspace, backups: &crate::backup::Backups) -> Result<
              RETURNING id",
         )?;
         let changed_collections = removed.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-        let mut changed = Applied { changed_entries,changed_collections };
-        // Local aliases may refer to identical derived bytes. Keep their files for
-        // local-only content and allow the cloud's canonical metadata to be inserted.
-        tx.execute(
-            "UPDATE assets SET source_key=NULL WHERE kind='derived' AND EXISTS(
-                SELECT 1 FROM sync_bootstrap b WHERE b.entity_type='asset' AND b.entity_id<>assets.id
-                  AND b.payload_json->>'$.payload.kind'='derived'
-                  AND b.payload_json->>'$.payload.sha256'=assets.sha256
-                  AND b.payload_json->>'$.payload.sourceKey'=assets.source_key
-             )", [],
-        )?;
+        let mut changed = Applied { changed_entries,changed_collections,..Applied::default() };
+        release_asset_aliases(tx)?;
         changed.extend(apply_baseline(tx)?);
         tx.execute_batch("DELETE FROM sync_bootstrap; UPDATE sync_binding SET paused=0")?;
         tx.execute(
@@ -1318,11 +1346,16 @@ pub async fn sync_run(
 
 #[tauri::command]
 pub async fn sync_apply(
-    db: State<'_, Workspace>,
+    app: tauri::AppHandle,
     sync: State<'_, SyncConnection>,
 ) -> Result<Applied> {
+    use tauri::Manager;
     let _guard = sync.gate.lock().await;
-    apply_received(&db)
+    tokio::task::spawn_blocking(move || {
+        apply_received_with_backup(&app.state::<Workspace>(), Some(&app.state::<crate::backup::Backups>()))
+    })
+    .await
+    .map_err(|_| AppError::new("SYNC_APPLY", "同步写入任务已中断"))?
 }
 
 #[tauri::command]
@@ -1473,7 +1506,6 @@ fn resolve(
         if matches!(choice,Resolution::Copy) {
             let mut local = entries::snapshot(tx,entry_id)?.ok_or_else(protocol_error)?;
             local["title"] = json!(format!("{}（冲突副本）",local["title"].as_str().unwrap_or("未命名")));
-            local["source"] = Value::Null;
             if deleted_folder {
                 local["categoryId"] = remote.payload["categoryId"].clone();
                 local["folderSortOrder"] = Value::Null;
@@ -1507,7 +1539,10 @@ fn resolve(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ConnectWith, Pairing, connect, register};
+    use super::super::{
+        ConnectWith, Credential, connect, create_access_key, create_recovery_key, credential,
+        generate_secret, register, service_url,
+    };
     use super::*;
     use crate::backup::Backups;
 
@@ -1582,17 +1617,14 @@ mod tests {
             .unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
         apply_received(&a).unwrap();
-        let remote = Remote::open(&a, &sync).await.unwrap();
-        let pairing: Pairing = response(remote.request(Method::POST, "v1/pairings").unwrap())
-            .await
-            .unwrap();
+        let access_key = create_access_key(&a, &sync).await.unwrap();
         let second = connect(
             &b,
             &sync,
             &url,
             "画布 B",
-            ConnectWith::Pair,
-            &pairing.pairing_token,
+            ConnectWith::Join,
+            &access_key,
         )
         .await
         .unwrap();
@@ -1889,6 +1921,119 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires an isolated fresh v1 service and a native system keyring"]
+    async fn recover_only_device_into_fresh_workspace() {
+        let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
+        let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let original = Workspace::open(&root.path().join("original.sqlite")).unwrap();
+        let assets = Assets::new(root.path().join("original-assets"), &original).unwrap();
+        let sync = SyncConnection::new().unwrap();
+        let first = connect(&original, &sync, &url, "原设备", ConnectWith::Claim, &setup)
+            .await
+            .unwrap();
+        original
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO entries (id,kind,title,status,content_md,created_at,updated_at)
+                     VALUES ('draft','article','文稿','draft','留在云端的正文',1,1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        exchange(&original, &assets, &sync).await.unwrap();
+        let key = create_recovery_key(&original, &sync).await.unwrap();
+        first.key(&original).unwrap().delete_credential().unwrap();
+        drop(original);
+
+        let occupied = Workspace::open(&root.path().join("occupied.sqlite")).unwrap();
+        occupied
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO entries (id,kind,title,status,content_md,created_at,updated_at)
+                     VALUES ('local','article','本地稿','draft','仅在本地',1,1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let rejected = connect(
+            &occupied,
+            &sync,
+            &url,
+            "已有本地稿",
+            ConnectWith::Recover,
+            &key,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(rejected.code(), "SYNC_LOCAL_DATA");
+
+        let workspace = Workspace::open(&root.path().join("reinstalled.sqlite")).unwrap();
+        let assets = Assets::new(root.path().join("reinstalled-assets"), &workspace).unwrap();
+        let restored = connect(
+            &workspace,
+            &sync,
+            &url,
+            "重装后",
+            ConnectWith::Recover,
+            &key,
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.device_id, first.device_id);
+        assert_eq!(restored.epoch, first.epoch);
+        exchange(&workspace, &assets, &sync).await.unwrap();
+        apply_received(&workspace).unwrap();
+        let draft = workspace
+            .read(|conn| entries::snapshot(conn, "draft"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(draft["contentMd"], "留在云端的正文");
+
+        let retry_key = create_recovery_key(&workspace, &sync).await.unwrap();
+        restored
+            .key(&workspace)
+            .unwrap()
+            .delete_credential()
+            .unwrap();
+        let retry = Workspace::open(&root.path().join("retry.sqlite")).unwrap();
+        let pending = generate_secret().unwrap();
+        let pending_key = credential(
+            &retry,
+            &restored.url,
+            &restored.instance_id,
+            &restored.epoch,
+        )
+        .unwrap();
+        Credential {
+            active: None,
+            pending: Some(pending.clone()),
+        }
+        .store(&pending_key)
+        .unwrap();
+        let base = service_url(&url).unwrap();
+        // The server completed recovery before the client received the response.
+        send(
+            sync.client(&base)
+                .post(base.join("v1/recover").unwrap())
+                .json(&json!({
+                    "recoveryKey": retry_key, "deviceToken": pending, "name": "重试"
+                })),
+        )
+        .await
+        .unwrap();
+        let retried = connect(&retry, &sync, &url, "重试", ConnectWith::Recover, &retry_key)
+            .await
+            .unwrap();
+        assert_eq!(retried.device_id, restored.device_id);
+        assert_eq!(Credential::read(&pending_key).unwrap().active, Some(pending));
+        pending_key.delete_credential().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated fresh v1 service and a native system keyring"]
     async fn articles_and_private_images_between_workspaces() {
         let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
         let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
@@ -1904,17 +2049,14 @@ mod tests {
             .await
             .unwrap();
         let first_key = first.key(&a).unwrap();
-        let remote = Remote::open(&a, &sync).await.unwrap();
-        let invitation: Pairing = response(remote.request(Method::POST, "v1/pairings").unwrap())
-            .await
-            .unwrap();
+        let access_key = create_access_key(&a, &sync).await.unwrap();
         let second = connect(
             &b,
             &sync,
             &url,
             "文章工作区 B",
-            ConnectWith::Pair,
-            &invitation.pairing_token,
+            ConnectWith::Join,
+            &access_key,
         )
         .await
         .unwrap();
@@ -2128,16 +2270,14 @@ mod tests {
             stage_recovery(&b, &sync).await.unwrap_err().code(),
             "SYNC_REAUTH"
         );
-        let invitation: Pairing = response(remote_a.request(Method::POST, "v1/pairings").unwrap())
-            .await
-            .unwrap();
+        let access_key = create_access_key(&a, &sync).await.unwrap();
         let rebound = register(
             &b,
             &sync,
             &url,
             "恢复后的 B",
-            ConnectWith::Pair,
-            &invitation.pairing_token,
+            ConnectWith::Join,
+            &access_key,
             true,
         )
         .await

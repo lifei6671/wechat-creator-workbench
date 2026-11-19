@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { authenticate, claim, createPairing, listDevices, redeem, revoke } from "./auth.js";
+import { authenticate, claim, createAccessKey, createRecoveryKey, join, listDevices, recover, revoke, type DeviceAuthorization } from "./auth.js";
 import {
   entityType, hashPattern, id, integer, invalid, MAX_BLOB_BYTES, MAX_PUSH_BYTES,
   operation, queryInteger, record, SyncError, text,
@@ -8,7 +8,7 @@ import {
 import { identity, query, type BlobStore, type Database, type Identity } from "./storage.js";
 import { apply, bootstrap, checkIdentity, checkPush, getEntity, pull, seed, type Client } from "./sync.js";
 
-type Variables = { deviceId: string; client: Client; identity: Identity };
+type Variables = { device: DeviceAuthorization; client: Client; identity: Identity };
 type Route = Context<{ Variables: Variables }>;
 
 async function json(c: Route) {
@@ -38,7 +38,8 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     const state = await identity(db);
     return c.json({
       protocolVersion: 1, serverInstanceId: state.instance_id, syncEpoch: state.epoch,
-      claimed: Boolean(state.claimed), seedStatus: state.seed_status, canvasSync: true,
+      claimed: Boolean(state.claimed), seedStatus: state.seed_status,
+      canvasSync: true, connectionRecovery: true, workspaceAccess: true,
     });
   });
 
@@ -50,33 +51,39 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     const input = await json(c);
     return c.json(await claim(db, setupSecret, input.setupSecret, input.deviceToken, text(input.name, 128)), 201);
   });
-  app.post("/v1/pairings/redeem", smallBody, async (c) => {
+  app.post("/v1/devices/join", smallBody, async (c) => {
     const input = await json(c);
-    return c.json(await redeem(db, input.pairingToken, input.deviceToken, text(input.name, 128)), 201);
+    return c.json(await join(db, input.accessKey, input.deviceToken, text(input.name, 128)), 201);
+  });
+  app.post("/v1/recover", smallBody, async (c) => {
+    const input = await json(c);
+    return c.json(await recover(db, input.recoveryKey, input.deviceToken, text(input.name, 128)), 200);
   });
 
   app.use("/v1/*", async (c, next) => {
-    c.set("deviceId", await authenticate(db, c.req.header("Authorization")));
+    c.set("device", await authenticate(db, c.req.header("Authorization")));
     await next();
   });
-  app.post("/v1/pairings", async (c) => c.json(await createPairing(db, c.get("deviceId")), 201));
+  app.post("/v1/access-key", async (c) => c.json(await createAccessKey(db, c.get("device")), 201));
+  app.post("/v1/recovery-key", async (c) => c.json(await createRecoveryKey(db, c.get("device")), 201));
   app.get("/v1/devices", async (c) => {
     const rows = await listDevices(db);
-    return c.json({ currentDeviceId: c.get("deviceId"), devices: rows.map((row) => ({
+    return c.json({ currentDeviceId: c.get("device").id, devices: rows.map((row) => ({
       deviceId: row.id, name: row.name, createdAt: row.created_at, revokedAt: row.revoked_at,
     })) });
   });
   app.delete("/v1/devices/:id", async (c) => {
-    await revoke(db, c.get("deviceId"), id(c.req.param("id")));
+    await revoke(db, c.get("device"), id(c.req.param("id")));
     return c.body(null, 204);
   });
 
   for (const path of ["/v1/sync/*", "/v1/blobs/*"]) {
     app.use(path, async (c, next) => {
+      const { id: deviceId, tokenHash } = c.get("device");
       const client = {
         instanceId: c.req.header("X-Sync-Instance") ?? "",
         epoch: c.req.header("X-Sync-Epoch") ?? "",
-        deviceId: c.get("deviceId"),
+        deviceId, tokenHash,
       };
       const state = await identity(db);
       checkIdentity(state, client);
@@ -148,9 +155,9 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     const rows = await query<{ sha256: string }>(db, [
       `INSERT INTO sync_blobs
        SELECT ?, ? FROM sync_identity WHERE instance_id = ? AND epoch = ?
-         AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND revoked_at IS NULL)
+         AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL)
        ON CONFLICT (sha256) DO UPDATE SET size_bytes = excluded.size_bytes RETURNING sha256`,
-      hash, size, client.instanceId, client.epoch, client.deviceId,
+      hash, size, client.instanceId, client.epoch, client.deviceId, client.tokenHash,
     ]);
     if (!rows.length) {
       checkIdentity(await identity(db), client);

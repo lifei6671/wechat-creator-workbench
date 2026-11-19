@@ -5,7 +5,8 @@ use std::{borrow::Cow, ops::Range};
 
 const PATH: &str = "(COALESCE((SELECT COALESCE(p.name || '/', '') || c.name || '/'
     FROM categories c LEFT JOIN categories p ON p.id=c.parent_id WHERE c.id=e.category_id),'') || e.title)";
-const SOURCE: &str = "COALESCE((SELECT s.source_url || ' ' || s.author || ' ' || s.account_name
+const SOURCE: &str = "COALESCE((SELECT s.source_url || ' ' || COALESCE(e.source_details->>'$.author',s.author)
+    || ' ' || COALESCE(e.source_details->>'$.accountName',s.account_name)
     FROM sources s WHERE s.id=e.source_id),'')";
 const MATCH_PAGE_SIZE: usize = 12;
 const SNIPPET_LEADING_CHARS: usize = 40;

@@ -108,15 +108,43 @@ impl Binding {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Meta {
     protocol_version: u32,
     #[serde(default)]
     canvas_sync: bool,
+    #[serde(default)]
+    connection_recovery: bool,
+    #[serde(default)]
+    workspace_access: bool,
     server_instance_id: String,
     sync_epoch: String,
     seed_status: String,
+}
+
+impl Meta {
+    fn require_workspace_access(&self) -> Result<()> {
+        if self.workspace_access {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "SYNC_ACCESS_UNSUPPORTED",
+                "请先升级同步服务以使用工作区接入密钥",
+            ))
+        }
+    }
+
+    fn require_connection_recovery(&self) -> Result<()> {
+        if self.connection_recovery {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "SYNC_RECOVERY_UNSUPPORTED",
+                "请先升级同步服务以使用连接恢复",
+            ))
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -141,18 +169,24 @@ pub struct Devices {
     devices: Vec<Device>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Pairing {
-    pairing_token: String,
-    expires_at: i64,
+struct AccessKey {
+    access_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryKey {
+    recovery_key: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectWith {
     Claim,
-    Pair,
+    Join,
+    Recover,
 }
 
 fn valid_id(value: &str) -> bool {
@@ -209,8 +243,9 @@ async fn send(request: RequestBuilder) -> Result<reqwest::Response> {
     let code: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
     let error = match code["error"].as_str() {
         Some("invalid_setup_secret") => AppError::new("SYNC_CODE", "认领密钥无效"),
-        Some("invalid_pairing") => AppError::new("SYNC_CODE", "配对码无效、已使用或已过期"),
-        Some("already_claimed") => AppError::new("SYNC_CLAIMED", "服务已认领，请使用配对码"),
+        Some("invalid_access_key") => AppError::new("SYNC_CODE", "工作区接入密钥无效或已更换"),
+        Some("invalid_recovery_key") => AppError::new("SYNC_CODE", "恢复密钥无效、已使用或已撤销"),
+        Some("already_claimed") => AppError::new("SYNC_CLAIMED", "服务已认领，请使用接入密钥或恢复连接"),
         Some("device_required") => AppError::new(
             "SYNC_DEVICE_REQUIRED",
             "请保留首次上传设备和至少一台有效设备",
@@ -283,7 +318,7 @@ async fn fetch_devices(client: &Client, url: &Url, token: &str) -> Result<Device
     .await
 }
 
-async fn connected(db: &Workspace, sync: &SyncConnection) -> Result<(Url, String)> {
+async fn connected(db: &Workspace, sync: &SyncConnection) -> Result<(Url, String, Meta)> {
     let binding = Binding::read(db)?.ok_or_else(|| AppError::invalid("请先连接同步服务"))?;
     if binding.paused {
         return Err(AppError::new(
@@ -292,7 +327,8 @@ async fn connected(db: &Workspace, sync: &SyncConnection) -> Result<(Url, String
         ));
     }
     let url = service_url(&binding.url)?;
-    if !binding.matches(&sync.meta(&url).await?) {
+    let meta = sync.meta(&url).await?;
+    if !binding.matches(&meta) {
         pause(db)?;
         return Err(AppError::new(
             "SYNC_PAUSED",
@@ -302,12 +338,56 @@ async fn connected(db: &Workspace, sync: &SyncConnection) -> Result<(Url, String
     let token = Credential::read(&binding.key(db)?)?
         .active
         .ok_or_else(|| AppError::new("SYNC_CREDENTIAL", "同步设备凭据已失效"))?;
-    Ok((url, token))
+    Ok((url, token, meta))
 }
 
 #[tauri::command]
 pub fn sync_status(db: State<'_, Workspace>) -> Result<Option<Binding>> {
     Binding::read(&db)
+}
+
+#[tauri::command]
+pub async fn sync_default_device_name() -> Option<String> {
+    #[cfg(windows)]
+    let name = {
+        use windows::{
+            Win32::System::SystemInformation::{ComputerNamePhysicalDnsHostname, GetComputerNameExW},
+            core::PWSTR,
+        };
+        let mut buffer = [0u16; 256];
+        let mut len = buffer.len() as u32;
+        // The API receives the writable buffer capacity and reports the UTF-16 length.
+        unsafe {
+            GetComputerNameExW(
+                ComputerNamePhysicalDnsHostname,
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &mut len,
+            )
+        }
+        .ok()?;
+        String::from_utf16(&buffer[..len as usize]).ok()?
+    };
+    #[cfg(target_os = "macos")]
+    let name = {
+        let output = tokio::process::Command::new("/usr/sbin/scutil")
+            .args(["--get", "ComputerName"])
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout).ok()?
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let name = String::new();
+
+    let name = name.trim();
+    valid_device_name(name).then(|| name.to_owned())
+}
+
+fn valid_device_name(name: &str) -> bool {
+    !name.is_empty() && name.encode_utf16().count() <= 128 && !name.contains('\0')
 }
 
 #[tauri::command]
@@ -355,13 +435,9 @@ async fn register(
     let url = service_url(url)?;
     let name = name.trim();
     let code = code.trim();
-    if name.is_empty()
-        || name.encode_utf16().count() > 128
-        || name.contains('\0')
-        || !valid_token(code)
-    {
+    if !valid_device_name(name) || !valid_token(code) {
         return Err(AppError::invalid(
-            "请填写设备名和 64 位十六进制密钥或配对码",
+            "请填写设备名和 64 位十六进制密钥",
         ));
     }
     let old = Binding::read(db)?;
@@ -383,6 +459,16 @@ async fn register(
             "SYNC_PAUSED",
             "同步服务身份已变化，连接已暂停",
         ));
+    }
+    match method {
+        ConnectWith::Join => meta.require_workspace_access()?,
+        ConnectWith::Recover => {
+            meta.require_connection_recovery()?;
+            if old.is_none() && meta.seed_status == "ready" {
+                db.read(contents::require_empty)?;
+            }
+        }
+        ConnectWith::Claim => {}
     }
     let key = credential(db, url.as_str(), &meta.server_instance_id, &meta.sync_epoch)?;
     let client = sync.client(&url);
@@ -412,9 +498,13 @@ async fn register(
                     "v1/setup/claim",
                     json!({ "name": name, "setupSecret": code, "deviceToken": token }),
                 ),
-                ConnectWith::Pair => (
-                    "v1/pairings/redeem",
-                    json!({ "name": name, "pairingToken": code, "deviceToken": token }),
+                ConnectWith::Join => (
+                    "v1/devices/join",
+                    json!({ "name": name, "accessKey": code, "deviceToken": token }),
+                ),
+                ConnectWith::Recover => (
+                    "v1/recover",
+                    json!({ "name": name, "recoveryKey": code, "deviceToken": token }),
                 ),
             };
             let result: Registration = response(
@@ -486,23 +576,59 @@ pub async fn sync_devices(
     sync: State<'_, SyncConnection>,
 ) -> Result<Devices> {
     let _guard = sync.gate.lock().await;
-    let (url, token) = connected(&db, &sync).await?;
+    let (url, token, _) = connected(&db, &sync).await?;
     fetch_devices(sync.client(&url), &url, &token).await
 }
 
 #[tauri::command]
-pub async fn sync_create_pairing(
+pub async fn sync_create_access_key(
     db: State<'_, Workspace>,
     sync: State<'_, SyncConnection>,
-) -> Result<Pairing> {
+) -> Result<String> {
+    create_access_key(&db, &sync).await
+}
+
+async fn create_access_key(db: &Workspace, sync: &SyncConnection) -> Result<String> {
     let _guard = sync.gate.lock().await;
-    let (url, token) = connected(&db, &sync).await?;
-    response(
+    let (url, token, meta) = connected(db, sync).await?;
+    meta.require_workspace_access()?;
+    let result: AccessKey = response(
         sync.client(&url)
-            .post(url.join("v1/pairings").map_err(invalid_response)?)
+            .post(url.join("v1/access-key").map_err(invalid_response)?)
             .bearer_auth(token),
     )
-    .await
+    .await?;
+    if !valid_token(&result.access_key) {
+        return Err(AppError::new("SYNC_PROTOCOL", "同步服务返回了无效的接入密钥"));
+    }
+    Ok(result.access_key)
+}
+
+#[tauri::command]
+pub async fn sync_create_recovery_key(
+    db: State<'_, Workspace>,
+    sync: State<'_, SyncConnection>,
+) -> Result<String> {
+    create_recovery_key(&db, &sync).await
+}
+
+async fn create_recovery_key(db: &Workspace, sync: &SyncConnection) -> Result<String> {
+    let _guard = sync.gate.lock().await;
+    let (url, token, meta) = connected(db, sync).await?;
+    meta.require_connection_recovery()?;
+    let result: RecoveryKey = response(
+        sync.client(&url)
+            .post(url.join("v1/recovery-key").map_err(invalid_response)?)
+            .bearer_auth(token),
+    )
+    .await?;
+    if !valid_token(&result.recovery_key) {
+        return Err(AppError::new(
+            "SYNC_PROTOCOL",
+            "同步服务返回了无效的恢复密钥",
+        ));
+    }
+    Ok(result.recovery_key)
 }
 
 #[tauri::command]
@@ -515,7 +641,7 @@ pub async fn sync_revoke_device(
         return Err(AppError::invalid("设备标识无效"));
     }
     let _guard = sync.gate.lock().await;
-    let (url, token) = connected(&db, &sync).await?;
+    let (url, token, _) = connected(&db, &sync).await?;
     let route = format!("v1/devices/{device_id}");
     send(
         sync.client(&url)
@@ -557,7 +683,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires an isolated fresh v1 service and a native system keyring"]
-    async fn claim_pair_and_recover_using_real_service() {
+    async fn claim_join_and_reconnect_using_real_service() {
         let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
         let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -595,21 +721,15 @@ mod tests {
         .unwrap();
         assert_eq!(first.device_id, restore_binding.device_id);
         assert_eq!(Credential::read(&first_key).unwrap().active, Some(token));
-        let (base, authenticated) = connected(&first_db, &sync).await.unwrap();
-        let code: Pairing = response(
-            sync.http
-                .post(base.join("v1/pairings").unwrap())
-                .bearer_auth(&authenticated),
-        )
-        .await
-        .unwrap();
+        let (base, authenticated, _) = connected(&first_db, &sync).await.unwrap();
+        let access_key = create_access_key(&first_db, &sync).await.unwrap();
         let peer = connect(
             &peer_db,
             &sync,
             &url,
             "测试设备二",
-            ConnectWith::Pair,
-            &code.pairing_token,
+            ConnectWith::Join,
+            &access_key,
         )
         .await
         .unwrap();
@@ -639,7 +759,7 @@ mod tests {
                 &sync,
                 &url,
                 "测试设备二",
-                ConnectWith::Pair,
+                ConnectWith::Join,
                 &"0".repeat(64)
             )
             .await
@@ -649,20 +769,13 @@ mod tests {
             "SYNC_CODE"
         );
         let pending = Credential::read(&peer_key).unwrap().pending.unwrap();
-        let re_pair: Pairing = response(
-            sync.client(&base)
-                .post(base.join("v1/pairings").unwrap())
-                .bearer_auth(&authenticated),
-        )
-        .await
-        .unwrap();
         let reconnected = connect(
             &peer_db,
             &sync,
             &url,
             "测试设备二",
-            ConnectWith::Pair,
-            &re_pair.pairing_token,
+            ConnectWith::Join,
+            &access_key,
         )
         .await
         .unwrap();

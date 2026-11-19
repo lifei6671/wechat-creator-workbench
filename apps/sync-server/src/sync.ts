@@ -1,7 +1,7 @@
 import { MAX_PAGE_BYTES, sha256, SyncError, type operation } from "./protocol.js";
 import { query, type Database, type Identity } from "./storage.js";
 
-export type Client = { instanceId: string; epoch: string; deviceId: string };
+export type Client = { instanceId: string; epoch: string; deviceId: string; tokenHash: string };
 
 export function checkIdentity(state: Identity, client: Client) {
   if (state.instance_id !== client.instanceId || state.epoch !== client.epoch) throw new SyncError(409, "reset_required");
@@ -27,10 +27,10 @@ export async function seed(db: Database, client: Client, action: "begin" | "fini
      WHERE instance_id = ? AND epoch = ? AND (${action === "begin"
       ? "seed_status = 'empty' OR (seed_status = 'seeding' AND seed_device = ?)"
       : "seed_status IN ('seeding', 'ready') AND seed_device = ?"})
-       AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND revoked_at IS NULL)
+       AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL)
      RETURNING seed_status`,
     action === "begin" ? "seeding" : "ready", client.deviceId, client.instanceId, client.epoch,
-    client.deviceId, client.deviceId,
+    client.deviceId, client.deviceId, client.tokenHash,
   ]]);
   if (!rows.length) throw new SyncError(409, "seed_unavailable");
   return { seedStatus: action === "begin" ? "seeding" : "ready" };
@@ -49,7 +49,7 @@ type Receipt = {
 const applyGate = `
   instance_id = ? AND epoch = ?
     AND ((seed_status = 'seeding' AND seed_device = ?) OR (seed_status = 'ready' AND ? BETWEEN min_cursor AND head_cursor))
-    AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND revoked_at IS NULL)`;
+    AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL)`;
 
 export async function apply(db: Database, client: Client, cursor: number, input: ReturnType<typeof operation>) {
   const mutations = JSON.stringify(input.mutations);
@@ -77,7 +77,7 @@ export async function apply(db: Database, client: Client, cursor: number, input:
       LEFT JOIN sync_entities e ON (e.entity_type, e.entity_id) = (m.value ->> '$.entityType', m.value ->> '$.entityId')
       WHERE ${applyGate}
         AND NOT EXISTS (SELECT 1 FROM sync_operations WHERE (epoch, device_id, operation_id) = (?, ?, ?))`,
-      now, mutations, client.instanceId, client.epoch, client.deviceId, cursor, client.deviceId, ...key],
+      now, mutations, client.instanceId, client.epoch, client.deviceId, cursor, client.deviceId, client.tokenHash, ...key],
     [`INSERT INTO sync_operations (epoch, device_id, operation_id, request_hash, group_id, status, reason, versions_json)
       SELECT ?, ?, ?, ?, ?,
         CASE WHEN reason IS NULL THEN 'applied'
@@ -119,12 +119,12 @@ export async function apply(db: Database, client: Client, cursor: number, input:
       WHERE (epoch, device_id, operation_id) = (?, ?, ?) AND group_id = ? AND status = 'applied'`, ...key, groupId],
     ["DELETE FROM sync_pending"],
     ["SELECT * FROM sync_operations WHERE (epoch, device_id, operation_id) = (?, ?, ?)", ...key],
-    [`SELECT sync_watermarks.*, EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND revoked_at IS NULL) AS active
-      FROM sync_watermarks`, client.deviceId],
+    [`SELECT sync_watermarks.*, EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL) AS active
+      FROM sync_watermarks`, client.deviceId, client.tokenHash],
   ]);
   const state = stateRows[0] as Identity & { active: number };
-  checkPush(state, client, cursor);
   if (!state.active) throw new SyncError(401, "invalid_device");
+  checkPush(state, client, cursor);
   const receipt = receiptRows[0] as Receipt;
   if (receipt.request_hash !== digest) {
     return { operationId: input.operationId, status: "rejected", reason: "operation_id_reused" };

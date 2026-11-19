@@ -42,8 +42,8 @@ use sync::contents::{
     sync_resolve, sync_run,
 };
 use sync::{
-    sync_connect, sync_create_pairing, sync_devices, sync_generate_secret, sync_revoke_device,
-    sync_status,
+    sync_connect, sync_create_access_key, sync_create_recovery_key, sync_default_device_name,
+    sync_devices, sync_generate_secret, sync_revoke_device, sync_status,
 };
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
@@ -170,9 +170,11 @@ fn main() {
             mcp_save,
             mcp_token,
             sync_status,
+            sync_default_device_name,
             sync_connect,
             sync_devices,
-            sync_create_pairing,
+            sync_create_access_key,
+            sync_create_recovery_key,
             sync_revoke_device,
             sync_generate_secret,
             sync_run,

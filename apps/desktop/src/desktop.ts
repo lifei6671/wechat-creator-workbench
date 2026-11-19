@@ -39,10 +39,9 @@ export interface McpStatus { config: McpConfig; running: boolean; error: string 
 export interface SyncBinding { url: string; instanceId: string; epoch: string; deviceId: string; paused: boolean }
 export interface SyncDevice { deviceId: string; name: string; createdAt: number; revokedAt: number | null }
 export interface SyncDevices { currentDeviceId: string; devices: SyncDevice[] }
-export interface SyncPairing { pairingToken: string; expiresAt: number }
-export type SyncConnectMethod = "claim" | "pair";
+export type SyncConnectMethod = "claim" | "join" | "recover";
 export type SyncResolution = "cloud" | "local" | "copy";
-export interface SyncApplied { changedEntries: string[]; changedCollections: string[] }
+export interface SyncApplied { changedEntries: string[]; changedCollections: string[]; mergeArchive?: string }
 export interface SyncConflict {
   entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge";
   entityId: string;
@@ -166,10 +165,12 @@ export const desktop = {
   wechatGraphics: (markdown: string) => invoke<SourceFragment[]>("wechat_graphics", { markdown }),
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
   syncStatus: () => invoke<SyncBinding | null>("sync_status"),
+  syncDefaultDeviceName: () => invoke<string | null>("sync_default_device_name"),
   syncConnect: (url: string, name: string, method: SyncConnectMethod, code: string, rebuild?: boolean) =>
     invoke<SyncBinding>("sync_connect", { url, name, method, code, rebuild }),
   syncDevices: () => invoke<SyncDevices>("sync_devices"),
-  syncCreatePairing: () => invoke<SyncPairing>("sync_create_pairing"),
+  syncCreateAccessKey: () => invoke<string>("sync_create_access_key"),
+  syncCreateRecoveryKey: () => invoke<string>("sync_create_recovery_key"),
   syncRevokeDevice: (deviceId: string) => invoke<void>("sync_revoke_device", { deviceId }),
   syncGenerateSecret: () => invoke<string>("sync_generate_secret"),
   syncRun: () => invoke<void>("sync_run"),

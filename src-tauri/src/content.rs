@@ -556,16 +556,17 @@ impl Workspace {
                 return Err(AppError::invalid("请先从回收站恢复内容"));
             }
             let timestamp = now();
-            let source_id = validate_fields(tx, id, Kind::from_key(&kind), &fields, timestamp)?;
+            let source_id = validate_fields(tx, id, Kind::from_key(&kind), &fields, timestamp, false)?;
             if matches!(mode, SaveMode::AiReplace) {
                 record_revision(tx, id, "before_ai_replace", timestamp)?;
             }
             tx.execute(
                 "UPDATE entries SET title=?2, content_md=?3, status=?4, category_id=?5, source_id=?6, summary=?7,
                  published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12,
-                 custom_properties=COALESCE(?13, custom_properties) WHERE id=?1",
+                 custom_properties=COALESCE(?13, custom_properties), source_details=?14 WHERE id=?1",
                 params![id, fields.title, fields.content_md, fields.status, fields.category_id, source_id,
-                        fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id, fields.theme_id, fields.encoded_properties()?],
+                        fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id,
+                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp)],
             )?;
             crate::assets::references::sync_entry(tx, id, &fields.content_md)?;
             taxonomy::replace_tags(tx, id, &fields.tags)?;
@@ -827,7 +828,13 @@ fn entry_preview(
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
     let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version, e.custom_properties,
-           s.source_url, s.author, s.account_name, s.original_published_at, s.imported_at, e.cover_asset_id, e.theme_id
+           s.source_url,
+           COALESCE(e.source_details->>'$.author',s.author) AS author,
+           COALESCE(e.source_details->>'$.accountName',s.account_name) AS account_name,
+           CASE WHEN e.source_details IS NULL THEN s.original_published_at
+                ELSE e.source_details->>'$.originalPublishedAt' END AS original_published_at,
+           COALESCE(e.source_details->>'$.importedAt',s.imported_at) AS imported_at,
+           e.cover_asset_id, e.theme_id
         FROM entries e LEFT JOIN sources s ON s.id=e.source_id WHERE e.id=?1");
     let mut entry = conn.query_row(&sql, [id], |r| {
         let row = entry_row(r)?;
@@ -899,7 +906,8 @@ fn github_reference(conn: &Connection, url: &str) -> Result<Option<(String, bool
 
 fn web_reference(conn: &Connection, url: &str) -> Result<Option<(String, bool)>> {
     Ok(conn.query_row(
-        "SELECT e.id, e.deleted_at IS NOT NULL FROM entries e JOIN sources s ON s.id=e.source_id WHERE s.source_url=?1",
+        "SELECT e.id, e.deleted_at IS NOT NULL FROM entries e JOIN sources s ON s.id=e.source_id
+         WHERE s.source_url=?1 ORDER BY e.deleted_at IS NOT NULL,e.created_at,e.id LIMIT 1",
         [url], |row| Ok((row.get(0)?, row.get(1)?)),
     ).optional()?)
 }
@@ -912,14 +920,14 @@ fn insert_entry(
 ) -> Result<Entry> {
     let timestamp = now();
     let entry_id = id();
-    let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp)?;
+    let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp, false)?;
     tx.execute(
         "INSERT INTO entries (id, kind, title, content_md, status, category_id, source_id, summary,
-                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'))",
+                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties, source_details)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'),?15)",
         params![entry_id, kind.key(), fields.title, fields.content_md, fields.status,
                 fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id,
-                fields.encoded_properties()?],
+                fields.encoded_properties()?, source_details(&fields, timestamp)],
     )?;
     crate::assets::references::sync_entry(tx, &entry_id, &fields.content_md)?;
     taxonomy::replace_tags(tx, &entry_id, &fields.tags)?;
@@ -932,12 +940,22 @@ fn insert_entry(
     get_entry(tx, &entry_id)
 }
 
+fn source_details(fields: &Fields, timestamp: i64) -> Option<String> {
+    fields.source.as_ref().map(|source| serde_json::json!({
+        "author": source.author,
+        "accountName": source.account_name,
+        "originalPublishedAt": source.original_published_at,
+        "importedAt": source.imported_at.unwrap_or(timestamp),
+    }).to_string())
+}
+
 fn validate_fields(
     conn: &Connection,
     entry_id: &str,
     kind: Kind,
     fields: &Fields,
     timestamp: i64,
+    allow_shared_source: bool,
 ) -> Result<Option<String>> {
     if !kind.statuses().contains(&fields.status.as_str()) {
         return Err(AppError::invalid("状态与内容类型不匹配"));
@@ -955,22 +973,21 @@ fn validate_fields(
     fields.source.as_ref().map(|source| {
         let mut url = http_url(&source.url)?;
         url.set_fragment(None);
-        let already_collected: bool = conn.query_row(
+        if !allow_shared_source && conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sources s JOIN entries e ON e.source_id=s.id
-                           WHERE s.source_url=?1 AND e.id<>?2)",
-            params![url.as_str(), entry_id], |row| row.get(0),
-        )?;
-        if already_collected {
+                           WHERE s.source_url=?1 AND e.id<>?2
+                           AND NOT EXISTS(SELECT 1 FROM entries current
+                                          WHERE current.id=?2 AND current.source_id=s.id))",
+            params![url.as_str(), entry_id], |row| row.get::<_, bool>(0),
+        )? {
             return Err(AppError::invalid("此原文链接已收录，请使用已有笔记"));
         }
-        let source_id = conn.query_row(
+        conn.execute(
             "INSERT INTO sources VALUES (?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(source_url) DO UPDATE SET author=excluded.author, account_name=excluded.account_name,
-             original_published_at=excluded.original_published_at RETURNING id",
+             ON CONFLICT(source_url) DO NOTHING",
             params![id(), url.as_str(), source.author, source.account_name, source.original_published_at, timestamp],
-            |r| r.get(0),
         )?;
-        Ok(source_id)
+        Ok(conn.query_row("SELECT id FROM sources WHERE source_url=?1", [url.as_str()], |row| row.get(0))?)
     }).transpose()
 }
 

@@ -11,7 +11,8 @@ const COLLECTIONS: &str = "SELECT c.id,c.title,c.description,c.created_at,c.upda
     (SELECT COUNT(*) FROM collection_nodes WHERE collection_id=c.id) FROM collections c";
 
 const NODES: &str = "SELECT n.id,n.collection_id,n.kind,n.entry_id,n.asset_id,n.content_md,
-    n.x,n.y,n.width,n.height,n.created_at,n.updated_at,e.title,e.kind,e.summary,e.deleted_at,s.account_name,
+    n.x,n.y,n.width,n.height,n.created_at,n.updated_at,e.title,e.kind,e.summary,e.deleted_at,
+    COALESCE(e.source_details->>'$.accountName',s.account_name),
     CASE WHEN TRIM(e.summary)='' AND e.deleted_at IS NULL THEN SUBSTR(e.content_md,1,1024) ELSE '' END,
     a.name,COALESCE(n.custom_color,n.color),n.external_url
     FROM collection_nodes n LEFT JOIN entries e ON e.id=n.entry_id LEFT JOIN sources s ON s.id=e.source_id

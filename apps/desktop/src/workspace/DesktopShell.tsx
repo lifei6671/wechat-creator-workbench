@@ -303,7 +303,8 @@ export function DesktopShell() {
     flushSync(() => setGlobalLock(true));
     try {
       await flushWorkspaceForSync();
-      const { changedEntries, changedCollections } = await operation();
+      const applied = await operation();
+      const { changedEntries, changedCollections } = applied;
       const reopened = await Promise.all([...new Set(changedEntries)].flatMap(id => {
         const queue = queues.current.get(id);
         return queue ? [desktop.entry(id).then(entry => ({ queue, entry }))] : [];
@@ -318,6 +319,7 @@ export function DesktopShell() {
       }
       refresh();
       setAssetsRevision(revision => revision + 1);
+      return applied;
     } finally {
       setGlobalLock(false);
     }
@@ -334,10 +336,10 @@ export function DesktopShell() {
   }
 
   async function runSync() {
-    await withSync(async () => {
+    const applied = await withSync(async () => {
       await flushWorkspaceForSync();
       const applyIncoming = async () => {
-        if (!exit.current && (await desktop.syncActivity())?.incoming) await applySync(desktop.syncApply);
+        if (!exit.current && (await desktop.syncActivity())?.incoming) return applySync(desktop.syncApply);
       };
       try {
         await desktop.syncRun();
@@ -346,9 +348,10 @@ export function DesktopShell() {
         await applyIncoming().catch(() => {});
         throw error;
       }
-      await applyIncoming();
+      return applyIncoming();
     });
     setAutomaticSyncError("");
+    return applied?.mergeArchive;
   }
 
   async function rebuildSync() {
@@ -2148,8 +2151,9 @@ export function DesktopShell() {
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
           if (page === "sync") return <SyncSettings onSync={runSync} onRebuild={rebuildSync} automaticError={automaticSyncError}
-            onResolve={(entityType, entityId, choice, remoteRevision, localGeneration) =>
-              applySync(() => desktop.syncResolve(entityType, entityId, choice, remoteRevision, localGeneration))} />;
+            onResolve={async (entityType, entityId, choice, remoteRevision, localGeneration) => {
+              await applySync(() => desktop.syncResolve(entityType, entityId, choice, remoteRevision, localGeneration));
+            }} />;
           if (page === "images") return <ImageStorageSettings track={trackAssetTask} />;
           if (page === "backups") return <BackupPanel busy={backupWorking !== null || migrationWorking !== null} progress={backupWorking ?? ""} feedback={backupFeedback}
             listRevision={backupListRevision} prepared={preparedBackup?.migration ? null : preparedBackup} onCreate={createBackup} onRestore={prepareBackup}

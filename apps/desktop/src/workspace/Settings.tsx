@@ -20,7 +20,7 @@ const groups = [
     { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Codex Claude" },
   ] },
   { label: "存储", items: [
-    { id: "sync", label: "同步", icon: RefreshCw, keywords: "多设备 自托管 服务地址 Cloudflare VPS 配对 认领 设备" },
+    { id: "sync", label: "同步", icon: RefreshCw, keywords: "多设备 自托管 服务地址 Cloudflare Docker VPS 设备名称 连接方式 认领密钥 接入密钥 恢复密钥 重装 合并 SETUP_SECRET" },
     { id: "images", label: "S3 图床", icon: Cloud, keywords: "素材 图片 公开访问地址 S3 端点 区域 桶名 对象前缀 访问密钥 ID 秘密访问密钥 R2" },
     { id: "backups", label: "数据库备份", icon: DatabaseBackup, keywords: "SQLite S3 R2 还原 恢复 备份桶 工作区 S3 端点 区域 桶名 对象前缀 访问密钥 ID 秘密访问密钥" },
   ] },
