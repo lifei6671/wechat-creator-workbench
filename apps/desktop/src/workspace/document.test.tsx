@@ -7,7 +7,7 @@ import { type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
 import { desktop } from "../desktop";
 import { SaveQueue } from "../editor/save-queue";
-import { DocumentEditor, DocumentTabs, DocumentToolbar, type DocumentActions } from "./Document";
+import { DocumentEditor, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions } from "./Document";
 import { Outline } from "./Outline";
 import { LinkImportDialog } from "./Publishing";
 import { PropertiesDialog } from "./Dialogs";
@@ -33,6 +33,31 @@ afterEach(() => {
   container.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("shows preview progress before rendering and gives each table a scroll region", async () => {
+  let resolveGraphics!: (result: Awaited<ReturnType<typeof desktop.wechatGraphics>>) => void;
+  const graphics = new Promise<Awaited<ReturnType<typeof desktop.wechatGraphics>>>(resolve => { resolveGraphics = resolve; });
+  const renderGraphics = vi.spyOn(desktop, "wechatGraphics").mockReturnValue(graphics);
+  vi.spyOn(desktop, "onAssetsChanged").mockResolvedValue(() => {});
+  const markdown = "金额 $5\n\n| 左 | 右 |\n| - | - |\n| 一 | 二 |\n\n中间段落\n\n| 名称 |\n| - |\n| 第二张表 |";
+  flushSync(() => root.render(<MarkdownPreview title="示例" markdown={markdown} revision={0} />));
+  const preview = container.querySelector<HTMLElement>(".markdown-preview")!;
+  expect(preview.getAttribute("aria-busy")).toBe("true");
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("正在渲染预览");
+  expect(renderGraphics).not.toHaveBeenCalled();
+
+  await vi.waitFor(() => expect(renderGraphics).toHaveBeenCalledWith(markdown));
+  expect(preview.shadowRoot!.querySelector("table")).toBeNull();
+  resolveGraphics([]);
+  await vi.waitFor(() => expect(preview.getAttribute("aria-busy")).toBe("false"));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  const tables = [...preview.shadowRoot!.querySelectorAll("table")];
+  expect(tables).toHaveLength(2);
+  for (const table of tables) {
+    expect(table.parentElement?.matches(".preview-table-scroll[tabindex='0']")).toBe(true);
+  }
+  expect(tables[0].parentElement?.nextElementSibling?.textContent).toBe("中间段落");
 });
 
 it("moves complete outline sections through the save queue and restores them with one undo", async () => {

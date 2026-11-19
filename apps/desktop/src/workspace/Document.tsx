@@ -346,6 +346,7 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
   const heading = useRef<HTMLHeadingElement>(null);
   const body = useRef<HTMLElement>(null);
   const displayed = useRef<RenderedWechat | null>(null);
+  const [ready, setReady] = useState(false);
   const [assetRevision, setAssetRevision] = useState(0);
   const resources = useRef(new Map<string, { image: ReturnType<typeof loadLocalImage>; failed: boolean }>());
 
@@ -388,7 +389,7 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
     if (projectLinks === null) return;
     let alive = true;
     const controller = new AbortController();
-    void Promise.resolve().then(() => renderWechat({ ...deferred, markdown: projectLinks?.(deferred.markdown) ?? deferred.markdown, output: "preview" }, {
+    const render = () => void Promise.resolve().then(() => renderWechat({ ...deferred, markdown: projectLinks?.(deferred.markdown) ?? deferred.markdown, output: "preview" }, {
       signal: controller.signal,
       sources: desktop.wechatGraphics,
       derive: desktop.deriveImage,
@@ -408,6 +409,17 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
       displayed.current = result;
       const content = body.current!;
       content.innerHTML = result.html;
+      for (const table of content.querySelectorAll("table")) {
+        const scroller = document.createElement("div");
+        scroller.className = "preview-table-scroll";
+        scroller.style.margin = table.style.margin;
+        table.style.margin = "0";
+        scroller.tabIndex = 0;
+        scroller.setAttribute("role", "region");
+        scroller.setAttribute("aria-label", "表格");
+        table.before(scroller);
+        scroller.append(table);
+      }
       for (const link of content.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         const href = link.getAttribute("href")!;
         if (href.startsWith("#") && footnoteId.test(href.slice(1))) {
@@ -426,18 +438,23 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
           void item.image.then(image => image.dispose(), () => {});
         }
       }
+      setReady(true);
     }, error => {
       if (!alive) return;
       displayed.current?.dispose();
       displayed.current = null;
       body.current!.textContent = errorMessage(error);
+      setReady(true);
     });
-    return () => { alive = false; controller.abort(); };
+    // Paint the loading state before the renderer starts synchronous work.
+    let frame = requestAnimationFrame(() => { frame = requestAnimationFrame(render); });
+    return () => { cancelAnimationFrame(frame); alive = false; controller.abort(); };
   }, [deferred, assetRevision, projectLinks]);
 
   return <div className="preview-phone">
     <div className="preview-phone-screen">
-      <div className="markdown-preview" ref={host} role="region" aria-label="公众号排版预览" tabIndex={0} />
+      <div className="markdown-preview" ref={host} role="region" aria-label="公众号排版预览" aria-busy={!ready} tabIndex={0} />
+      {!ready && <div className="preview-loading" role="status"><Spinner aria-hidden="true" />正在渲染预览…</div>}
     </div>
   </div>;
 }
