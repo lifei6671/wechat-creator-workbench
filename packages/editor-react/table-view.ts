@@ -159,7 +159,16 @@ const plusIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13H13
 const dragIcon = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 9.83366C3.35833 9.83366 3.23961 9.78571 3.14383 9.68983C3.04794 9.59394 3 9.47516 3 9.33349C3 9.19171 3.04794 9.07299 3.14383 8.97733C3.23961 8.88155 3.35833 8.83366 3.5 8.83366H12.5C12.6417 8.83366 12.7604 8.8816 12.8562 8.97749C12.9521 9.07338 13 9.19216 13 9.33383C13 9.4756 12.9521 9.59433 12.8562 9.68999C12.7604 9.78577 12.6417 9.83366 12.5 9.83366H3.5ZM3.5 7.16699C3.35833 7.16699 3.23961 7.11905 3.14383 7.02316C3.04794 6.92727 3 6.80849 3 6.66683C3 6.52505 3.04794 6.40633 3.14383 6.31066C3.23961 6.21488 3.35833 6.16699 3.5 6.16699H12.5C12.6417 6.16699 12.7604 6.21494 12.8562 6.31083C12.9521 6.40671 13 6.52549 13 6.66716C13 6.80894 12.9521 6.92766 12.8562 7.02333C12.7604 7.1191 12.6417 7.16699 12.5 7.16699H3.5Z"/></svg>`;
 
 type TableAxis = "row" | "column";
-type TableDrag = { axis: TableAxis; from: number; node: ProseNode; size: number };
+type TableDrag = {
+  axis: TableAxis;
+  from: number;
+  node: ProseNode;
+  size: number;
+  grip: HTMLButtonElement;
+  pointerId: number;
+  startX: number;
+  startY: number;
+};
 const edgeSnap = 8;
 
 function nearEdge(pointer: number, start: number, end: number) {
@@ -183,12 +192,9 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
   preview.inert = true;
   preview.setAttribute("aria-hidden", "true");
   const previewBody = preview.appendChild(document.createElement("table")).createTBody();
-  const dragImage = document.createElement("canvas");
-  dragImage.width = dragImage.height = 1;
   dom.append(table, controls);
   controls.append(preview);
   let drag: TableDrag | undefined;
-  let hideTimer: number | undefined;
 
   function control(action: "add" | "grip", axis: TableAxis, label: string, icon: string) {
     const button = document.createElement("button");
@@ -230,27 +236,25 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
       hide();
       view.dispatch(tr);
     };
-    grip.draggable = true;
     grip.tabIndex = -1;
-    grip.ondragstart = event => {
-      const transfer = event.dataTransfer;
-      if (!view.editable || grip.hidden || !transfer) {
-        event.preventDefault();
-        return;
-      }
+    grip.onpointerdown = event => {
+      if (!event.isPrimary || event.button !== 0 || drag || !view.editable || grip.hidden) return;
       const origin = axis === "row" ? table.rows[index] : table.rows[0].cells[index];
       const { width, height } = origin.getBoundingClientRect();
-      drag = { axis, from: index, node: view.state.doc.nodeAt(getPos()!)!, size: axis === "row" ? height : width };
-      transfer.effectAllowed = "move";
-      transfer.setData("application/x-workbench-table", axis);
-      transfer.setDragImage(dragImage, 0, 0);
-      controls.dataset.dragAxis = axis;
-      const bounds = table.getBoundingClientRect();
-      renderPreview(drag, bounds);
-      movePreview(event, drag, bounds);
-      window.addEventListener("dragover", followDrag, true);
+      event.preventDefault();
+      grip.setPointerCapture(event.pointerId);
+      drag = {
+        axis, from: index, node: view.state.doc.nodeAt(getPos()!)!, size: axis === "row" ? height : width,
+        grip, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+      };
+      window.addEventListener("keydown", cancelOnEscape, true);
+      window.addEventListener("blur", resetDrag);
     };
-    grip.ondragend = resetDrag;
+    grip.onpointermove = updateDrag;
+    grip.onpointerup = finishDrag;
+    grip.onpointercancel = grip.onlostpointercapture = event => {
+      if (drag?.pointerId === event.pointerId) resetDrag();
+    };
 
     function hide() {
       add.hidden = grip.hidden = line.hidden = true;
@@ -282,12 +286,22 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
     columns.hide();
   }
   function resetDrag() {
-    window.removeEventListener("dragover", followDrag, true);
+    if (!drag) return;
+    const { grip, pointerId } = drag;
     drag = undefined;
+    window.removeEventListener("keydown", cancelOnEscape, true);
+    window.removeEventListener("blur", resetDrag);
+    if (grip.hasPointerCapture(pointerId)) grip.releasePointerCapture(pointerId);
     preview.hidden = true;
     previewBody.replaceChildren();
     delete controls.dataset.dragAxis;
     hideControls();
+  }
+  function cancelOnEscape(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    resetDrag();
   }
 
   function cellAt(target: EventTarget | null) {
@@ -316,13 +330,7 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
       columns.showInsert(cell.cellIndex + columnEdge, (columnEdge ? cellRect.right : cellRect.left) - tableRect.left);
     }
   };
-  dom.onpointerenter = () => window.clearTimeout(hideTimer);
-  dom.onpointerleave = event => {
-    if (drag) return;
-    if (!event.buttons) hideControls();
-    // Keep the pressed handle available until Chromium starts the native drag.
-    else hideTimer = window.setTimeout(() => { if (!drag) hideControls(); }, 120);
-  };
+  dom.onpointerleave = () => { if (!drag) hideControls(); };
 
   function renderPreview({ axis, from, size }: TableDrag, { width, height }: DOMRect) {
     const picked = axis === "row" ? [table.rows[from].cloneNode(true)] : Array.from(table.rows, row => {
@@ -334,17 +342,16 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
     preview.style.width = `${axis === "row" ? width : size}px`;
     preview.style.height = `${axis === "row" ? size : height}px`;
   }
-  function movePreview(event: DragEvent, { axis, size }: TableDrag, bounds: DOMRect) {
+  function movePreview(event: PointerEvent, { axis, size }: TableDrag, bounds: DOMRect) {
     const pointer = axis === "row" ? event.clientY - bounds.top : event.clientX - bounds.left;
     const extent = axis === "row" ? bounds.height : bounds.width;
     setOffset(preview, axis, Math.max(-edgeSnap, Math.min(pointer - size / 2, extent - size + edgeSnap)));
     setOffset(preview, axis === "row" ? "column" : "row", 0);
     preview.hidden = false;
   }
-  function followDrag(event: DragEvent) {
-    if (drag) movePreview(event, drag, table.getBoundingClientRect());
-  }
-  function dropTarget(event: DragEvent, { axis, from }: TableDrag) {
+  function dropTarget(event: PointerEvent, { axis, from }: TableDrag) {
+    // Captured events target the handle, so test the pointer's actual location.
+    if (!dom.contains(document.elementFromPoint(event.clientX, event.clientY))) return;
     const items = axis === "row" ? Array.from(table.rows) : Array.from(table.rows[0].cells);
     const pointer = axis === "row" ? event.clientY : event.clientX;
     for (const [index, item] of items.entries()) {
@@ -356,45 +363,45 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
     const last = items.at(-1)!.getBoundingClientRect();
     return { to: items.length - 1, edge: axis === "row" ? last.bottom : last.right };
   }
-  dom.ondragover = event => {
-    if (!drag || !view.editable) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const { axis, from } = drag;
-    const { to, edge } = dropTarget(event, drag);
-    const bounds = table.getBoundingClientRect();
-    const active = axis === "row" ? rows : columns;
-    if (to === from) active.line.hidden = true;
-    else active.showLine(edge - (axis === "row" ? bounds.top : bounds.left));
-    if (event.dataTransfer) event.dataTransfer.dropEffect = to === from ? "none" : "move";
-  };
-  dom.ondragleave = event => {
-    if (!drag || (event.relatedTarget instanceof Node && dom.contains(event.relatedTarget))) return;
-    rows.line.hidden = columns.line.hidden = true;
-  };
-  dom.ondrop = event => {
-    if (!drag) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const { axis, from, node } = drag;
-    const { to } = dropTarget(event, drag);
-    resetDrag();
+  function updateDrag(event: PointerEvent) {
+    if (!drag || drag.pointerId !== event.pointerId) return;
     const pos = getPos();
-    if (!view.editable || pos === undefined || view.state.doc.nodeAt(pos) !== node || to === from) return;
+    if (!view.editable || pos === undefined || view.state.doc.nodeAt(pos) !== drag.node) {
+      resetDrag();
+      return;
+    }
+    const bounds = table.getBoundingClientRect();
+    const { axis, from, startX, startY } = drag;
+    if (preview.hidden) {
+      if (Math.hypot(event.clientX - startX, event.clientY - startY) < 5) return;
+      controls.dataset.dragAxis = axis;
+      renderPreview(drag, bounds);
+    }
+    movePreview(event, drag, bounds);
+    const target = dropTarget(event, drag);
+    const active = axis === "row" ? rows : columns;
+    if (!target || target.to === from) active.line.hidden = true;
+    else active.showLine(target.edge - (axis === "row" ? bounds.top : bounds.left));
+  }
+  function finishDrag(event: PointerEvent) {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const { axis, from, node } = drag;
+    const pos = getPos();
+    const target = !preview.hidden && view.editable && pos !== undefined && view.state.doc.nodeAt(pos) === node
+      ? dropTarget(event, drag) : undefined;
+    resetDrag();
+    if (pos === undefined || !target || target.to === from) return;
     // ProseMirror's row and column range lookup uses the selection, even with an explicit table position.
     const cell = TableMap.get(node).positionAt(axis === "row" ? from : 0, axis === "column" ? from : 0, node);
     view.dispatch(view.state.tr.setSelection(new CellSelection(view.state.doc.resolve(pos + 1 + cell))));
     const move = axis === "row" ? moveTableRow : moveTableColumn;
-    if (move({ from, to, pos: pos + 1 })(view.state, view.dispatch)) view.focus();
-  };
+    if (move({ from, to: target.to, pos: pos + 1 })(view.state, view.dispatch)) view.focus();
+  }
 
   return {
     dom, contentDOM,
     stopEvent: event => event.target instanceof Node && controls.contains(event.target),
     ignoreMutation: mutation => mutation.type !== "selection" && controls.contains(mutation.target),
-    destroy() {
-      window.clearTimeout(hideTimer);
-      resetDrag();
-    },
+    destroy: resetDrag,
   };
 }

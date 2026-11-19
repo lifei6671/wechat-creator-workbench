@@ -125,7 +125,7 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 .rich-table-control-row { left: 0; width: 18px; height: 28px; }
 .rich-table-control-column { top: 0; width: 28px; height: 18px; }
 .rich-table-control svg { width: 16px; height: 16px; fill: currentColor; pointer-events: none; }
-.rich-table-control[draggable="true"] { cursor: grab; }
+:is(.rich-table-grip-row, .rich-table-grip-column) { cursor: grab; touch-action: none; }
 .rich-table-control:hover { background: var(--gray-4); color: var(--text-main); }
 .rich-table-controls[data-drag-axis]::before { content: ""; position: absolute; pointer-events: auto; }
 .rich-table-controls[data-drag-axis="row"]::before { inset: 0 100% 0 auto; width: 24px; }

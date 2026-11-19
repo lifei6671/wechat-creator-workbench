@@ -1832,33 +1832,54 @@ it("adds rows and columns to the clicked table and persists column formatting an
     expect(rowTexts()[0]).toEqual(["数量", "名称", ""]);
     expect(rowTexts()[2]).toEqual(["2", "项目 2", ""]);
 
-    function dragGrip(axis: "row" | "column", row: number, column: number, x = 20, y = 5) {
-      const grip = container.querySelector(`.rich-table-grip-${axis}`)!;
+    function dragGrip(axis: "row" | "column", row: number, column: number, x = 20, y = 5,
+      finish: "drop" | "cancel" | "outside" = "drop") {
+      const grip = container.querySelector<HTMLButtonElement>(`.rich-table-grip-${axis}`)!;
       expect(grip.querySelector("svg")).not.toBeNull();
-      expect(grip.hasAttribute("hidden")).toBe(false);
-      const transfer = { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: "", dropEffect: "" };
-      for (const [type, target] of [["dragstart", grip], ["dragover", table().rows[row].cells[column]], ["drop", table().rows[row].cells[column]]] as const) {
-        const event = new MouseEvent(type, {
-          bubbles: true, cancelable: true, clientX: 20 + column * 100 + x, clientY: 40 + row * 30 + y,
-        });
-        Object.defineProperty(event, "dataTransfer", { value: transfer });
-        target.dispatchEvent(event);
-        expect(event.defaultPrevented).toBe(type !== "dragstart");
-        if (type === "dragover") {
-          const preview = container.querySelector<HTMLDivElement>(".rich-table-preview")!;
-          const line = container.querySelector<HTMLDivElement>(`.rich-table-line-${axis}`)!;
-          const offset = preview.style.cssText;
-          expect(preview.hidden || line.hidden).toBe(false);
-          table().parentElement!.dispatchEvent(new MouseEvent("dragleave", { bubbles: true, relatedTarget: container }));
-          container.dispatchEvent(new MouseEvent("dragover", { bubbles: true, clientX: 1000, clientY: 1000 }));
-          expect(line.hidden).toBe(true);
-          expect(preview.hidden).toBe(false);
-          expect(preview.style.cssText).not.toBe(offset);
+      expect(grip.hidden).toBe(false);
+      const preview = container.querySelector<HTMLDivElement>(".rich-table-preview")!;
+      const line = container.querySelector<HTMLDivElement>(`.rich-table-line-${axis}`)!;
+      grip.setPointerCapture = vi.fn();
+      grip.hasPointerCapture = () => true;
+      grip.releasePointerCapture = vi.fn();
+      const targetX = 20 + column * 100 + x, targetY = 40 + row * 30 + y;
+      const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint")!;
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: (pointerX: number) => pointerX === 1000 ? container : table().rows[row].cells[column],
+      });
+      const pointer = (type: string, clientX: number, clientY: number) => grip.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, clientX, clientY,
+      }));
+      try {
+        pointer("pointerdown", 20, 40);
+        expect(grip.setPointerCapture).toHaveBeenCalledWith(1);
+        pointer("pointermove", 22, 41);
+        expect(preview.hidden).toBe(true);
+        pointer("pointermove", targetX, targetY);
+        expect(preview.hidden || line.hidden).toBe(false);
+        const offset = preview.style.cssText;
+        pointer("pointermove", 1000, 1000);
+        expect(line.hidden).toBe(true);
+        expect(preview.hidden).toBe(false);
+        expect(preview.style.cssText).not.toBe(offset);
+        if (finish === "cancel") {
+          window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
         }
+        pointer("pointerup", finish === "outside" ? 1000 : targetX, finish === "outside" ? 1000 : targetY);
+        expect(grip.releasePointerCapture).toHaveBeenCalledExactlyOnceWith(1);
+        expect(preview.hidden).toBe(true);
+      } finally {
+        Object.defineProperty(document, "elementFromPoint", hitTest);
       }
-      expect(container.querySelector(".rich-table-preview")?.hasAttribute("hidden")).toBe(true);
     }
     handle!.command("selectAll");
+    const beforeDrag = rowTexts();
+    hoverCell(2, 1);
+    dragGrip("row", 1, 1, 20, 5, "cancel");
+    hoverCell(2, 1);
+    dragGrip("row", 1, 1, 20, 5, "outside");
+    expect(rowTexts()).toEqual(beforeDrag);
     hoverCell(2, 1);
     dragGrip("row", 1, 1);
     expect(rowTexts().slice(0, 3)).toEqual([["数量", "名称", ""], ["2", "项目 2", ""], ["", "", ""]]);
