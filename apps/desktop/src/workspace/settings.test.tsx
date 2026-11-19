@@ -265,7 +265,7 @@ it("refreshes local status when a hidden settings page becomes visible again", a
     await vi.waitFor(() => expect(container.textContent).toContain("等待检查"));
     vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: false, incoming: true, issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
     document.dispatchEvent(new Event("visibilitychange"));
-    await vi.waitFor(() => expect(container.textContent).toContain("已下载，等待应用"));
+    await vi.waitFor(() => expect(container.textContent).toContain("已下载，准备应用"));
   } finally {
     flushSync(() => root.unmount());
     container.remove();

@@ -165,6 +165,29 @@ it("moves complete outline sections through the save queue and restores them wit
   }
 });
 
+it("keeps only noninteractive exit visuals after tabs close and honors reduced motion", async () => {
+  const first = new SaveQueue(entry("one", "第一篇"), vi.fn(), () => {});
+  const second = new SaveQueue(entry("two", "第二篇"), vi.fn(), () => {});
+  const collection = { id: "canvas", title: "专题", description: "", createdAt: 0, updatedAt: 0, viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 };
+  function render(sessions: SaveQueue[], withCollection = false) {
+    flushSync(() => root.render(<Theme><DocumentTabs sessions={sessions} activeId="one" categories={[]}
+      collections={withCollection ? [collection] : []} readingIds={[]} lockedIds={[]} onMove={vi.fn()}
+      onSwitch={vi.fn()} onClose={vi.fn()} onAction={vi.fn()} onReorder={vi.fn()} onRename={vi.fn()} onError={vi.fn()} /></Theme>));
+  }
+  render([first, second], true);
+  render([first]);
+  second.dispose();
+  expect(container.querySelectorAll('[role="tab"]')).toHaveLength(1);
+  expect([...container.querySelectorAll(".tab-exiting")].map(tab => tab.textContent)).toEqual(["第二篇", "专题"]);
+  expect(container.querySelector('.tab-exiting button')).toBeNull();
+  await vi.waitFor(() => expect(container.querySelector('.tab-exiting')).toBeNull());
+  vi.stubGlobal("matchMedia", () => ({ matches: true }));
+  render([first, second], true);
+  render([first]);
+  expect(container.querySelector('.tab-exiting')).toBeNull();
+  first.dispose();
+});
+
 it("renames an inactive tab in place without implicitly selecting it", async () => {
   const first = new SaveQueue(entry("one", "第一篇"), vi.fn(), () => {});
   const second = new SaveQueue(entry("two", "第二篇"), vi.fn(), () => {});

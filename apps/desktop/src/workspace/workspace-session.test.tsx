@@ -448,6 +448,99 @@ it("updates the status bar through sync phases and opens sync settings from it",
   await vi.waitFor(() => expect(document.querySelector('.settings-nav-item[aria-current="location"]')?.textContent).toBe("同步"));
 });
 
+it("applies while viewing sync settings and explains waits for other pages and confirmations", async () => {
+  let incoming = false;
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach(listener => listener());
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { listeners.add(callback); return () => listeners.delete(callback); });
+  vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.mocked(desktop.syncActivity).mockImplementation(async () => ({ hasLocalContent: true, initialized: true, pending: false, incoming,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: 1 }));
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [{ deviceId: "peer", name: "另一台电脑", createdAt: 0, revokedAt: null }] });
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
+  const apply = vi.spyOn(desktop, "syncApply").mockImplementation(async () => {
+    incoming = false;
+    queueMicrotask(notify);
+    return { changedEntries: [], changedCollections: [] };
+  });
+  flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  flushSync(() => container.querySelector<HTMLButtonElement>(".status-sync")!.click());
+  const address = await vi.waitFor(() => {
+    const input = document.querySelector<HTMLInputElement>("#sync-bound-url");
+    expect(input).not.toBeNull();
+    return input!;
+  });
+  address.focus();
+  await new Promise(requestAnimationFrame);
+  incoming = true;
+  flushSync(notify);
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  expect(document.querySelector(".settings-dialog")).not.toBeNull();
+
+  const nav = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-item")].find(button => button.textContent === name)!;
+  flushSync(() => nav("通用").click());
+  incoming = true;
+  flushSync(notify);
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待关闭当前弹窗"));
+  expect(apply).toHaveBeenCalledOnce();
+
+  flushSync(() => nav("同步").click());
+  const revoke = [...document.querySelectorAll<HTMLButtonElement>(".sync-settings button")].find(button => button.textContent === "撤销")!;
+  flushSync(() => revoke.click());
+  await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
+  flushSync(notify);
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待关闭确认对话框"));
+  expect(apply).toHaveBeenCalledOnce();
+  const cancel = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(button => button.textContent === "取消")!;
+  flushSync(() => cancel.click());
+  await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).toBeNull());
+  flushSync(notify);
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+});
+
+it("waits for a sync settings operation and disables actions during automatic replay", async () => {
+  let incoming = false;
+  let finishInfo!: (info: { url: string; accessKey: string }) => void;
+  let finishApply!: () => void;
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach(listener => listener());
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { listeners.add(callback); return () => listeners.delete(callback); });
+  vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.mocked(desktop.syncActivity).mockImplementation(async () => ({ hasLocalContent: true, initialized: true, pending: false, incoming,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: 1 }));
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
+  vi.spyOn(desktop, "syncConnectionInfo").mockImplementation(() => new Promise(resolve => { finishInfo = resolve; }));
+  vi.spyOn(desktop, "copyText").mockResolvedValue();
+  const apply = vi.spyOn(desktop, "syncApply").mockImplementation(async () => {
+    await new Promise<void>(resolve => { finishApply = resolve; });
+    incoming = false;
+    return { changedEntries: [], changedCollections: [] };
+  });
+  flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  flushSync(() => container.querySelector<HTMLButtonElement>(".status-sync")!.click());
+  const copy = await vi.waitFor(() => {
+    const button = [...document.querySelectorAll<HTMLButtonElement>(".sync-settings button")].find(button => button.textContent === "复制连接信息");
+    expect(button).toBeDefined();
+    return button!;
+  });
+  flushSync(() => copy.click());
+  incoming = true;
+  flushSync(notify);
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待当前操作完成"));
+  expect(apply).not.toHaveBeenCalled();
+  finishInfo({ url: "https://sync.example.test", accessKey: "test-key" });
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  expect(copy.disabled).toBe(true);
+  finishApply();
+  await vi.waitFor(() => expect(copy.disabled).toBe(false));
+});
+
 it("does not replay again when a phase read finishes after its own replay", async () => {
   let changed!: () => void;
   let holdPhaseRead = false;
@@ -522,6 +615,7 @@ it("checks the remote on restoration while unsaved input keeps downloaded change
   vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { statusChanged = callback; return () => {}; });
+  vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
   vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: true,
     issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
   const apply = vi.spyOn(desktop, "syncApply").mockResolvedValue({ changedEntries: [], changedCollections: [] });
@@ -541,8 +635,12 @@ it("checks the remote on restoration while unsaved input keeps downloaded change
   expect(apply).not.toHaveBeenCalled();
   expect(queue.snapshot().fields.contentMd).toBe("仍在输入的本地正文");
   expect(queue.isDirty()).toBe(true);
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待文稿保存完成"));
 
   await queue.flush();
+  statusChanged();
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待结束编辑"));
+  expect(apply).not.toHaveBeenCalled();
   input.blur();
   statusChanged();
   await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());

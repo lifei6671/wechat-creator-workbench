@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
@@ -34,14 +34,16 @@ function settingsSection(viewport: HTMLElement, page: SettingsPage) {
   return viewport.querySelector<HTMLElement>(`#settings-section-${page}`)!;
 }
 
-export function SettingsDialog({ initialPage, renderPage, status, toast, onClose }: {
+export function SettingsDialog({ initialPage, renderPage, status, toast, onClose, onPageChange }: {
   initialPage: SettingsPage;
   renderPage(page: SettingsPage): ReactNode;
   status?: string;
   toast?: ReactNode;
   onClose(): void;
+  onPageChange?(page: SettingsPage): void;
 }) {
   const [page, setPage] = useState(initialPage);
+  useLayoutEffect(() => { onPageChange?.(page); }, [page, onPageChange]);
   const [loaded, setLoaded] = useState<SettingsPage[]>([initialPage]);
   const [query, setQuery] = useState("");
   const search = useRef<HTMLInputElement>(null);

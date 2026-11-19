@@ -162,6 +162,9 @@ export function DesktopShell() {
   const [readingIds, setReadingIds] = useState<string[]>([]);
   const [documentOptions, setDocumentOptions] = useState(() => new Map<string, DocumentOptions>());
   const [modal, setModal] = useState<Modal | null>(null);
+  const settingsPage = useRef<SettingsPage>("appearance");
+  const syncSettingsBusy = useRef(false);
+  const wakeAutomaticSync = useRef<(() => void) | undefined>(undefined);
   const [appearance, setAppearance] = useState(() => useStoredInitial<Appearance>("appearance", "system"));
   const [preferredView, setPreferredView] = useState<ViewMode>(() => useStoredInitial<string>("view", "") === "preview" ? "preview" : "edit");
   const [shortcut, setShortcut] = useState(() => useStoredInitial<ViewShortcut>("view-shortcut", "none"));
@@ -292,6 +295,7 @@ export function DesktopShell() {
   const syncing = useRef(false);
   const [automaticSyncError, setAutomaticSyncError] = useState("");
   const [syncState, setSyncState] = useState<{ binding: SyncBinding | null; activity: SyncActivity | null }>();
+  const [syncWaitingReason, setSyncWaitingReason] = useState<string>();
 
   async function flushWorkspaceForSync() {
     await Promise.all(writing.current);
@@ -373,16 +377,27 @@ export function DesktopShell() {
     return archive;
   }
 
-  const isAutomaticSyncActive = useEffectEvent(() => !syncing.current && !globalLock && !modal && !exit.current &&
-    document.visibilityState === "visible" && document.hasFocus());
-  const canApplyAutomatically = useEffectEvent(() => isAutomaticSyncActive() &&
-    (collectionCanvas.current?.canApplySync() ?? true) &&
-    !document.activeElement?.closest("[contenteditable=true],textarea,input,select") &&
-    ![...queues.current.values()].some(queue => queue.isDirty() || queue.isSaving()));
+  const automaticSyncWaitingReason = useEffectEvent(() => {
+    if (exit.current) return "等待工作区保存退出";
+    if (syncing.current || globalLock || syncSettingsBusy.current) return "等待当前操作完成";
+    if (document.visibilityState !== "visible" || !document.hasFocus()) return "等待返回工作台";
+    const viewingSyncSettings = modal?.type === "settings" && settingsPage.current === "sync";
+    if (modal && !viewingSyncSettings) return "等待关闭当前弹窗";
+    if (document.querySelector('[role="alertdialog"]')) return "等待关闭确认对话框";
+    const unsaved = [...queues.current.values()].filter(queue => queue.isDirty() || queue.isSaving());
+    if (unsaved.length) return unsaved.some(queue => queue.saveError()) ? "等待重试文稿保存" : "等待文稿保存完成";
+    if (!(collectionCanvas.current?.canApplySync() ?? true)) return "等待画布操作结束";
+    if (!viewingSyncSettings && document.activeElement?.closest("[contenteditable=true],textarea,input,select")) return "等待结束编辑";
+    return undefined;
+  });
   const applyAutomaticSync = useEffectEvent(async () => {
-    if (!canApplyAutomatically()) return false;
+    const waiting = automaticSyncWaitingReason();
+    setSyncWaitingReason(waiting);
+    if (waiting) return false;
     if (!(await desktop.syncActivity())?.incoming) return true;
-    if (!canApplyAutomatically()) return false;
+    const latest = automaticSyncWaitingReason();
+    setSyncWaitingReason(latest);
+    if (latest) return false;
     await withSync(() => applySync(desktop.syncApply));
     return true;
   });
@@ -394,7 +409,10 @@ export function DesktopShell() {
     async function readSyncStatus() {
       const current = ++request;
       const [binding, activity] = await Promise.all([desktop.syncStatus(), desktop.syncActivity()]);
-      if (live && current === request) setSyncState({ binding, activity });
+      if (live && current === request) {
+        setSyncState({ binding, activity });
+        setSyncWaitingReason(activity?.incoming ? automaticSyncWaitingReason() : undefined);
+      }
       return activity;
     }
     const scheduler = startSyncApplication({
@@ -402,6 +420,7 @@ export function DesktopShell() {
       apply: () => applyAutomaticSync(),
       report: error => setAutomaticSyncError(error ? errorMessage(error) : ""),
     });
+    wakeAutomaticSync.current = scheduler.wake;
     const statusChanged = desktop.onSyncStatusChanged(() => {
       scheduler.wake();
       // Phase updates must remain visible while local replay holds the application loop.
@@ -424,16 +443,22 @@ export function DesktopShell() {
     window.addEventListener("blur", foregroundChanged);
     window.addEventListener("online", online);
     document.addEventListener("visibilitychange", foregroundChanged);
+    document.addEventListener("focusin", scheduler.wake);
+    document.addEventListener("focusout", scheduler.wake);
     return () => {
       live = false;
       scheduler.dispose();
+      wakeAutomaticSync.current = undefined;
       void statusChanged.then(unlisten => unlisten(), () => {});
       window.removeEventListener("focus", foregroundChanged);
       window.removeEventListener("blur", foregroundChanged);
       window.removeEventListener("online", online);
       document.removeEventListener("visibilitychange", foregroundChanged);
+      document.removeEventListener("focusin", scheduler.wake);
+      document.removeEventListener("focusout", scheduler.wake);
     };
   }, [workspaceId]);
+  useEffect(() => { wakeAutomaticSync.current?.(); }, [modal]);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
   useEffect(() => installInputContextMenu(showError), [showError]);
   function updateDocumentOptions(id: string, patch: DocumentOptions) {
@@ -1285,6 +1310,7 @@ export function DesktopShell() {
   }
 
   function showModal(value: Modal, trigger?: HTMLElement | null) {
+    if (value.type === "settings") settingsPage.current = value.page;
     focusOrigin.current = trigger ?? (document.activeElement as HTMLElement | null);
     setModal(value);
   }
@@ -1841,14 +1867,14 @@ export function DesktopShell() {
       workspacePanels.current!.setLayout({ navigation: share, writing: 100 - share, "ai-sidebar": 0 });
     } else panel.collapse();
     const clear = () => { delete group.dataset.aiSidebarMoving; };
+    const timer = window.setTimeout(clear, 270);
     const frame = requestAnimationFrame(() => {
-      clear();
       if (showAiPanel && !layoutSuspended.current && hasWorkspaceSize(group)) {
         const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
         rememberAiWidth(available * workspacePanels.current!.getLayout()["ai-sidebar"] / 100);
       }
     });
-    return () => { cancelAnimationFrame(frame); clear(); };
+    return () => { window.clearTimeout(timer); cancelAnimationFrame(frame); clear(); };
   }, [showAiPanel, showExplorer, aiSidebarPanel, workspacePanels]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
@@ -2189,7 +2215,7 @@ export function DesktopShell() {
       </Group>
       {windowsTitleBar && <WindowControls onError={showError} />}
       <StatusBar queue={collectionMode ? undefined : queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
-        syncBinding={syncState?.binding} syncActivity={syncState?.activity} syncError={automaticSyncError}
+        syncBinding={syncState?.binding} syncActivity={syncState?.activity} syncError={automaticSyncError} syncWaitingReason={syncWaitingReason}
         onSync={trigger => openSettings("sync", trigger)}
         mcpRunning={mcpStatus?.running} onMcp={trigger => openSettings("mcp", trigger)} backupProgress={backupWorking}
         migrationProgress={migrationWorking} assetRevision={assetsRevision} imageStorageEnabled={Boolean(imageTarget)}
@@ -2209,11 +2235,17 @@ export function DesktopShell() {
     }}>{cleaning ? "停止清理并退出" : exit.current?.restoring ? "取消恢复" : "继续编辑"}</Button>}</div>}
     {!exitMessage && <>
       {modal?.type === "settings" && <>
-        <SettingsDialog initialPage={modal.page} status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
+        <SettingsDialog initialPage={modal.page} onPageChange={page => {
+          if (settingsPage.current !== page) { settingsPage.current = page; wakeAutomaticSync.current?.(); }
+        }}
+          status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
           if (page === "sync") return <SyncSettings onSync={runSync} onRebuild={rebuildSync} automaticError={automaticSyncError}
+            waitingReason={syncWaitingReason} applicationBusy={globalLock} onBusyChange={busy => {
+              syncSettingsBusy.current = busy; wakeAutomaticSync.current?.();
+            }}
             onResolve={async (entityType, entityId, choice, remoteRevision, localGeneration) => {
               await applySync(() => desktop.syncResolve(entityType, entityId, choice, remoteRevision, localGeneration));
             }} />;

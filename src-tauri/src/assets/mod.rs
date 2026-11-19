@@ -258,11 +258,12 @@ impl Assets {
         self.store_image(db, name, bytes, ImageOrigin::Library)
     }
 
-    pub fn fill(&self, db: &Workspace, asset_id: &str, bytes: &[u8]) -> Result<String> {
+    pub async fn fill(&self, db: &Workspace, asset_id: &str, bytes: Vec<u8>) -> Result<String> {
+        let bytes = remote_image::normalize(bytes).await?;
         self.store_image(
             db,
             "公众号图片",
-            bytes,
+            &bytes,
             ImageOrigin::ImportPlaceholder(asset_id),
         )
     }

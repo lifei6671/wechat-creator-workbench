@@ -10,7 +10,7 @@ import type { DocumentActions } from "./Document";
 import { SyncStatus } from "./SyncStatus";
 
 export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, backupProgress, migrationProgress,
-  imageStorageEnabled, assetRevision, imageUpload, syncBinding, syncActivity, syncError, onSync, onError, onMcp, onPalette, onTrash, onSettings }: {
+  imageStorageEnabled, assetRevision, imageUpload, syncBinding, syncActivity, syncError, syncWaitingReason, onSync, onError, onMcp, onPalette, onTrash, onSettings }: {
   queue?: SaveQueue;
   actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat">;
   trashActive: boolean;
@@ -24,6 +24,7 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
   syncBinding: SyncBinding | null | undefined;
   syncActivity: SyncActivity | null | undefined;
   syncError: string;
+  syncWaitingReason?: string;
   onSync(trigger: HTMLButtonElement): void;
   onError(error: unknown): void;
   onMcp(trigger: HTMLButtonElement): void;
@@ -55,7 +56,7 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
     </div>}
     <Tooltip content="同步设置"><button type="button" className="plain-button status-button status-sync"
       aria-label="同步设置" aria-haspopup="dialog" onClick={event => onSync(event.currentTarget)}>
-      <SyncStatus binding={syncBinding} activity={syncActivity} error={syncError} />
+      <SyncStatus binding={syncBinding} activity={syncActivity} error={syncError} waitingReason={syncWaitingReason} />
     </button></Tooltip>
     {backup && <Tooltip content={backup}><span className="background-status" role="status" aria-label={backup}>
       <span className="background-status-icon" aria-hidden="true"><DatabaseBackup size={15} /></span>

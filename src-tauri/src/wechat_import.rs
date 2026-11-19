@@ -304,7 +304,7 @@ impl Imports {
             let url = Url::parse(&source).map_err(|_| AppError::invalid("原图地址无效"));
             let result = async {
                 let (bytes, _) = self.fetch(url?, true).await?;
-                assets.fill(db, &asset, &bytes)?;
+                assets.fill(db, &asset, bytes).await?;
                 Ok::<_, AppError>(())
             }
             .await;

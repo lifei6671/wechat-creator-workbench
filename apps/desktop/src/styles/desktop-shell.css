@@ -3,16 +3,18 @@
 [data-windows-titlebar] { position: relative; --window-control-width: 44px; --window-controls-width: calc(3 * var(--window-control-width)); }
 [data-windows-titlebar] > .window-controls {
   position: absolute; z-index: 3; inset: 0 0 auto auto; height: var(--chrome-height);
+  background: var(--workspace-bar-bg);
 }
 .workspace-panels { flex: 1; min-height: 0; background: var(--workspace-bar-bg); --navigation-divider-hit-inset: 7px; }
 .workspace-panels:is([data-sidebar-moving], [data-timeline-directory-moving]) > [data-panel] { transition: flex-grow 200ms ease-out; }
+.workspace-panels[data-ai-sidebar-moving] > [data-panel] { transition: flex-grow 250ms ease-out; }
 .timeline-navigation { display: flex; height: 100%; }
 #timeline-directory { flex: 0 0 auto; min-width: 0; overflow: hidden; }
 .timeline-directory-divider { flex: 0 0 1px; touch-action: none; }
 .timeline-navigation > .timeline-workspace { flex: 1; min-width: 0; }
 .workspace-panels[data-timeline-directory-moving] #timeline-directory { transition: flex-basis 200ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .workspace-panels:is([data-sidebar-moving], [data-timeline-directory-moving]) > [data-panel],
+  .workspace-panels:is([data-sidebar-moving], [data-ai-sidebar-moving], [data-timeline-directory-moving]) > [data-panel],
   .workspace-panels[data-timeline-directory-moving] #timeline-directory { transition: none; }
 }
 .sidebar-workspace, .main-workspace {
@@ -274,6 +276,11 @@
 .tabs { overflow: auto hidden; scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
 .tab-scroll-slot { flex: 0 0 22px; width: 22px; }
+.tab-exiting { overflow: hidden; pointer-events: none; animation: tab-exit 250ms ease-out forwards; }
+@keyframes tab-exit {
+  to { width: 0; opacity: 0; padding-inline: 0; margin-inline-end: -4px; }
+}
+@media (prefers-reduced-motion: reduce) { .tab-exiting { display: none; animation: none; } }
 .tab-strip .tab-scroll { min-width: 22px; width: 22px; height: 26px; }
 .tab {
   position: relative; display: flex; align-items: center; padding-inline: 3px 10px; flex: none;
@@ -440,12 +447,6 @@
 .document-body { position: relative; display: flex; height: auto; }
 .document-body[data-outline-open] {
   --outline-width: min(256px, 36%);
-  --outline-clearance: calc(var(--outline-width) + 26px);
-}
-.document-body[data-outline-open] .editor-scroll { padding-inline-end: var(--outline-clearance); }
-.document-body[data-outline-open] .rich-search {
-  inset-inline-end: var(--outline-clearance);
-  width: min(425px, calc(100% - var(--outline-clearance) - 12px));
 }
 .document-outline {
   position: absolute; z-index: 2; inset: 10px 12px auto auto;

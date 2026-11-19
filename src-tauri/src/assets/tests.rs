@@ -598,15 +598,19 @@ fn same_formula_and_diagram_fixtures_protect_their_source_keys() {
     }
 }
 
-#[test]
-fn filling_a_placeholder_checks_live_references_and_leaves_the_body_intact() {
+#[tokio::test]
+async fn filling_a_placeholder_checks_live_references_and_leaves_the_body_intact() {
     let (_folder, db, assets) = setup();
     db.write(|tx| {
         tx.execute("INSERT INTO assets(id,kind,created_at,name) VALUES ('placeholder','original',0,'图片')",[])?;
         Ok(())
     }).unwrap();
     assert_eq!(
-        assets.fill(&db, "placeholder", &png()).unwrap_err().code(),
+        assets
+            .fill(&db, "placeholder", png())
+            .await
+            .unwrap_err()
+            .code(),
         "ASSET_UNUSED"
     );
     let edited = "后来补写的段落[^图]\n\n[^图]: ![图](asset://placeholder)";
@@ -615,7 +619,7 @@ fn filling_a_placeholder_checks_live_references_and_leaves_the_body_intact() {
         references::sync_entry(tx,"other",edited)
     }).unwrap();
     assert_eq!(
-        assets.fill(&db, "placeholder", &png()).unwrap(),
+        assets.fill(&db, "placeholder", png()).await.unwrap(),
         "placeholder"
     );
     assert_eq!(db.export_text("other").unwrap().1, edited);
@@ -625,6 +629,36 @@ fn filling_a_placeholder_checks_live_references_and_leaves_the_body_intact() {
             .path
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn imported_svg_fills_the_original_asset_as_a_readable_png() {
+    let (_folder, db, assets) = setup();
+    let markdown = "![公众号图片](asset://svg-placeholder)";
+    db.write(|tx| {
+        tx.execute("INSERT INTO assets(id,kind,created_at,name) VALUES ('svg-placeholder','original',0,'公众号图片')", [])?;
+        tx.execute("INSERT INTO entries(id,kind,title,content_md,status,created_at,updated_at) VALUES ('svg-entry','article','',?1,'draft',0,0)", [markdown])?;
+        references::sync_entry(tx, "svg-entry", markdown)
+    }).unwrap();
+    let svg = br##"  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="1200" height="540"><rect width="1200" height="540" fill="#f00"/></svg>"##;
+    assert_eq!(
+        assets
+            .fill(&db, "svg-placeholder", svg.to_vec())
+            .await
+            .unwrap(),
+        "svg-placeholder"
+    );
+    let bytes = assets.read(&db, "asset://svg-placeholder").await.unwrap();
+    assert_eq!(image_header(&bytes).unwrap(), (ImageFormat::Png, 1200, 540));
+    assert_eq!(
+        image::load_from_memory(&bytes)
+            .unwrap()
+            .to_rgba8()
+            .get_pixel(20, 20)
+            .0,
+        [255, 0, 0, 255]
+    );
+    assert_eq!(db.export_text("svg-entry").unwrap().1, markdown);
 }
 
 pub(super) fn setup() -> (tempfile::TempDir, Workspace, Assets) {

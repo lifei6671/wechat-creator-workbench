@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
@@ -50,6 +50,27 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
   const strip = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const wheelFrame = useRef(0);
+  const snapshots = [
+    ...sessions.map(queue => ({ key: queue.entry.id, title: queue.snapshotFields().title || untitled })),
+    ...collections.map(item => ({ key: `collection:${item.id}`, title: item.title })),
+  ];
+  const previousTabs = useRef(snapshots);
+  const previousOrder = useRef(snapshots.map(tab => tab.key));
+  const [closingTabs, setClosingTabs] = useState<{ key: string; title: string; index: number }[]>([]);
+  useLayoutEffect(() => {
+    const keys = new Set(snapshots.map(tab => tab.key));
+    const removed = previousTabs.current.flatMap(tab => keys.has(tab.key) ? [] : [{ ...tab, index: previousOrder.current.indexOf(tab.key) }]);
+    previousTabs.current = snapshots;
+    previousOrder.current = tabKeys;
+    if (removed.length && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setClosingTabs(current => [...current.filter(tab => !keys.has(tab.key) && !removed.some(item => item.key === tab.key)), ...removed]);
+    }
+  });
+  useEffect(() => {
+    if (!closingTabs.length) return;
+    const timer = setTimeout(() => setClosingTabs([]), 250);
+    return () => clearTimeout(timer);
+  }, [closingTabs]);
   const [edges, setEdges] = useState({ overflow: false, left: false, right: false });
   const drag = usePointerDrag<{ id: string; title: string }, { id: string; placement: CategoryPlacement }>(element => {
     const tab = element.closest<HTMLElement>("[data-tab-id]");
@@ -84,10 +105,15 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
         }
       }
     }
+    const last = viewport.lastElementChild as HTMLElement | null;
+    // Closing tabs collapse their trailing gap, which scrollWidth still counts as overflow.
+    const contentWidth = last && viewport.querySelector(".tab-exiting")
+      ? last.getBoundingClientRect().right - viewport.getBoundingClientRect().left + viewport.scrollLeft + parseFloat(getComputedStyle(last).marginRight)
+      : viewport.scrollWidth;
     const next = {
-      overflow: viewport.scrollWidth > strip.current!.clientWidth + 1,
+      overflow: contentWidth > strip.current!.clientWidth + 1,
       left: viewport.scrollLeft > 1,
-      right: viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - 1,
+      right: viewport.scrollLeft + viewport.clientWidth < contentWidth - 1,
     };
     setEdges(current => current.overflow === next.overflow && current.left === next.left && current.right === next.right ? current : next);
   }, []);
@@ -162,20 +188,33 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
     tabs[next].click();
   }
 
+  const tabs: ReactNode[] = [
+    ...sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} active={activeId === queue.entry.id}
+        tabbable={activeId === queue.entry.id || (!activeId && !activeCollectionId && queue === sessions[0])}
+        reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1 || collections.length > 0}
+        dragging={drag.ghost?.id === queue.entry.id} placement={drag.hint?.id === queue.entry.id ? drag.hint.placement : undefined}
+        collectionOptions={collectionOptions} onAddToCollection={onAddToCollection}
+        categories={categories} onMove={onMove} onSwitch={onSwitch} onClose={onClose} onAction={onAction} onRename={onRename} onError={onError} />),
+    ...collections.map(collection => <CollectionTab key={`collection:${collection.id}`} item={collection} active={activeCollectionId === collection.id}
+        tabbable={activeCollectionId === collection.id || (!activeId && !activeCollectionId && !sessions.length && collection === collections[0])}
+        onSwitch={() => onSwitchCollection?.(collection.id)} onClose={() => onCloseCollection?.(collection.id)} />),
+  ];
+  const tabKeys = snapshots.map(tab => tab.key);
+  for (const tab of [...closingTabs].sort((a, b) => a.index - b.index)) {
+    if (snapshots.some(current => current.key === tab.key)) continue;
+    tabKeys.splice(Math.min(tab.index, tabKeys.length), 0, tab.key);
+    tabs.splice(Math.min(tab.index, tabs.length), 0,
+      <div key={`closing:${tab.key}`} className="tab tab-exiting" aria-hidden="true">
+        <span className="plain-button tab-title"><span>{tab.title}</span></span><X size={14} />
+      </div>);
+  }
+
   return <div className="tab-strip" ref={strip}>
     {edges.overflow && <div className="tab-scroll-slot">
       {edges.left && <Tool label="向左滚动标签页" className="chrome-icon tab-scroll" onClick={() => scroll(-1)}><ChevronLeft size={15} /></Tool>}
     </div>}
     <div className="tabs" ref={list} role="tablist" aria-label="打开的内容" onKeyDown={navigate} {...drag.events}>
-      {sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} active={activeId === queue.entry.id}
-        tabbable={activeId === queue.entry.id || (!activeId && !activeCollectionId && queue === sessions[0])}
-        reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1 || collections.length > 0}
-        dragging={drag.ghost?.id === queue.entry.id} placement={drag.hint?.id === queue.entry.id ? drag.hint.placement : undefined}
-        collectionOptions={collectionOptions} onAddToCollection={onAddToCollection}
-        categories={categories} onMove={onMove} onSwitch={onSwitch} onClose={onClose} onAction={onAction} onRename={onRename} onError={onError} />)}
-      {collections.map(collection => <CollectionTab key={`collection:${collection.id}`} item={collection} active={activeCollectionId === collection.id}
-        tabbable={activeCollectionId === collection.id || (!activeId && !activeCollectionId && !sessions.length && collection === collections[0])}
-        onSwitch={() => onSwitchCollection?.(collection.id)} onClose={() => onCloseCollection?.(collection.id)} />)}
+      {tabs}
     </div>
     {edges.overflow && <div className="tab-scroll-slot">
       {edges.right && <Tool label="向右滚动标签页" className="chrome-icon tab-scroll" onClick={() => scroll(1)}><ChevronRight size={15} /></Tool>}
