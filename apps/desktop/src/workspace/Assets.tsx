@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import { Button, Checkbox, Select, TextField } from "@radix-ui/themes";
 import { readS3Settings, S3Fields, SettingRow } from "./Settings";
 import { ChevronLeft, ChevronRight, CloudUpload, Grid2X2, Grid3X3, ImageOff, Plus, Settings2 } from "lucide-react";
@@ -30,6 +30,30 @@ function assetImageKey(item: AssetRow) {
   return `${item.id}:${item.bytes}:${item.publicUrl}`;
 }
 
+const tileGap = 4;
+const tilePadding = 4;
+const tileCaption = 16;
+
+function arrangeAssets(items: AssetRow[], width: number, minimum: number) {
+  const columns = Math.max(1, Math.floor((width + tileGap) / (minimum + tileGap)));
+  const tileWidth = (width - (columns - 1) * tileGap) / columns;
+  const heights = Array<number>(columns).fill(0);
+  const priorities = Array<number>(columns).fill(0);
+  const chrome = 2 * tilePadding + tileGap + tileCaption;
+  const mediaHeight = (width: number, ratio: number) => Math.min(320, Math.max(0, width - 2 * tilePadding) * ratio);
+  const tiles = items.map(item => {
+    const column = priorities.indexOf(Math.min(...priorities));
+    const ratio = item.width && item.height ? item.height / item.width : 3 / 4;
+    const imageHeight = mediaHeight(tileWidth, ratio);
+    const position = { insetBlockStart: heights[column], insetInlineStart: column * (tileWidth + tileGap), width: tileWidth };
+    heights[column] += imageHeight + chrome + tileGap;
+    // Keep column assignments stable when the sidebar width changes within the same column count.
+    priorities[column] += mediaHeight(minimum, ratio) + chrome + tileGap;
+    return { item, position, imageHeight };
+  });
+  return { tiles, height: Math.max(...heights) };
+}
+
 export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert, canCover }: {
   onImport(files: File[]): Promise<string>;
   onInsert(id: string, name: string): void;
@@ -47,8 +71,19 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   const [page, setPage] = useState(0);
   const [paging, setPaging] = useState(false);
   const [largeTiles, setLargeTiles] = useState(() => useStoredInitial("asset-large-tiles", false));
+  const [gridWidth, setGridWidth] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
+  const grid = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = grid.current!;
+    setGridWidth(element.clientWidth);
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) setGridWidth(entry.contentRect.width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     let live = true;
     let request = 0;
@@ -70,6 +105,8 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   }, [library?.page]);
   const current = library?.items.find(item => item.id === selected?.id);
   const currentKey = current && assetImageKey(current);
+  const minimum = largeTiles ? 108 : 68;
+  const layout = arrangeAssets(library?.items ?? [], gridWidth || minimum, minimum);
 
   function turnPage(next: number) {
     setSelected(null);
@@ -117,15 +154,20 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         {library?.items.length === 0 && !loading && <div className="explorer-empty">
           <Button size="1" variant="soft" onClick={() => input.current?.click()}>导入图片</Button>
         </div>}
-        {library && library.items.length > 0 && <div className="asset-grid" data-large={largeTiles || undefined} role="group" aria-label="图片">
-          {library.items.map(item => {
+        <div ref={grid} className="asset-masonry" data-large={largeTiles || undefined} role="group" aria-label="图片"
+          aria-hidden={!layout.tiles.length} style={{
+            height: layout.height, "--asset-tile-gap": `${tileGap}px`, "--asset-tile-padding": `${tilePadding}px`,
+            "--asset-tile-caption": `${tileCaption}px`,
+          } as CSSProperties}>
+          {layout.tiles.map(({ item, position, imageHeight }) => {
             const key = assetImageKey(item);
-            return <AssetTile key={key} item={item} selected={selected?.id === item.id} onSelect={thumbnail => {
+            return <AssetTile key={key} item={item} position={position} imageHeight={imageHeight}
+              selected={selected?.id === item.id} onSelect={thumbnail => {
               setSelected({ id: item.id, key, thumbnail });
               setNotice("");
             }} />;
           })}
-        </div>}
+        </div>
       </div>
     </div>
     {library && (library.page > 0 || library.hasNext) && <div className="asset-pagination" role="group" aria-label="素材分页">
@@ -159,8 +201,8 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   </aside>;
 }
 
-function AssetTile({ item, selected, onSelect }: {
-  item: AssetRow; selected: boolean; onSelect(thumbnail?: string): void;
+function AssetTile({ item, position, imageHeight, selected, onSelect }: {
+  item: AssetRow; position: CSSProperties; imageHeight: number; selected: boolean; onSelect(thumbnail?: string): void;
 }) {
   const media = useRef<HTMLSpanElement>(null);
   const [broken, setBroken] = useState(false);
@@ -169,10 +211,11 @@ function AssetTile({ item, selected, onSelect }: {
   const result = useAssetImage(visible && available ? `asset://${item.id}` : null, true);
   const src = broken ? undefined : result?.src;
   return <Tooltip content={item.name || "图片"}>
-    <button className="plain-button asset-tile" type="button" aria-pressed={selected}
+    <button className="plain-button asset-tile" style={position} type="button" aria-pressed={selected}
       onClick={() => onSelect(src)}>
-      <span className="asset-tile-media" ref={media} aria-hidden="true">
-        {src ? <img src={src} alt="" onError={() => setBroken(true)} /> : (!available || result) && <ImageOff size={16} />}
+      <span className="asset-tile-media" ref={media} aria-hidden="true" style={{ height: imageHeight }}>
+        {src ? <img src={src} alt="" onError={() => setBroken(true)} />
+          : (!available || result) && <ImageOff size={16} />}
       </span>
       <span className="asset-tile-name">{item.name || "图片"}</span>
     </button>

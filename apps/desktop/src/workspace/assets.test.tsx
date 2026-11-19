@@ -20,7 +20,17 @@ it("loads tiles near the viewport and keeps the selected thumbnail visible until
     }
     disconnect() {}
   });
-  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  let resizeMasonry!: (width: number) => void;
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      if (target.classList.contains("asset-masonry")) {
+        resizeMasonry = width => this.callback([{ contentRect: new DOMRect(0, 0, width, 0), target } as ResizeObserverEntry],
+          this as unknown as ResizeObserver);
+      }
+    }
+    disconnect() {}
+  });
   const makeUrl = vi.fn().mockReturnValueOnce("blob:thumb-one").mockReturnValueOnce("blob:thumb-two")
     .mockReturnValueOnce("blob:full-one").mockReturnValueOnce("blob:full-two");
   const revokeUrl = vi.fn();
@@ -30,7 +40,9 @@ it("loads tiles near the viewport and keeps the selected thumbnail visible until
     uploadStatus: null, uploadError: null, cleanupError: null, publicUrl: "https://cdn.example.test/one.png",
   };
   const library = vi.spyOn(desktop, "assetLibrary").mockImplementation(async (page = 0) => ({
-    items: page ? [{ ...row, id: "three", name: "图三.png" }] : [row, { ...row, id: "two", name: "图二.png" }],
+    items: page ? [{ ...row, id: "three", name: "图三.png" }] : [
+      row, { ...row, id: "two", name: "图二.png", width: 200, height: 400 }, { ...row, id: "four", name: "图四.png" },
+    ],
     target: null, page, hasNext: page === 0,
   }));
   vi.spyOn(desktop, "onAssetsChanged").mockResolvedValue(() => {});
@@ -42,16 +54,25 @@ it("loads tiles near the viewport and keeps the selected thumbnail visible until
   try {
     flushSync(() => root.render(<Theme><AssetPanel onImport={vi.fn()} onInsert={vi.fn()}
       onCover={vi.fn()} onConfigure={vi.fn()} canInsert={false} canCover={false} /></Theme>));
-    await vi.waitFor(() => expect(visible.size).toBe(2));
+    await vi.waitFor(() => expect(visible.size).toBe(3));
     expect(small).not.toHaveBeenCalled();
+    flushSync(() => resizeMasonry(148));
     const tiles = container.querySelectorAll<HTMLButtonElement>(".asset-tile");
+    const mediaHeights = () => Array.from(tiles, tile => tile.querySelector<HTMLElement>(".asset-tile-media")?.style.height);
+    const coordinates = () => Array.from(tiles, tile => [tile.style.insetInlineStart, tile.style.insetBlockStart]);
+    expect(mediaHeights()).toEqual(["32px", "128px", "32px"]);
+    expect(coordinates()).toEqual([["0px", "0px"], ["76px", "0px"], ["0px", "64px"]]);
     const seeTile = (tile: HTMLButtonElement) => flushSync(() => visible.get(tile.querySelector(".asset-tile-media")!)!());
     seeTile(tiles[0]);
     await vi.waitFor(() => expect(tiles[0].querySelector("img")?.getAttribute("src")).toBe("blob:thumb-one"));
     expect(small).toHaveBeenCalledExactlyOnceWith("one");
     seeTile(tiles[1]);
     await vi.waitFor(() => expect(tiles[1].querySelector("img")?.getAttribute("src")).toBe("blob:thumb-two"));
-    const grid = container.querySelector(".asset-grid")!;
+    expect(mediaHeights()).toEqual(["32px", "128px", "32px"]);
+    expect(coordinates()).toEqual([["0px", "0px"], ["76px", "0px"], ["0px", "64px"]]);
+    flushSync(() => resizeMasonry(0));
+    expect(coordinates()).toEqual([["0px", "0px"], ["76px", "0px"], ["0px", "64px"]]);
+    const grid = container.querySelector(".asset-masonry")!;
     expect(grid.hasAttribute("data-large")).toBe(false);
     flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="切换为大缩略图"]')!.click());
     expect(grid.getAttribute("data-large")).toBe("true");
@@ -90,12 +111,12 @@ it("loads tiles near the viewport and keeps the selected thumbnail visible until
     const next = () => container.querySelector<HTMLButtonElement>('[aria-label="下一页"]')!;
     expect(previous().disabled).toBe(true);
     flushSync(() => next().click());
-    await vi.waitFor(() => expect(container.querySelector(".asset-grid")?.textContent).toBe("图三.png"));
+    await vi.waitFor(() => expect(container.querySelector(".asset-masonry")?.textContent).toBe("图三.png"));
     expect(library).toHaveBeenCalledWith(1);
     expect(next().disabled).toBe(true);
     expect(container.querySelector(".asset-details")).toBeNull();
     flushSync(() => previous().click());
-    await vi.waitFor(() => expect(container.querySelector(".asset-grid")?.textContent).toContain("图二.png"));
+    await vi.waitFor(() => expect(container.querySelector(".asset-masonry")?.textContent).toContain("图二.png"));
     expect(library).toHaveBeenLastCalledWith(0);
   } finally {
     flushSync(() => root.unmount());
