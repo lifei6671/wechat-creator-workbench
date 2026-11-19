@@ -78,6 +78,12 @@ fn closed() -> AppError {
     AppError::new("EXIT_PENDING", "数据库已关闭，应用正在重启")
 }
 
+const ENTRY_SOURCE_DETAILS: &str = include_str!("../migrations/0023_entry_source_details.sql");
+const TIMELINE_ENTRY_PINS: &str = include_str!("../migrations/0023_timeline_entry_pins.sql");
+const EXTERNAL_ARTICLES: &str = include_str!("../migrations/0024_external_articles.sql");
+const PREVIEW_MIGRATIONS: &[&str] = &[ENTRY_SOURCE_DETAILS, TIMELINE_ENTRY_PINS, EXTERNAL_ARTICLES];
+const BEFORE_SOURCE_MIGRATIONS: i64 = 22;
+
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_assets.sql"),
@@ -101,9 +107,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0020_sync.sql"),
     include_str!("../migrations/0021_content_sync.sql"),
     include_str!("../migrations/0022_canvas_sync.sql"),
-    include_str!("../migrations/0023_entry_source_details.sql"),
-    include_str!("../migrations/0023_timeline_entry_pins.sql"),
-    include_str!("../migrations/0024_external_articles.sql"),
+    TIMELINE_ENTRY_PINS,
+    EXTERNAL_ARTICLES,
+    ENTRY_SOURCE_DETAILS,
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -287,9 +293,36 @@ impl Workspace {
 }
 
 fn migrate(conn: &mut Connection, from: i64, to: i64) -> Result<()> {
+    // The first sync-merge build inserted source details ahead of two shipped migrations.
+    let preview = (23..=24).contains(&from)
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('entries') WHERE name='source_details')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+    apply_migrations(conn, from, to, preview)
+}
+
+fn apply_migrations(conn: &mut Connection, from: i64, to: i64, preview: bool) -> Result<()> {
     for (version, sql) in (from + 1..=to).zip(&MIGRATIONS[from as usize..to as usize]) {
+        let sql = if preview && (23..=25).contains(&version) {
+            PREVIEW_MIGRATIONS[(version - BEFORE_SOURCE_MIGRATIONS - 1) as usize]
+        } else {
+            sql
+        };
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Copying existing source metadata leaves the synced document unchanged.
+        let suspend_capture = sql == ENTRY_SOURCE_DETAILS
+            && tx.query_row("SELECT capture FROM sync_progress WHERE id=1", [], |row| {
+                row.get::<_, bool>(0)
+            })?;
+        if suspend_capture {
+            tx.execute("UPDATE sync_progress SET capture=0 WHERE id=1", [])?;
+        }
         tx.execute_batch(sql)?;
+        if suspend_capture {
+            tx.execute("UPDATE sync_progress SET capture=1 WHERE id=1", [])?;
+        }
         if version == 1 {
             tx.execute(
                 "INSERT INTO app_settings VALUES ('workspace_id',?1)",
@@ -323,14 +356,23 @@ pub fn validate_backup_schema(conn: &Connection) -> Result<i64> {
     }
     let mut reference = Connection::open_in_memory()?;
     reference.pragma_update(None, "foreign_keys", true)?;
+    let actual = definitions(conn)?;
     migrate(&mut reference, 0, version)?;
-    if definitions(conn)? != definitions(&reference)? {
-        return Err(AppError::new(
-            "BACKUP_SCHEMA",
-            "快照的表、索引或触发器与工作台的数据库结构不一致",
-        ));
+    if actual == definitions(&reference)? {
+        return Ok(version);
     }
-    Ok(version)
+    if version > BEFORE_SOURCE_MIGRATIONS {
+        let mut preview = Connection::open_in_memory()?;
+        preview.pragma_update(None, "foreign_keys", true)?;
+        apply_migrations(&mut preview, 0, version, true)?;
+        if actual == definitions(&preview)? {
+            return Ok(version);
+        }
+    }
+    Err(AppError::new(
+        "BACKUP_SCHEMA",
+        "快照的表、索引或触发器与工作台的数据库结构不一致",
+    ))
 }
 
 pub fn checkpoint(conn: &Connection) -> Result<()> {
@@ -408,6 +450,96 @@ mod tests {
         assert_eq!((cursor, pending), (41, 4));
     }
     use super::*;
+
+    #[test]
+    fn source_details_upgrade_preserves_shipped_and_preview_workspaces() {
+        let shipped = [TIMELINE_ENTRY_PINS, EXTERNAL_ARTICLES];
+        for history in [shipped.as_slice(), PREVIEW_MIGRATIONS] {
+            for applied in 1..=history.len() {
+                let mut conn = Connection::open_in_memory().unwrap();
+                conn.pragma_update(None, "foreign_keys", true).unwrap();
+                migrate(&mut conn, 0, BEFORE_SOURCE_MIGRATIONS).unwrap();
+                let version = BEFORE_SOURCE_MIGRATIONS + applied as i64;
+                for sql in &history[..applied] {
+                    conn.execute_batch(sql).unwrap();
+                }
+                conn.pragma_update(None, "user_version", version).unwrap();
+                assert_eq!(validate_backup_schema(&conn).unwrap(), version);
+                conn.execute_batch(
+                    "INSERT INTO sources VALUES ('source','https://example.com/article','作者','账号',1,2);
+                     INSERT INTO entries(id,kind,title,content_md,status,created_at,updated_at,source_id)
+                     VALUES ('doc','reference','测试文档','保留正文','unread',1,1,'source'),
+                            ('clean','reference','已同步的文档','','unread',1,1,'source');
+                     INSERT INTO sync_binding(id,url,instance_id,epoch,device_id)
+                     VALUES (1,'https://example.com','instance','epoch','device');
+                     UPDATE sync_progress SET initialized=1,cursor=23;",
+                )
+                .unwrap();
+                if history == shipped && applied == shipped.len() {
+                    conn.execute_batch(
+                        "UPDATE entries SET external_imported=1,
+                         custom_properties='[{\"name\":\"分类\",\"value\":\"测试\"}]';
+                         INSERT INTO timeline_entry_pins VALUES ('all','doc',4);",
+                    )
+                    .unwrap();
+                }
+                conn.execute_batch(
+                    "UPDATE sync_progress SET capture=1;
+                     INSERT INTO sync_dirty (entity_type,entity_id,generation) VALUES ('entry','doc',7);",
+                )
+                .unwrap();
+                migrate(&mut conn, version, SCHEMA_VERSION).unwrap();
+                let state: (String, i64, String, i64) = conn
+                    .query_row(
+                        "SELECT content_md,external_imported,(SELECT device_id FROM sync_binding),
+                            (SELECT cursor FROM sync_progress) FROM entries WHERE id='doc'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .unwrap();
+                let has_prior_properties = history == shipped && applied == shipped.len();
+                assert_eq!(
+                    state,
+                    (
+                        "保留正文".into(),
+                        i64::from(has_prior_properties),
+                        "device".into(),
+                        23
+                    )
+                );
+                if has_prior_properties {
+                    assert_eq!(
+                        conn.query_row("SELECT pin_order FROM timeline_entry_pins", [], |row| row
+                            .get::<_, i64>(
+                            0
+                        ))
+                        .unwrap(),
+                        4
+                    );
+                    assert_eq!(conn.query_row("SELECT json_extract(custom_properties,'$[0].value') FROM entries WHERE id='doc'", [], |row| row.get::<_, String>(0)).unwrap(), "测试");
+                }
+                let queue: (i64, i64, i64) = conn.query_row(
+                    "SELECT capture,(SELECT count(*) FROM sync_dirty),
+                            (SELECT generation FROM sync_dirty WHERE entity_id='doc') FROM sync_progress",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                ).unwrap();
+                assert_eq!(queue, (1, 1, 7));
+                if history == shipped {
+                    let details: String = conn
+                        .query_row(
+                            "SELECT source_details->>'$.author' FROM entries WHERE id='clean'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(details, "作者");
+                }
+                assert_eq!(validate_backup_schema(&conn).unwrap(), SCHEMA_VERSION);
+                check_integrity(&conn).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn adding_custom_card_colors_preserves_existing_presets() {

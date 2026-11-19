@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { unstable_dev } from "wrangler";
 import assert from "node:assert/strict";
 import Sqlite from "better-sqlite3";
+import { issueRecoveryKey, listRecoveryDevices } from "../scripts/cloudflare-recovery.mjs";
 import { openSqlite } from "../dist/adapters/sqlite.js";
 import { authenticate, claim, createAccessKey, createRecoveryKey, join as joinWorkspace, recover, revoke } from "../dist/auth.js";
 import { apply, seed } from "../dist/sync.js";
@@ -45,16 +46,65 @@ test("upgrading a populated sync database preserves the device and cloud data", 
   const db = openSqlite(path);
   try {
     const [[device], [draft], [identity]] = await db.batch([
-      ["SELECT id, token_hash, recovery_hash FROM sync_devices"],
+      ["SELECT id, token_hash, recovery_hash, admin_recovery_hash, admin_recovery_expires_at FROM sync_devices"],
       ["SELECT revision, payload_json FROM sync_entities"],
       ["SELECT claimed, claim_device, seed_status FROM sync_identity"],
     ]);
-    assert.deepEqual(device, { id: "old", token_hash: "old-hash", recovery_hash: null });
+    assert.deepEqual(device, { id: "old", token_hash: "old-hash", recovery_hash: null,
+      admin_recovery_hash: null, admin_recovery_expires_at: null });
     assert.deepEqual(draft, { revision: 7, payload_json: '{"contentMd":"原文"}' });
     assert.deepEqual(identity, { claimed: 1, claim_device: "old", seed_status: "ready" });
   } finally {
     db.close();
   }
+});
+
+test("a Cloudflare administrator can recover the only device without existing keys", async (t) => {
+  const db = openSqlite(":memory:");
+  t.after(() => db.close());
+  const execute = async (sql) => (await db.batch([[sql]]))[0];
+  assert.deepEqual(await listRecoveryDevices(execute), []);
+  const setup = secret(), original = secret();
+  const { deviceId } = await claim(db, setup, setup, original, "原设备");
+  const beforeSeed = await identity(db);
+  const oldDevice = await authenticate(db, "Bearer " + original);
+  const client = { instanceId: beforeSeed.instance_id, epoch: beforeSeed.epoch, deviceId, tokenHash: oldDevice.tokenHash };
+  await seed(db, client, "begin");
+  await apply(db, client, 0, { operationId: "initial-folder", mutations: [
+    { entityType: "category", entityId: "folder", baseRevision: 0,
+      operation: "upsert", payload: { name: "已有目录", parentId: null } },
+  ] });
+  await seed(db, client, "finish");
+  const before = await identity(db);
+  const entities = "SELECT * FROM sync_entities";
+  const records = await execute(entities);
+  const [device] = await listRecoveryDevices(execute);
+  assert.deepEqual(Object.keys(device), ["id", "name", "createdAt"]);
+  assert.equal(device.id, deviceId);
+  await assert.rejects(issueRecoveryKey(execute, "missing"), /找不到可恢复的设备/);
+
+  const expired = await issueRecoveryKey(execute, deviceId);
+  await execute("UPDATE sync_devices SET admin_recovery_expires_at = unixepoch() WHERE id = '" + deviceId + "'");
+  await assert.rejects(recover(db, expired.recoveryKey, secret(), "重装后"), { code: "invalid_recovery_key" });
+  const superseded = await issueRecoveryKey(execute, deviceId);
+  const current = await issueRecoveryKey(execute, deviceId);
+  await assert.rejects(recover(db, superseded.recoveryKey, secret(), "重装后"), { code: "invalid_recovery_key" });
+  assert.deepEqual(await authenticate(db, "Bearer " + original), oldDevice);
+
+  const replacements = [secret(), secret()];
+  const outcomes = await Promise.allSettled(replacements.map(token => recover(db, current.recoveryKey, token, "重装后")));
+  const winner = outcomes.findIndex(outcome => outcome.status === "fulfilled");
+  assert.notEqual(winner, -1);
+  assert.deepEqual(outcomes[winner].value, { deviceId });
+  assert.equal(outcomes[1 - winner].reason.code, "invalid_recovery_key");
+  await assert.rejects(authenticate(db, "Bearer " + original), { code: "invalid_device" });
+  assert.equal((await authenticate(db, "Bearer " + replacements[winner])).id, deviceId);
+  assert.deepEqual(await listRecoveryDevices(execute), [{ ...device, name: "重装后" }]);
+  assert.deepEqual(await identity(db), before);
+  assert.deepEqual(await execute(entities), records);
+  assert.deepEqual(await execute("SELECT recovery_hash, admin_recovery_hash, admin_recovery_expires_at FROM sync_devices"), [
+    { recovery_hash: null, admin_recovery_hash: null, admin_recovery_expires_at: null },
+  ]);
 });
 
 test("replacing device credentials blocks writes from requests already authorized with the old credentials", async (t) => {

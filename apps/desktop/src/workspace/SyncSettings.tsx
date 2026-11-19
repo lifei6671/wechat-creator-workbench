@@ -152,7 +152,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError }: {
       <SettingRow id="sync-method" label="连接方式"
         hint={canClaim
           ? "首次部署选「认领服务」。添加电脑选「加入已有服务」。本机已有内容时，先备份再合并。"
-          : "可用工作区接入密钥重新登记，或使用之前保存的恢复密钥。"}>
+          : "选「恢复连接」沿用原设备。使用接入密钥会登记为新设备。"}>
         {hintId => <Select.Root value={connectionMethod} onValueChange={value => { setMethod(value as SyncConnectMethod); setCode(""); setError(""); }}>
           <Select.Trigger id="sync-method" aria-describedby={hintId} />
           <Select.Content>
@@ -168,7 +168,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError }: {
             ? "填写管理员重新配置的 SETUP_SECRET。Cloudflare 在部署配置中设置，Docker 在服务目录的 .env 文件中设置。"
             : "填写部署时设置的 SETUP_SECRET。部署前可点「生成并复制密钥」，把同一个值填入 Cloudflare 部署配置或 Docker 的 .env 文件。"
           : connectionMethod === "recover"
-            ? "填写这台设备之前保存的恢复密钥。连接后旧设备凭据失效，云端内容保留。请用空工作区接收云端内容。"
+            ? "用之前保存的恢复密钥，或请 Cloudflare 管理员为这台设备签发。全新安装请用空工作区恢复云端内容。"
             : "粘贴已保存的工作区接入密钥。可在已连接的电脑上打开「设置 → 同步」生成。"}>
         {hintId => <TextField.Root id="sync-code" aria-describedby={hintId} type="password" autoComplete="off" required
           minLength={64} maxLength={64} value={code} onChange={event => setCode(event.target.value)} />}

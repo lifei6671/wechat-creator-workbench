@@ -9,6 +9,7 @@
     "start": "node dist/node.js",
     "dev:worker": "wrangler dev",
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "recovery:cloudflare": "node scripts/cloudflare-recovery.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
     "test:remote": "node --test tests/remote.test.mjs"
   },

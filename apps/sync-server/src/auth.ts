@@ -80,11 +80,15 @@ export async function recover(db: Database, recoveryKey: unknown, deviceToken: u
   if (typeof recoveryKey !== "string" || !hashPattern.test(recoveryKey)) throw new SyncError(401, "invalid_recovery_key");
   const [hash, recoveryHash] = await Promise.all([deviceHash(deviceToken), sha256(recoveryKey)]);
   const [device] = await query<{ id: string }>(db, [
-    `UPDATE sync_devices SET name = ?, token_hash = ?, recovery_hash = NULL
-     WHERE recovery_hash = ? AND revoked_at IS NULL
+    `UPDATE sync_devices SET name = ?, token_hash = ?, recovery_hash = NULL,
+       admin_recovery_hash = NULL, admin_recovery_expires_at = NULL
+     WHERE (recovery_hash = ? OR (
+       admin_recovery_hash = ? AND admin_recovery_expires_at > unixepoch()
+       AND EXISTS (SELECT 1 FROM sync_identity WHERE claimed = 1)
+     )) AND revoked_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM sync_devices WHERE token_hash = ?)
      RETURNING id`,
-    name, hash, recoveryHash, hash,
+    name, hash, recoveryHash, recoveryHash, hash,
   ]);
   if (!device) throw new SyncError(401, "invalid_recovery_key");
   return { deviceId: device.id };
@@ -96,7 +100,8 @@ export function listDevices(db: Database) {
 
 export async function revoke(db: Database, actor: DeviceAuthorization, deviceId: string) {
   const [updated, activeActor, target] = await db.batch([
-    [`UPDATE sync_devices SET revoked_at = COALESCE(revoked_at, ?), recovery_hash = NULL
+    [`UPDATE sync_devices SET revoked_at = COALESCE(revoked_at, ?), recovery_hash = NULL,
+       admin_recovery_hash = NULL, admin_recovery_expires_at = NULL
       WHERE id = ? AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL)
         AND EXISTS (SELECT 1 FROM sync_devices d WHERE d.id <> ? AND d.revoked_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM sync_identity WHERE seed_status = 'seeding' AND seed_device = ?)
