@@ -1,6 +1,5 @@
 import type { AppError, Entry, EntryFields, SaveMode, SaveResult } from "../../../../packages/shared-types";
 import type { MarkdownSnapshot } from "../../../../packages/editor-react";
-import { editorPerformance, recordEditorPerformance } from "../../../../packages/editor-react/performance";
 
 type Commit = (id: string, version: number, fields: EntryFields, mode: SaveMode) => Promise<SaveResult>;
 type SaveOptions = { manual?: boolean; retry?: boolean; aiReplace?: boolean };
@@ -139,12 +138,11 @@ export class SaveQueue {
         const mode = this.aiReplace ? "ai_replace" : this.manual ? "manual" : "auto";
         if (mode === "ai_replace") this.aiReplace = false;
         if (mode === "manual") this.manual = false;
-        const started = editorPerformance ? performance.now() : 0;
         const { version: committedVersion } = await this.commit(this.entry.id, version, fields, mode).catch(error => {
           this.manual ||= mode === "manual";
           this.aiReplace ||= mode === "ai_replace";
           throw error;
-        }).finally(() => { if (editorPerformance) recordEditorPerformance("save.ipc", performance.now() - started); });
+        });
         committed = true;
         this.update({ version: committedVersion, savedRevision: revision });
       }

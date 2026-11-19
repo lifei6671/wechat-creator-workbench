@@ -5,7 +5,6 @@ import { readCalloutMarker } from "../markdown-core/callouts";
 import { codeHighlight } from "./code-view";
 import { tableSelectionDecorations } from "./table-view";
 import { hasLinkFootnoteContent, linksToFootnotes } from "./link-footnotes";
-import { measureEditorPerformance } from "./performance";
 import { inlineChangedBlocks } from "./inline-changes";
 
 type Section = { from: number; to: number };
@@ -425,8 +424,7 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
               const from = tr.doc.resolve(0).posAtIndex(index), to = from + tr.doc.child(index).nodeSize;
               const obsolete = blocks.find(from, to).filter(item => item.from >= from && item.to <= to
                 && (item.from !== item.to || (item.from > from && item.to < to)));
-              blocks = blocks.remove(obsolete).add(tr.doc, measureEditorPerformance("decoration.blocks.local", () =>
-                blockDecorations(tr.doc, folded, false, from, to).find()));
+              blocks = blocks.remove(obsolete).add(tr.doc, blockDecorations(tr.doc, folded, false, from, to).find());
             }
             cached = { ...cached, doc: tr.doc, folded, blocks };
           }
@@ -453,12 +451,11 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         const { focused, folded, context } = presentation.getState(state)!;
         const { readOnly, lineNumbers = false, convertLinks } = options();
         if (cached?.doc !== doc || cached.folded !== folded || cached.lineNumbers !== lineNumbers) {
-          cached = { doc, folded, lineNumbers, blocks: measureEditorPerformance("decoration.blocks.full", () => blockDecorations(doc, folded, lineNumbers)) };
+          cached = { doc, folded, lineNumbers, blocks: blockDecorations(doc, folded, lineNumbers) };
         }
         let persistent = cached.blocks;
         if (convertLinks) {
-          if (linkNotes?.doc !== doc) linkNotes = { doc, decorations: measureEditorPerformance("decoration.links.full", () =>
-            DecorationSet.create(doc, linkFootnoteDecorations(doc))) };
+          if (linkNotes?.doc !== doc) linkNotes = { doc, decorations: DecorationSet.create(doc, linkFootnoteDecorations(doc)) };
           const links = linkNotes.decorations;
           if (combined?.blocks !== persistent || combined.links !== links) {
             combined = { blocks: persistent, links, set: persistent.add(doc, links.find()) };

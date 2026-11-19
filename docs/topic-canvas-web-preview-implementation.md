@@ -165,7 +165,7 @@ Windows 11 / WebView2 为本轮完整实现与验收平台。当前 canvas_webvi
 
 性能验收：固定 Windows 11 Release 构建和相同测试数据，分别测试 20 个普通节点、100 节点含 30 张图/100 条边、10 张网页静态卡片和 1 张激活网页。连续缩放的帧间隔 P95 目标不高于 20ms（60Hz 环境），桌面采样要求白帧/网页错位 0 次，锚点漂移 ≤2 CSS px；记录首次截图准备时间和恢复耗时 P50/P95/P99，优先确认是否为当前最主要延迟。每种场景重复至少 5 轮。
 
-推荐命令：pnpm typecheck；pnpm test；cargo test（在 src-tauri 目录）；Windows 正式应用中实际滚轮/触控板缩放并采样屏幕图像。已有 experiments/electron-canvas 验证原型只能作为对照，不代表 Tauri 的验收结果。
+推荐命令：pnpm typecheck；pnpm test；cargo test（在 src-tauri 目录）；Windows 正式应用中实际滚轮/触控板缩放并采样屏幕图像。[Electron 原型历史验证记录](./electron-canvas-prototype-results.md)只能作为对照，不代表 Tauri 的验收结果。
 
 ## 8. 实施纪律与交付
 

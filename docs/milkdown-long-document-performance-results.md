@@ -9,7 +9,7 @@
 
 ## 测量口径
 
-使用 Windows 11 Pro 10.0.26200、Intel Core i9-13900KF、64 GB 内存、WebView2 157 和原生 Tauri Release 构建。窗口为 1360 × 840 CSS 像素，系统缩放 150%。独立应用标识和 SQLite 工作区只加载固定种子的生成文稿。[复测方法](../fixtures/performance/README.md)
+使用 Windows 11 Pro 10.0.26200、Intel Core i9-13900KF、64 GB 内存、WebView2 157 和原生 Tauri Release 构建。窗口为 1360 × 840 CSS 像素，系统缩放 150%。独立应用标识和 SQLite 工作区只加载固定种子的生成文稿。一次性测量脚本、样本生成器及编辑器计时入口已在临时代码清理时移除，本文保留历史测量口径和结果，实际性能优化继续保留。
 
 每组对照各跑 5 轮。每轮重放 200 次插入、100 次光标移动、10 次本地 AI 替换及撤销、30 次段落删除和 10 次粘贴。输入时延从合成事务测到下一次 `requestAnimationFrame`，单位为 ms。打开时延从 Milkdown 初始化测到编辑器句柄可用，第一轮绕开缓存。AI 提交时延覆盖目标校验、片段解析和事务执行。保存 IPC 计时含跨进程调用和 SQLite 写入；图片引用同步使用该合计口径。Long Task 是各阶段观察到的最长单个任务，`—` 表示该轮组中没有浏览器上报的 Long Task。
 

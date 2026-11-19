@@ -2,7 +2,7 @@
 
 > 项目：wechat-creator-workbench  
 > 版本：1.0 / 2026-11-17  
-> 状态：已完成本地源码静态审查；性能基线与改造验收按本文执行  
+> 状态：历史改造方案；实施结果见[验收记录](./milkdown-long-document-performance-results.md)。一次性测量脚本和计时入口已移除，本文保留设计与验收依据\
 > 目标：在现有 Tauri 2 + React 19 + Milkdown 7.23.0 + ProseMirror + SQLite 架构下，优化 10 万至 100 万中文字符的 Markdown 长文写作，以及 AI 修改单段、章节时的输入响应、保存成本、渲染开销与内容一致性。
 >
 > 关联：[AI 写作助手方案](./ai-writing-assistant-technical-design.md) · [Obsidian 功能方案](./obsidian-feature-integration-plan.md) · [实施计划](./implementation-plan.md)
@@ -193,7 +193,7 @@ onDocumentChanged(entryId: string, localRevision: number): void;
 
 ## 7. 基准数据、测量工具与验收门槛
 
-### 7.1 固定数据集（在 `fixtures/performance/` 中新增生成器及固定种子）
+### 7.1 固定数据集（历史测量使用固定种子生成器，现已移除）
 
 | 编号 | 文稿规模 | 结构 | 目的 |
 | --- | --- | --- | --- |
@@ -251,7 +251,7 @@ onDocumentChanged(entryId: string, localRevision: number): void;
 
 ### P0-A：建立基线与诊断（先执行）
 
-**改动范围**：新增 `fixtures/performance/` 测试样本生成器、基准脚本；在指定热点增加仅开发环境可开关的计时器。
+**当时的改动范围**：新增测试样本生成器、基准脚本和开发环境计时器。这些一次性诊断工具现已移除。
 
 **验收**：
 - 采集 L1、L3、L4、L5 的首开、200 次输入、保存与 AI 局部替换数据。

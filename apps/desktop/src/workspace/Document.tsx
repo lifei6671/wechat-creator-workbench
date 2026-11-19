@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
-import { recordEditorPerformance } from "../../../../packages/editor-react/performance";
 import { footnoteId } from "../../../../packages/markdown-core";
 import { renderWechat, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
 import type { ChatSelection } from "../ai/context";
@@ -348,7 +347,6 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   onAddSelectionToChat?(selection: ChatSelection): void;
 }) {
   const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
-  useLayoutEffect(() => { recordEditorPerformance("document.commit"); });
   const editor = useRef<MarkdownEditorHandle>(null);
   const readOnly = reading || locked || queue.entry.deletedAt !== null;
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}

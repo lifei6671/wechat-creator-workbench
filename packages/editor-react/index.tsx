@@ -28,7 +28,6 @@ import "@milkdown/kit/prose/view/style/prosemirror.css";
 import "@milkdown/kit/prose/tables/style/tables.css";
 import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
 import "./editor.css";
-import { editorPerformance, measureEditorPerformance, recordEditorPerformance } from "./performance";
 import { inlineChangedBlocks, repairInlineStrong } from "./inline-changes";
 import type { WorkspaceSearchHit } from "../shared-types";
 import { locateSearchHit } from "./search-location";
@@ -325,7 +324,6 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
   view: EditorView; readOnly: boolean; inputRef: Ref<HTMLInputElement>;
   subscribe(listener: () => void): () => void; onClose(): void;
 }) {
-  useLayoutEffect(() => { recordEditorPerformance("search.commit"); });
   const [query, setQuery] = useState("");
   const [replacement, setReplacement] = useState("");
   const [showReplace, setShowReplace] = useState(false);
@@ -535,7 +533,7 @@ export function MarkdownEditor(props: Props) {
     const failedImages = new Set<() => void>();
     let disposed = false;
     let detachRef: (() => void) | undefined;
-    function publishDocument(doc: ProseNode) {
+    function publish(doc: ProseNode) {
       const { node, end } = lastBodyBlock(doc);
       if (node?.type.name === "paragraph" && !node.content.size) {
         const content = doc.content.cut(0, end - node.nodeSize).append(doc.content.cut(end));
@@ -544,7 +542,6 @@ export function MarkdownEditor(props: Props) {
       }
       return editor.action(ctx => ctx.get(serializerCtx)(doc).replace(/\n$/, ""));
     }
-    const publish = (doc: ProseNode) => measureEditorPerformance("markdown.serialize", () => publishDocument(doc));
     function normalizeDocument(viewState: EditorView["state"], initializing = false) {
       const { doc, selection } = viewState;
       const { node, end } = lastBodyBlock(doc);
@@ -787,7 +784,7 @@ export function MarkdownEditor(props: Props) {
         key: documentLayout,
         appendTransaction(transactions, _old, state) {
           if (!transactions.some(tr => tr.docChanged && inlineChangedBlocks(tr) === null)) return null;
-          return measureEditorPerformance("layout.normalize", () => normalizeDocument(state));
+          return normalizeDocument(state);
         },
       })))
       .use($prose(ctx => editorPresentation(() => latest.current, (state, source, value) => {
@@ -859,14 +856,13 @@ export function MarkdownEditor(props: Props) {
     const targetText = (view: EditorView, { from, to }: Range) =>
       from === to ? "" : publish(view.state.doc.cut(from, to));
 
-    const opening = editorPerformance ? performance.now() : 0;
     void editor.create().then(() => {
       if (disposed) { void editor.destroy(); return; }
       const view = editor.action(ctx => ctx.get(editorViewCtx));
       const unlink = view.state.tr;
       unlinkFootnoteNames(unlink, footnotedLinkNames(view.state.doc));
       if (unlink.docChanged) view.dispatch(unlink.setMeta(documentLayout, true).setMeta("addToHistory", false));
-      const normalized = measureEditorPerformance("layout.normalize", () => normalizeDocument(view.state, true));
+      const normalized = normalizeDocument(view.state, true);
       if (normalized) view.dispatch(normalized);
       viewRef.current = view;
       lastSnapshot = { doc: view.state.doc, markdown: value };
@@ -909,7 +905,7 @@ export function MarkdownEditor(props: Props) {
         },
         captureMarkdown() {
           const { doc } = view.state;
-          if (lastSnapshot.doc !== doc) lastSnapshot = { doc, markdown: measureEditorPerformance("markdown.snapshot", () => publish(doc)) };
+          if (lastSnapshot.doc !== doc) lastSnapshot = { doc, markdown: publish(doc) };
           return { markdown: lastSnapshot.markdown, localRevision: revision.getState(view.state)! };
         },
         captureDocumentMatch() {
@@ -1197,8 +1193,6 @@ export function MarkdownEditor(props: Props) {
           return true;
         },
       };
-      editorPerformance?.editors.set(entryId, { view, handle });
-      if (editorPerformance) recordEditorPerformance("editor.open", performance.now() - opening);
       if (typeof ref === "function") {
         const cleanup = ref(handle);
         detachRef = typeof cleanup === "function" ? cleanup : () => ref(null);
@@ -1210,7 +1204,6 @@ export function MarkdownEditor(props: Props) {
 
     return () => {
       disposed = true;
-      if (editorPerformance?.editors.get(entryId)?.view === viewRef.current) editorPerformance.editors.delete(entryId);
       pending.clear();
       pastes.clear();
       detachRef?.();

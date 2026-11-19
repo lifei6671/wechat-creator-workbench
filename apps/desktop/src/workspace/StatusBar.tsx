@@ -1,9 +1,8 @@
-import { useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Spinner } from "@radix-ui/themes";
 import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Trash2 } from "lucide-react";
 import { desktop, type SyncActivity, type SyncBinding, type UploadProgress } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
-import { recordEditorPerformance } from "../../../../packages/editor-react/performance";
 import { commandKey } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
@@ -102,7 +101,6 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
   const dirty = useSyncExternalStore(queue.subscribe, queue.isDirty);
   const saving = useSyncExternalStore(queue.subscribe, queue.isSaving);
   const error = useSyncExternalStore(queue.subscribe, queue.saveError);
-  useLayoutEffect(() => { recordEditorPerformance("status.commit"); });
   const wordSource = useDeferredValue(fields.contentMd);
   const count = useMemo(() => Array.from(wordSource.replace(/\s/g, "")).length.toLocaleString("zh-CN"), [wordSource]);
   const [backgroundUpload, setBackgroundUpload] = useState<UploadProgress | null>(null);
