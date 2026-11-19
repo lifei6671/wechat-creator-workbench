@@ -23,22 +23,20 @@ export type EntryRowAction = "delete" | "restore" | "duplicate" | "pin" | "unpin
 
 interface CreateActions {
   onCreate(): void;
-  onImportWechat(): void;
+  onImportLink(): void;
   onImportMarkdown(): void;
-  onImportGitHub?(): void;
   onCreateCollection?(): void;
   disabled?: boolean;
 }
 
-function CreateItems({ Item, onCreate, onImportWechat, onImportMarkdown, onImportGitHub, onCreateCollection, disabled }: CreateActions & {
+function CreateItems({ Item, onCreate, onImportLink, onImportMarkdown, onCreateCollection, disabled }: CreateActions & {
   Item: typeof DropdownMenu.Item | typeof ContextMenu.Item;
 }) {
   return <>
     <Item disabled={disabled} onSelect={onCreate}><FilePenLine size={15} />新建笔记</Item>
     {onCreateCollection && <Item disabled={disabled} onSelect={onCreateCollection}><Plus size={15} />新建专题</Item>}
-    <Item disabled={disabled} onSelect={onImportWechat}><Link size={15} />导入公众号文章</Item>
+    <Item disabled={disabled} onSelect={onImportLink}><Link size={15} />导入链接</Item>
     <Item disabled={disabled} onSelect={onImportMarkdown}><FileUp size={15} />导入 Markdown</Item>
-    {onImportGitHub && <Item disabled={disabled} onSelect={onImportGitHub}><Link size={15} />导入 GitHub README</Item>}
   </>;
 }
 
@@ -129,9 +127,8 @@ interface ExplorerProps {
   onCaseSensitive(value: boolean): void;
   onFolder(id: string): void;
   onCreate(categoryId: string | null): void;
-  onImportWechat(categoryId: string | null): void;
+  onImportLink(categoryId: string | null): void;
   onImportMarkdown(categoryId: string | null): void;
-  onImportGitHub?(categoryId: string | null): void;
   onRevealFolder(id: string): void;
   onSaveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon): Promise<void>;
   onFolderError(error: unknown): void;
@@ -235,7 +232,7 @@ export function Explorer(props: ExplorerProps) {
   }, [isTree, locate, locatePinned, props.onLocateCurrent]);
   const isSearch = section === "search";
   const [searchDisplay, setSearchDisplay] = useState(() => useStoredInitial(searchDisplayKey, searchDisplayDefaults));
-  const listLabel = isSearch ? "全文搜索" : section === "imports" ? "公众号导入" : "回收站";
+  const listLabel = isSearch ? "全文搜索" : section === "imports" ? "导入的外部文章" : "回收站";
   const drag = useExplorerDrag(categories, sort === "manual", props.onReorderFolder, props.onReorderEntry, props.onMoveEntry);
   const DragIcon = drag.ghost?.kind === "folder" ? FolderOpen : FileText;
 
@@ -346,7 +343,7 @@ export function Explorer(props: ExplorerProps) {
             </ContextMenu.Trigger>
             <ContextMenu.Content size="1" aria-label="文件夹操作" onCloseAutoFocus={finishMenu}>
               <CreateItems Item={ContextMenu.Item} disabled={props.treeLocked} onCreate={() => props.onCreate(category.id)}
-                onImportWechat={() => props.onImportWechat(category.id)} onImportMarkdown={() => props.onImportMarkdown(category.id)} />
+                onImportLink={() => props.onImportLink(category.id)} onImportMarkdown={() => props.onImportMarkdown(category.id)} />
               {!category.parentId && <ContextMenu.Item disabled={props.treeLocked} onSelect={() => { editAfterMenu.current = () => addFolder(category.id); }}><FolderPlus size={14} />新建子目录</ContextMenu.Item>}
               <ContextMenu.Item disabled={props.treeLocked} onSelect={() => {
                 editAfterMenu.current = () => setEditing({ target: category, parent: category.parentId });
@@ -493,9 +490,8 @@ export function Explorer(props: ExplorerProps) {
   </aside>;
   return section === "folders" ? <BlankAreaMenu label="目录操作" actions={{
     disabled: props.treeLocked || !library,
-    onCreate: () => props.onCreate(null), onImportWechat: () => props.onImportWechat(null),
+    onCreate: () => props.onCreate(null), onImportLink: () => props.onImportLink(null),
     onImportMarkdown: () => props.onImportMarkdown(null), onAddFolder: () => addFolder(null),
-    onImportGitHub: props.onImportGitHub && (() => props.onImportGitHub!(null)),
   }}>
     {content}
   </BlankAreaMenu> : content;

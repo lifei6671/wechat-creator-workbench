@@ -11,7 +11,7 @@ use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, params, params_from_iter, types::Value,
 };
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroU32;
+use std::{collections::HashSet, num::NonZeroU32};
 use url::Url;
 
 const PAGE_SIZE: i64 = 60;
@@ -55,11 +55,26 @@ impl Kind {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Source {
-    url: String,
-    author: String,
-    account_name: String,
-    original_published_at: Option<i64>,
-    imported_at: Option<i64>,
+    pub(crate) url: String,
+    pub(crate) author: String,
+    pub(crate) account_name: String,
+    pub(crate) original_published_at: Option<i64>,
+    pub(crate) imported_at: Option<i64>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CustomProperty {
+    key: String,
+    #[serde(flatten)]
+    value: PropertyValue,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+enum PropertyValue {
+    Text(String),
+    Date(String),
+    Tags(Vec<String>),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -81,6 +96,8 @@ pub struct Fields {
     source: Option<Source>,
     published_at: Option<i64>,
     published_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_properties: Option<Vec<CustomProperty>>,
 }
 
 #[derive(Serialize)]
@@ -118,6 +135,19 @@ pub struct Entry {
     links: Vec<EntryRow>,
 }
 
+impl Entry {
+    pub(crate) fn with_github_images(mut self) -> Result<Self> {
+        if let Some(source) = &self.fields.source
+            && source.account_name == "GitHub"
+            && let Some(markdown) =
+                crate::github_import::convert_saved_html(&self.fields.content_md, &source.url)?
+        {
+            self.fields.content_md = markdown;
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
@@ -139,6 +169,8 @@ pub struct Filter {
     pub deleted: bool,
     #[serde(default)]
     pub wechat_imported: bool,
+    #[serde(default)]
+    pub external_imported: bool,
     pub offset: i64,
     pub limit: Option<NonZeroU32>,
 }
@@ -287,6 +319,35 @@ impl Workspace {
                 imported_at: None,
             });
             let entry = insert_entry(tx, kind, fields, None)?;
+            tx.execute("UPDATE entries SET external_imported=1 WHERE id=?1", [&entry.row.id])?;
+            Ok((entry.row.id, false, false))
+        })
+    }
+
+    pub(crate) fn web_reference(&self, url: &str) -> Result<Option<(String, bool)>> {
+        self.read_running(|conn| web_reference(conn, url))
+    }
+
+    pub(crate) fn import_web_article(
+        &self,
+        source: Source,
+        title: String,
+        markdown: String,
+        summary: String,
+        category_id: Option<String>,
+    ) -> Result<(String, bool, bool)> {
+        self.write(|tx| {
+            if let Some((entry_id, deleted)) = web_reference(tx, &source.url)? {
+                return Ok((entry_id, true, deleted));
+            }
+            let mut fields = Fields::empty(Kind::Article);
+            fields.title = title;
+            fields.content_md = markdown;
+            fields.summary = summary;
+            fields.category_id = category_id;
+            fields.source = Some(source);
+            let entry = insert_entry(tx, Kind::Article, fields, None)?;
+            tx.execute("UPDATE entries SET external_imported=1 WHERE id=?1", [&entry.row.id])?;
             Ok((entry.row.id, false, false))
         })
     }
@@ -308,6 +369,9 @@ impl Workspace {
                 if filter.deleted { "NOT " } else { "" });
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
+            }
+            if filter.external_imported {
+                sql.push_str(" AND (e.wechat_imported = 1 OR e.external_imported = 1)");
             }
             if let Some(pinned) = filter.pinned {
                 sql.push_str(&format!(" AND {pin_order} IS {}NULL", if pinned { "NOT " } else { "" }));
@@ -498,9 +562,10 @@ impl Workspace {
             }
             tx.execute(
                 "UPDATE entries SET title=?2, content_md=?3, status=?4, category_id=?5, source_id=?6, summary=?7,
-                 published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12 WHERE id=?1",
+                 published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12,
+                 custom_properties=COALESCE(?13, custom_properties) WHERE id=?1",
                 params![id, fields.title, fields.content_md, fields.status, fields.category_id, source_id,
-                        fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id, fields.theme_id],
+                        fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id, fields.theme_id, fields.encoded_properties()?],
             )?;
             crate::assets::references::sync_entry(tx, id, &fields.content_md)?;
             taxonomy::replace_tags(tx, id, &fields.tags)?;
@@ -639,7 +704,25 @@ impl Fields {
             source: None,
             published_at: None,
             published_url: String::new(),
+            custom_properties: None,
         }
+    }
+
+    fn encoded_properties(&self) -> Result<Option<String>> {
+        let Some(properties) = &self.custom_properties else { return Ok(None) };
+        let mut keys = HashSet::new();
+        for property in properties {
+            let key = property.key.trim();
+            if key.is_empty() || !keys.insert(key.to_lowercase()) {
+                return Err(AppError::invalid("自定义属性名称不能为空或重复"));
+            }
+            if let PropertyValue::Date(date) = &property.value
+                && !date.is_empty()
+                && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
+                return Err(AppError::invalid("自定义日期无效"));
+            }
+        }
+        Ok(Some(serde_json::to_string(properties).expect("properties serialize to JSON")))
     }
 }
 
@@ -743,11 +826,12 @@ fn entry_preview(
 }
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
-    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version,
+    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version, e.custom_properties,
            s.source_url, s.author, s.account_name, s.original_published_at, s.imported_at, e.cover_asset_id, e.theme_id
         FROM entries e LEFT JOIN sources s ON s.id=e.source_id WHERE e.id=?1");
     let mut entry = conn.query_row(&sql, [id], |r| {
         let row = entry_row(r)?;
+        let properties_column = r.as_ref().column_index("custom_properties")?;
         let source = r
             .get::<_, Option<String>>("source_url")?
             .map(|url| -> rusqlite::Result<_> {
@@ -772,6 +856,11 @@ fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
             source,
             published_at: r.get("published_at")?,
             published_url: r.get("published_url")?,
+            custom_properties: serde_json::from_str::<Vec<CustomProperty>>(&r.get::<_, String>("custom_properties")?)
+                .map(Some)
+                .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
+                    properties_column, rusqlite::types::Type::Text, Box::new(error)
+                ))?,
         };
         Ok(Entry {
             row,
@@ -808,6 +897,13 @@ fn github_reference(conn: &Connection, url: &str) -> Result<Option<(String, bool
         .optional()?)
 }
 
+fn web_reference(conn: &Connection, url: &str) -> Result<Option<(String, bool)>> {
+    Ok(conn.query_row(
+        "SELECT e.id, e.deleted_at IS NOT NULL FROM entries e JOIN sources s ON s.id=e.source_id WHERE s.source_url=?1",
+        [url], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?)
+}
+
 fn insert_entry(
     tx: &Transaction<'_>,
     kind: Kind,
@@ -819,10 +915,11 @@ fn insert_entry(
     let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp)?;
     tx.execute(
         "INSERT INTO entries (id, kind, title, content_md, status, category_id, source_id, summary,
-                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13)",
+                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'))",
         params![entry_id, kind.key(), fields.title, fields.content_md, fields.status,
-                fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id],
+                fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id,
+                fields.encoded_properties()?],
     )?;
     crate::assets::references::sync_entry(tx, &entry_id, &fields.content_md)?;
     taxonomy::replace_tags(tx, &entry_id, &fields.tags)?;
@@ -877,7 +974,7 @@ fn validate_fields(
     }).transpose()
 }
 
-fn http_url(value: &str) -> Result<Url> {
+pub(crate) fn http_url(value: &str) -> Result<Url> {
     Url::parse(value.trim())
         .ok()
         .filter(|u| {

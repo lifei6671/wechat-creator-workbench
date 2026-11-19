@@ -909,7 +909,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
 
   openMenu(".timeline-entries");
   expect(menu()?.getAttribute("aria-label")).toBe("文章区操作");
-  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "导入 GitHub README", "新建目录"]);
+  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入链接", "导入 Markdown", "新建目录"]);
   flushSync(() => menuItems().find(item => item.textContent === "新建笔记")!.click());
   await vi.waitFor(() => expect(create).toHaveBeenCalledExactlyOnceWith("article", expect.objectContaining({ categoryId: "closed" })));
   openMenu(".timeline-content");
@@ -932,7 +932,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
   expect(container.querySelector<HTMLButtonElement>("#add-root-folder")!.disabled).toBe(true);
   await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("子目录"));
   openMenu(".timeline-content");
-  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "导入 GitHub README"]);
+  expect(menuItems().map(item => item.textContent)).toEqual(["新建笔记", "导入链接", "导入 Markdown"]);
   flushSync(() => menuItems().find(item => item.textContent === "导入 Markdown")!.click());
   await vi.waitFor(() => expect(importMarkdown).toHaveBeenLastCalledWith("child"));
 });
@@ -965,8 +965,12 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
     expect(field?.value).toBe(target.summary);
     return field!;
   });
-  summary.value = "更新列表文章的摘要";
-  flushSync(() => summary.form!.requestSubmit());
+  expect(summary.form!.querySelector('[type="submit"]')).toBeNull();
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "更新列表文章的摘要");
+    summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  });
+  flushSync(() => summary.form!.querySelector<HTMLButtonElement>('[type="submit"]')!.click());
   await vi.waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith(target.id, 3, expect.objectContaining({
     summary: "更新列表文章的摘要",
   }), "auto"));
@@ -1010,16 +1014,21 @@ it("selects the root by default and only queries unfiled articles", async () => 
   await vi.waitFor(() => expect(create).toHaveBeenCalledExactlyOnceWith("article", undefined));
 });
 
-it.each(["completed", "partial"] as const)("opens a %s WeChat import without leaving the timeline folder", async status => {
-  const imported = entry("公众号文章", "closed");
-  const url = "https://mp.weixin.qq.com/s/demo";
+it.each(["completed", "partial", "article"] as const)("opens a %s link import without leaving the timeline folder", async status => {
+  const article = status === "article";
+  const imported = entry(article ? "外部文章" : "公众号文章", "closed");
+  const url = article ? "https://example.com/article" : "https://mp.weixin.qq.com/s/demo";
+  if (article) localStorage.setItem("download-pasted-images", "true");
   let saved = false;
-  const importWechat = vi.spyOn(desktop, "importWechat").mockImplementation(async () => {
+  const importLink = vi.spyOn(desktop, "importLink").mockImplementation(async () => {
     saved = true;
-    return {
+    if (article) return { kind: "article", article: {
+      entryId: imported.id, existing: false, deleted: false, unavailableImages: 1,
+    }};
+    return { kind: "wechat", job: {
       id: "wechat-import", url, entryId: imported.id, status, error: null,
       pendingImages: status === "partial" ? 1 : 0,
-    };
+    }};
   });
   vi.spyOn(desktop, "entry").mockResolvedValue(imported);
   vi.mocked(desktop.entries).mockImplementation(async filter => ({
@@ -1041,13 +1050,13 @@ it.each(["completed", "partial"] as const)("opens a %s WeChat import without lea
     })));
   }
   const launch = [...document.querySelectorAll<HTMLElement>(status === "completed"
-    ? '[role="menuitem"]' : ".workbench-empty-actions button")].find(button => button.textContent === "导入公众号文章")!;
+    ? '[role="menuitem"]' : ".workbench-empty-actions button")].find(button => button.textContent === "导入链接")!;
   flushSync(() => launch.click());
   const field = document.querySelector<HTMLInputElement>('[role="dialog"] input[type="url"]')!;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, url);
   flushSync(() => field.dispatchEvent(new InputEvent("input", { bubbles: true })));
   flushSync(() => field.form!.requestSubmit());
-  await vi.waitFor(() => expect(importWechat).toHaveBeenCalledExactlyOnceWith(url, "closed"));
+  await vi.waitFor(() => expect(importLink).toHaveBeenCalledExactlyOnceWith(url, "closed", article));
 
   if (status === "partial") {
     const open = await vi.waitFor(() => {
@@ -1058,7 +1067,8 @@ it.each(["completed", "partial"] as const)("opens a %s WeChat import without lea
     flushSync(() => open.click());
   }
 
-  await vi.waitFor(() => expect(container.querySelector('[data-document="公众号文章"]')).not.toBeNull());
+  await vi.waitFor(() => expect(container.querySelector(`[data-document="${imported.id}"]`)).not.toBeNull());
+  if (article) expect(container.textContent).toContain("1 张图片未能下载，已保留原链接");
   expect(container.querySelector('.sidebar-chrome [aria-label="文章时间流"]')?.getAttribute("aria-current")).toBe("page");
   expect(container.querySelector(".timeline-folder-title h1")?.textContent).toBe("已折叠");
   await vi.waitFor(() => expect(container.querySelector(".timeline-entry")?.textContent).toContain(imported.title));

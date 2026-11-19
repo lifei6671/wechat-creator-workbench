@@ -595,22 +595,6 @@ fn job_info(conn: &Connection, job: &str) -> Result<ImportJob> {
 }
 
 #[tauri::command]
-pub async fn wechat_import(
-    app: AppHandle,
-    db: State<'_, Workspace>,
-    assets: State<'_, Assets>,
-    imports: State<'_, Imports>,
-    url: String,
-    category_id: Option<String>,
-) -> Result<ImportJob> {
-    let result = imports
-        .import(&db, &assets, &url, category_id.as_deref())
-        .await?;
-    let _ = app.emit("assets-changed", ());
-    Ok(result)
-}
-
-#[tauri::command]
 pub async fn wechat_retry_images(
     app: AppHandle,
     db: State<'_, Workspace>,
@@ -621,18 +605,6 @@ pub async fn wechat_retry_images(
     let result = imports.retry(&db, &assets, &entry).await?;
     let _ = app.emit("assets-changed", ());
     Ok(result)
-}
-
-#[tauri::command]
-pub async fn wechat_import_jobs(db: State<'_, Workspace>) -> Result<Vec<ImportJob>> {
-    db.read(|conn| {
-        let mut jobs = conn.prepare(
-            "SELECT id FROM jobs WHERE kind='wechat_import' ORDER BY updated_at DESC LIMIT 30",
-        )?;
-        jobs.query_map([], |r| r.get::<_, String>(0))?
-            .map(|job| job_info(conn, &job?))
-            .collect()
-    })
 }
 
 #[cfg(test)]

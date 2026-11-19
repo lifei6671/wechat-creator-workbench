@@ -5,19 +5,6 @@ import type { EntryPage } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { untitled } from "../labels";
 
-export function GitHubImportDialog({ adding, onImport, onClose }: {
-  adding?: boolean;
-  onImport(url: string): Promise<void>;
-  onClose(): void;
-}) {
-  const [url, setUrl] = useState("");
-  return <CollectionForm title="导入 GitHub README" submitLabel={adding ? "导入并添加" : "导入"}
-    ready={Boolean(url.trim())} onClose={onClose} onSubmit={() => onImport(url.trim())}>
-    <label>公开仓库地址<TextField.Root type="url" value={url} placeholder="https://github.com/owner/repo"
-      onChange={event => setUrl(event.target.value)} autoFocus required /></label>
-  </CollectionForm>;
-}
-
 export function EdgeLabelDialog({ label, onSave, onClose }: {
   label: string;
   onSave(label: string): Promise<void>;

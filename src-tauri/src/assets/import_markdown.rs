@@ -12,30 +12,59 @@ impl Assets {
         markdown: &str,
         directory: &Path,
     ) -> Result<(String, usize)> {
-        let running = db.running_lifetime();
         let download_remote = db.read_running(Profile::automatic)?.is_some();
-        tokio::select! {
-            biased;
-            () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
-            result = self.download_markdown_images(db, markdown, directory, download_remote) => result,
+        self.download_markdown_images(db, markdown, Some(directory), download_remote)
+            .await
+    }
+
+    pub(crate) async fn import_link_images(
+        &self,
+        db: &Workspace,
+        markdown: String,
+        download: bool,
+    ) -> Result<(String, usize)> {
+        if !download {
+            return Ok((markdown, 0));
         }
+        self.download_markdown_images(db, &markdown, None, true)
+            .await
     }
 
     async fn download_markdown_images(
         &self,
         db: &Workspace,
         markdown: &str,
-        directory: &Path,
+        directory: Option<&Path>,
+        download_remote: bool,
+    ) -> Result<(String, usize)> {
+        let running = db.running_lifetime();
+        tokio::select! {
+            biased;
+            () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
+            result = self.rewrite_images(db, markdown, directory, download_remote) => result,
+        }
+    }
+
+    async fn rewrite_images(
+        &self,
+        db: &Workspace,
+        markdown: &str,
+        directory: Option<&Path>,
         download_remote: bool,
     ) -> Result<(String, usize)> {
         let sources = references::urls(markdown)?;
-        let root = tokio::fs::canonicalize(directory).await.ok();
-        let base = Url::from_directory_path(directory).ok();
-        let downloads = stream::iter(
-            sources
-                .into_iter()
-                .filter(|url| !url.starts_with("asset://") && (download_remote || !is_http(url))),
-        )
+        let root = match directory {
+            Some(directory) => tokio::fs::canonicalize(directory).await.ok(),
+            None => None,
+        };
+        let base = directory.and_then(|path| Url::from_directory_path(path).ok());
+        let downloads = stream::iter(sources.into_iter().filter(|url| {
+            if is_http(url) {
+                download_remote
+            } else {
+                directory.is_some() && !url.starts_with("asset://")
+            }
+        }))
         .map(|source| {
             let root = root.as_deref();
             let base = base.as_ref();

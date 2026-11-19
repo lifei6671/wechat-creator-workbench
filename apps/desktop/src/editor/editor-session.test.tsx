@@ -949,7 +949,7 @@ it("shows rich structure and round-trips Markdown after editing an unrelated blo
     expect(editor.querySelector("sup")?.textContent).toBe("[^n]");
     expect(editor.querySelector("blockquote dl")).toBeNull();
     expect(editor.lastElementChild?.textContent).toBe("[^q]:引用内脚注");
-    expect(editor.querySelector('[data-type="html-block"]')?.textContent).toBe("嵌入的 HTML");
+    expect(editor.querySelector('[data-type="html-block"]')?.textContent).toBe("保留 HTML");
     expect(editor.querySelector("[onclick], script")).toBeNull();
     expect(editor.textContent).not.toMatch(/\*\*粗体|<em>|# 标题/);
     expect(onChange).not.toHaveBeenCalled();
@@ -972,6 +972,93 @@ it("shows rich structure and round-trips Markdown after editing an unrelated blo
     expect(saved).toContain(fence + "mermaid\ngraph TD\nA --> B\n" + fence);
     expect(saved).toContain(fence + "text\n$$not_math$$\n" + fence);
     expect(onError).not.toHaveBeenCalled();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("displays GitHub HTML images and disclosures without exposing executable content", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const release = vi.fn();
+  const onError = vi.fn();
+  const resolveImage = vi.fn().mockResolvedValue({ src: "blob:https://workbench.test/logo", dispose: release });
+  const markdown = [
+    "介绍",
+    '<p><a href="./docs/guide.md"><img src="./assets/logo.png" alt="徽标" onerror="alert(1)"></a></p>',
+    '<details><summary>使用方法</summary>\n\n**运行说明**\n\n</details>',
+    '<table><tr><td>表格</td></tr></table>',
+    '<script>alert(1)</script><iframe src="https://example.test"></iframe>',
+  ].join("\n\n");
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="github-html" value={markdown} readOnly
+      githubRepo="https://github.com/Owner/Repo" resolveImage={resolveImage} onError={onError}
+      ref={editor => { handle = editor; }} onChange={vi.fn()} onBlur={() => {}} />));
+    await vi.waitFor(() => {
+      if (onError.mock.calls.length) throw onError.mock.calls[0][0];
+      expect(container.querySelector('img[alt="徽标"]')?.getAttribute("src")).toBe("blob:https://workbench.test/logo");
+    });
+    expect(resolveImage.mock.calls).toEqual([["https://raw.githubusercontent.com/Owner/Repo/HEAD/assets/logo.png"]]);
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("https://github.com/Owner/Repo/blob/HEAD/docs/guide.md");
+    expect(container.querySelector("details summary")?.textContent).toBe("使用方法");
+    expect(container.querySelector("details strong")?.textContent).toBe("运行说明");
+    expect(container.querySelector("td")?.textContent).toBe("表格");
+    expect(container.querySelector("[onerror], script, iframe")).toBeNull();
+    expect(handle!.captureMarkdown().markdown).toBe(markdown);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+  await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+});
+
+it("edits Markdown inside a collapsed GitHub disclosure and preserves the wrapper on save", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onError = vi.fn();
+  const onChange = vi.fn();
+  const markdown = [
+    "<details open>\n\n<summary>下载</summary>\n<br/>",
+    "下载说明",
+    "</details>",
+    "<details onclick=\"alert(1)\">\n<summary><strong>开源范围</strong></summary>\n<br/>",
+    "**许可协议**，请从 [Releases](https://github.com/CM-idea/SnowAir/releases) 下载 `SnowAir.exe`。",
+    "</details>",
+    "后续正文",
+  ].join("\n\n");
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="disclosure" value={markdown} readOnly={false}
+      ref={editor => { handle = editor; }} onChange={onChange} onError={onError} onBlur={() => {}} />));
+    await vi.waitFor(() => {
+      if (onError.mock.calls.length) throw onError.mock.calls[0][0];
+      expect(handle).not.toBeNull();
+    });
+    const [download, license] = container.querySelectorAll<HTMLDetailsElement>(".rich-disclosure");
+    expect(download.open).toBe(true);
+    expect(download.querySelector("summary")?.textContent).toBe("下载");
+    expect(license.open).toBe(false);
+    expect(license.hasAttribute("onclick")).toBe(false);
+    expect(license.querySelector("summary strong")?.textContent).toBe("开源范围");
+    license.querySelector("summary")!.click();
+    expect(license.open).toBe(true);
+    expect(license.querySelector("p strong")?.textContent).toBe("许可协议");
+    expect(license.querySelector("p a")?.getAttribute("href")).toBe("https://github.com/CM-idea/SnowAir/releases");
+    const code = license.querySelector("p code")!;
+    expect(code.textContent).toBe("SnowAir.exe");
+    const text = [...license.querySelector("p")!.childNodes].find(node => node.nodeType === Node.TEXT_NODE)!;
+    handle!.focus();
+    document.getSelection()!.setBaseAndExtent(text, 1, text, 3);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.selectionText()).toBe("请从"));
+    handle!.insert("可直接前往");
+    const saved: string = onChange.mock.lastCall![2];
+    expect(saved).toContain("**许可协议**，可直接前往 [Releases]");
+    expect(saved).toMatch(/<\/details>\n\n后续正文$/);
   } finally {
     flushSync(() => root.unmount());
     container.remove();

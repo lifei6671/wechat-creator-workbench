@@ -5,6 +5,7 @@ mod image_cache;
 mod import_markdown;
 pub mod publishing;
 pub mod references;
+mod remote_image;
 pub(crate) mod s3;
 pub(crate) mod sync;
 pub(crate) mod upload_format;
@@ -172,6 +173,17 @@ struct HostedLocation {
 }
 
 impl Assets {
+    pub(crate) async fn fetch_external_page(&self, url: &url::Url) -> Result<reqwest::Response> {
+        if !is_http_image(url) || !has_public_image_host(url) {
+            return Err(AppError::invalid("只能导入公网 HTTP 或 HTTPS 链接"));
+        }
+        self.external_http.get(url.clone())
+            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+            .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (compatible; Workbench Link Import)")
+            .send().await
+            .map_err(|_| AppError::new("LINK_NETWORK", "无法访问网页，请检查地址或网络后重试"))
+    }
+
     pub fn new(root: PathBuf, db: &Workspace) -> Result<Self> {
         db.write(|tx| {
             tx.execute(
@@ -556,8 +568,7 @@ impl Assets {
             "IMAGE_TIMEOUT",
         )
         .await?;
-        image_header(&bytes)?;
-        Ok(bytes)
+        remote_image::normalize(bytes).await
     }
 
     pub(super) async fn read_file(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {

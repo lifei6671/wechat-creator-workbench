@@ -8,11 +8,11 @@ pub fn preserve_local_revision(conn: &Connection, id: &str) -> Result<()> {
 }
 
 pub fn snapshot(conn: &Connection, id: &str) -> Result<Option<Value>> {
-    let Some((folder, pin, imported, deleted)) = conn.query_row(
-        "SELECT folder_sort_order,pinned_order,wechat_imported,deleted_at FROM entries WHERE id=?1",
+    let Some((folder, pin, imported, deleted, external)) = conn.query_row(
+        "SELECT folder_sort_order,pinned_order,wechat_imported,deleted_at,external_imported FROM entries WHERE id=?1",
         [id],
         |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?,
-                   row.get::<_, bool>(2)?, row.get::<_, Option<i64>>(3)?)),
+                   row.get::<_, bool>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, bool>(4)?)),
     ).optional()? else { return Ok(None); };
     let entry = get_entry(conn, id)?;
     let mut data = serde_json::to_value(entry).map_err(invalid)?;
@@ -23,6 +23,7 @@ pub fn snapshot(conn: &Connection, id: &str) -> Result<Option<Value>> {
     fields.insert("folderSortOrder".into(), json!(folder));
     fields.insert("pinnedOrder".into(), json!(pin));
     fields.insert("wechatImported".into(), json!(imported));
+    fields.insert("externalImported".into(), json!(external));
     fields.insert("deletedAt".into(), json!(deleted));
     for (key, sql) in [
         (
@@ -69,19 +70,23 @@ pub fn apply(conn: &Connection, id: &str, payload: &Value, deleted: Option<i64>)
     let fields: Fields = serde_json::from_value(data).map_err(invalid)?;
     let saved = payload["updatedAt"].as_i64().unwrap_or_else(now);
     let source = validate_fields(conn, id, kind, &fields, saved)?;
+    let properties = fields.encoded_properties()?;
+    let external = payload["externalImported"].as_bool();
     conn.execute(
         "INSERT INTO entries (id,kind,title,content_md,status,category_id,source_id,summary,cover_asset_id,theme_id,
-            created_at,updated_at,published_at,published_url,deleted_at,pinned_order,wechat_imported)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+            created_at,updated_at,published_at,published_url,deleted_at,pinned_order,wechat_imported,external_imported,custom_properties)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,COALESCE(?18,0),COALESCE(?19,'[]'))
          ON CONFLICT(id) DO UPDATE SET title=excluded.title,content_md=excluded.content_md,
             status=excluded.status,category_id=excluded.category_id,source_id=excluded.source_id,summary=excluded.summary,
             cover_asset_id=excluded.cover_asset_id,theme_id=excluded.theme_id,updated_at=excluded.updated_at,
             published_at=excluded.published_at,published_url=excluded.published_url,deleted_at=excluded.deleted_at,
-            pinned_order=excluded.pinned_order,wechat_imported=excluded.wechat_imported,version=entries.version+1",
+            pinned_order=excluded.pinned_order,wechat_imported=excluded.wechat_imported,
+            external_imported=COALESCE(?18,entries.external_imported),
+            custom_properties=COALESCE(?19,entries.custom_properties),version=entries.version+1",
         params![id,kind.key(),fields.title,fields.content_md,fields.status,fields.category_id,source,fields.summary,
             fields.cover_asset_id,fields.theme_id,payload["createdAt"].as_i64().unwrap_or(saved),saved,
             fields.published_at,fields.published_url,deleted,payload["pinnedOrder"].as_i64(),
-            payload["wechatImported"].as_bool().unwrap_or(false)],
+            payload["wechatImported"].as_bool().unwrap_or(false), external, properties],
     )?;
     conn.execute(
         "UPDATE entries SET folder_sort_order=?2 WHERE id=?1",

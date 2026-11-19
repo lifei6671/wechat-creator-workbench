@@ -31,7 +31,7 @@ pub async fn entries(state: State<'_, Workspace>, filter: Filter) -> Result<Page
 
 #[tauri::command]
 pub async fn get_entry(state: State<'_, Workspace>, id: String) -> Result<Entry> {
-    state.get_entry(&id)
+    state.get_entry(&id)?.with_github_images()
 }
 
 #[tauri::command]

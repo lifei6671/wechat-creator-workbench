@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { Button, Theme } from "@radix-ui/themes";
-import { FilePenLine, FileText, Folder, Image, List, Search, Workflow } from "lucide-react";
+import { FilePenLine, Folder, Globe, Image, List, Search, Workflow } from "lucide-react";
 import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizable-panels";
 import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, TimelineSelection, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
@@ -32,8 +32,7 @@ import { MigrationPanel } from "./Migration";
 import { AssetPanel, canHostImage, ImageStorageSettings, imageMarkdown } from "./Assets";
 import { Timeline } from "./Timeline";
 import { WindowControls, WindowDragRegion } from "./WindowTitle";
-import { ImageViewer, PublishImagesDialog, WechatImportDialog, renderForPublication } from "./Publishing";
-import { GitHubImportDialog } from "./CollectionDialogs";
+import { ImageViewer, LinkImportDialog, PublishImagesDialog, renderForPublication } from "./Publishing";
 import { CollectionExplorer } from "./CollectionExplorer";
 import type { CollectionCanvasHandle } from "./CollectionCanvas";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
@@ -59,14 +58,14 @@ type Modal =
   | { type: "properties" | "revisions"; id: string }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
-  | { type: "wechatImport" | "githubImport"; categoryId: string | null }
+  | { type: "linkImport"; categoryId: string | null }
   | { type: "deleteCollection"; collection: Collection }
   | { type: "imageViewer"; src: string; alt: string }
   | { type: "publishImages"; images: RenderedWechat["images"] };
 
 const destinations = [
   ["folders", Folder, "内容目录"], ["timeline", List, "文章时间流"], ["search", Search, "全文搜索"], ["assets", Image, "素材库"],
-  ["imports", FileText, "已导入的公众号文章"], ["collections", Workflow, "专题"],
+  ["imports", Globe, "导入的外部文章"], ["collections", Workflow, "专题"],
 ] as const;
 
 function useMedia(query: string) {
@@ -285,6 +284,10 @@ export function DesktopShell() {
   const searchInput = useRef<HTMLInputElement>(null);
   const focusOrigin = useRef<HTMLElement | null>(null);
   const refresh = () => setRefreshCount(count => count + 1);
+  function linkImported(unavailableImages = 0) {
+    refresh();
+    if (unavailableImages) setNotice({ type: "info", text: `已导入文章，${unavailableImages} 张图片未能下载，已保留原链接。` });
+  }
   const syncing = useRef(false);
   const [automaticSyncError, setAutomaticSyncError] = useState("");
 
@@ -414,7 +417,7 @@ export function DesktopShell() {
     workspaceSearch: section === "search" ? { text: searchText, caseSensitive } : undefined,
     sort: section === "search" ? searchSort : undefined,
     limit: section === "search" ? 30 : undefined,
-    deleted: section === "trash", wechatImported: section === "imports", offset: 0,
+    deleted: section === "trash", externalImported: section === "imports", offset: 0,
   };
   const liveFilter = useEffectEvent(() => filter);
   const filterEpoch = useRef(0);
@@ -1022,10 +1025,6 @@ export function DesktopShell() {
 
   const currentFolder = section === "timeline" ? timelineFolder?.id ?? null : section === "folders" ? categoryId ?? null : null;
 
-  function showGitHubImport(categoryId: string | null = currentFolder) {
-    showModal({ type: "githubImport", categoryId });
-  }
-
   function saveCollection(collection: Collection | undefined, title: string, description: string) {
     const pending = waitForCollectionWrites();
     const canvas = collectionCanvas.current;
@@ -1323,7 +1322,7 @@ export function DesktopShell() {
   });
   const display = displayFor(activeId);
   const projectLinks = display.convertLinks ? (activeId ? handles.current.get(activeId)?.linkFootnoteMarkdown ?? null : null) : undefined;
-  const showWechatImport = (parent: string | null = currentFolder) => showModal({ type: "wechatImport", categoryId: parent });
+  const showLinkImport = (parent: string | null = currentFolder) => showModal({ type: "linkImport", categoryId: parent });
   const openSettings = (page: SettingsPage = "appearance", trigger?: HTMLElement) => {
     showModal({ type: "settings", page }, trigger ?? (modal?.type === "palette" ? focusOrigin.current : undefined));
   };
@@ -1414,7 +1413,8 @@ export function DesktopShell() {
     run(async () => {
       try {
         const { fields, revision } = selected.capture();
-        const input = { output, revision, markdown: projectLinks?.(fields.contentMd) ?? fields.contentMd, themeId: fields.themeId };
+        const input = { output, revision, markdown: projectLinks?.(fields.contentMd) ?? fields.contentMd,
+          themeId: fields.themeId, githubRepo: fields.source?.url };
         const { result, hosting, exportImages } = await renderForPublication(input);
         try {
           if (exit.current) return;
@@ -1512,9 +1512,8 @@ export function DesktopShell() {
   const commands: PaletteCommand[] = [
     { name: "新建笔记", keys: commandKey + "N", run: () => create() },
     { name: "新建专题", run: createCollection },
-    { name: "导入公众号文章", run: () => showWechatImport() },
+    { name: "导入链接", run: () => showLinkImport() },
     { name: "导入 Markdown", run: () => importMarkdown() },
-    { name: "导入 GitHub README", run: () => showGitHubImport() },
     { name: "设置", run: () => openSettings() },
     { name: "MCP 服务设置", run: () => openSettings("mcp") },
     { name: "AI 代理设置", run: showModel },
@@ -1911,7 +1910,7 @@ export function DesktopShell() {
         onQuery={value => { if (value !== query) { setQuery(value); invalidateSearch(true); } }}
         onCaseSensitive={value => { if (value !== caseSensitive) { setCaseSensitive(value); invalidateSearch(true); } }}
         onFolder={section === "timeline" ? toggleFolderExpanded : toggleFolder}
-        onImportWechat={showWechatImport} onImportMarkdown={importMarkdown} onImportGitHub={showGitHubImport}
+        onImportLink={showLinkImport} onImportMarkdown={importMarkdown}
         onCreate={create} onRevealFolder={revealFolder} onSaveFolder={saveFolder}
         onReorderFolder={reorderFolder} onReorderEntry={reorderEntry}
         onCategoryAction={categoryAction} onMore={more} />}
@@ -2017,9 +2016,8 @@ export function DesktopShell() {
                     blankMenu={timelineFolder || timelineRoot ? {
                       disabled: globalLock || !library,
                       onCreate: () => create(currentFolder),
-                      onImportWechat: () => showWechatImport(currentFolder),
+                      onImportLink: () => showLinkImport(currentFolder),
                       onImportMarkdown: () => importMarkdown(currentFolder),
-                      onImportGitHub: () => showGitHubImport(currentFolder),
                       onAddFolder: timelineFolder?.parentId ? undefined : () => explorerTree.current?.addFolder(currentFolder),
                     } : null} />
               </div>
@@ -2039,8 +2037,8 @@ export function DesktopShell() {
                 onAddToCollection={addToCollection} readingIds={readingIds} lockedIds={locked}
                 categories={library?.categories ?? []} onMove={moveTreeEntry} onSwitch={switchTab} onClose={closeTab} onAction={tabAction}
                 onReorder={reorderTab} onRename={renameEntry} onError={showError} />}
-              {!focusMode && <CreateMenu onCreate={() => create()} onImportWechat={() => showWechatImport()}
-                onImportMarkdown={() => importMarkdown()} onImportGitHub={() => showGitHubImport()}
+              {!focusMode && <CreateMenu onCreate={() => create()} onImportLink={() => showLinkImport()}
+                onImportMarkdown={() => importMarkdown()}
                 onCreateCollection={createCollection} disabled={globalLock} />}
               <WindowDragRegion onError={showError} />
               {!reading && !focusMode && !collectionMode && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
@@ -2058,7 +2056,7 @@ export function DesktopShell() {
                   onOpenEntry={onOpenCollectionEntry}
                   onLoadArticle={loadCollectionArticle} onSaveArticle={saveCollectionArticle} onArticleImages={importImages}
                   onDelete={() => showModal({ type: "deleteCollection", collection: activeCollection })}
-                  onEntryCreated={refresh} onError={showError} />
+                  downloadLinkImages={downloadPastedImages} onEntryCreated={linkImported} onError={showError} />
               </Suspense> : <div className="document-body">
                 <div className="workbench-empty">
                   <Workflow size={25} strokeWidth={1.4} />
@@ -2105,7 +2103,7 @@ export function DesktopShell() {
                 <h2>还没有打开的内容</h2>
                 <div className="button-strip workbench-empty-actions">
                   <Button size="2" variant="soft" onClick={() => create()}>新建笔记</Button>
-                  <Button size="2" variant="soft" color="gray" onClick={() => showWechatImport()}>导入公众号文章</Button>
+                  <Button size="2" variant="soft" color="gray" onClick={() => showLinkImport()}>导入链接</Button>
                 </div>
               </div>
               {!collectionMode && workspaceNotice}
@@ -2183,20 +2181,13 @@ export function DesktopShell() {
           }}
           onConfirm={() => finishWorkspace(preparedBackup.ticket)} />}
       </>}
-      {modal?.type === "wechatImport" && <WechatImportDialog categoryId={modal.categoryId}
-        track={trackAssetTask} onClose={closeModal} onImported={refresh} onOpen={id => {
+      {modal?.type === "linkImport" && <LinkImportDialog categoryId={modal.categoryId} downloadImages={downloadPastedImages}
+        track={trackAssetTask} onClose={closeModal} onImported={linkImported} onOpen={id => {
         if (exit.current) return;
         closeModal();
         if (section !== "imports" && section !== "timeline") navigate("folders");
         run(() => open(id));
       }} />}
-      {modal?.type === "githubImport" && <GitHubImportDialog onClose={closeModal} onImport={url => trackAssetTask((async () => {
-        const result = await desktop.importGitHub(url, modal.categoryId);
-        if (result.deleted) throw new Error("该仓库已收录，请先从回收站恢复");
-        await open(result.entryId, "new-tab");
-        refresh();
-        setNotice({ type: "info", text: result.existing ? "已打开收录的 README" : "已导入 GitHub README" });
-      })())} />}
       {modal?.type === "deleteCollection" && <Confirm title="删除专题" text={`将删除「${modal.collection.title}」中的卡片和连线。引用的文章会保留。`}
         action="删除专题" onClose={closeModal} onConfirm={() => deleteCollection(modal.collection)} />}
       {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} onClose={closeModal} />}
@@ -2224,5 +2215,5 @@ function ActivePreview({ queue, projectLinks }: { queue: SaveQueue; projectLinks
   const materialized = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const { fields, revision } = useMemo(() => queue.capture(), [queue, materialized]);
   return <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
-    projectLinks={projectLinks} />;
+    githubRepo={fields.source?.url} projectLinks={projectLinks} />;
 }

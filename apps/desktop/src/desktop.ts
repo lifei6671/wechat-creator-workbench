@@ -31,6 +31,9 @@ export interface WechatImportJob {
   id: string; url: string; status: "queued" | "running" | "completed" | "partial" | "needs_attention" | "failed";
   entryId: string | null; error: string | null; pendingImages: number;
 }
+export type LinkImportResult = { kind: "wechat"; job: WechatImportJob } | {
+  kind: "article"; article: { entryId: string; existing: boolean; deleted: boolean; unavailableImages: number };
+};
 export interface McpConfig { enabled: boolean; port: number; permission: "read" | "write" }
 export interface McpStatus { config: McpConfig; running: boolean; error: string | null }
 export interface SyncBinding { url: string; instanceId: string; epoch: string; deviceId: string; paused: boolean }
@@ -135,8 +138,6 @@ export const desktop = {
   saveCollectionViewport: (collectionId: string, viewport: CanvasViewport) =>
     invoke<void>("save_collection_viewport", { collectionId, viewport }),
   entryCollections: (entryId: string) => invoke<Collection[]>("list_entry_collections", { entryId }),
-  importGitHub: (url: string, categoryId: string | null) =>
-    invoke<{ entryId: string; existing: boolean; deleted: boolean }>("github_import", { url, categoryId }),
   create: (kind: EntryKind, fields?: EntryFields, sourceEntryId?: string) => invoke<Entry>("create_entry", { kind, fields, sourceEntryId }),
   save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode) =>
     invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode }),
@@ -158,9 +159,9 @@ export const desktop = {
   readClipboard: (acceptImages: boolean, acceptHtml = false) =>
     invoke<ClipboardContents | null>("clipboard_read", { acceptImages, acceptHtml }),
   copyHtml: (html: string, text: string) => invoke<void>("clipboard_write_html", { html, text }),
-  importWechat: (url: string, categoryId: string | null) => invoke<WechatImportJob>("wechat_import", { url, categoryId }),
+  importLink: (url: string, categoryId: string | null, downloadImages: boolean) =>
+    invoke<LinkImportResult>("import_link", { url, categoryId, downloadImages }),
   importMarkdown: (categoryId: string | null) => invoke<{ entry: Entry; unavailableImages: number } | null>("import_markdown", { categoryId }),
-  importJobs: () => invoke<WechatImportJob[]>("wechat_import_jobs"),
   retryWechatImages: (entry: string) => invoke<WechatImportJob>("wechat_retry_images", { entry }),
   wechatGraphics: (markdown: string) => invoke<SourceFragment[]>("wechat_graphics", { markdown }),
   mcpStatus: () => invoke<McpStatus>("mcp_status"),

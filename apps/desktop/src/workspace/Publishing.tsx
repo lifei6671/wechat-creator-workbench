@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Button, Dialog, TextField } from "@radix-ui/themes";
 import { X } from "lucide-react";
-import { desktop, errorMessage, type ExportImage, type WechatImportJob } from "../desktop";
+import { desktop, errorMessage, type ExportImage, type LinkImportResult, type WechatImportJob } from "../desktop";
 import { Tooltip } from "../ui";
 import { renderWechat, type ImageResult, type RenderInput, type RenderedWechat } from "../../../../packages/wechat-renderer";
 
@@ -64,44 +64,61 @@ const importStatus: Record<WechatImportJob["status"], string> = {
   needs_attention: "访问受限", failed: "导入失败",
 };
 
-export function WechatImportDialog({ categoryId, onClose, track, onOpen, onImported }: {
+export function LinkImportDialog({ categoryId, downloadImages, onClose, track, onOpen, onImported, adding }: {
   categoryId: string | null;
+  downloadImages: boolean;
   onClose(): void;
   track: Track;
-  onOpen(id: string): void;
-  onImported(): void;
+  onOpen(id: string): void | Promise<void>;
+  onImported?(unavailableImages: number): void;
+  adding?: boolean;
 }) {
   const [url, setUrl] = useState("");
   const [job, setJob] = useState<WechatImportJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function perform(load: () => Promise<WechatImportJob>) {
+  async function perform(load: () => Promise<LinkImportResult>) {
+    if (busy) return;
     setBusy(true);
     setError("");
     setJob(null);
     try {
       const result = await track(load());
-      if (result.entryId) onImported();
-      if (result.status === "completed" && result.entryId) onOpen(result.entryId);
-      else setJob(result);
+      if (result.kind === "article") {
+        if (result.article.deleted) throw new Error("该链接已收录，请先从回收站恢复");
+        onImported?.(result.article.unavailableImages);
+        await onOpen(result.article.entryId);
+      } else {
+        const job = result.job;
+        if (job.entryId) onImported?.(0);
+        if (job.status === "completed" && job.entryId) await onOpen(job.entryId);
+        else setJob(job);
+      }
     } catch (error) { setError(errorMessage(error)); }
     finally { setBusy(false); }
   }
   function submit(event: FormEvent) {
     event.preventDefault();
-    void perform(() => desktop.importWechat(url, categoryId));
+    void perform(() => desktop.importLink(url.trim(), categoryId, downloadImages));
+  }
+  async function openImported(id: string) {
+    setBusy(true);
+    setError("");
+    try { await onOpen(id); }
+    catch (failure) { setError(errorMessage(failure)); }
+    finally { setBusy(false); }
   }
   return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
     <Dialog.Content maxWidth="520px" aria-describedby={undefined}>
-      <Dialog.Title>导入公众号文章</Dialog.Title>
+      <Dialog.Title>导入链接</Dialog.Title>
       <form className="dialog-form" onSubmit={submit}>
-        <label>公众号文章链接<TextField.Root type="url" required value={url} onChange={event => setUrl(event.target.value)}
-          placeholder="https://mp.weixin.qq.com/s/…" autoFocus /></label>
+        <label>网页链接<TextField.Root type="url" required value={url} onChange={event => setUrl(event.target.value)}
+          placeholder="https://" autoFocus /></label>
         {error && <p role="alert" className="inline-error">{error}</p>}
         <div className="dialog-actions">
           <Dialog.Close><Button type="button" color="gray" variant="soft" disabled={busy}>关闭</Button></Dialog.Close>
-          <Button type="submit" loading={busy}>导入</Button>
+          <Button type="submit" loading={busy}>{adding ? "导入并添加" : "导入"}</Button>
         </div>
       </form>
       {job && <section className="wechat-job" aria-label="本次导入结果">
@@ -109,11 +126,11 @@ export function WechatImportDialog({ categoryId, onClose, track, onOpen, onImpor
             <span title={job.url}>{job.url}</span></div>
           {job.error && <p className="inline-error">{job.error}</p>}
           <div className="button-strip">
-            {job.entryId && <Button size="1" variant="soft" disabled={busy} onClick={() => onOpen(job.entryId!)}>打开笔记</Button>}
+            {job.entryId && <Button size="1" variant="soft" disabled={busy} onClick={() => void openImported(job.entryId!)}>{adding ? "添加到画布" : "打开笔记"}</Button>}
             {job.entryId && job.pendingImages > 0 && <Button size="1" variant="soft" disabled={busy}
-              onClick={() => { void perform(() => desktop.retryWechatImages(job.entryId!)); }}>补图（{job.pendingImages}）</Button>}
+              onClick={() => { void perform(async () => ({ kind: "wechat", job: await desktop.retryWechatImages(job.entryId!) })); }}>补图（{job.pendingImages}）</Button>}
             {!job.entryId && (job.status === "failed" || job.status === "needs_attention") && <Button size="1" variant="soft"
-              disabled={busy} onClick={() => { void perform(() => desktop.importWechat(job.url, categoryId)); }}>重试导入</Button>}
+              disabled={busy} onClick={() => { void perform(() => desktop.importLink(job.url, categoryId, downloadImages)); }}>重试导入</Button>}
           </div>
       </section>}
     </Dialog.Content>

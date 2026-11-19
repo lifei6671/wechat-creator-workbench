@@ -1,4 +1,4 @@
-use super::{Assets, image_header, local_error};
+use super::{Assets, image_header, local_error, remote_image};
 use crate::db::{AppError, Result};
 use http::{HeaderMap, Request, StatusCode, header, response};
 use http_cache_semantics::{AfterResponse, BeforeRequest, CacheOptions, CachePolicy, ResponseLike};
@@ -116,7 +116,7 @@ impl ImageCache {
             None
         };
         let bytes = Assets::read_image_body(response, LABEL, NETWORK_ERROR, TIMEOUT_ERROR).await?;
-        image_header(&bytes)?;
+        let bytes = remote_image::normalize(bytes).await?;
         self.save(key, policy, bytes, request_lock).await
     }
 

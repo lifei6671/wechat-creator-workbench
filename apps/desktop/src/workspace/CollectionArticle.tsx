@@ -23,7 +23,7 @@ export function CollectionArticlePreview({ id, title, source, load, onError }: {
 }) {
   const card = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
-  const [body, setBody] = useState<string>();
+  const [article, setArticle] = useState<Entry>();
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -39,7 +39,7 @@ export function CollectionArticlePreview({ id, title, source, load, onError }: {
     let current = true;
     void load(id).then(entry => {
       if (!current) return;
-      setBody(entry.contentMd);
+      setArticle(entry);
       setError("");
     }, failure => { if (current) setError(errorMessage(failure)); });
     return () => { current = false; };
@@ -48,20 +48,20 @@ export function CollectionArticlePreview({ id, title, source, load, onError }: {
   return <div ref={card} className="collection-card-body nowheel">
     <h2 className="collection-card-title">{title}</h2>
     {source && <p className="collection-card-source">{source}</p>}
-    {visible && body === undefined && !error && <p className="muted-text" role="status">正在读取正文…</p>}
-    {body !== undefined && <ArticleMarkdown body={body} onError={onError} />}
+    {visible && !article && !error && <p className="muted-text" role="status">正在读取正文…</p>}
+    {article && <ArticleMarkdown body={article.contentMd} githubRepo={article.source?.url} onError={onError} />}
     {error && <div className="collection-article-error" role="alert">
       <span>{error}</span><Button variant="soft" size="1" className="nodrag" onClick={() => setAttempt(value => value + 1)}>重试</Button>
     </div>}
   </div>;
 }
 
-function ArticleMarkdown({ body, onError }: { body: string; onError(error: unknown): void }) {
+function ArticleMarkdown({ body, githubRepo, onError }: { body: string; githubRepo?: string; onError(error: unknown): void }) {
   const content = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     let current = true;
     const images: Array<() => void> = [];
-    const fragment = sanitizeRenderedMarkdown(articleMarkdown.render(body));
+    const fragment = sanitizeRenderedMarkdown(articleMarkdown.render(body), { githubRepo });
     for (const placeholder of fragment.querySelectorAll<HTMLElement>(".preview-image[data-image-url]")) {
       const { imageUrl, imageAlt } = placeholder.dataset;
       void loadLocalImage(imageUrl!).then(image => {
@@ -76,7 +76,7 @@ function ArticleMarkdown({ body, onError }: { body: string; onError(error: unkno
     }
     content.current!.replaceChildren(fragment);
     return () => { current = false; images.forEach(dispose => dispose()); };
-  }, [body]);
+  }, [body, githubRepo]);
   return <div className="collection-markdown" ref={content} onClick={event => {
     const link = (event.target as Element).closest("a");
     const href = link?.getAttribute("href");
@@ -113,7 +113,7 @@ export function CollectionArticleEditor({ queue, locked, clipboard, onEditor, on
     }
   }}>
     <EditorContextMenu editor={editorRef} clipboard={clipboard} readOnly={locked} onError={onError} onLeave={leave}>
-    <MarkdownEditor entryId={queue.entry.id} value={queue.entry.contentMd} readOnly={locked} ref={editor => {
+    <MarkdownEditor entryId={queue.entry.id} value={queue.entry.contentMd} githubRepo={queue.entry.source?.url} readOnly={locked} ref={editor => {
       if (!editor) return;
       editorRef.current = editor;
       const release = queue.bindContentProvider(editor.captureMarkdown);

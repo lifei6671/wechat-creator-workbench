@@ -26,3 +26,16 @@ it("matches the shared Markdown image syntax fixtures", () => {
     expect(urls).toEqual(images);
   }
 });
+
+it("renders safe HTML disclosures and strips executable and display-spoofing markup", () => {
+  const fragment = renderMarkdown([
+    '<details open style="position:fixed" class="rich-editor" id="control">',
+    "<summary>使用方法</summary>", "", "**运行**", "", "</details>", "",
+    '<a href="javascript:alert(1)">不安全链接</a>',
+    '<img src="file:///etc/passwd" srcset="https://example.test/logo.png" onerror="alert(1)">',
+    '<form><input></form><svg><script>alert(1)</script></svg>',
+  ].join("\n"), { githubRepo: "https://github.com/Owner/Repo", embedded: true });
+  expect(fragment.querySelector("details[open] summary")?.textContent).toBe("使用方法");
+  expect(fragment.querySelector("details strong")?.textContent).toBe("运行");
+  expect(fragment.querySelector("[style], [onclick], [onerror], [id], [href], [src], [srcset], [data-image-url], .rich-editor, form, input, svg, script")).toBeNull();
+});

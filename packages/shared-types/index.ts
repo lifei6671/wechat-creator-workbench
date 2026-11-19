@@ -14,6 +14,10 @@ export interface Source {
   importedAt: number | null;
 }
 
+export type CustomProperty = { key: string } & (
+  { kind: "text" | "date"; value: string } | { kind: "tags"; value: string[] }
+);
+
 export interface EntryFields {
   title: string;
   contentMd: string;
@@ -26,6 +30,7 @@ export interface EntryFields {
   source: Source | null;
   publishedAt: number | null;
   publishedUrl: string;
+  customProperties?: CustomProperty[];
 }
 
 export interface EntryRow {
@@ -62,6 +67,7 @@ export interface EntryFilter {
   workspaceSearch?: { text: string; caseSensitive: boolean; matchPage?: { entryId: string; offset: number } };
   deleted: boolean;
   wechatImported?: boolean;
+  externalImported?: boolean;
   offset: number;
   limit?: number;
 }

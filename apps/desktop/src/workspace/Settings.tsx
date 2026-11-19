@@ -11,7 +11,7 @@ export type ViewShortcut = "none" | "shift-m" | "alt-v";
 
 const groups = [
   { label: "工作区", items: [
-    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: `外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 默认展开文档大纲 下载粘贴内容中的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数${windowsTitleBar ? " GPU 硬件加速 渲染" : ""}` },
+    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: `外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 默认展开文档大纲 下载粘贴和链接导入的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数${windowsTitleBar ? " GPU 硬件加速 渲染" : ""}` },
     { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 查找与替换 全文搜索 保存版本 新建笔记" },
     { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
@@ -284,7 +284,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
       <SettingRow id="default-document-outline" label="默认展开文档大纲" hint="可在「更多编辑操作」中单独设置当前文档的大纲。">
         {hintId => <Switch id="default-document-outline" aria-describedby={hintId} radius="full" checked={defaultOutline} onCheckedChange={onDefaultOutline} />}
       </SettingRow>
-      <SettingRow id="download-pasted-images" label="下载粘贴内容中的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
+      <SettingRow id="download-pasted-images" label="下载粘贴和链接导入的外链图片" hint="将外链图片保存到本地素材库，已配置图床的图片保留原链接。">
         {hintId => <Switch id="download-pasted-images" aria-describedby={hintId} radius="full" checked={downloadPastedImages} onCheckedChange={onDownloadPastedImages} />}
       </SettingRow>
       <SettingRow id="links-to-footnotes" label="链接转脚注" hint="默认将正文中的外部链接显示为文末参考脚注。">

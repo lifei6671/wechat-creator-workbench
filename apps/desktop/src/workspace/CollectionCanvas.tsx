@@ -12,9 +12,9 @@ import { SaveQueue } from "../editor/save-queue";
 import { pastedWebUrl, useCanvasWebPreview } from "./CanvasWebPreview";
 import { CanvasPreviewCache } from "./CanvasPreviewCache";
 import { CollectionNodeContext, collectionNodeTypes, type FlowNode } from "./CollectionNodes";
-import { CollectionPicker, EdgeLabelDialog, GitHubImportDialog } from "./CollectionDialogs";
+import { CollectionPicker, EdgeLabelDialog } from "./CollectionDialogs";
 import { alignCollectionNodes } from "./collection-alignment";
-import { ImageViewer, loadLocalImage } from "./Publishing";
+import { ImageViewer, LinkImportDialog, loadLocalImage } from "./Publishing";
 import "@xyflow/react/dist/style.css";
 
 export interface CollectionCanvasHandle {
@@ -40,7 +40,8 @@ interface Props {
   onSaveArticle(id: string, version: number, fields: EntryFields, mode: SaveMode): Promise<SaveResult>;
   onArticleImages(files: File[]): Promise<string>;
   onDelete(): void;
-  onEntryCreated(): void;
+  downloadLinkImages: boolean;
+  onEntryCreated(unavailableImages?: number): void;
   onError(error: unknown): void;
 }
 
@@ -88,7 +89,7 @@ type TextEdit = { nodeId: string; handle: MarkdownEditorHandle; revision: number
 type ArticleEdit = { nodeId: string; queue: SaveQueue };
 
 function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, previewBlocked, clipboard, canvasRef, track, onOpenEntry,
-  onLoadArticle, onSaveArticle, onArticleImages, onEntryCreated, onError, onDelete }: Props & { initial: Canvas }) {
+  onLoadArticle, onSaveArticle, onArticleImages, downloadLinkImages, onEntryCreated, onError, onDelete }: Props & { initial: Canvas }) {
   const collectionId = collection.id;
   const flow = useReactFlow<FlowNode, Edge>();
   const area = useRef<HTMLDivElement>(null);
@@ -119,7 +120,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   const explicitEdgeSelection = useRef(false);
   const [convertingId, setConvertingId] = useState<string | null>(null);
   const converting = useRef<string | null>(null);
-  const [dialog, setDialog] = useState<{ type: "picker" | "github"; point?: CanvasPosition } | { type: "edge"; edge: Edge } | null>(null);
+  const [dialog, setDialog] = useState<{ type: "picker" | "link"; point?: CanvasPosition } | { type: "edge"; edge: Edge } | null>(null);
   const [menu, setMenu] = useState<{ type: "canvas"; point?: CanvasPosition } | { type: "node" | "edge"; id: string }>({ type: "canvas" });
   const actionAfterMenu = useRef<(() => void) | null>(null);
   const [image, setImage] = useState<Awaited<ReturnType<typeof loadLocalImage>>>();
@@ -852,7 +853,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
           <FileText size={15} />添加文章
         </ContextMenu.Item>
         <ContextMenu.Item onSelect={() => void addNode({ kind: "text", contentMd: "" }, menu.point).catch(onError)}><StickyNote size={15} />新建文本</ContextMenu.Item>
-        <ContextMenu.Item onSelect={() => { actionAfterMenu.current = () => setDialog({ type: "github", point: menu.point }); }}><FilePlus2 size={15} />导入 GitHub README</ContextMenu.Item>
+        <ContextMenu.Item onSelect={() => { actionAfterMenu.current = () => setDialog({ type: "link", point: menu.point }); }}><FilePlus2 size={15} />导入链接</ContextMenu.Item>
         <ContextMenu.Item onSelect={() => pasteContent(menu.point)}><Clipboard size={15} />粘贴</ContextMenu.Item>
         <ContextMenu.Separator />
         <ContextMenu.Item color="red" onSelect={() => { actionAfterMenu.current = onDelete; }}><Trash2 size={15} />删除专题</ContextMenu.Item>
@@ -902,12 +903,12 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
     </ContextMenu.Content>
     </ContextMenu.Root>
     {dialog?.type === "picker" && <CollectionPicker onClose={closeDialog} onChoose={async entryId => { await addNode({ kind: "entry", entryId }, dialog.point); }} />}
-    {dialog?.type === "github" && <GitHubImportDialog adding onClose={closeDialog} onImport={url => track((async () => {
-      const result = await desktop.importGitHub(url, null);
-      if (result.deleted) throw new Error("该仓库已收录，请先从回收站恢复");
-      if (!result.existing) onEntryCreated();
-      if (area.current) await addNode({ kind: "entry", entryId: result.entryId }, dialog.point);
-    })())} />}
+    {dialog?.type === "link" && <LinkImportDialog adding categoryId={null} downloadImages={downloadLinkImages} track={track}
+      onClose={closeDialog} onImported={onEntryCreated}
+      onOpen={async entryId => {
+        if (area.current) await addNode({ kind: "entry", entryId }, dialog.point);
+        closeDialog();
+      }} />}
     {dialog?.type === "edge" && <EdgeLabelDialog label={String(dialog.edge.label ?? "")} onClose={closeDialog}
       onSave={label => enqueue(async () => {
         const id = dialog.edge.id;

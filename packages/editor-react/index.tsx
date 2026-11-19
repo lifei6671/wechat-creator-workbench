@@ -96,6 +96,7 @@ interface Props extends EditorImages {
   ref?: Ref<MarkdownEditorHandle>;
   entryId: string;
   value: string;
+  githubRepo?: string;
   readOnly: boolean;
   active?: boolean;
   lineNumbers?: boolean;

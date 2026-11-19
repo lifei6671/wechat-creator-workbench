@@ -143,6 +143,77 @@ async fn public_image_previews_cache_on_disk_without_creating_assets() {
 }
 
 #[tokio::test]
+async fn external_svg_badges_are_cached_and_imported_as_png() {
+    let (folder, db, assets) = setup();
+    let mut assets = assets.with_image_cache(&folder.path().join("image-cache"));
+    let (listener, url) = image_origin(&mut assets).await;
+    let url = url.strip_suffix(".png").unwrap();
+    let local_image = folder.path().join("never-read.png");
+    std::fs::write(&local_image, png()).unwrap();
+    let data_image = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png());
+    let badge = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="4" onload="alert(1)">
+            <rect width="2" height="4" fill="#0f0"/>
+            <script>alert(1)</script>
+            <image href="{}" x="3" width="2" height="4"/>
+            <image href="data:image/png;base64,{data_image}" x="6" width="2" height="4"/>
+        </svg>"##,
+        url::Url::from_file_path(&local_image).unwrap(),
+    );
+    let (preview, _) = tokio::join!(
+        assets.read(&db, url),
+        serve_image_response(
+            &listener,
+            "200 OK",
+            "Cache-Control: max-age=3600\r\n",
+            badge.as_bytes()
+        )
+    );
+    let preview = preview.unwrap();
+    assert_eq!(image_header(&preview).unwrap(), (ImageFormat::Png, 10, 4));
+    let image = image::load_from_memory(&preview).unwrap().to_rgba8();
+    assert_eq!(image.get_pixel(0, 0).0, [0, 255, 0, 255]);
+    assert_eq!(image.get_pixel(3, 2).0[3], 0);
+    assert_eq!(image.get_pixel(6, 2).0[3], 0);
+
+    drop(listener);
+    let markdown =
+        format!("[![徽标]({url})](https://github.com/example/repo)\n\n<img src=\"{url}\">");
+    let (imported, unavailable) = assets
+        .import_link_images(&db, markdown, true)
+        .await
+        .unwrap();
+    assert_eq!(unavailable, 0);
+    assert!(!imported.contains(url));
+    let references = references::urls(&imported).unwrap();
+    assert_eq!(references.len(), 1);
+    let image = references.first().unwrap();
+    assert!(image.starts_with("asset://"));
+    assert_eq!(assets.read(&db, image).await.unwrap(), preview);
+}
+
+#[tokio::test]
+async fn external_svg_limits_reject_dtd_and_oversized_images() {
+    let dtd = br#"<!DOCTYPE svg [<!ENTITY external SYSTEM "file:///example.txt">]>
+        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="4"><text>&external;</text></svg>"#;
+    let oversized = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4096" height="1"/>"#;
+    assert_eq!(
+        remote_image::normalize(dtd.to_vec())
+            .await
+            .unwrap_err()
+            .code(),
+        "IMAGE_FORMAT"
+    );
+    assert_eq!(
+        remote_image::normalize(oversized.to_vec())
+            .await
+            .unwrap_err()
+            .code(),
+        "IMAGE_SIZE"
+    );
+}
+
+#[tokio::test]
 async fn public_image_cache_validates_stale_images_and_honors_no_store() {
     let (folder, db, assets) = setup();
     let mut assets = assets.with_image_cache(&folder.path().join("image-cache"));
@@ -792,6 +863,43 @@ async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavaila
             .iter()
             .all(|row| row.upload_status.as_deref() == Some("queued"))
     );
+}
+
+#[tokio::test]
+async fn link_import_downloads_images_only_when_enabled_and_preserves_unavailable_urls() {
+    let (_folder, db, mut assets) = setup();
+    image_profile(&db);
+    let (server, url) = image_origin(&mut assets).await;
+    let hosted = "https://cdn.example.test/hosted.png";
+    let unavailable = "http://127.0.0.1/unavailable.png";
+    let body = format!(
+        "![原图]({url})\n\n<img src=\"{url}\">\n\n![图床]({hosted})\n\n![不可用]({unavailable})\n\n![相对路径](local.png)\n\n`![示例]({url})`"
+    );
+    let (untouched, failures) = assets
+        .import_link_images(&db, body.clone(), false)
+        .await
+        .unwrap();
+    assert_eq!(untouched, body);
+    assert_eq!(failures, 0);
+    assert!(assets.library(&db, 0).unwrap().items.is_empty());
+
+    let bytes = png();
+    let (rewritten, _) = tokio::join!(
+        assets.import_link_images(&db, body, true),
+        serve_image_response(&server, "200 OK", "", &bytes)
+    );
+    let (rewritten, failures) = rewritten.unwrap();
+    assert_eq!(failures, 1);
+    let library = assets.library(&db, 0).unwrap();
+    assert_eq!(library.items.len(), 1);
+    let local = format!("asset://{}", library.items[0].id);
+    assert_eq!(assets.read(&db, &local).await.unwrap(), bytes);
+    assert!(rewritten.contains(&format!("![原图]({local})")));
+    assert!(rewritten.contains(&format!("<img src=\"{local}\">")));
+    assert!(rewritten.contains(&format!("![图床]({hosted})")));
+    assert!(rewritten.contains(&format!("![不可用]({unavailable})")));
+    assert!(rewritten.contains("![相对路径](local.png)"));
+    assert!(rewritten.contains(&format!("`![示例]({url})`")));
 }
 
 #[test]

@@ -1,10 +1,11 @@
 use crate::db::{AppError, Result, Workspace};
+use crate::link_import::ImportedLink;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use lol_html::{RewriteStrSettings, element, rewrite_str};
 use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use reqwest::{StatusCode, redirect::Policy};
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use tauri::State;
+use serde::Deserialize;
+use std::{borrow::Cow, time::Duration};
 use url::Url;
 
 const MAX_README: usize = 1024 * 1024;
@@ -20,27 +21,21 @@ struct Readme {
     size: usize,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitHubImport {
-    entry_id: String,
-    existing: bool,
-    deleted: bool,
-}
-
-#[tauri::command]
-pub async fn github_import(
-    state: State<'_, Workspace>,
-    url: String,
+pub(crate) async fn import_readme(
+    state: &Workspace,
+    assets: &crate::assets::Assets,
+    url: &str,
     category_id: Option<String>,
-) -> Result<GitHubImport> {
-    let (owner, repo) = repository(&url)?;
+    download_images: bool,
+) -> Result<ImportedLink> {
+    let (owner, repo) = repository(url)?;
     let canonical = format!("https://github.com/{owner}/{repo}").to_ascii_lowercase();
     if let Some((entry_id, deleted)) = state.github_reference(&canonical)? {
-        return Ok(GitHubImport {
+        return Ok(ImportedLink {
             entry_id,
             existing: true,
             deleted,
+            unavailable_images: 0,
         });
     }
 
@@ -111,12 +106,16 @@ pub async fn github_import(
         AppError::new("GITHUB_README", format!("无法解析 GitHub README：{error}"))
     })?;
     let (title, markdown) = prepare_readme(readme, &repo)?;
+    let (markdown, unavailable_images) = assets
+        .import_link_images(state, markdown, download_images)
+        .await?;
     let (entry_id, existing, deleted) =
         state.import_github_reference(canonical, title, markdown, category_id)?;
-    Ok(GitHubImport {
+    Ok(ImportedLink {
         entry_id,
         existing,
         deleted,
+        unavailable_images: if existing { 0 } else { unavailable_images },
     })
 }
 
@@ -136,7 +135,7 @@ async fn read_body(response: &mut reqwest::Response) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn repository(value: &str) -> Result<(String, String)> {
+pub(crate) fn repository(value: &str) -> Result<(String, String)> {
     let invalid = || AppError::invalid("请输入公开的 GitHub 仓库或 README 网页地址");
     let url = Url::parse(value.trim()).map_err(|_| invalid())?;
     if url.scheme() != "https"
@@ -207,19 +206,196 @@ fn prepare_readme(readme: Readme, repository: &str) -> Result<(String, String)> 
         &readme.download_url,
         &["raw.githubusercontent.com", "github.com"],
     )?;
-    let html_root = repository_root(&html, &readme.path)?;
-    let raw_root = repository_root(&raw, &readme.path)?;
+    prepare_markdown(markdown, repository, &html, &raw, &readme.path, true)
+}
+
+pub(crate) fn convert_saved_html(markdown: &str, source: &str) -> Result<Option<String>> {
+    if !markdown
+        .as_bytes()
+        .windows(4)
+        .any(|part| part.eq_ignore_ascii_case(b"<img"))
+        && !contains_disclosure(markdown)
+    {
+        return Ok(None);
+    }
+    let Ok((owner, repo)) = repository(source) else {
+        return Ok(None);
+    };
+    let html = Url::parse(&format!(
+        "https://github.com/{owner}/{repo}/blob/HEAD/README.md"
+    ))
+    .expect("valid repository name");
+    let raw = Url::parse(&format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md"
+    ))
+    .expect("valid repository name");
+    let (_, converted) = prepare_markdown(markdown, &repo, &html, &raw, "README.md", false)?;
+    Ok((converted != markdown).then_some(converted))
+}
+
+fn prepare_markdown(
+    markdown: &str,
+    repository: &str,
+    html: &Url,
+    raw: &Url,
+    path: &str,
+    resolve_markdown_links: bool,
+) -> Result<(String, String)> {
+    let html_root = repository_root(html, path)?;
+    let raw_root = repository_root(raw, path)?;
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_MATH;
+    let markdown = separate_disclosures(markdown, options);
     let mut title = String::new();
     let mut in_title = false;
     let mut changed = false;
     let mut events = Vec::new();
-    for mut event in Parser::new_ext(markdown, options) {
-        match &mut event {
+    let mut parser = Parser::new_ext(&markdown, options).peekable();
+    let mut sanitizer = ammonia::Builder::default();
+    sanitizer.link_rel(None).add_url_schemes(["asset"]);
+    let converter = htmd::HtmlToMarkdown::builder()
+        .add_handler(
+            vec!["img"],
+            |_: &dyn htmd::element_handler::Handlers, image: htmd::Element| {
+                let attribute = |name| {
+                    image
+                        .attrs
+                        .iter()
+                        .find(|attr| attr.name.local.as_ref() == name)
+                        .map(|attr| attr.value.as_ref())
+                };
+                let url = Url::parse(attribute("src")?).ok()?;
+                if !matches!(url.scheme(), "http" | "https" | "asset") {
+                    return None;
+                }
+                let alt = attribute("alt")
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace('\\', "\\\\")
+                    .replace('[', "\\[")
+                    .replace(']', "\\]");
+                let title = attribute("title").map_or(String::new(), |title| {
+                    format!(
+                        " \"{}\"",
+                        title
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                    )
+                });
+                Some(format!("![{alt}](<{url}>{title})").into())
+            },
+        )
+        .build();
+    while let Some(event) = parser.next() {
+        let block = matches!(event, Event::Start(Tag::HtmlBlock));
+        let mut fragment = match event {
+            Event::Start(Tag::HtmlBlock) => String::new(),
+            Event::InlineHtml(value) => value.into_string(),
+            _ => {
+                events.push(event);
+                continue;
+            }
+        };
+        if block {
+            for event in parser.by_ref() {
+                match event {
+                    Event::Html(line) => fragment.push_str(&line),
+                    Event::End(TagEnd::HtmlBlock) => break,
+                    _ => unreachable!("only HTML may occur inside an HTML block"),
+                }
+            }
+        } else {
+            while let Some(Event::InlineHtml(_)) = parser.peek() {
+                let Some(Event::InlineHtml(line)) = parser.next() else {
+                    unreachable!()
+                };
+                fragment.push_str(&line);
+            }
+        }
+        let mut has_image = false;
+        let mut has_disclosure = false;
+        let rewritten = rewrite_str(
+            &fragment,
+            RewriteStrSettings {
+                element_content_handlers: vec![
+                    element!("details", |_| {
+                        has_disclosure = true;
+                        Ok(())
+                    }),
+                    element!("img[src], a[href]", |element| {
+                        let image = element.tag_name() == "img";
+                        let (attribute, base, root) = if image {
+                            ("src", raw, &raw_root)
+                        } else {
+                            ("href", html, &html_root)
+                        };
+                        let source = element.get_attribute(attribute).unwrap();
+                        let destination = html_escape::decode_html_entities(&source);
+                        let destination = destination.trim();
+                        if image {
+                            has_image = true;
+                        }
+                        if !destination.is_empty()
+                            && !destination.starts_with('#')
+                            && let Some(url) = resolve_relative(destination, base, root)
+                        {
+                            element.set_attribute(
+                                attribute,
+                                &html_escape::encode_double_quoted_attribute(url.as_str()),
+                            )?;
+                        }
+                        Ok(())
+                    }),
+                ],
+                ..RewriteStrSettings::default()
+            },
+        )
+        .map_err(readme_conversion_error)?;
+        if has_image && !has_disclosure {
+            let clean = sanitizer.clean(&rewritten).to_string();
+            let converted = converter.convert(&clean).map_err(readme_conversion_error)?;
+            let parsed: Vec<_> = Parser::new_ext(&converted, options)
+                .map(Event::into_static)
+                .collect();
+            if parsed
+                .iter()
+                .any(|event| matches!(event, Event::Start(Tag::Image { .. })))
+            {
+                changed = true;
+                events.extend(parsed.into_iter().filter(|event| {
+                    block
+                        || !matches!(
+                            event,
+                            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
+                        )
+                }));
+                continue;
+            }
+        }
+        if resolve_markdown_links && fragment != rewritten {
+            changed = true;
+            fragment = rewritten;
+        }
+        if block {
+            events.extend([
+                Event::Start(Tag::HtmlBlock),
+                Event::Html(fragment.into()),
+                Event::End(TagEnd::HtmlBlock),
+            ]);
+        } else {
+            events.push(Event::InlineHtml(fragment.into()));
+        }
+    }
+    for event in &mut events {
+        match event {
             Event::Start(Tag::Heading {
                 level: HeadingLevel::H1,
                 ..
@@ -230,41 +406,139 @@ fn prepare_readme(readme: Readme, repository: &str) -> Result<(String, String)> 
                 link_type,
                 dest_url,
                 ..
-            }) => {
-                changed |= resolve_link(link_type, dest_url, &raw, &raw_root);
+            }) if resolve_markdown_links => {
+                changed |= resolve_link(link_type, dest_url, raw, &raw_root);
             }
             Event::Start(Tag::Link {
                 link_type,
                 dest_url,
                 ..
-            }) => {
-                changed |= resolve_link(link_type, dest_url, &html, &html_root);
+            }) if resolve_markdown_links => {
+                changed |= resolve_link(link_type, dest_url, html, &html_root);
             }
             _ => {}
         }
-        events.push(event);
     }
     let title = title.trim();
     let title = if title.is_empty() { repository } else { title }.to_owned();
-    let mut output = String::new();
-    if changed {
-        let mut format_options = pulldown_cmark_to_cmark::Options::default();
-        if let Some(tokens) =
-            pulldown_cmark_to_cmark::calculate_code_block_token_count(events.iter())
-        {
-            format_options.code_block_token_count = tokens;
-        }
-        pulldown_cmark_to_cmark::cmark_with_options(
-            events.iter(),
-            &mut output,
-            options,
-            format_options,
-        )
-        .map_err(|error| AppError::new("GITHUB_README", format!("README 链接转换失败：{error}")))?;
-    } else {
-        output.push_str(markdown);
+    if !changed {
+        return Ok((title, markdown.into_owned()));
     }
-    Ok((title, output))
+    let mut output = String::new();
+    let mut format_options = pulldown_cmark_to_cmark::Options::default();
+    if let Some(tokens) = pulldown_cmark_to_cmark::calculate_code_block_token_count(events.iter()) {
+        format_options.code_block_token_count = tokens;
+    }
+    pulldown_cmark_to_cmark::cmark_with_options(
+        events.iter(),
+        &mut output,
+        options,
+        format_options,
+    )
+    .map_err(readme_conversion_error)?;
+    Ok((title, separate_disclosures(&output, options).into_owned()))
+}
+
+fn contains_disclosure(markdown: &str) -> bool {
+    markdown
+        .as_bytes()
+        .windows(8)
+        .any(|part| part.eq_ignore_ascii_case(b"<details"))
+}
+
+fn separate_disclosures(markdown: &str, options: Options) -> Cow<'_, str> {
+    if !contains_disclosure(markdown) {
+        return Cow::Borrowed(markdown);
+    }
+    let lines: Vec<_> = markdown.split_inclusive('\n').collect();
+    let mut offsets = vec![0];
+    offsets.extend(markdown.match_indices('\n').map(|(offset, _)| offset + 1));
+    let mut html_lines = vec![false; lines.len()];
+    let mut raw_text = false;
+    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+        match event {
+            Event::Start(Tag::HtmlBlock) => {
+                let first = markdown[range]
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim_start()
+                    .to_ascii_lowercase();
+                raw_text = first.starts_with("<!")
+                    || ["<pre", "<script", "<style", "<textarea"]
+                        .iter()
+                        .any(|tag| first.starts_with(tag));
+            }
+            Event::End(TagEnd::HtmlBlock) => raw_text = false,
+            Event::Html(_) | Event::InlineHtml(_) if !raw_text && !range.is_empty() => {
+                let start = offsets.partition_point(|offset| *offset <= range.start) - 1;
+                let end = offsets.partition_point(|offset| *offset < range.end);
+                html_lines[start..end].fill(true);
+            }
+            _ => {}
+        }
+    }
+    let mut breaks = vec![false; lines.len()];
+    let line_break = |line: &str| {
+        matches!(
+            line.trim().to_ascii_lowercase().as_str(),
+            "<br>" | "<br/>" | "<br />"
+        )
+    };
+    let mut depth = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        if !html_lines[index] || line.len() - line.trim_start().len() > 3 {
+            continue;
+        }
+        let tag = line.trim().to_ascii_lowercase();
+        let start = tag.starts_with("<details>") || tag.starts_with("<details ");
+        if start && !tag.contains("</details>") {
+            depth += 1;
+            breaks[index] = true;
+        }
+        if depth == 0 {
+            continue;
+        }
+        if tag == "</details>" {
+            depth -= 1;
+            breaks[index] = true;
+            if let Some(next) = breaks.get_mut(index + 1) {
+                *next = true;
+            }
+        } else if (start || tag.starts_with("<summary")) && tag.ends_with("</summary>") {
+            let next = index
+                + 1
+                + lines[index + 1..]
+                    .iter()
+                    .take_while(|line| line_break(line))
+                    .count();
+            if let Some(next) = breaks.get_mut(next) {
+                *next = true;
+            }
+        }
+    }
+    let mut output = String::with_capacity(markdown.len());
+    let mut changed = false;
+    for (index, line) in lines.iter().enumerate() {
+        if breaks[index]
+            && index > 0
+            && !line.trim().is_empty()
+            && !lines[index - 1].trim().is_empty()
+        {
+            output.push('\n');
+            changed = true;
+        }
+        output.push_str(line);
+    }
+    if changed {
+        Cow::Owned(output)
+    } else {
+        Cow::Borrowed(markdown)
+    }
+}
+
+fn readme_conversion_error(error: impl std::fmt::Display) -> AppError {
+    AppError::new("GITHUB_README", format!("README 内容转换失败：{error}"))
 }
 
 fn readme_url(value: &str, hosts: &[&str]) -> Result<Url> {
@@ -295,8 +569,17 @@ fn resolve_link(
     base: &Url,
     root: &Url,
 ) -> bool {
-    if Url::parse(destination).is_ok() {
+    let Some(url) = resolve_relative(destination, base, root) else {
         return false;
+    };
+    *link_type = LinkType::Inline;
+    *destination = url.to_string().into();
+    true
+}
+
+fn resolve_relative(destination: &str, base: &Url, root: &Url) -> Option<Url> {
+    if Url::parse(destination).is_ok() {
+        return None;
     }
     let resolved = if let Some(path) = destination
         .strip_prefix('/')
@@ -306,14 +589,7 @@ fn resolve_link(
     } else {
         base.join(destination)
     };
-    if let Ok(url) = resolved
-        && url.scheme() == "https"
-    {
-        *link_type = LinkType::Inline;
-        *destination = url.to_string().into();
-        return true;
-    }
-    false
+    resolved.ok().filter(|url| url.scheme() == "https")
 }
 
 fn request_error(error: reqwest::Error) -> AppError {
@@ -356,7 +632,7 @@ mod tests {
 
     #[test]
     fn resolves_nested_readme_links_and_images_without_rewriting_code() {
-        let source = "Intro\n\n# A **tool**\n\n[Guide](../guide.md#setup) [root](/LICENSE)\n\n[![logo][badge]](../)\n\n[badge]: assets/logo.png\n\n| Column |\n| --- |\n| value |\n\n```markdown\n[leave](./sample)\n```";
+        let source = "Intro\n\n# A **tool**\n\n[Guide](../guide.md#setup) [root](/LICENSE)\n\n[![logo][badge]](../)\n\n[badge]: assets/logo.png\n\n<p><a href='../guide.md'><img src='/assets/hero.png?x=1&amp;y=2'></a></p>\n\nInline <img src='./assets/mini.png'>\n\n| Column |\n| --- |\n| value |\n\n```markdown\n[leave](./sample)\n<img src='./sample.png'>\n```";
         let readme = Readme {
             path: "docs/README.md".into(),
             html_url: "https://github.com/Owner/Repo/blob/main/docs/README.md".into(),
@@ -380,11 +656,140 @@ mod tests {
                 .contains("https://raw.githubusercontent.com/Owner/Repo/main/docs/assets/logo.png"),
             "{output}"
         );
+        let parsed: Vec<_> = Parser::new_ext(&output, Options::ENABLE_TABLES).collect();
+        let images: Vec<_> = parsed
+            .iter()
+            .filter_map(|event| match event {
+                Event::Start(Tag::Image { dest_url, .. }) => Some(dest_url.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            images.contains(
+                &"https://raw.githubusercontent.com/Owner/Repo/main/assets/hero.png?x=1&y=2"
+            ),
+            "{output}"
+        );
+        assert!(
+            images.contains(
+                &"https://raw.githubusercontent.com/Owner/Repo/main/docs/assets/mini.png"
+            ),
+            "{output}"
+        );
+        assert!(parsed.iter().any(|event| matches!(event, Event::Start(Tag::Link { dest_url, .. }) if dest_url.as_ref() == "https://github.com/Owner/Repo/blob/main/guide.md")));
+        assert!(output.contains("<img src='./sample.png'>"));
         assert!(
             Parser::new_ext(&output, Options::ENABLE_TABLES)
                 .any(|event| matches!(event, Event::Start(Tag::Table(_))))
         );
         assert!(output.contains("[leave](./sample)"));
+    }
+
+    #[test]
+    fn saved_github_pictures_open_as_editable_markdown_images_without_changing_the_saved_body() {
+        let source = r#"<p align="center"><picture>
+<source media="(prefers-color-scheme: light)" srcset="./images/light.png">
+<img src="./images/banner.png" alt="SnowAir [轻雪]" title="横幅" onerror="alert(1)">
+</picture></p>
+<script>alert(1)</script>
+
+| 功能 |
+| --- |
+| <picture><source srcset="./alt.svg"><img src="asset://saved" alt="截图" height="20"></picture>&nbsp;截图 |
+
+<details><summary>展开</summary>说明</details>
+
+本地编辑 [相对位置](./my-notes.md)"#;
+        let folder = tempfile::tempdir().unwrap();
+        let db = Workspace::open(&folder.path().join("workspace.db")).unwrap();
+        let (id, _, _) = db
+            .import_github_reference(
+                "https://github.com/CM-idea/SnowAir".into(),
+                "SnowAir".into(),
+                source.into(),
+                None,
+            )
+            .unwrap();
+        let entry = db.get_entry(&id).unwrap().with_github_images().unwrap();
+        let entry = serde_json::to_value(entry).unwrap();
+        let body = entry["contentMd"].as_str().unwrap();
+        let images: Vec<_> = crate::assets::references::images(body)
+            .into_iter()
+            .filter_map(|image| match image {
+                crate::assets::references::Image::Markdown {
+                    url, alt, title, ..
+                } => Some((url, alt, title)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            images,
+            [
+                (
+                    "https://raw.githubusercontent.com/CM-idea/SnowAir/HEAD/images/banner.png"
+                        .into(),
+                    "SnowAir [轻雪]".into(),
+                    "横幅".into()
+                ),
+                ("asset://saved".into(), "截图".into(), String::new()),
+            ],
+            "{body}"
+        );
+        assert!(
+            Parser::new_ext(body, Options::ENABLE_TABLES)
+                .any(|event| matches!(event, Event::Start(Tag::Table(_))))
+        );
+        assert!(
+            !body.contains("alert(1)") && !body.contains("srcset"),
+            "{body}"
+        );
+        assert!(
+            body.contains("<details><summary>展开</summary>说明</details>"),
+            "{body}"
+        );
+        assert!(body.contains("[相对位置](./my-notes.md)"), "{body}");
+        let saved = serde_json::to_value(db.get_entry(&id).unwrap()).unwrap();
+        assert_eq!(saved["contentMd"], source);
+        assert!(
+            convert_saved_html(body, "https://github.com/CM-idea/SnowAir")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn adjacent_disclosures_keep_their_markdown_bodies() {
+        let source = concat!(
+            "安装说明\n<details open>\n<summary>软件下载</summary>\n<br/>\n可在线下载。\n</details>\n",
+            "<details>\n<summary><strong>开源范围</strong></summary>\n<br/>\n\n",
+            "**许可协议**，请从 [Releases](https://github.com/CM-idea/SnowAir/releases) 下载 `SnowAir.exe`。\n\n",
+            "</details>\n## 其他\n\n",
+            "```html\n<details>\n<summary>示例</summary>\n</details>\n```",
+        );
+        let output = convert_saved_html(source, "https://github.com/CM-idea/SnowAir")
+            .unwrap()
+            .unwrap();
+        assert!(output.contains("说明\n\n<details open>"), "{output}");
+        assert!(
+            output.contains("<br/>\n\n可在线下载。\n\n</details>\n\n<details>"),
+            "{output}"
+        );
+        assert!(output.contains("</details>\n\n## 其他"), "{output}");
+        assert!(
+            output.contains("```html\n<details>\n<summary>示例</summary>\n</details>\n```"),
+            "{output}"
+        );
+        let events: Vec<_> = Parser::new(&output).collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Start(Tag::Strong)))
+        );
+        assert!(
+            events.iter().any(
+                |event| matches!(event, Event::Code(value) if value.as_ref() == "SnowAir.exe")
+            )
+        );
     }
 
     #[test]

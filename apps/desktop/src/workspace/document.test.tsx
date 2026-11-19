@@ -9,7 +9,7 @@ import { desktop } from "../desktop";
 import { SaveQueue } from "../editor/save-queue";
 import { DocumentEditor, DocumentTabs, DocumentToolbar, type DocumentActions } from "./Document";
 import { Outline } from "./Outline";
-import { WechatImportDialog } from "./Publishing";
+import { LinkImportDialog } from "./Publishing";
 import { PropertiesDialog } from "./Dialogs";
 
 const display = { limitWidth: true, lineNumbers: false, showTitle: true, convertLinks: false };
@@ -272,14 +272,12 @@ it("renames through the focused breadcrumb and updates the editor theme without 
 });
 
 it("shows only the current import result in the dialog", async () => {
-  const history = vi.spyOn(desktop, "importJobs").mockResolvedValue([]);
-  const importNow = vi.spyOn(desktop, "importWechat").mockResolvedValue({
+  const importNow = vi.spyOn(desktop, "importLink").mockResolvedValue({ kind: "wechat", job: {
     id: "job", url: "https://mp.weixin.qq.com/s/demo", status: "partial", entryId: "entry", error: null, pendingImages: 2,
-  });
+  }});
   const onOpen = vi.fn();
   const onImported = vi.fn();
-  flushSync(() => root.render(<Theme><WechatImportDialog categoryId="folder" onClose={vi.fn()} track={job => job} onOpen={onOpen} onImported={onImported} /></Theme>));
-  expect(history).not.toHaveBeenCalled();
+  flushSync(() => root.render(<Theme><LinkImportDialog categoryId="folder" downloadImages onClose={vi.fn()} track={job => job} onOpen={onOpen} onImported={onImported} /></Theme>));
   const input = document.querySelector<HTMLInputElement>('input[type="url"]')!;
   flushSync(() => {
     setInput.call(input, "https://mp.weixin.qq.com/s/demo");
@@ -287,13 +285,13 @@ it("shows only the current import result in the dialog", async () => {
   });
   flushSync(() => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   await vi.waitFor(() => expect(document.querySelector(".wechat-job")?.textContent).toContain("补图（2）"));
-  expect(importNow).toHaveBeenCalledExactlyOnceWith("https://mp.weixin.qq.com/s/demo", "folder");
+  expect(importNow).toHaveBeenCalledExactlyOnceWith("https://mp.weixin.qq.com/s/demo", "folder", true);
   expect(onImported).toHaveBeenCalledOnce();
   expect(onOpen).not.toHaveBeenCalled();
   expect(document.querySelectorAll(".wechat-job")).toHaveLength(1);
 });
 
-it("keeps the source and publishing fields available on an imported note", () => {
+it("keeps the source and publishing fields available on an imported note", async () => {
   const note = entry("imported", "导入的笔记");
   note.source = { url: "https://mp.weixin.qq.com/s/demo", author: "作者", accountName: "公众号",
     originalPublishedAt: null, importedAt: null };
@@ -303,9 +301,21 @@ it("keeps the source and publishing fields available on an imported note", () =>
       locked={false} onClose={vi.fn()} onOpen={vi.fn()}
       onSave={async (_, change) => { queue.edit(change); await queue.flush({ retry: true }); }} /></Theme>));
     const source = document.querySelector<HTMLInputElement>('input[name="sourceUrl"]')!;
-    const published = document.querySelector<HTMLInputElement>('input[name="publishedUrl"]')!;
     expect(source.value).toBe(note.source.url);
-    setInput.call(published, "https://mp.weixin.qq.com/s/published");
+    expect(document.querySelector('input[name="publishedUrl"]')).toBeNull();
+    const add = document.querySelector(".property-add")!;
+    flushSync(() => add.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+    const option = await vi.waitFor(() => {
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(row => row.textContent === "发布链接");
+      expect(item).toBeDefined();
+      return item!;
+    });
+    flushSync(() => option.click());
+    const published = document.querySelector<HTMLInputElement>('input[name="publishedUrl"]')!;
+    flushSync(() => {
+      setInput.call(published, "https://mp.weixin.qq.com/s/published");
+      published.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     flushSync(() => published.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     expect(queue.snapshot().fields.source).toEqual(note.source);
     expect(queue.snapshot().fields.publishedUrl).toBe("https://mp.weixin.qq.com/s/published");

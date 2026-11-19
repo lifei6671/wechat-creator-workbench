@@ -10,6 +10,7 @@ mod commands;
 mod content;
 mod db;
 mod github_import;
+mod link_import;
 mod graphics;
 mod mcp;
 mod secrets;
@@ -33,7 +34,7 @@ use canvas_webview::{canvas_webview, canvas_webview_page, canvas_webview_snapsho
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
 use db::Workspace;
-use github_import::github_import;
+use link_import::import_link;
 use graphics::gpu_acceleration;
 use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
 use sync::contents::{
@@ -46,7 +47,7 @@ use sync::{
 };
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
-use wechat_import::{Imports, wechat_import, wechat_import_jobs, wechat_retry_images};
+use wechat_import::{Imports, wechat_retry_images};
 
 fn main() {
     let app = tauri::Builder::default()
@@ -125,7 +126,6 @@ fn main() {
             delete_collection_edge,
             save_collection_viewport,
             list_entry_collections,
-            github_import,
             save_entry,
             set_deleted,
             save_category,
@@ -156,9 +156,8 @@ fn main() {
             cancel_asset_cleanup,
             clipboard_read,
             clipboard_write,
-            wechat_import,
+            import_link,
             wechat_retry_images,
-            wechat_import_jobs,
             clipboard_write_html,
             asset_derive,
             asset_info,

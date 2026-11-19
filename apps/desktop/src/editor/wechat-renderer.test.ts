@@ -12,6 +12,28 @@ it("uses the same formula and diagram source fragments as Rust retention", () =>
   }
 });
 
+it("keeps adjacent GitHub disclosures and renders Markdown inside them in preview", async () => {
+  const markdown = [
+    "<details open=\"open\">\n<summary>下载</summary>\n<br/>",
+    "下载说明",
+    "</details>",
+    "<details>\n<summary><strong>开源范围</strong></summary>\n<br/>",
+    "**许可协议**，请从 [Releases](https://github.com/CM-idea/SnowAir/releases) 下载 `SnowAir.exe`。",
+    "</details>",
+  ].join("\n\n");
+  const result = await renderWechat({ output: "preview", revision: 1, markdown },
+    { image: vi.fn(), derive: vi.fn(), sources: vi.fn() });
+  const template = document.createElement("template");
+  template.innerHTML = result.html;
+  const [download, license] = template.content.querySelectorAll("details");
+  expect(download.open).toBe(true);
+  expect(license.open).toBe(false);
+  expect(license.querySelector("summary strong")?.textContent).toBe("开源范围");
+  expect(license.querySelector("p strong")?.textContent).toBe("许可协议");
+  expect(license.querySelector("p a")?.getAttribute("href")).toBe("https://github.com/CM-idea/SnowAir/releases");
+  expect(license.querySelector("p code")?.textContent).toBe("SnowAir.exe");
+});
+
 it("inlines the theme, retains table width and replaces asset links in document order", async () => {
   const image = vi.fn(async (url: string) => ({ src: `https://images.test/${url.split("://")[1]}.png`, width: 120, height: 60 }));
   const result = await renderWechat({

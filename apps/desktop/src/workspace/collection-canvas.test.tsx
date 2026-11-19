@@ -101,7 +101,7 @@ async function mountCanvas(read = vi.fn().mockResolvedValue(""), edit = true, no
   flushSync(() => root.render(<Theme><CollectionCanvas collection={topic} dark={false} revision={0} articleLocked={false}
     clipboard={{ read, write: vi.fn(), onError }} canvasRef={value => { if (value) api = value; }} track={job => job}
     waitForWrites={async () => {}} onOpenEntry={vi.fn()} onLoadArticle={vi.fn()} onSaveArticle={vi.fn()} onArticleImages={vi.fn()}
-    onDelete={vi.fn()} onEntryCreated={vi.fn()} onError={onError} /></Theme>));
+    onDelete={vi.fn()} downloadLinkImages={false} onEntryCreated={vi.fn()} onError={onError} /></Theme>));
   await vi.waitFor(() => expect(container.querySelector(".collection-card")).not.toBeNull());
   const editor = () => container.querySelector<HTMLElement>(".ProseMirror");
   if (edit) {

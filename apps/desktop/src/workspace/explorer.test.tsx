@@ -84,7 +84,7 @@ it("collapses each note independently through its leading disclosure button", ()
       active={null} openMode="current" readOnlyIds={[]} treeLocked={false} expanded={[]} revision={0}
       loading="paged" pageSize={30} query="line:(引用)" caseSensitive={false} searchInputRef={null} listError=""
       onOpen={onOpen} onSearchHit={onSearchHit} onRetry={vi.fn()} onQuery={vi.fn()} onCaseSensitive={vi.fn()} onFolder={vi.fn()}
-      onCreate={vi.fn()} onImportWechat={vi.fn()} onImportMarkdown={vi.fn()} onRevealFolder={vi.fn()} onSaveFolder={vi.fn()}
+      onCreate={vi.fn()} onImportLink={vi.fn()} onImportMarkdown={vi.fn()} onRevealFolder={vi.fn()} onSaveFolder={vi.fn()}
       onFolderError={vi.fn()} onReorderFolder={vi.fn()} onReorderEntry={vi.fn()} onRenameEntry={vi.fn()}
       onMoveEntry={vi.fn()} onCategoryAction={vi.fn()} onRowAction={vi.fn()} onMore={vi.fn()} /></Theme>));
     const notes = [...container.querySelectorAll(".search-note")];
@@ -232,7 +232,7 @@ it("offers the same creation commands and inserts a search operator at an editab
       searchInfo={{ total: 0, clauses: [{ field: "section", terms: ["开始", "Edge"] }] }} />;
   }
   try {
-    flushSync(() => root.render(<Theme><Search /><CreateMenu onCreate={vi.fn()} onImportWechat={vi.fn()} onImportMarkdown={onImportMarkdown} /></Theme>));
+    flushSync(() => root.render(<Theme><Search /><CreateMenu onCreate={vi.fn()} onImportLink={vi.fn()} onImportMarkdown={onImportMarkdown} /></Theme>));
     const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
     flushSync(() => button("区分大小写").click());
     expect(button("区分大小写").getAttribute("aria-pressed")).toBe("true");
@@ -267,7 +267,7 @@ it("offers the same creation commands and inserts a search operator at an editab
     expect(field.selectionStart).toBe(field.value.length - 1);
     flushSync(() => button("新建内容").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     const items = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")];
-    expect(items.map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown"]);
+    expect(items.map(item => item.textContent)).toEqual(["新建笔记", "导入链接", "导入 Markdown"]);
     flushSync(() => items[2].click());
     expect(onImportMarkdown).toHaveBeenCalledOnce();
   } finally {
@@ -304,7 +304,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
   document.body.append(root);
   const render = createRoot(root);
   const onCreate = vi.fn();
-  const onImportWechat = vi.fn();
+  const onImportLink = vi.fn();
   const onImportMarkdown = vi.fn();
   const onSaveFolder = vi.fn().mockResolvedValue(undefined);
   const onReorderFolder = vi.fn();
@@ -343,7 +343,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
       ] }} page={null} expanded={expanded} revision={revision} loading={loading} pageSize={pageSize} caseSensitive={false} query=""
       searchInputRef={null} listError="" onRetry={vi.fn()} onQuery={vi.fn()} onCaseSensitive={vi.fn()}
       onFolder={vi.fn()} onCreate={onCreate} onRevealFolder={vi.fn()}
-      onImportWechat={onImportWechat} onImportMarkdown={onImportMarkdown}
+      onImportLink={onImportLink} onImportMarkdown={onImportMarkdown}
       onSaveFolder={onSaveFolder} onFolderError={vi.fn()} onReorderFolder={onReorderFolder} onMoveEntry={onMoveEntry}
       onReorderEntry={onReorderEntry} onRenameEntry={onRenameEntry}
       onCategoryAction={vi.fn()} onOpen={onOpen} onToggleAll={onToggleAll} onLocateCurrent={onLocateCurrent} onRowAction={onRowAction} onMore={vi.fn()} /></Theme>));
@@ -447,16 +447,16 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     expect(onRenameEntry).toHaveBeenCalledTimes(1);
     open("#folder-row-one");
     expect(position("one").dataset.menuTarget).toBe("true");
-    expect(menu().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "新建子目录", "编辑名称和图标", "上移", "下移", "删除目录"]);
+    expect(menu().map(item => item.textContent)).toEqual(["新建笔记", "导入链接", "导入 Markdown", "新建子目录", "编辑名称和图标", "上移", "下移", "删除目录"]);
     expect(menu().slice(-3).every(item => Boolean(item.querySelector("svg")))).toBe(true);
     flushSync(() => menu()[1].click());
-    expect(onImportWechat).toHaveBeenLastCalledWith("one");
+    expect(onImportLink).toHaveBeenLastCalledWith("one");
     expect(position("one").dataset.menuTarget).toBeUndefined();
     open("#folder-row-child");
     flushSync(() => menu().find(item => item.textContent === "导入 Markdown")!.click());
     expect(onImportMarkdown).toHaveBeenLastCalledWith("child");
     open();
-    expect(menu().map(item => item.textContent)).toEqual(["新建笔记", "导入公众号文章", "导入 Markdown", "新建目录"]);
+    expect(menu().map(item => item.textContent)).toEqual(["新建笔记", "导入链接", "导入 Markdown", "新建目录"]);
     flushSync(() => menu().find(item => item.textContent === "导入 Markdown")!.click());
     expect(onImportMarkdown).toHaveBeenLastCalledWith(null);
     open();

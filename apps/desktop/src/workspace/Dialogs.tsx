@@ -1,7 +1,7 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { Button, Dialog, Select, TextArea, TextField } from "@radix-ui/themes";
-import { X } from "lucide-react";
-import type { Category, Collection, Entry, EntryFields, Revision } from "../../../../packages/shared-types";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Button, Dialog, DropdownMenu, Select, TextArea } from "@radix-ui/themes";
+import { CalendarDays, Folder, Link, Plus, Tags, Text, Trash2, X } from "lucide-react";
+import type { Category, Collection, CustomProperty, Entry, EntryFields, Revision } from "../../../../packages/shared-types";
 import { statuses } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, statusLabels, untitled } from "../labels";
@@ -22,6 +22,47 @@ interface PropertiesDialogProps {
   onOpenCollection?(id: string): void;
 }
 
+const propertyTypes = {
+  text: { label: "文本", icon: Text },
+  date: { label: "日期", icon: CalendarDays },
+  tags: { label: "标签", icon: Tags },
+} as const;
+const builtinFields = {
+  title: { label: "标题", kind: "text" },
+  sourceUrl: { label: "原文链接", kind: "text", icon: Link },
+  author: { label: "作者", kind: "text" },
+  accountName: { label: "来源平台", kind: "text" },
+  originalDate: { label: "原文发布日期", kind: "date" },
+  createdDate: { label: "创建日期", kind: "date" },
+  summary: { label: "摘要", kind: "text" },
+  tags: { label: "标签", kind: "tags" },
+  publishedDate: { label: "发布日期", kind: "date" },
+  publishedUrl: { label: "发布链接", kind: "text", icon: Link },
+  status: { label: "状态", kind: "text" },
+  category: { label: "所在目录", kind: "text", icon: Folder },
+} satisfies Record<string, { label: string; kind: CustomProperty["kind"]; icon?: typeof Text }>;
+type Builtin = keyof typeof builtinFields;
+const builtinNames = Object.keys(builtinFields) as Builtin[];
+const sourceFields: Builtin[] = ["author", "accountName", "originalDate"];
+const propertyDate = new Intl.DateTimeFormat("sv-SE", { year: "numeric", month: "2-digit", day: "2-digit" });
+const formatPropertyDate = (value?: number | null) => value == null ? "" : propertyDate.format(value);
+const readPropertyDate = (value: string, previous?: number | null) =>
+  value ? (value === formatPropertyDate(previous) ? previous! : new Date(value + "T00:00:00").getTime()) : null;
+type PropertyDraft = CustomProperty & { id: number; tagDraft: string };
+
+function changePropertyType(property: PropertyDraft, kind: CustomProperty["kind"]): PropertyDraft | null {
+  if (kind === property.kind) return property;
+  const value = property.kind === "tags" ? addTag(property.value, property.tagDraft, []).join("、") : property.value;
+  if (kind === "tags") return { ...property, kind, value: addTag([], value, []), tagDraft: "" };
+  if (kind === "date" && value) {
+    const date = new Date(value + "T00:00:00Z");
+    const valid = /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(date.getTime())
+      && date.toISOString().slice(0, 10) === value;
+    if (!valid) return null;
+  }
+  return { ...property, kind, value, tagDraft: "" };
+}
+
 export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDialogProps) {
   const [open, setOpen] = useState(true);
   const [loaded, setLoaded] = useState<Entry>();
@@ -39,7 +80,7 @@ export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDial
   const entry = queue?.entry ?? loaded;
 
   return <Dialog.Root open={open} onOpenChange={setOpen}>
-    <Dialog.Content maxWidth="360px" className="properties-panel" aria-describedby={undefined}
+    <Dialog.Content maxWidth="440px" className="properties-panel" aria-describedby={undefined}
       onCloseAutoFocus={event => {
         if (open) return;
         event.preventDefault();
@@ -63,11 +104,25 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
   entry: Entry;
   fields: EntryFields;
 }) {
-  const [status, setStatus] = useState(fields.status);
-  const [category, setCategory] = useState(fields.categoryId ?? "none");
+  const [values, setValues] = useState<Record<Builtin, string>>(() => ({
+    title: fields.title, sourceUrl: fields.source?.url ?? "", author: fields.source?.author ?? "",
+    accountName: fields.source?.accountName ?? "", originalDate: formatPropertyDate(fields.source?.originalPublishedAt),
+    createdDate: formatPropertyDate(entry.createdAt), summary: fields.summary, tags: "",
+    publishedDate: formatPropertyDate(fields.publishedAt), publishedUrl: fields.publishedUrl,
+    status: fields.status, category: fields.categoryId ?? "",
+  }));
+  const [shown, setShown] = useState(() => new Set(builtinNames.filter(name =>
+    name === "tags" ? fields.tags.length > 0 : values[name].trim() !== "")));
   const [cover, setCover] = useState(fields.coverAssetId ?? null);
   const [tags, setTags] = useState(fields.tags);
   const [tagDraft, setTagDraft] = useState("");
+  const [properties, setProperties] = useState<PropertyDraft[]>(() =>
+    (fields.customProperties ?? []).map((property, id) => ({ ...property, id, tagDraft: "" })));
+  const [hidden, setHidden] = useState(() => new Set(properties.filter(property => property.kind === "tags"
+    ? property.value.length === 0 : !property.value.trim()).map(property => property.id)));
+  const nextPropertyId = useRef(properties.length);
+  const focusAfterAdd = useRef<string>(null);
+  const [edited, setEdited] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -81,41 +136,56 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
     return () => { live = false; };
   }, [entry.id, showCollections]);
   const readOnly = locked || entry.deletedAt !== null;
-  const hasSourceFields = entry.kind === "reference" || fields.source !== null;
+  function updateProperty(id: number, update: (property: PropertyDraft) => PropertyDraft) {
+    setEdited(true);
+    setProperties(current => current.map(property => property.id === id ? update(property) : property));
+  }
+  function showBuiltin(name: Builtin) {
+    setShown(current => new Set([...current, name, ...(sourceFields.includes(name) && !values.sourceUrl ? ["sourceUrl" as const] : [])]));
+    focusAfterAdd.current = `property-${name}`;
+  }
+  function setValue(name: Builtin, value: string) {
+    setEdited(true);
+    setValues(current => ({ ...current, [name]: value }));
+  }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (readOnly || saving) return;
-    const form = new FormData(event.currentTarget);
-    const text = (key: string) => String(form.get(key) ?? "").trim();
-    const sourceUrl = text("sourceUrl");
-    const publishedUrl = text("publishedUrl");
-    const author = text("author");
-    const accountName = text("accountName");
-    const originalDate = text("originalDate");
+    const sourceUrl = values.sourceUrl.trim();
+    const publishedUrl = values.publishedUrl.trim();
+    const author = values.author.trim();
+    const accountName = values.accountName.trim();
+    const originalDate = values.originalDate;
     if (!sourceUrl && (author || accountName || originalDate)) {
       setError("请先填写原文链接，再保存来源信息");
       return;
     }
     for (const value of [sourceUrl, publishedUrl]) {
-      if (value && !URL.canParse(value)) {
-        setError("请输入完整链接");
+      if (value && (!/^https?:\/\//i.test(value) || !URL.canParse(value))) {
+        setError("请输入完整的 HTTP 或 HTTPS 链接");
         return;
       }
     }
-    const change: Partial<EntryFields> = {
-      status, categoryId: category === "none" ? null : category, tags: addTag(tags, tagDraft, tagSuggestions),
-      summary: text("summary"),
-      publishedUrl,
-      coverAssetId: cover,
-      publishedAt: status === "published" ? fields.publishedAt ?? Date.now() : fields.publishedAt,
-    };
-    if (hasSourceFields) {
-      change.source = sourceUrl ? {
-        url: sourceUrl, author, accountName,
-        originalPublishedAt: originalDate ? new Date(originalDate + "T00:00:00").getTime() : null,
-        importedAt: fields.source?.importedAt ?? null,
-      } : null;
+    const customProperties: CustomProperty[] = properties.map(({ key, kind, value, tagDraft }) => kind === "tags"
+      ? { key: key.trim(), kind, value: addTag(value, tagDraft, []) } : { key: key.trim(), kind, value })
+      .filter(property => property.key || property.value.length > 0);
+    const keys = customProperties.map(property => property.key.toLowerCase());
+    if (keys.some(key => !key) || new Set(keys).size !== keys.length) {
+      setError("自定义属性名称不能为空或重复");
+      return;
     }
+    const change: Partial<EntryFields> = {
+      title: values.title.trim(),
+      status: values.status as Entry["status"], categoryId: values.category || null,
+      tags: addTag(tags, tagDraft, tagSuggestions), summary: values.summary.trim(), publishedUrl, coverAssetId: cover,
+      publishedAt: readPropertyDate(values.publishedDate, fields.publishedAt)
+        ?? (values.status === "published" ? fields.publishedAt ?? Date.now() : null),
+      source: sourceUrl ? { url: sourceUrl, author, accountName,
+        originalPublishedAt: readPropertyDate(originalDate, fields.source?.originalPublishedAt),
+        importedAt: fields.source?.importedAt ?? null,
+      } : null,
+      customProperties,
+    };
     setSaving(true);
     setError("");
     try {
@@ -128,35 +198,136 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
     }
   }
 
-  return <form className="properties-form" onSubmit={save}>
+  function builtinRow(name: Builtin) {
+    const field = builtinFields[name];
+    const Icon = "icon" in field ? field.icon : propertyTypes[field.kind].icon;
+    const id = `property-${name}`;
+    const fixed = readOnly || name === "createdDate";
+    let editor: ReactNode;
+    if (name === "tags") {
+      editor = <TagInput id={id} tags={tags} onTags={value => { setTags(value); setEdited(true); }}
+        draft={tagDraft} onDraft={value => { setTagDraft(value); setEdited(true); }}
+        history={tagSuggestions} readOnly={readOnly} label={field.label} />;
+    } else if (name === "status") {
+      editor = <Select.Root size="1" value={values.status} onValueChange={value => setValue(name, value)} disabled={readOnly}>
+        <Select.Trigger id={id} aria-label={field.label} />
+        <Select.Content>{statuses[entry.kind].map(value => <Select.Item value={value} key={value}>{statusLabels[value]}</Select.Item>)}</Select.Content>
+      </Select.Root>;
+    } else if (name === "category") {
+      editor = <FolderSelect id={id} categories={categories} value={values.category || "none"}
+        onChange={value => setValue(name, value === "none" ? "" : value)} label={field.label} defaultLabel="根目录" disabled={readOnly} />;
+    } else if (name === "summary") {
+      editor = <textarea className="property-value" id={id} name={name} rows={1} readOnly={fixed} value={values[name]}
+        onChange={event => setValue(name, event.target.value)} placeholder="没有值" />;
+    } else {
+      const type = field.kind === "date" ? "date" : name === "sourceUrl" || name === "publishedUrl" ? "url" : "text";
+      editor = <input className="property-value" id={id} name={name} type={type} readOnly={fixed} value={values[name]}
+        onChange={event => setValue(name, event.target.value)} placeholder="没有值" />;
+    }
+    return <div className="property-row" key={name}>
+      <span className="property-icon" title={propertyTypes[field.kind].label}><Icon size={16} /></span>
+      <label htmlFor={id} className="property-name">{field.label}</label>
+      <div className="property-editor">{editor}</div>
+    </div>;
+  }
+
+  const available = builtinNames.filter(name => name !== "createdDate" && !shown.has(name));
+  return <form className="properties-form" onSubmit={save} noValidate>
     <div className="properties-fields">
-      <div className="form-pair">
-        <label>状态
-          <Select.Root size="2" value={status} onValueChange={value => setStatus(value as Entry["status"])} disabled={readOnly}>
-            <Select.Trigger aria-label="状态" />
-            <Select.Content>{statuses[entry.kind].map(value => <Select.Item value={value} key={value}>{statusLabels[value]}</Select.Item>)}</Select.Content>
-          </Select.Root>
-        </label>
-        <label>所在目录
-          <FolderSelect size="2" categories={categories} value={category} onChange={setCategory} label="所在目录" defaultLabel="根目录" disabled={readOnly} />
-        </label>
+      <div className="property-list">
+        {builtinNames.filter(name => shown.has(name)).map(builtinRow)}
+        {properties.filter(property => !hidden.has(property.id)).map(property => {
+          const { icon: Icon, label } = propertyTypes[property.kind];
+          const update = (change: (old: PropertyDraft) => PropertyDraft) => updateProperty(property.id, change);
+          return <div key={property.id} className="property-row custom-property">
+            {readOnly ? <span className="property-icon" title={label}><Icon size={16} /></span>
+              : <DropdownMenu.Root modal={false}>
+                <DropdownMenu.Trigger>
+                  <button type="button" className="property-icon" title={label} aria-label={`属性类型：${property.key || "新属性"}`}>
+                    <Icon size={16} />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content size="1" align="start">
+                  <DropdownMenu.Label>属性类型</DropdownMenu.Label>
+                  <DropdownMenu.RadioGroup value={property.kind} onValueChange={value => {
+                    const converted = changePropertyType(property, value as CustomProperty["kind"]);
+                    if (converted) {
+                      update(() => converted);
+                      setError("");
+                    } else {
+                      setError("请先清空原值，或将它改为 YYYY-MM-DD 格式");
+                    }
+                  }}>
+                    {Object.entries(propertyTypes).map(([kind, { label, icon: TypeIcon }]) =>
+                      <DropdownMenu.RadioItem value={kind} key={kind}><TypeIcon size={14} />{label}</DropdownMenu.RadioItem>)}
+                  </DropdownMenu.RadioGroup>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item color="red" onSelect={() => {
+                    setEdited(true);
+                    setProperties(current => current.filter(value => value.id !== property.id));
+                  }}><Trash2 size={14} />移除属性</DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>}
+            <input className="property-name property-key" id={`custom-property-${property.id}`} aria-label="属性名称"
+              placeholder="属性名称" readOnly={readOnly} value={property.key}
+              onChange={event => {
+                const key = event.target.value;
+                update(old => ({ ...old, key }));
+              }} />
+            <div className="property-editor">
+              {property.kind === "tags" ? <TagInput label="属性值" tags={property.value} draft={property.tagDraft}
+                history={tagSuggestions} readOnly={readOnly}
+                onTags={tags => update(old => ({ ...old, kind: "tags", value: tags }))}
+                onDraft={tagDraft => update(old => ({ ...old, tagDraft }))} />
+                : <input className="property-value" aria-label="属性值" placeholder="没有值" type={property.kind}
+                  readOnly={readOnly} value={property.value} onChange={event => {
+                    const value = event.target.value;
+                    update(old => old.kind === "tags" ? old : { ...old, value });
+                  }} />}
+            </div>
+          </div>;
+        })}
+        {!readOnly && <DropdownMenu.Root modal={false}>
+          <DropdownMenu.Trigger><button className="property-add" type="button"><Plus size={16} />添加属性</button></DropdownMenu.Trigger>
+          <DropdownMenu.Content size="1" align="start" onCloseAutoFocus={event => {
+            const id = focusAfterAdd.current;
+            if (!id) return;
+            event.preventDefault();
+            focusAfterAdd.current = null;
+            requestAnimationFrame(() => document.getElementById(id)?.focus());
+          }}>
+            <DropdownMenu.Item onSelect={() => {
+              const id = nextPropertyId.current++;
+              setProperties(current => [...current, { id, key: "", kind: "text", value: "", tagDraft: "" }]);
+              focusAfterAdd.current = `custom-property-${id}`;
+            }}><Plus size={14} />新建自定义属性</DropdownMenu.Item>
+            {available.length > 0 && <>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Label>内置属性</DropdownMenu.Label>
+              {available.map(name => {
+                const field = builtinFields[name];
+                const Icon = "icon" in field ? field.icon : propertyTypes[field.kind].icon;
+                return <DropdownMenu.Item key={name} onSelect={() => showBuiltin(name)}><Icon size={14} />{field.label}</DropdownMenu.Item>;
+              })}
+            </>}
+            {hidden.size > 0 && <>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Label>自定义属性</DropdownMenu.Label>
+              {properties.filter(property => hidden.has(property.id)).map(property => {
+                const Icon = propertyTypes[property.kind].icon;
+                return <DropdownMenu.Item key={property.id} onSelect={() => {
+                  setHidden(current => new Set([...current].filter(id => id !== property.id)));
+                  focusAfterAdd.current = `custom-property-${property.id}`;
+                }}><Icon size={14} />{property.key}</DropdownMenu.Item>;
+              })}
+            </>}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>}
       </div>
-      <TagInput tags={tags} onTags={setTags} draft={tagDraft} onDraft={setTagDraft} history={tagSuggestions} readOnly={readOnly} />
-      <label>摘要<TextArea size="2" name="summary" readOnly={readOnly} defaultValue={fields.summary} rows={3} /></label>
-      {hasSourceFields && <>
-        <label>原文链接<TextField.Root type="url" readOnly={readOnly} name="sourceUrl" defaultValue={fields.source?.url} /></label>
-        <div className="form-pair">
-          <label>作者<TextField.Root name="author" readOnly={readOnly} defaultValue={fields.source?.author} /></label>
-          <label>来源平台<TextField.Root name="accountName" readOnly={readOnly} defaultValue={fields.source?.accountName} /></label>
-        </div>
-        <label>原文发布日期<TextField.Root name="originalDate" type="date" readOnly={readOnly}
-          defaultValue={fields.source?.originalPublishedAt == null ? "" : new Intl.DateTimeFormat("sv-SE").format(fields.source.originalPublishedAt)} /></label>
-        {fields.source?.importedAt && <span className="muted-text">收录于 {dateLabel(fields.source.importedAt)}</span>}
-      </>}
-      <label>发布链接<TextField.Root type="url" name="publishedUrl" readOnly={readOnly} defaultValue={fields.publishedUrl} /></label>
+      {fields.source?.importedAt && <span className="muted-text">收录于 {dateLabel(fields.source.importedAt)}</span>}
       {cover && <div className="asset-details">
         <span>封面</span><AssetThumb id={cover} name="文章封面" />
-        {!readOnly && <Button type="button" size="1" variant="soft" onClick={() => setCover(null)}>移除封面</Button>}
+        {!readOnly && <Button type="button" size="1" variant="soft" onClick={() => { setCover(null); setEdited(true); }}>移除封面</Button>}
       </div>}
       {entry.links.length > 0 && <div className="linked-entries">
         <span>关联内容</span>
@@ -172,7 +343,7 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
       {collectionError && <p role="alert" className="inline-error">无法读取所属专题。{collectionError}</p>}
       {error && <p role="alert" className="inline-error">{error}</p>}
     </div>
-    {!readOnly && <footer className="properties-footer">
+    {!readOnly && edited && <footer className="properties-footer">
       <Dialog.Close><Button type="button" variant="soft" color="gray">取消</Button></Dialog.Close>
       <Button type="submit" loading={saving}>保存</Button>
     </footer>}

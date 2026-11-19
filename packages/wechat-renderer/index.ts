@@ -19,7 +19,7 @@ export function wechatThemeId(id?: string | null) {
 }
 
 export type Output = "preview" | "clipboard" | "html";
-export interface RenderInput { markdown: string; revision: number; themeId?: string | null; output: Output }
+export interface RenderInput { markdown: string; revision: number; themeId?: string | null; githubRepo?: string; output: Output }
 export interface ImageResult { src: string | null; width: number; height: number }
 export interface SourceFragment { kind: GraphicKind; source: string; line: number }
 export interface RenderServices {
@@ -38,7 +38,7 @@ export interface RenderedWechat {
   dispose(): void;
 }
 
-export function parseWechat(markdown: string, sources: SourceFragment[]) {
+export function parseWechat(markdown: string, sources: SourceFragment[], githubRepo?: string) {
   const parser = createMarkdownParser();
   const fragments: Omit<SourceFragment, "line">[] = [];
   const markerPrefix = `${crypto.randomUUID()}-`;
@@ -78,14 +78,14 @@ export function parseWechat(markdown: string, sources: SourceFragment[]) {
     const fragment = token.info.trim().split(/\s+/)[0] === "mermaid" ? blockAt("mermaid", token.map?.[0]) : undefined;
     return fragment ? mark(fragment.kind, fragment.source) : fence(tokens, index, options, env, self);
   };
-  return { body: sanitizeRenderedMarkdown(parser.render(markdown)), fragments, markerPrefix };
+  return { body: sanitizeRenderedMarkdown(parser.render(markdown), { githubRepo }), fragments, markerPrefix };
 }
 
 export async function renderWechat(input: RenderInput, services: RenderServices): Promise<RenderedWechat> {
   const theme = wechatThemes.find(theme => theme.id === input.themeId) ?? wechatThemes[0];
   const sources = /\$|mermaid/.test(input.markdown) ? await services.sources(input.markdown) : [];
   services.signal?.throwIfAborted();
-  const { body, fragments, markerPrefix } = parseWechat(input.markdown, sources);
+  const { body, fragments, markerPrefix } = parseWechat(input.markdown, sources, input.githubRepo);
   const article = document.createElement("section");
   article.className = "plainly-article";
   article.append(body);

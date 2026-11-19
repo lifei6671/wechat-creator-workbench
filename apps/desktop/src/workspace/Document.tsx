@@ -311,6 +311,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
       canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAddSelectionToChat={onAddSelectionToChat}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
+        githubRepo={fields.source?.url}
         title={display.showTitle && <div className="writing-title">
         {reading ? <h1>{fields.title || untitled}</h1> : <textarea aria-label="标题" rows={1}
           value={fields.title} readOnly={readOnly} placeholder={untitled}
@@ -336,10 +337,10 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   </div>;
 }
 
-export function MarkdownPreview({ title, markdown, themeId, revision, projectLinks }: {
-  title: string; markdown: string; themeId?: string | null; revision: number; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null;
+export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo, projectLinks }: {
+  title: string; markdown: string; themeId?: string | null; revision: number; githubRepo?: string; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null;
 }) {
-  const snapshot = useMemo(() => ({ markdown, themeId, revision }), [markdown, themeId, revision]);
+  const snapshot = useMemo(() => ({ markdown, themeId, revision, githubRepo }), [markdown, themeId, revision, githubRepo]);
   const deferred = useDeferredValue(snapshot);
   const host = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -432,7 +433,7 @@ export function MarkdownPreview({ title, markdown, themeId, revision, projectLin
       body.current!.textContent = errorMessage(error);
     });
     return () => { alive = false; controller.abort(); };
-  }, [deferred.markdown, deferred.themeId, deferred.revision, assetRevision, projectLinks]);
+  }, [deferred, assetRevision, projectLinks]);
 
   return <div className="preview-phone">
     <div className="preview-phone-screen">

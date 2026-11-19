@@ -17,6 +17,7 @@ fn article(title: &str, text: &str) -> Fields {
         source: None,
         published_at: None,
         published_url: String::new(),
+        custom_properties: None,
     }
 }
 
@@ -25,6 +26,65 @@ fn search(query: &str) -> Filter {
         query: Some(query.into()),
         ..Filter::default()
     }
+}
+
+#[test]
+fn external_imports_are_listed_once_and_keep_typed_properties_in_sync() {
+    let db = memory();
+    let source = |url: &str| Source {
+        url: url.into(),
+        author: "作者".into(),
+        account_name: "示例".into(),
+        imported_at: None,
+        original_published_at: None,
+    };
+    let folder = db.save_category(None, None, "外部资料", None).unwrap();
+    let mut local = article("手写文章", "");
+    local.source = Some(source("https://example.com/local"));
+    db.create_entry(Kind::Article, Some(local), None).unwrap();
+    let import = || db.import_web_article(source("https://example.com/article"), "导入文章".into(), "# Markdown".into(),
+        "简介".into(), Some(folder.id.clone())).unwrap();
+    let (id, existing, deleted) = import();
+    assert!(!existing && !deleted);
+    assert_eq!(import(), (id.clone(), true, false));
+    let filter = || Filter { external_imported: true, ..Filter::default() };
+    let listed = db.entries(filter()).unwrap().items;
+    assert_eq!(listed.iter().map(|entry| &entry.id).collect::<Vec<_>>(), [&id]);
+
+    let entry = db.get_entry(&id).unwrap();
+    let mut fields = entry.fields;
+    assert_eq!(fields.category_id.as_deref(), Some(folder.id.as_str()));
+    let properties = serde_json::json!([
+        {"key":"出处备注","kind":"text","value":"站点文章"},
+        {"key":"复读日期","kind":"date","value":"2026-11-19"},
+        {"key":"用途","kind":"tags","value":["资料","待阅读"]}
+    ]);
+    fields.custom_properties = serde_json::from_value(properties.clone()).unwrap();
+    let saved = db.save_entry(&id, entry.version, fields, SaveMode::Auto).unwrap();
+    let mut fields = db.get_entry(&id).unwrap().fields;
+    fields.custom_properties = None;
+    db.save_entry(&id, saved.version, fields, SaveMode::Auto).unwrap();
+    let mut payload = db.read(|conn| sync::snapshot(conn, &id)).unwrap().unwrap();
+    assert_eq!(payload["customProperties"], properties);
+    assert_eq!(payload["externalImported"], true);
+
+    let remote = memory();
+    payload["categoryId"] = serde_json::Value::Null;
+    remote.write(|tx| sync::apply(tx, &id, &payload, None)).unwrap();
+    payload.as_object_mut().unwrap().remove("customProperties");
+    payload.as_object_mut().unwrap().remove("externalImported");
+    remote.write(|tx| sync::apply(tx, &id, &payload, None)).unwrap();
+    let remote_entry = remote.get_entry(&id).unwrap();
+    assert_eq!(serde_json::to_value(&remote_entry.fields.custom_properties).unwrap(), properties);
+    assert_eq!(remote.entries(filter()).unwrap().items[0].id, id);
+    let mut edited = remote_entry.fields;
+    edited.custom_properties = Some(vec![]);
+    remote.save_entry(&id, remote_entry.version, edited, SaveMode::Auto).unwrap();
+    assert!(remote.get_entry(&id).unwrap().fields.custom_properties.unwrap().is_empty());
+
+    db.set_deleted(&id, db.get_entry(&id).unwrap().version, true).unwrap();
+    assert!(db.entries(filter()).unwrap().items.is_empty());
+    assert_eq!(import(), (id, true, true));
 }
 
 #[test]

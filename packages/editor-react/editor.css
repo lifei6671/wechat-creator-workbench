@@ -141,8 +141,12 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 }
 .rich-table-preview table { height: 100%; }
 .rich-editor .ProseMirror[contenteditable="false"] .rich-table-controls { display: none; }
-.rich-editor :is([data-type="html"], [data-type="html-block"], .rich-formula, .rich-image) { color: var(--text-muted); }
-.rich-editor :is(.rich-formula, .rich-image) img { max-width: 100%; vertical-align: middle; }
+.rich-editor :is(.rich-formula, .rich-image) { color: var(--text-muted); }
+.rich-editor :is(.rich-formula, .rich-image, .rich-embedded-html) img { max-width: 100%; vertical-align: middle; }
+.rich-editor .rich-embedded-html { white-space: normal; }
+.rich-editor .rich-embedded-html table { border-collapse: collapse; }
+.rich-editor :is(.rich-embedded-html, .rich-disclosure) summary { cursor: pointer; }
+.rich-editor .rich-disclosure { margin-block: .75em; }
 .dark .rich-editor .rich-formula img { filter: invert(1); }
 .rich-image { display: inline-flex; flex-direction: column; max-width: 100%; vertical-align: middle; }
 .rich-image:has(.rich-image-source-editor:not([hidden])) { display: flex; }

@@ -9,6 +9,7 @@ import type { EditorView, NodeView } from "@milkdown/kit/prose/view";
 import { $inputRule, $markSchema, $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import { remarkMarkHighlight } from "@ai-markdown/remark-mark-highlight";
 import remarkMath from "remark-math";
+import { renderMarkdown, sanitizeRenderedMarkdown } from "../markdown-core";
 import { readCalloutMarker } from "../markdown-core/callouts";
 import { editorIconButton, imageView, type EditorImages } from "./image-view";
 import { sentencePunctuation } from "./link-footnotes";
@@ -20,6 +21,7 @@ export const clipboardMarkdownCtx = createSlice(false, "clipboardMarkdown");
 type Tree = {
   type: string;
   value?: unknown;
+  disclosureHeader?: string;
   url?: string;
   children?: Tree[];
   literalCallout?: boolean;
@@ -52,7 +54,7 @@ const richNodes = $remark("workbenchRichNodes", ctx =>
       parent.children = parent.children.filter(child => {
         if (parent.type === "tableCell" && child.type === "html" && /^<br\s*\/?>$/i.test(String(child.value))) {
           child.type = "tableLineBreak";
-        } else if (child.type === "html" && containers.includes(parent.type)) {
+        } else if (child.type === "html" && (containers.includes(parent.type) || parent.type === "githubDisclosure")) {
           child.type = "htmlBlock";
         }
         const start = child.position?.start.offset;
@@ -83,6 +85,31 @@ const richNodes = $remark("workbenchRichNodes", ctx =>
         return nestedFootnotes.length === count || child.children?.length !== 0;
       });
     };
+    // Keep the Markdown inside a disclosure in the editor's normal block schema.
+    const children = tree.children ?? [];
+    const disclosures: { index: number; header: string }[] = [];
+    for (let index = 0; index < children.length; index++) {
+      const child = children[index];
+      if (child.type !== "html") continue;
+      const html = String(child.value).trim();
+      const previous = disclosures.at(-1);
+      if (previous?.index === index - 1 && !/<summary(?=[\s>])/i.test(previous.header)
+        && /^<summary(?:\s[^>]*)?>[\s\S]*?<\/summary>(?:\s*<br\s*\/?>\s*)*$/i.test(html)) {
+        previous.header += "\n" + html;
+        children.splice(index, 1);
+        index--;
+        continue;
+      }
+      if (/^<details(?:\s[^>]*)?>\s*(?:<summary(?:\s[^>]*)?>[\s\S]*?<\/summary>\s*)?(?:<br\s*\/?>\s*)*$/i.test(html)) {
+        disclosures.push({ index, header: html });
+      }
+      const opening = /^<\/details>$/i.test(html) ? disclosures.pop() : undefined;
+      if (!opening) continue;
+      children.splice(opening.index, index - opening.index + 1, {
+        type: "githubDisclosure", disclosureHeader: opening.header, children: children.slice(opening.index + 1, index),
+      });
+      index = opening.index;
+    }
     visit(tree);
     tree.children?.push(...nestedFootnotes);
   });
@@ -107,6 +134,71 @@ const htmlBlock = $nodeSchema("html_block", () => ({
     runner: (state, node) => { state.addNode("html", undefined, node.attrs.value); },
   },
 }));
+
+function disclosureDOM(header: string) {
+  const fragment = sanitizeRenderedMarkdown(header, { embedded: true });
+  const dom = fragment.querySelector("details") ?? document.createElement("details");
+  const summary = dom.querySelector(":scope > summary") ?? document.createElement("summary");
+  if (!summary.textContent?.trim()) summary.textContent = "详细信息";
+  summary.setAttribute("contenteditable", "false");
+  const contentDOM = document.createElement("div");
+  dom.className = "rich-disclosure";
+  dom.replaceChildren(summary, contentDOM);
+  return { dom, contentDOM };
+}
+
+const githubDisclosure = $nodeSchema("github_disclosure", () => ({
+  group: "block",
+  content: "block+",
+  attrs: { header: { default: "<details>" } },
+  toDOM: node => disclosureDOM(node.attrs.header),
+  parseMarkdown: {
+    match: node => node.type === "githubDisclosure",
+    runner: (state, node, type) => state.openNode(type, { header: node.disclosureHeader }).next(node.children).closeNode(),
+  },
+  toMarkdown: {
+    match: node => node.type.name === "github_disclosure",
+    runner: (state, node) => state.addNode("html", undefined, node.attrs.header)
+      .next(node.content).addNode("html", undefined, "</details>"),
+  },
+}));
+
+type HtmlOptions = EditorImages & { githubRepo?: string };
+
+function embeddedHtmlView(node: ProseNode, { githubRepo, resolveImage }: HtmlOptions): NodeView {
+  const dom = document.createElement(node.isInline ? "span" : "div");
+  dom.dataset.type = node.isInline ? "html" : "html-block";
+  dom.dataset.value = node.attrs.value;
+  dom.className = "rich-embedded-html";
+  dom.contentEditable = "false";
+  const options = { githubRepo, embedded: true };
+  const fragment = node.isInline
+    ? sanitizeRenderedMarkdown(node.attrs.value, options)
+    : renderMarkdown(node.attrs.value, options);
+  if (fragment.firstChild) dom.append(fragment);
+  else if (!node.isInline) dom.textContent = "嵌入的 HTML";
+
+  const disposals: (() => void)[] = [];
+  let destroyed = false;
+  if (resolveImage) for (const placeholder of dom.querySelectorAll<HTMLElement>("[data-image-url]")) {
+    const { imageUrl, imageAlt } = placeholder.dataset;
+    void resolveImage(imageUrl!).then(image => {
+      if (destroyed) { image.dispose(); return; }
+      disposals.push(image.dispose);
+      const element = document.createElement("img");
+      element.alt = imageAlt ?? "";
+      element.draggable = false;
+      element.src = image.src;
+      placeholder.replaceWith(element);
+    }, () => { /* Keep the image alternative if the resource is unavailable. */ });
+  }
+  return {
+    dom,
+    stopEvent: event => event.target instanceof Element && Boolean(event.target.closest("summary")) && !event.target.closest("a[href]"),
+    ignoreMutation: () => true,
+    destroy() { destroyed = true; disposals.forEach(dispose => dispose()); },
+  };
+}
 
 const safeImage = imageSchema.extendSchema(base => ctx => {
   const schema = base(ctx);
@@ -346,10 +438,20 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
   };
 }
 
-export function richSchema(getOptions: () => EditorImages, failedImages: Set<() => void>) {
+export function richSchema(getOptions: () => HtmlOptions, failedImages: Set<() => void>) {
   return [
-    math, highlightSyntax, highlight, highlightInput, richNodes, htmlInline, htmlBlock, safeImage, mathInline, mathBlock,
+    math, highlightSyntax, highlight, highlightInput, richNodes, htmlInline, htmlBlock, githubDisclosure, safeImage, mathInline, mathBlock,
     markdownTableCell, markdownTableHeader, tableLineBreak, blockquote, footnoteReference, footnoteDefinition,
+    $view(htmlInline.node, () => node => embeddedHtmlView(node, getOptions())),
+    $view(htmlBlock.node, () => node => embeddedHtmlView(node, getOptions())),
+    $view(githubDisclosure.node, () => node => {
+      const { dom, contentDOM } = disclosureDOM(node.attrs.header);
+      return {
+        dom, contentDOM,
+        stopEvent: event => event.target instanceof Element && Boolean(event.target.closest("summary")) && !event.target.closest("a[href]"),
+        ignoreMutation: mutation => mutation.type === "attributes" && mutation.target === dom && mutation.attributeName === "open",
+      };
+    }),
     $view(imageSchema.node, ctx => (node, view, getPos) =>
       imageView(node, view, getPos, ctx.get(parserCtx), ctx.get(serializerCtx), getOptions, failedImages)),
     $view(mathInline.node, ctx => (node, view, getPos) => formulaView(node, view, getPos, ctx.get(parserCtx))),
