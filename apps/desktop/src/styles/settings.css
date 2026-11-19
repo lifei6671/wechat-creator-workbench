@@ -18,6 +18,19 @@
   margin-left: auto; min-height: 30px; width: 30px; padding: 0; border-radius: 7px;
   justify-content: center; color: var(--text-muted);
 }
+.settings-window-header[data-mac-titlebar] { padding-left: 8px; }
+.settings-window-header[data-mac-titlebar] .settings-close {
+  order: -1; margin-left: 0; display: grid; place-items: center; background: transparent;
+}
+.settings-window-header[data-mac-titlebar] .settings-close::before {
+  content: ""; grid-area: 1 / 1; width: 12px; height: 12px; border-radius: 50%;
+  background: #ff5f57; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 14%);
+}
+.settings-window-header[data-mac-titlebar] .settings-close svg {
+  grid-area: 1 / 1; width: 8px; height: 8px; stroke-width: 2.5; color: #680b08; opacity: 0;
+}
+.settings-window-header[data-mac-titlebar] .settings-close:is(:hover, :focus-visible) svg { opacity: 1; }
+.settings-window-header[data-mac-titlebar] .settings-close:active::before { background: #e0443e; }
 .settings-window-body { display: grid; grid-template-columns: 212px minmax(0, 1fr); flex: 1; min-height: 0; }
 .settings-sidebar { display: flex; flex-direction: column; min-height: 0; padding: 4px 8px 12px 12px; }
 .settings-search { padding: 0 3px 12px; }

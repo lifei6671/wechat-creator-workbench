@@ -1,15 +1,16 @@
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+html { background: var(--workbench-bg); }
 :root {
   --workbench-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   font-family: var(--workbench-sans);
 }
 .radix-themes {
-  --app-bg: var(--gray-1);
+  --app-bg: var(--workbench-bg, var(--gray-1));
   --sidebar-bg: var(--gray-2);
   --workspace-chrome-bg: var(--gray-3);
   --workspace-bar-bg: var(--sand-3);
-  --panel-bg: var(--gray-1);
+  --panel-bg: var(--app-bg);
   --panel-hover: var(--gray-3);
   --panel-selected: var(--accent-3);
   --chrome-selected: var(--gray-a5);

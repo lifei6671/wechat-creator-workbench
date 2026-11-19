@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import { desktop, errorMessage, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
+import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import type { ViewMode } from "./Document";
 import type { DocumentOpenMode } from "./preferences";
@@ -95,7 +95,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
         if (initialPage === "appearance") search.current?.focus();
         else select(initialPage);
       }}>
-      <header className="settings-window-header">
+      <header className="settings-window-header" data-mac-titlebar={macTitleBar || undefined}>
         <Dialog.Title className="settings-title">设置</Dialog.Title>
         {status && page !== "backups" && <span className="settings-header-status" role="status">{status}</span>}
         <Dialog.Close><button className="plain-button settings-close" type="button" aria-label="关闭设置"><X size={17} /></button></Dialog.Close>

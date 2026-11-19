@@ -31,9 +31,12 @@
   padding-inline: 10px 4px; border-bottom-color: var(--gray-a4);
   --chrome-selected: var(--sand-a4);
 }
-[data-mac-titlebar] :is(.sidebar-chrome, .workbench-chrome:has(> .restore-sidebar)) {
-  padding-inline-start: 80px;
+[data-mac-titlebar] { --mac-titlebar-inset: 80px; }
+[data-mac-titlebar] .sidebar-chrome { padding-inline-start: var(--mac-titlebar-inset); }
+[data-mac-titlebar] .workbench-chrome {
+  padding-inline-start: max(8px, calc(var(--mac-titlebar-inset) - var(--navigation-width, 0px)));
 }
+[data-mac-titlebar] .restore-sidebar { margin-inline-start: 0; }
 [data-mac-titlebar] .ai-panel-trigger[aria-expanded="false"] { margin-inline-end: 12px; }
 .sidebar-chrome > .button-strip { gap: 4px; }
 @container sidebar-chrome (width < 210px) {
@@ -266,7 +269,7 @@
 .tab-scroll-slot { flex: 0 0 22px; width: 22px; }
 .tab-strip .tab-scroll { min-width: 22px; width: 22px; height: 26px; }
 .tab {
-  position: relative; display: flex; align-items: center; padding-inline: 3px 4px; flex: none; width: clamp(112px, 17vw, 205px);
+  position: relative; display: flex; align-items: center; padding-inline: 3px 10px; flex: none; width: clamp(112px, 17vw, 205px);
   height: calc(var(--chrome-height) - 2 * var(--tab-inset)); gap: 3px; border-radius: 7px;
   user-select: none;
 }

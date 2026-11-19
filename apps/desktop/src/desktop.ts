@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type { ThreadHistoryAdapter } from "@assistant-ui/react";
 import type { AiContextScope } from "../../../packages/editor-react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { SourceFragment } from "../../../packages/wechat-renderer";
@@ -94,6 +95,7 @@ export const macTitleBar = /Mac/.test(navigator.platform);
 export const nativeWindow = () => getCurrentWindow();
 
 export const desktop = {
+  setWindowBackground: (color: string) => getCurrentWebviewWindow().setBackgroundColor(color),
   openLink: (url: string) => openUrl(url),
   gpuAcceleration: (enabled?: boolean) => invoke<boolean>("gpu_acceleration", { enabled }),
   library: (includeArticleCounts = false) => invoke<Library>("library", { includeArticleCounts }),

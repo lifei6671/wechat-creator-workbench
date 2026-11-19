@@ -214,6 +214,13 @@ export function DesktopShell() {
   }, [showAiConfiguration, savingAiSettings]);
   const [aiChatSelection, setAiChatSelection] = useState<{ sessionId: number; selection: ChatSelection }>();
   const systemDark = useMedia("(prefers-color-scheme: dark)");
+  const dark = appearance === "dark" || (appearance === "system" && systemDark);
+  useLayoutEffect(() => {
+    if (!macTitleBar) return;
+    const color = dark ? "#111113" : "#fcfcfd";
+    document.documentElement.style.setProperty("--workbench-bg", color);
+    void desktop.setWindowBackground(color).catch(error => console.error(error));
+  }, [dark]);
   const compact = useMedia("(width < 820px)");
   const defaultExplorer = preferredExplorer ?? !compact;
   const explorer = explorerOverride ?? defaultExplorer;
@@ -264,6 +271,7 @@ export function DesktopShell() {
   const navigationWidth = useRef(initialNavigationWidth);
   const timelineWidth = useRef(initialTimelineWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
+  const navigationElement = useRef<HTMLDivElement>(null);
   const layoutSuspended = useRef(false);
   const timelineLayoutReady = useRef(false);
   const directoryDrag = useRef<{ pointerId: number; startX: number; width: number; articleWidth: number; currentWidth: number }>(null);
@@ -1697,6 +1705,17 @@ export function DesktopShell() {
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, []);
   useLayoutEffect(() => {
+    if (!macTitleBar) return;
+    const group = sidebarGroup.current!;
+    const navigation = navigationElement.current!;
+    // The panel's rendered width changes throughout the flex transition.
+    const reserveTitlebarSpace = (width: number) => group.style.setProperty("--navigation-width", `${width}px`);
+    reserveTitlebarSpace(navigation.getBoundingClientRect().width);
+    const observer = new ResizeObserver(([entry]) => reserveTitlebarSpace(entry.contentRect.width));
+    observer.observe(navigation);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
     const panel = sidebarPanel.current!;
     const group = sidebarGroup.current!;
     const target = preferredNavigationWidth();
@@ -1898,7 +1917,7 @@ export function DesktopShell() {
         onCategoryAction={categoryAction} onMore={more} />}
     </div>
   );
-  return <Theme appearance={appearance === "system" ? systemDark ? "dark" : "light" : appearance} accentColor="indigo"
+  return <Theme appearance={dark ? "dark" : "light"} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
     <div className="workspace-shell" data-mac-titlebar={macTitleBar || undefined} inert={Boolean(exitMessage)}>
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup} groupRef={workspacePanels}
@@ -1925,7 +1944,7 @@ export function DesktopShell() {
         }}>
           <Panel id="navigation" defaultSize={initialSidebarSize}
             minSize={timelineMode ? minimumTimelineWidth : minimumNavigationWidth}
-            collapsible={!timelineMode || !showExplorer} collapsedSize="0px" panelRef={sidebarPanel}
+            collapsible={!timelineMode || !showExplorer} collapsedSize="0px" panelRef={sidebarPanel} elementRef={navigationElement}
             style={{ overflow: "hidden" }} groupResizeBehavior="preserve-pixel-size"
             onResize={(size, _id, previous) => {
               if (!timelineMode && showExplorer && previous?.inPixels && !size.inPixels
@@ -2029,7 +2048,7 @@ export function DesktopShell() {
               {activeCollection ? <Suspense fallback={<div id="collection-canvas-panel" role="tabpanel"
                 aria-labelledby={`collection-tab-${activeCollection.id}`} className="document-body collection-state"><span role="status">正在打开专题…</span></div>}>
                 <CollectionCanvas key={`${activeCollection.id}:${canvasRevisions.get(activeCollection.id) ?? 0}`}
-                  collection={activeCollection} dark={appearance === "system" ? systemDark : appearance === "dark"}
+                  collection={activeCollection} dark={dark}
                   revision={refreshCount} articleLocked={globalLock} previewBlocked={Boolean(modal || exitMessage || globalLock)} clipboard={editorClipboard}
                   canvasRef={collectionCanvas} track={trackCollectionWrite} waitForWrites={waitForCollectionWrites}
                   onOpenEntry={onOpenCollectionEntry}

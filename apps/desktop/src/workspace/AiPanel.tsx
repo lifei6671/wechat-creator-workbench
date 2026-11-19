@@ -355,11 +355,12 @@ function ConversationView({
   }}>
     <header className="ai-chat-header">
       <h2>AI 聊天</h2>
-      <Tool label="新对话" color="gray" disabled={!ready || running || switching} onClick={() => void switchThread()}><Plus size={16} /></Tool>
+      <Tool label="新对话" className="chrome-icon" color="gray" disabled={!ready || running || switching}
+        onClick={() => void switchThread()}><Plus size={18} strokeWidth={1.8} /></Tool>
       {open && windowControls && <WindowDragRegion onError={report} />}
       <div className="ai-chat-header-tools">
-        <Tool label="对话记录" color="gray" aria-pressed={view === "threads"} disabled={!ready || switching || historyLoading}
-          onClick={toggleHistory}><History size={15} /></Tool>
+        <Tool label="对话记录" className="chrome-icon" color="gray" aria-pressed={view === "threads"} disabled={!ready || switching || historyLoading}
+          onClick={toggleHistory}><History size={18} strokeWidth={1.8} /></Tool>
       </div>
       {open && windowControls}
     </header>
