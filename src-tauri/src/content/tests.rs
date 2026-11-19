@@ -665,6 +665,71 @@ fn pinned_entries_keep_an_independent_order_across_folders_and_restarts() {
 }
 
 #[test]
+fn timeline_pins_persist_in_their_scope_and_respect_current_membership() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("timeline-pins.db");
+    let db = Workspace::open(&path).unwrap();
+    let parent = db.save_category(None, None, "文章目录", None).unwrap();
+    let child = db.save_category(None, Some(&parent.id), "子目录", None).unwrap();
+    let mut fields = article("文章", "正文");
+    fields.category_id = Some(child.id.clone());
+    fields.tags.push("微信".into());
+    let tagged = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    let root = db.create_entry(Kind::Article, Some(article("根目录文章", "")), None).unwrap();
+    let tag_id = db.read(|conn| Ok(conn.query_row("SELECT id FROM tags WHERE name='微信'", [], |row| row.get::<_, String>(0))?)).unwrap();
+    let folder_scope = || TimelineSelection::Folder { id: parent.id.clone() };
+    let tag_scope = || TimelineSelection::Tag { id: tag_id.clone() };
+    let folder_filter = |pinned, exact_category| Filter {
+        timeline_scope: Some(folder_scope()),
+        pinned: Some(pinned),
+        category_id: Some(parent.id.clone()),
+        exact_category,
+        ..Filter::default()
+    };
+    let tag_filter = |pinned| Filter {
+        timeline_scope: Some(tag_scope()),
+        pinned: Some(pinned),
+        tag_ids: Some(vec![tag_id.clone()]),
+        ..Filter::default()
+    };
+
+    db.set_entry_pinned(&tagged.row.id, true).unwrap();
+    assert!(!db.entries(folder_filter(false, false)).unwrap().items[0].pinned);
+    db.set_timeline_entry_pinned(&tagged.row.id, &folder_scope(), true).unwrap();
+    assert_eq!(db.entries(tag_filter(false)).unwrap().items[0].id, tagged.row.id);
+    assert!(db.entries(folder_filter(true, true)).unwrap().items.is_empty());
+    assert!(db.entries(Filter {
+        timeline_scope: Some(TimelineSelection::Folder { id: child.id.clone() }),
+        pinned: Some(true),
+        category_id: Some(child.id),
+        ..Filter::default()
+    }).unwrap().items.is_empty());
+    db.set_timeline_entry_pinned(&tagged.row.id, &tag_scope(), true).unwrap();
+    db.set_timeline_entry_pinned(&root.row.id, &TimelineSelection::Root, true).unwrap();
+    assert!(db.entries(Filter {
+        timeline_scope: Some(TimelineSelection::Untagged),
+        pinned: Some(true),
+        untagged: true,
+        ..Filter::default()
+    }).unwrap().items.is_empty());
+    drop(db);
+
+    let db = Workspace::open(&path).unwrap();
+    assert_eq!(db.entries(folder_filter(true, false)).unwrap().items[0].id, tagged.row.id);
+    assert!(db.entries(folder_filter(false, false)).unwrap().items.is_empty());
+    db.set_timeline_entry_pinned(&tagged.row.id, &folder_scope(), false).unwrap();
+    assert_eq!(db.entries(folder_filter(false, false)).unwrap().items[0].id, tagged.row.id);
+    assert_eq!(db.entries(tag_filter(true)).unwrap().items[0].id, tagged.row.id);
+    let directory_pins = db.entries(Filter { pinned: Some(true), ..Filter::default() }).unwrap();
+    assert_eq!(directory_pins.items.len(), 1);
+    assert_eq!(directory_pins.items[0].id, tagged.row.id);
+    db.set_entry_pinned(&tagged.row.id, false).unwrap();
+    assert_eq!(db.entries(tag_filter(true)).unwrap().items[0].id, tagged.row.id);
+    db.set_deleted(&tagged.row.id, tagged.version, true).unwrap();
+    assert!(db.entries(tag_filter(true)).unwrap().items.is_empty());
+}
+
+#[test]
 fn external_updates_use_versions_and_distinguish_null_patch_values_from_omitted_values() {
     let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
     let create = serde_json::from_value(serde_json::json!({ "title":"原题", "contentMd":"原稿", "tags":["保留"], "publishedAt":42 })).unwrap();

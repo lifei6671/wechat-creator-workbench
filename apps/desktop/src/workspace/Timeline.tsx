@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type MouseEvent, type ReactNode } from "react";
 import { Button } from "@radix-ui/themes";
 import { ChevronDown, FolderOpen, Layers, Tag as TagIcon, type LucideIcon } from "lucide-react";
-import type { Category, EntryFilter, EntryPage, EntryRow, Tag } from "../../../../packages/shared-types";
+import type { Category, EntryFilter, EntryPage, EntryRow, Tag, TimelineSelection } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { rootFolderLabel, untitled } from "../labels";
 import { Tool } from "../ui";
@@ -16,7 +16,8 @@ const timeLabel = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2
 const calendarDay = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
 type ArticleTags = { ids: ReadonlyMap<string, string>; select(id: string, keyboard: boolean): void };
 type TimelineHeading = { label: string; icon: LucideIcon; hasFolder: boolean; includeChildren: boolean };
-type TimelineResults = { filter: EntryFilter; heading: TimelineHeading; page: EntryPage | null; pinned: EntryRow[] };
+type TimelineFilter = EntryFilter & { timelineScope: TimelineSelection };
+type TimelineResults = { filter: TimelineFilter; heading: TimelineHeading; page: EntryPage | null; pinned: EntryRow[] };
 
 function groupEntries(items: EntryRow[]) {
   const today = new Date();
@@ -36,7 +37,7 @@ function groupEntries(items: EntryRow[]) {
   return groups;
 }
 
-export function Timeline({ workspaceId, root, folder, tag, untagged, tags, onSelectTag, includeChildren, onIncludeChildren, revision, actions, sidebarToggle, navigation, directoryToggle, blankMenu }: {
+export function Timeline({ workspaceId, root, folder, tag, untagged, tags, onSelectTag, includeChildren, onIncludeChildren, onPin, revision, actions, sidebarToggle, navigation, directoryToggle, blankMenu }: {
   workspaceId: string | undefined;
   root: boolean;
   folder: Category | null;
@@ -46,6 +47,7 @@ export function Timeline({ workspaceId, root, folder, tag, untagged, tags, onSel
   onSelectTag: ArticleTags["select"];
   includeChildren: boolean;
   onIncludeChildren(value: boolean): void;
+  onPin(id: string, pinned: boolean, scope: TimelineSelection): void;
   revision: number;
   actions: RowActions;
   sidebarToggle: ReactNode;
@@ -72,9 +74,10 @@ export function Timeline({ workspaceId, root, folder, tag, untagged, tags, onSel
   const categoryId = folder?.id;
   const tagId = tag?.id;
   const exactCategory = root || Boolean(folder && !includeChildren);
-  const filter = useMemo<EntryFilter>(() => ({
+  const filter = useMemo<TimelineFilter>(() => ({
     categoryId, exactCategory, tagIds: tagId ? [tagId] : undefined,
     untagged, deleted: false, pinned: false,
+    timelineScope: categoryId ? { kind: "folder", id: categoryId } : tagId ? { kind: "tag", id: tagId } : { kind: untagged ? "untagged" : "root" },
     sort: "updated", kind: "article", includePreview: true, offset: 0,
   }), [categoryId, exactCategory, tagId, untagged]);
 
@@ -135,8 +138,11 @@ export function Timeline({ workspaceId, root, folder, tag, untagged, tags, onSel
   const rowActions: RowActions = {
     ...actions,
     onRowAction(row, action, trigger) {
-      if ((action === "pin" || action === "unpin") && trigger && document.activeElement !== document.body) {
-        movedRow.current = { id: row.id, previous: trigger };
+      if (action === "pin" || action === "unpin") {
+        if (!results || switching) return;
+        if (trigger && document.activeElement !== document.body) movedRow.current = { id: row.id, previous: trigger };
+        onPin(row.id, action === "pin", results.filter.timelineScope);
+        return;
       }
       actions.onRowAction(row, action, trigger);
     },

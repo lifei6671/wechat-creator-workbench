@@ -637,14 +637,14 @@ it("browses a folder and its descendants in the timeline while opening the docum
   flushSync(() => pin().click());
   await vi.waitFor(() => expect(rows()[0].closest("ul")?.getAttribute("aria-label")).toBe("已固定"));
   expect(titles()).toEqual(["子目录文章", "父目录文章"]);
-  expect(setPin).toHaveBeenLastCalledWith(second.id, true);
+  expect(setPin).toHaveBeenLastCalledWith(second.id, true, { kind: "folder", id: "closed" });
   expect(document.activeElement).toBe(openRow(0));
   pin().focus();
   flushSync(() => pin().click());
   await vi.waitFor(() => expect(container.querySelector('.timeline-group ul[aria-label="已固定"]')).toBeNull());
   expect(titles()).toEqual(["子目录文章", "父目录文章"]);
   expect(document.activeElement).toBe(openRow(0));
-  expect(setPin).toHaveBeenLastCalledWith(second.id, false);
+  expect(setPin).toHaveBeenLastCalledWith(second.id, false, { kind: "folder", id: "closed" });
   click('.timeline-pane [aria-label="包含子目录"]');
   await vi.waitFor(() => expect(titles()).toEqual(["父目录文章"]));
   expect(desktop.entries).toHaveBeenCalledWith(expect.objectContaining({ categoryId: "closed", exactCategory: true }));
@@ -654,6 +654,63 @@ it("browses a folder and its descendants in the timeline while opening the docum
   expect(container.querySelector(".timeline-pane")).toBeNull();
   expect(container.querySelector(".sidebar-chrome #hide-sidebar")).not.toBeNull();
   expect(container.querySelector('[data-document="子目录文章"]')).not.toBeNull();
+});
+
+it("keeps folder, tag, and content-directory pins independent", async () => {
+  const library = await desktop.library();
+  vi.mocked(desktop.library).mockResolvedValue({ ...library, tags: [{ id: "wechat", name: "微信" }] });
+  const article = { ...entry("shared", "closed"), pinned: true };
+  const pins = new Set<string>();
+  const setPin = vi.spyOn(desktop, "setEntryPinned").mockImplementation(async (_id, pinned, scope) => {
+    const key = JSON.stringify(scope);
+    if (pinned) pins.add(key);
+    else pins.delete(key);
+  });
+  vi.mocked(desktop.entries).mockImplementation(async filter => {
+    if (!filter.timelineScope) return { items: filter.pinned ? [article] : [], nextOffset: null };
+    const matches = filter.categoryId === "closed" || filter.tagIds?.includes("wechat");
+    const pinned = pins.has(JSON.stringify(filter.timelineScope));
+    return { items: matches && filter.pinned === pinned ? [{ ...article, pinned }] : [], nextOffset: null };
+  });
+  const click = (selector: string) => flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+  const label = () => container.querySelector(".timeline-pin")?.getAttribute("aria-label");
+  const fixedRow = () => container.querySelector('ul[aria-label="已固定"] #timeline-row-shared');
+  const directoryPin = () => container.querySelector("#tree-pinned-list #entry-row-shared");
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(directoryPin()).not.toBeNull());
+  click('.sidebar-chrome [aria-label="文章时间流"]');
+  await vi.waitFor(() => expect(container.querySelector("#folder-row-closed")).not.toBeNull());
+  click("#folder-row-closed");
+  await vi.waitFor(() => expect(label()).toBe("置顶"));
+  click(".timeline-pin");
+  await vi.waitFor(() => expect(fixedRow()).not.toBeNull());
+  click("#timeline-tag-wechat");
+  await vi.waitFor(() => expect(label()).toBe("置顶"));
+  expect(fixedRow()).toBeNull();
+
+  flushSync(() => container.querySelector(".timeline-entry")!.dispatchEvent(
+    new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+  ));
+  const pinItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
+  expect(pinItem.textContent).toBe("置顶");
+  flushSync(() => pinItem.click());
+  await vi.waitFor(() => expect(fixedRow()).not.toBeNull());
+
+  click("#folder-row-closed");
+  await vi.waitFor(() => expect(container.querySelector(".timeline-heading h1")?.textContent).toBe("已折叠"));
+  expect(label()).toBe("取消置顶");
+  click(".timeline-pin");
+  await vi.waitFor(() => expect(fixedRow()).toBeNull());
+  click("#timeline-tag-wechat");
+  await vi.waitFor(() => expect(fixedRow()).not.toBeNull());
+  expect(label()).toBe("取消置顶");
+  click('.sidebar-chrome [aria-label="内容目录"]');
+  await vi.waitFor(() => expect(directoryPin()).not.toBeNull());
+  expect(setPin.mock.calls).toEqual([
+    [article.id, true, { kind: "folder", id: "closed" }],
+    [article.id, true, { kind: "tag", id: "wechat" }],
+    [article.id, false, { kind: "folder", id: "closed" }],
+  ]);
 });
 
 it("keeps the AI sidebar toggle in the writing header when the panel opens or closes", async () => {

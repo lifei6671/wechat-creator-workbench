@@ -8,7 +8,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { SourceFragment } from "../../../packages/wechat-renderer";
 import type {
   CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
-  Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult,
+  Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection,
 } from "../../../packages/shared-types";
 
 export interface ImageTarget { endpoint: string; region: string; bucket: string; prefix: string; publicBase: string }
@@ -149,7 +149,8 @@ export const desktop = {
     invoke<void>("reorder_category", { id, anchor, placement }),
   reorderEntry: (id: string, anchor: string, placement: CategoryPlacement) =>
     invoke<void>("reorder_entry", { id, anchor, placement }),
-  setEntryPinned: (id: string, pinned: boolean) => invoke<void>("set_entry_pinned", { id, pinned }),
+  setEntryPinned: (id: string, pinned: boolean, timelineScope?: TimelineSelection) =>
+    invoke<void>("set_entry_pinned", { id, pinned, timelineScope }),
   revisions: (id: string) => invoke<Revision[]>("revisions", { id }),
   exportMarkdown: (id: string) => invoke<string | null>("export_markdown", { id }),
   revealFile: (path: string) => revealItemInDir(path),

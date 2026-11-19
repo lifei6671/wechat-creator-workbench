@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect
 import { Button, Theme } from "@radix-ui/themes";
 import { FilePenLine, FileText, Folder, Image, List, Search, Workflow } from "lucide-react";
 import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizable-panels";
-import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, WorkspaceSearchHit } from "../../../../packages/shared-types";
+import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, TimelineSelection, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncApplied, type UploadProgress } from "../desktop";
@@ -20,7 +20,7 @@ import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, Markd
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
 import { Outline } from "./Outline";
-import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section, type TimelineSelection } from "./Explorer";
+import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { SyncSettings } from "./SyncSettings";
 import { startSyncScheduler } from "./sync-scheduler";
@@ -2007,6 +2007,10 @@ export function DesktopShell() {
                       explorerTree.current?.revealTimelineTag(id, keyboard && timelineTag?.id !== id);
                     }}
                     includeChildren={includeTimelineChildren} onIncludeChildren={setIncludeTimelineChildren}
+                    onPin={(id, pinned, scope) => run(async () => {
+                      await desktop.setEntryPinned(id, pinned, scope);
+                      refresh();
+                    })}
                     revision={refreshCount} actions={rowActions} sidebarToggle={hideSidebarButton}
                     navigation={showTimelineDirectory ? undefined : <div className="button-strip">{navigationButtons}</div>}
                     directoryToggle={showTimelineDirectory ? undefined : timelineDirectoryToggle}

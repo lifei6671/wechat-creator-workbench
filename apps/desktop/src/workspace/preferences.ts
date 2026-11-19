@@ -1,7 +1,7 @@
-import { entrySortOrders } from "../../../../packages/shared-types";
+import { entrySortOrders, type TimelineSelection } from "../../../../packages/shared-types";
 import { persist } from "../ui";
 import type { ViewMode } from "./Document";
-import type { Section, TimelineSelection } from "./Explorer";
+import type { Section } from "./Explorer";
 
 export type DocumentOpenMode = "current" | "new-tab";
 export type DocumentOptions = { view?: ViewMode; convertLinks?: boolean; outline?: boolean };

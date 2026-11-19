@@ -15,7 +15,8 @@ use std::num::NonZeroU32;
 use url::Url;
 
 const PAGE_SIZE: i64 = 60;
-const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id, e.pinned_order IS NOT NULL AS pinned";
+const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id";
+const DIRECTORY_PIN: &str = "e.pinned_order";
 const ENTRY_TAG_NAMES: &str = "SELECT t.name FROM tags t JOIN entry_tags r ON r.tag_id=t.id WHERE r.entry_id=?1 ORDER BY t.normalized";
 
 #[derive(Clone, Copy, Deserialize, PartialEq, rmcp::schemars::JsonSchema)]
@@ -122,6 +123,7 @@ pub struct Entry {
 pub struct Filter {
     pub sort: Option<EntrySort>,
     pub pinned: Option<bool>,
+    pub timeline_scope: Option<TimelineSelection>,
     pub kind: Option<Kind>,
     pub status: Option<String>,
     pub category_id: Option<String>,
@@ -139,6 +141,26 @@ pub struct Filter {
     pub wechat_imported: bool,
     pub offset: i64,
     pub limit: Option<NonZeroU32>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TimelineSelection {
+    Root,
+    Folder { id: String },
+    Tag { id: String },
+    Untagged,
+}
+
+impl TimelineSelection {
+    fn pin_key(&self) -> String {
+        match self {
+            Self::Root => "root".into(),
+            Self::Folder { id } => format!("folder:{id}"),
+            Self::Tag { id } => format!("tag:{id}"),
+            Self::Untagged => "untagged".into(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -275,13 +297,20 @@ impl Workspace {
             let mut values: Vec<Value> = Vec::new();
             let preview_columns = if filter.include_preview { ", e.summary, e.cover_asset_id, e.content_md" } else { "" };
             let search_columns = if search.is_some() { ", e.version AS search_version, COUNT(*) OVER() AS search_total" } else { "" };
-            let mut sql = format!("SELECT {HEAD}{preview_columns}{search_columns} FROM entries e WHERE e.deleted_at IS {}NULL",
+            let (pin_order, pin_join) = if let Some(scope) = &filter.timeline_scope {
+                values.push(scope.pin_key().into());
+                ("tp.pin_order", " LEFT JOIN timeline_entry_pins tp ON tp.scope=? AND tp.entry_id=e.id")
+            } else {
+                (DIRECTORY_PIN, "")
+            };
+            let mut sql = format!("SELECT {HEAD}, {pin_order} IS NOT NULL AS pinned{preview_columns}{search_columns}
+                FROM entries e{pin_join} WHERE e.deleted_at IS {}NULL",
                 if filter.deleted { "NOT " } else { "" });
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
             }
             if let Some(pinned) = filter.pinned {
-                sql.push_str(if pinned { " AND e.pinned_order IS NOT NULL" } else { " AND e.pinned_order IS NULL" });
+                sql.push_str(&format!(" AND {pin_order} IS {}NULL", if pinned { "NOT " } else { "" }));
             }
             if let Some(kind) = filter.kind {
                 sql.push_str(" AND e.kind = ?");
@@ -321,7 +350,7 @@ impl Workspace {
                 search.apply(conn, &mut sql, &mut values)?;
             }
             if filter.pinned == Some(true) {
-                sql.push_str(" ORDER BY e.pinned_order, e.id LIMIT ? OFFSET ?");
+                sql.push_str(&format!(" ORDER BY {pin_order}, e.id LIMIT ? OFFSET ?"));
             } else if let (Some(EntrySort::Relevance), Some(search)) = (&filter.sort, &search) {
                 search.register_relevance(conn)?;
                 sql.push_str(" ORDER BY workspace_title_rank(e.title) DESC, workspace_line_count(e.content_md) DESC,
@@ -498,6 +527,27 @@ impl Workspace {
             )?;
             if changed == 0 {
                 return Err(AppError::new("NOT_FOUND", "找不到可置顶的文档"));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn set_timeline_entry_pinned(&self, id: &str, scope: &TimelineSelection, pinned: bool) -> Result<()> {
+        let scope = scope.pin_key();
+        self.write(|tx| {
+            if pinned {
+                let changed = tx.execute(
+                    "INSERT INTO timeline_entry_pins(scope, entry_id, pin_order)
+                    SELECT ?1, e.id, (SELECT COALESCE(MIN(pin_order), 0) - 1 FROM timeline_entry_pins WHERE scope=?1)
+                    FROM entries e WHERE e.id=?2 AND e.kind='article' AND e.deleted_at IS NULL
+                    ON CONFLICT(scope, entry_id) DO UPDATE SET pin_order=timeline_entry_pins.pin_order",
+                    params![scope, id],
+                )?;
+                if changed == 0 {
+                    return Err(AppError::new("NOT_FOUND", "找不到可置顶的文章"));
+                }
+            } else {
+                tx.execute("DELETE FROM timeline_entry_pins WHERE scope=?1 AND entry_id=?2", params![scope, id])?;
             }
             Ok(())
         })
@@ -693,7 +743,7 @@ fn entry_preview(
 }
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
-    let sql = format!("SELECT {HEAD}, e.content_md, e.summary, e.published_at, e.published_url, e.version,
+    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version,
            s.source_url, s.author, s.account_name, s.original_published_at, s.imported_at, e.cover_asset_id, e.theme_id
         FROM entries e LEFT JOIN sources s ON s.id=e.source_id WHERE e.id=?1");
     let mut entry = conn.query_row(&sql, [id], |r| {
@@ -735,7 +785,7 @@ fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
         .query_map([id], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let links = format!(
-        "SELECT {HEAD} FROM entry_links l JOIN entries e
+        "SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned FROM entry_links l JOIN entries e
         ON e.id=CASE WHEN l.article_id=?1 THEN l.source_entry_id ELSE l.article_id END
         WHERE l.article_id=?1 OR l.source_entry_id=?1 ORDER BY e.updated_at DESC"
     );

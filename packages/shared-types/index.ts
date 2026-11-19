@@ -47,9 +47,11 @@ export interface Entry extends EntryRow, EntryFields {
 }
 export const entrySortOrders = ["name", "nameDesc", "updated", "updatedAsc", "created", "createdAsc"] as const;
 export type EntrySortOrder = typeof entrySortOrders[number];
+export type TimelineSelection = { kind: "folder" | "tag"; id: string } | { kind: "root" | "untagged" };
 export interface EntryFilter {
   sort?: EntrySortOrder | "relevance";
   pinned?: boolean;
+  timelineScope?: TimelineSelection;
   kind?: EntryKind;
   categoryId?: string;
   exactCategory?: boolean;

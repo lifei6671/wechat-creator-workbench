@@ -4,7 +4,7 @@ import {
   ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
   FolderOpen, FolderPlus, History, Link, PencilLine, Pin, PinOff, Plus, SquareArrowOutUpRight, Tag, Tags, Trash2,
 } from "lucide-react";
-import type { Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
+import type { Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, TimelineSelection, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
@@ -18,7 +18,6 @@ import type { DocumentOpenMode } from "./preferences";
 import { SearchHitRow, WorkspaceSearch, searchDisplayDefaults, searchDisplayKey } from "./WorkspaceSearch";
 
 export type Section = "folders" | "timeline" | "search" | "assets" | "trash" | "imports" | "collections";
-export type TimelineSelection = { kind: "folder" | "tag"; id: string } | { kind: "root" | "untagged" };
 export type CategoryAction = "delete" | "up" | "down";
 export type EntryRowAction = "delete" | "restore" | "duplicate" | "pin" | "unpin" | "copyTitle" | "copyPath" | "history" | "export" | "properties";
 

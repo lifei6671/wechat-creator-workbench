@@ -2,7 +2,7 @@ use crate::{
     ai::AiService,
     assets::Assets,
     content::{
-        Entry, Fields, Filter, Kind, Page, Revision, SaveMode, SaveResult,
+        Entry, Fields, Filter, Kind, Page, Revision, SaveMode, SaveResult, TimelineSelection,
         taxonomy::{Category, CategoryChange, CategoryIcon, CategoryPlacement, Library},
     },
     db::{AppError, Result, Workspace},
@@ -188,8 +188,16 @@ pub async fn reorder_category(
 }
 
 #[tauri::command]
-pub async fn set_entry_pinned(state: State<'_, Workspace>, id: String, pinned: bool) -> Result<()> {
-    state.set_entry_pinned(&id, pinned)
+pub async fn set_entry_pinned(
+    state: State<'_, Workspace>,
+    id: String,
+    pinned: bool,
+    timeline_scope: Option<TimelineSelection>,
+) -> Result<()> {
+    match timeline_scope {
+        Some(scope) => state.set_timeline_entry_pinned(&id, &scope, pinned),
+        None => state.set_entry_pinned(&id, pinned),
+    }
 }
 
 #[tauri::command]

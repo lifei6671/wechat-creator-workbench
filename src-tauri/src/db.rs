@@ -101,6 +101,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0020_sync.sql"),
     include_str!("../migrations/0021_content_sync.sql"),
     include_str!("../migrations/0022_canvas_sync.sql"),
+    include_str!("../migrations/0023_timeline_entry_pins.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
