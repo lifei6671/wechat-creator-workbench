@@ -51,6 +51,8 @@ it("explains what to enter in every first-time sync setting", async () => {
       expect(document.getElementById(description!)?.textContent).toContain(context);
     }
     expect(container.querySelector("#sync-method")).toBeNull();
+    expect(container.querySelector<HTMLInputElement>("#sync-code")?.type).toBe("text");
+    expect(container.querySelector("#sync-url-hint")?.textContent).toContain("不是 R2/S3 存储端点");
   } finally {
     flushSync(() => root.unmount());
     container.remove();

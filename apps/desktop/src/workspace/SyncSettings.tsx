@@ -150,7 +150,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError }: {
       event.preventDefault();
       void perform("connect", async () => connected(await desktop.syncConnect(binding?.url ?? url, name ?? "", code || undefined)));
     }}>
-      {!binding && <SettingRow id="sync-url" label="服务地址" hint="填写同步服务的 HTTPS 根地址。">
+      {!binding && <SettingRow id="sync-url" label="服务地址" hint="填写已部署同步服务的 HTTPS 根地址（如 Worker 域名），不是 R2/S3 存储端点。">
         {hintId => <TextField.Root id="sync-url" aria-describedby={hintId} type="url" placeholder="https://sync.example.com"
           required value={url} onChange={event => setUrl(event.target.value)} />}
       </SettingRow>}
@@ -159,7 +159,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError }: {
           maxLength={128} value={name ?? ""} onChange={event => setName(event.target.value)} />}
       </SettingRow>
       <SettingRow id="sync-code" label="连接密钥" hint="首次连接使用部署时的 SETUP_SECRET，添加电脑或重装使用已保存的连接密钥。">
-        {hintId => <TextField.Root id="sync-code" aria-describedby={hintId} type="password" autoComplete="off" required
+        {hintId => <TextField.Root id="sync-code" aria-describedby={hintId} type="text" autoComplete="off" required
           minLength={64} maxLength={64} value={code} onChange={event => setCode(event.target.value)} />}
       </SettingRow>
       {showMergeNotice && <p id="sync-merge-hint" className="setting-hint">连接后将合并本地与云端内容；同一内容存在不同修改时，会保留双方版本供你处理。</p>}
@@ -233,7 +233,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError }: {
           {() => <TextField.Root id="sync-review-name" required maxLength={128} value={deviceName} onChange={event => setName(event.target.value)} />}
         </SettingRow>
         <SettingRow id="sync-review-key" label="当前服务连接密钥" hint="仅重新授权，随后仍需明确选择是否采用云端内容。">
-          {hintId => <TextField.Root id="sync-review-key" aria-describedby={hintId} type="password" autoComplete="off"
+          {hintId => <TextField.Root id="sync-review-key" aria-describedby={hintId} type="text" autoComplete="off"
             required minLength={64} maxLength={64} value={code} onChange={event => setCode(event.target.value)} />}
         </SettingRow>
         <div className="settings-footer"><Button type="submit" variant="soft" loading={busy === "reauthorize"} disabled={Boolean(busy)}>授权当前服务</Button></div>
