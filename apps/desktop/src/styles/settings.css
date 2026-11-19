@@ -97,6 +97,15 @@
 .sync-settings .setting-control:has(> :is(.rt-TextFieldRoot, .rt-SelectTrigger)) { max-width: none; }
 .sync-settings .setting-control > .rt-TextFieldRoot { width: 100%; }
 .sync-connect-footer { align-items: center; flex-wrap: nowrap; }
+.sync-settings .setting-row:has(.sync-conflict) { display: block; }
+.sync-settings .setting-control:has(.sync-conflict) { display: block; max-width: none; margin-top: 8px; }
+.sync-conflict > summary { cursor: pointer; }
+.sync-conflict-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.sync-conflict-versions > label { display: grid; gap: 6px; min-width: 0; }
+.sync-conflict-versions textarea { overflow-wrap: anywhere; }
+@media (max-width: 1100px) {
+  .sync-conflict-versions { grid-template-columns: minmax(0, 1fr); }
+}
 .sync-connect-footer > .rt-Button { flex: none; }
 .sync-feedback {
   margin: 0; min-width: 0; min-height: 1lh; font-size: var(--small-font); line-height: 1.45;

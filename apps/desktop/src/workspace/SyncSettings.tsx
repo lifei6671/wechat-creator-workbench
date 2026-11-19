@@ -10,6 +10,24 @@ const conflictLabels: Record<SyncConflict["entityType"], string> = {
   collection: "专题冲突", collection_node: "画布卡片冲突", collection_edge: "画布连线冲突",
 };
 
+function canvasVersion(type: SyncConflict["entityType"], version: SyncConflict["local"], deleted: boolean) {
+  if (deleted || !version) return "此项已删除";
+  if (type === "collection") return `标题：${version.title}\n说明：${version.description}`;
+  if (type === "collection_edge") return `连线文字：${version.label}\n起点：${version.sourceNodeId}\n终点：${version.targetNodeId}`;
+  const kinds: Record<string, string> = { text: "文字", entry: "文章引用", image: "图片", web: "网页" };
+  const colors: Record<string, string> = { red: "红色", orange: "橙色", amber: "琥珀色", green: "绿色", blue: "蓝色", violet: "紫色" };
+  return [
+    `卡片类型：${kinds[version.kind!]}`,
+    version.kind === "text" ? `正文：\n${version.contentMd}` : undefined,
+    version.kind === "entry" ? `文章：${version.entryId}` : undefined,
+    version.kind === "image" ? `图片：${version.assetId}` : undefined,
+    version.kind === "web" ? `网址：${version.externalUrl}` : undefined,
+    `位置：${version.x}, ${version.y}`,
+    `尺寸：${version.width} × ${version.height}`,
+    `颜色：${version.customColor ?? (version.color ? colors[version.color] : "默认")}`,
+  ].filter(line => line !== undefined).join("\n");
+}
+
 function credentialRejected(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error &&
     (error.code === "SYNC_CREDENTIAL" || error.code === "SYNC_REAUTH");
@@ -134,7 +152,8 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     if (issue.remoteRevision === null || issue.localGeneration === null) return;
     try { await onResolve(issue.entityType, issue.entityId, choice, issue.remoteRevision, issue.localGeneration); }
     finally { setConflicts(await desktop.syncConflicts()); }
-    setNotice(choice === "local" ? "本地版本已排队上传" : "冲突已处理");
+    setNotice(choice === "local" ? "本地版本已排队上传" : choice === "copy" && issue.entityType !== "entry"
+      ? "已另存本地白板副本；原冲突项已选择云端版本，同组冲突处理完毕后应用" : "冲突已处理；如有同组冲突，请继续处理");
   }
 
   const active = devices?.devices.filter(device => !device.revokedAt) ?? [];
@@ -212,17 +231,32 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     </>}
     {conflicts.map(issue => <SettingRow key={issue.entityType + "/" + issue.entityId}
       label={issue.local?.title || issue.local?.name || issue.local?.label || issue.remote?.title || issue.remote?.name || issue.remote?.label || conflictLabels[issue.entityType]} hint={issue.reason}>
-      {() => issue.resolvable ? <details>
+      {() => issue.resolvable ? <details className="sync-conflict">
         <summary>查看冲突内容</summary>
-        <TextArea aria-label="本地稿" readOnly value={issue.local?.contentMd ?? ""} />
-        <TextArea aria-label="云端稿" readOnly value={issue.remote?.contentMd ?? ""} />
+        <div className="sync-conflict-versions">
+          <label><span>{issue.entityType === "entry" ? "本地稿" : "本地版本"}</span>
+            <TextArea aria-label={issue.entityType === "entry" ? "本地稿" : "本地版本"} readOnly rows={7}
+              value={issue.entityType === "entry" ? issue.local?.contentMd ?? "" : canvasVersion(issue.entityType, issue.local, !issue.local)} />
+          </label>
+          <label><span>{issue.entityType === "entry" ? "云端稿" : "云端版本"}</span>
+            <TextArea aria-label={issue.entityType === "entry" ? "云端稿" : "云端版本"} readOnly rows={7}
+              value={issue.entityType === "entry" ? issue.remote?.contentMd ?? "" : canvasVersion(issue.entityType, issue.remote, issue.remoteDeleted)} />
+          </label>
+        </div>
+        {issue.entityType !== "entry" && <p className="setting-hint">
+          仅处理当前冲突项。另存副本会完整复制本地白板的卡片、布局和连线，保留文章及图片引用，再让原冲突项采用云端版本。
+          {issue.remoteDeleted && "云端已删除此项，需另存副本以保留本地内容。"}
+          {!issue.local && "本地已删除此项，无法另存副本。"}
+        </p>}
         <Flex wrap="wrap" gap="2" mt="2">
-          {([["copy", "另存本地稿"], ["local", "保留本地稿"], ["cloud", "采用云端稿"]] as const).map(([choice, label]) =>
-            <Button key={choice} type="button" size="1" variant="soft" disabled={blocked || binding?.paused}
+          {([["copy", issue.entityType === "entry" ? "另存本地稿" : "另存副本"],
+            ["local", issue.entityType === "entry" ? "保留本地稿" : "保留本地版本"],
+            ["cloud", issue.entityType === "entry" ? "采用云端稿" : "采用云端版本"]] as const).map(([choice, label]) =>
+            <Button key={choice} type="button" size="1" variant="soft" disabled={blocked || binding?.paused ||
+              (issue.entityType !== "entry" && (choice === "local" && !issue.canKeepLocal || choice === "copy" && !issue.local))}
               onClick={() => void perform("resolve", () => resolve(issue, choice))}>{label}</Button>)}
         </Flex>
-      </details> : issue.canKeepLocal && <Button type="button" size="1" variant="soft" disabled={blocked || binding?.paused}
-        onClick={() => void perform("resolve", () => resolve(issue, "local"))}>保留本地版本</Button>}
+      </details> : null}
     </SettingRow>)}
     <details className="sync-advanced">
       <summary><ChevronRight size={16} strokeWidth={1.65} aria-hidden="true" />高级操作</summary>

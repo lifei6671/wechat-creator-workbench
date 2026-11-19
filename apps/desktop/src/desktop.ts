@@ -55,8 +55,12 @@ export interface SyncConflict {
   entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge";
   entityId: string;
   reason: string;
-  local: { title?: string; name?: string; contentMd?: string; label?: string } | null;
-  remote: { title?: string; name?: string; contentMd?: string; label?: string } | null;
+  local: { title?: string; name?: string; description?: string; contentMd?: string; label?: string;
+    kind?: string; entryId?: string | null; assetId?: string | null; externalUrl?: string | null;
+    collectionId?: string; sourceNodeId?: string; targetNodeId?: string;
+    color?: string | null; customColor?: string | null; x?: number; y?: number; width?: number; height?: number } | null;
+  remote: SyncConflict["local"];
+  remoteDeleted: boolean;
   resolvable: boolean;
   canKeepLocal: boolean;
   remoteRevision: number | null;

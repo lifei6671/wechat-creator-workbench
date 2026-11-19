@@ -21,6 +21,7 @@ const INLINE_BYTES: usize = 64 * 1024;
 const MAX_ENTITY_BYTES: usize = 512 * 1024;
 const MAX_GROUP: usize = 256;
 
+mod canvas_conflicts;
 mod merge;
 mod reconcile;
 
@@ -1139,111 +1140,7 @@ fn apply_received_with_backup(
     db: &Workspace,
     backups: Option<&crate::backup::Backups>,
 ) -> Result<Applied> {
-    let result = db.write(|tx| {
-        if tx.query_row("SELECT paused FROM sync_binding WHERE id=1", [], |row| {
-            row.get::<_, bool>(0)
-        })? {
-            return Err(AppError::new("SYNC_PAUSED", "同步连接已暂停"));
-        }
-        let (capture, bootstrap, initialized): (bool, Option<i64>, bool) = tx.query_row(
-            "SELECT capture,bootstrap_cursor,initialized FROM sync_progress",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        tx.execute("UPDATE sync_progress SET capture=0", [])?;
-        let mut changed = Applied::default();
-        if let Some(cursor) = bootstrap {
-            if initialized {
-                changed.extend(reconcile::baseline(tx)?);
-            } else if empty_local(tx)? {
-                reconcile::outbox(tx)?;
-                // The built-in directory rows are pristine. Replacing them as a set
-                // avoids unique-name collisions when the cloud has renamed two directories.
-                tx.execute("DELETE FROM categories", [])?;
-                changed.extend(apply_baseline(tx)?);
-            } else {
-                reconcile::outbox(tx)?;
-                let backups = backups
-                    .ok_or_else(|| AppError::new("SYNC_BACKUP", "首次合并需要先备份本地工作区"))?;
-                changed.extend(merge::baseline(tx, backups)?);
-            }
-            tx.execute("DELETE FROM sync_bootstrap", [])?;
-            tx.execute("DELETE FROM sync_inbox WHERE cursor<=?1", [cursor])?;
-            changed.network_ready = true;
-            tx.execute(
-                "UPDATE sync_progress SET initialized=1,bootstrap_cursor=NULL,cursor=?1",
-                [cursor],
-            )?;
-        }
-        changed.extend(reconcile::replay_deferred(tx)?);
-        let mut query = tx.prepare(
-            "SELECT group_id FROM sync_inbox GROUP BY group_id
-             HAVING COUNT(*)=MAX(group_size) ORDER BY MIN(cursor)",
-        )?;
-        let groups = query
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for group in groups {
-            let mut query = tx
-                .prepare("SELECT payload_json FROM sync_inbox WHERE group_id=?1 ORDER BY cursor")?;
-            let mut mutations = Vec::new();
-            let mut blocked = false;
-            for encoded in query.query_map([&group], |row| row.get::<_, String>(0))? {
-                let entity: Entity = serde_json::from_str(&encoded?).map_err(invalid_response)?;
-                let (base, _) = revision(tx, &entity.key)?;
-                if entity.remote_revision <= base {
-                    continue;
-                }
-                if let Some(generation) = generation(tx, &entity.key)?
-                    && !matching_canvas_delete(tx, &entity)?
-                {
-                    issue(
-                        tx,
-                        &entity.key,
-                        generation,
-                        "检测到同一内容在多台设备修改",
-                        Some(&entity),
-                    )?;
-                    blocked = true;
-                }
-                mutations.push(entity);
-            }
-            if blocked {
-                continue;
-            }
-            tx.execute_batch("SAVEPOINT sync_apply_group")?;
-            match apply_group(tx, mutations.clone()) {
-                Ok(items) => {
-                    changed.extend(items);
-                    for entity in &mutations {
-                        if entity.key.entity_type.is_canvas() && entity.deleted_at.is_some() {
-                            tx.execute(
-                                "DELETE FROM sync_dirty WHERE (entity_type,entity_id)=(?1,?2)",
-                                params![entity.key.entity_type.key(), entity.key.entity_id],
-                            )?;
-                        }
-                        tx.execute(
-                            "DELETE FROM sync_issues WHERE (entity_type,entity_id)=(?1,?2)",
-                            params![entity.key.entity_type.key(), entity.key.entity_id],
-                        )?;
-                    }
-                    tx.execute("DELETE FROM sync_inbox WHERE group_id=?1", [&group])?;
-                    tx.execute_batch("RELEASE sync_apply_group")?;
-                }
-                Err(error) => {
-                    tx.execute_batch("ROLLBACK TO sync_apply_group; RELEASE sync_apply_group")?;
-                    for entity in &mutations {
-                        issue(tx, &entity.key, 0, &error.to_string(), Some(entity))?;
-                    }
-                }
-            }
-        }
-        tx.execute(
-            "UPDATE sync_progress SET capture=?1",
-            [capture || bootstrap.is_some()],
-        )?;
-        Ok(changed)
-    });
+    let result = db.write(|tx| apply_received_transaction(tx, backups));
     if result
         .as_ref()
         .is_err_and(|error| error.code() == "SYNC_HISTORY")
@@ -1251,6 +1148,115 @@ fn apply_received_with_backup(
         pause_with_reason(db, "history_inconsistent")?;
     }
     result
+}
+
+fn apply_received_transaction(
+    tx: &Connection,
+    backups: Option<&crate::backup::Backups>,
+) -> Result<Applied> {
+    if tx.query_row("SELECT paused FROM sync_binding WHERE id=1", [], |row| {
+        row.get::<_, bool>(0)
+    })? {
+        return Err(AppError::new("SYNC_PAUSED", "同步连接已暂停"));
+    }
+    let (capture, bootstrap, initialized): (bool, Option<i64>, bool) = tx.query_row(
+        "SELECT capture,bootstrap_cursor,initialized FROM sync_progress",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    tx.execute("UPDATE sync_progress SET capture=0", [])?;
+    let mut changed = Applied::default();
+    if let Some(cursor) = bootstrap {
+        if initialized {
+            changed.extend(reconcile::baseline(tx)?);
+        } else if empty_local(tx)? {
+            reconcile::outbox(tx)?;
+            // The built-in directory rows are pristine. Replacing them as a set
+            // avoids unique-name collisions when the cloud has renamed two directories.
+            tx.execute("DELETE FROM categories", [])?;
+            changed.extend(apply_baseline(tx)?);
+        } else {
+            reconcile::outbox(tx)?;
+            let backups = backups
+                .ok_or_else(|| AppError::new("SYNC_BACKUP", "首次合并需要先备份本地工作区"))?;
+            changed.extend(merge::baseline(tx, backups)?);
+        }
+        tx.execute("DELETE FROM sync_bootstrap", [])?;
+        tx.execute("DELETE FROM sync_inbox WHERE cursor<=?1", [cursor])?;
+        changed.network_ready = true;
+        tx.execute(
+            "UPDATE sync_progress SET initialized=1,bootstrap_cursor=NULL,cursor=?1",
+            [cursor],
+        )?;
+    }
+    changed.extend(reconcile::replay_deferred(tx)?);
+    let mut query = tx.prepare(
+        "SELECT group_id FROM sync_inbox GROUP BY group_id
+         HAVING COUNT(*)=MAX(group_size) ORDER BY MIN(cursor)",
+    )?;
+    let groups = query
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for group in groups {
+        let mut query = tx
+            .prepare("SELECT payload_json FROM sync_inbox WHERE group_id=?1 ORDER BY cursor")?;
+        let mut mutations = Vec::new();
+        let mut blocked = false;
+        for encoded in query.query_map([&group], |row| row.get::<_, String>(0))? {
+            let entity: Entity = serde_json::from_str(&encoded?).map_err(invalid_response)?;
+            let (base, _) = revision(tx, &entity.key)?;
+            if entity.remote_revision <= base {
+                continue;
+            }
+            if let Some(generation) = generation(tx, &entity.key)?
+                && !matching_canvas_delete(tx, &entity)?
+            {
+                issue(
+                    tx,
+                    &entity.key,
+                    generation,
+                    "检测到同一内容在多台设备修改",
+                    Some(&entity),
+                )?;
+                blocked = true;
+            }
+            mutations.push(entity);
+        }
+        if blocked {
+            continue;
+        }
+        tx.execute_batch("SAVEPOINT sync_apply_group")?;
+        match apply_group(tx, mutations.clone()) {
+            Ok(items) => {
+                changed.extend(items);
+                for entity in &mutations {
+                    if entity.key.entity_type.is_canvas() && entity.deleted_at.is_some() {
+                        tx.execute(
+                            "DELETE FROM sync_dirty WHERE (entity_type,entity_id)=(?1,?2)",
+                            params![entity.key.entity_type.key(), entity.key.entity_id],
+                        )?;
+                    }
+                    tx.execute(
+                        "DELETE FROM sync_issues WHERE (entity_type,entity_id)=(?1,?2)",
+                        params![entity.key.entity_type.key(), entity.key.entity_id],
+                    )?;
+                }
+                tx.execute("DELETE FROM sync_inbox WHERE group_id=?1", [&group])?;
+                tx.execute_batch("RELEASE sync_apply_group")?;
+            }
+            Err(error) => {
+                tx.execute_batch("ROLLBACK TO sync_apply_group; RELEASE sync_apply_group")?;
+                for entity in &mutations {
+                    issue(tx, &entity.key, 0, &error.to_string(), Some(entity))?;
+                }
+            }
+        }
+    }
+    tx.execute(
+        "UPDATE sync_progress SET capture=?1",
+        [capture || bootstrap.is_some()],
+    )?;
+    Ok(changed)
 }
 
 fn matching_canvas_delete(conn: &Connection, entity: &Entity) -> Result<bool> {
@@ -1498,6 +1504,7 @@ pub struct Conflict {
     reason: String,
     local: Option<Value>,
     remote: Option<Value>,
+    remote_deleted: bool,
     resolvable: bool,
     can_keep_local: bool,
     remote_revision: Option<i64>,
@@ -1551,10 +1558,11 @@ pub fn sync_conflicts(db: State<'_, Workspace>) -> Result<Vec<Conflict>> {
             let remote = remote.map(|remote| serde_json::from_str::<Entity>(&remote)).transpose().map_err(invalid_response)?;
             let local_generation = generation(conn,&key)?;
             let remote_revision = remote.as_ref().map(|entity| entity.remote_revision);
-            let resolvable = entity_type == Kind::Entry && local_generation.is_some() && remote.is_some();
+            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas()) && local_generation.is_some() && remote.is_some();
             let can_keep_local = entity_type.is_canvas() && local_generation.is_some()
                 && remote.as_ref().is_some_and(|entity| entity.deleted_at.is_none());
-            Ok(Conflict { key,reason,local,remote:remote.map(|entity| entity.payload),resolvable,can_keep_local,remote_revision,local_generation })
+            let remote_deleted = remote.as_ref().is_some_and(|entity| entity.deleted_at.is_some());
+            Ok(Conflict { key,reason,local,remote:remote.map(|entity| entity.payload),remote_deleted,resolvable,can_keep_local,remote_revision,local_generation })
         }).collect()
     })
 }
@@ -1588,21 +1596,24 @@ pub async fn sync_resolve(
         }
         return result;
     }
-    if !entity_type.is_canvas() || !matches!(choice, Resolution::Local) {
+    if !entity_type.is_canvas() {
         return Err(AppError::invalid("此同步冲突不支持所选处理方式"));
     }
-    keep_canvas_local(
+    let result = canvas_conflicts::resolve(
         &db,
         &Key {
             entity_type,
             entity_id,
         },
+        choice,
         remote_revision,
         local_generation,
-    )?;
-    sync.wake();
-    sync.changed(&app);
-    Ok(Applied::default())
+    );
+    super::scheduler::settled(&sync, &app, result.as_ref().err());
+    if result.is_ok() {
+        sync.wake();
+    }
+    result
 }
 
 fn in_outbox(conn: &Connection, key: &Key) -> Result<bool> {
@@ -1643,26 +1654,6 @@ fn resolution_target(
         return Err(changed());
     }
     Ok(remote)
-}
-
-fn keep_canvas_local(
-    db: &Workspace,
-    key: &Key,
-    remote_revision: i64,
-    local_generation: i64,
-) -> Result<()> {
-    db.write(|tx| {
-        let remote = resolution_target(tx, key, remote_revision, local_generation)?;
-        if remote.deleted_at.is_some() {
-            return Err(AppError::invalid("云端已删除此项，请先保留本地内容"));
-        }
-        remember(tx, key, remote_revision, false)?;
-        tx.execute(
-            "DELETE FROM sync_issues WHERE (entity_type,entity_id)=(?1,?2)",
-            params![key.entity_type.key(), key.entity_id],
-        )?;
-        Ok(())
-    })
 }
 
 fn resolve(
@@ -1957,12 +1948,12 @@ mod tests {
         let (version, generation, remote) = conflict();
         assert_eq!(remote["contentMd"], "A 的并发修改");
         assert_eq!(
-            keep_canvas_local(&b, &key, version, generation + 1)
-                .unwrap_err()
+            canvas_conflicts::resolve(&b, &key, Resolution::Local, version, generation + 1)
+                .err().unwrap()
                 .code(),
             "SYNC_CONFLICT_CHANGED"
         );
-        keep_canvas_local(&b, &key, version, generation).unwrap();
+        canvas_conflicts::resolve(&b, &key, Resolution::Local, version, generation).unwrap();
         a.update_collection_node_text("note", "A 的更新版本")
             .unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
@@ -1971,7 +1962,7 @@ mod tests {
         let (new_version, new_generation, remote) = conflict();
         assert!(new_version > version);
         assert_eq!(remote["contentMd"], "A 的更新版本");
-        keep_canvas_local(&b, &key, new_version, new_generation).unwrap();
+        canvas_conflicts::resolve(&b, &key, Resolution::Local, new_version, new_generation).unwrap();
         exchange(&b, &b_assets, &sync).await.unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
         assert!(

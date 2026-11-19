@@ -197,7 +197,7 @@ it("offers reconnecting against the saved instance when its device credential wa
   }
 });
 
-it("keeps a local canvas edit by sending the displayed conflict version", async () => {
+it.each(["local", "cloud", "copy"] as const)("resolves a canvas edit with %s using the displayed versions", async choice => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   const resolve = vi.fn().mockResolvedValue(undefined);
@@ -207,23 +207,73 @@ it("keeps a local canvas edit by sending the displayed conflict version", async 
   vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
   vi.spyOn(desktop, "syncConflicts").mockResolvedValueOnce([{
     entityType: "collection_node", entityId: "note", reason: "两端修改了同一张卡片",
-    local: { contentMd: "本地" }, remote: { contentMd: "云端" },
-    resolvable: false, canKeepLocal: true, remoteRevision: 3, localGeneration: 8,
+    local: { kind: "text", contentMd: "本地", x: 10, y: 20, width: 300, height: 200 },
+    remote: { kind: "text", contentMd: "云端", x: 30, y: 40, width: 400, height: 200 },
+    remoteDeleted: false, resolvable: true, canKeepLocal: true, remoteRevision: 3, localGeneration: 8,
   }]).mockResolvedValue([]);
   try {
     flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={resolve} onRebuild={vi.fn()} /></Theme>));
     const keep = await vi.waitFor(() => {
-      const button = [...container.querySelectorAll("button")].find(item => item.textContent === "保留本地版本");
+      const label = { local: "保留本地版本", cloud: "采用云端版本", copy: "另存副本" }[choice];
+      const button = [...container.querySelectorAll("button")].find(item => item.textContent === label);
       expect(button).toBeDefined();
       return button!;
     });
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="本地版本"]')?.value).toContain("本地");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="云端版本"]')?.value).toContain("位置：30, 40");
+    expect(container.textContent).toContain("完整复制本地白板");
     flushSync(() => keep.click());
-    await vi.waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith("collection_node", "note", "local", 3, 8));
-    await vi.waitFor(() => expect(container.textContent).toContain("本地版本已排队上传"));
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith("collection_node", "note", choice, 3, 8));
+    await vi.waitFor(() => expect(container.textContent).toContain(choice === "local" ? "本地版本已排队上传" : choice === "copy" ? "已另存本地白板副本" : "冲突已处理"));
   } finally {
     flushSync(() => root.unmount());
     container.remove();
   }
+});
+
+it.each(["collection", "collection_edge"] as const)("shows both %s versions and offers all choices", async entityType => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({ url: "https://sync.example.test/", deviceId: "device", instanceId: "i", epoch: "e", paused: false });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "device", devices: [] });
+  vi.mocked(desktop.syncConflicts).mockResolvedValue([{
+    entityType, entityId: "item", reason: "版本不同", local: { title: "本地白板", description: "本地说明", label: "本地连线", sourceNodeId: "a", targetNodeId: "b" },
+    remote: { title: "云端白板", description: "云端说明", label: "云端连线", sourceNodeId: "b", targetNodeId: "c" },
+    remoteDeleted: false, resolvable: true, canKeepLocal: true, remoteRevision: 2, localGeneration: 1,
+  }]);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="云端版本"]')).not.toBeNull());
+    const local = container.querySelector<HTMLTextAreaElement>('[aria-label="本地版本"]')!;
+    const remote = container.querySelector<HTMLTextAreaElement>('[aria-label="云端版本"]')!;
+    expect(local.value).toContain(entityType === "collection" ? "本地说明" : "本地连线");
+    expect(remote.value).toContain(entityType === "collection" ? "云端说明" : "终点：c");
+    expect(local.readOnly && remote.readOnly).toBe(true);
+    for (const text of ["保留本地版本", "采用云端版本", "另存副本"]) {
+      expect([...container.querySelectorAll("button")].find(button => button.textContent === text)?.disabled).toBe(false);
+    }
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it.each([true, false])("explains deleted canvas versions (cloud deleted: %s)", async remoteDeleted => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({ url: "https://sync.example.test/", deviceId: "device", instanceId: "i", epoch: "e", paused: false });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "device", devices: [] });
+  vi.mocked(desktop.syncConflicts).mockResolvedValue([{
+    entityType: "collection", entityId: "topic", reason: "修改与删除冲突", local: remoteDeleted ? { title: "本地白板", description: "说明" } : null,
+    remote: remoteDeleted ? {} : { title: "云端白板", description: "说明" }, remoteDeleted,
+    resolvable: true, canKeepLocal: !remoteDeleted, remoteRevision: 2, localGeneration: 1,
+  }]);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="云端版本"]')).not.toBeNull());
+    expect(container.querySelector<HTMLTextAreaElement>(`[aria-label="${remoteDeleted ? "云端" : "本地"}版本"]`)?.value).toBe("此项已删除");
+    const button = (text: string) => [...container.querySelectorAll("button")].find(item => item.textContent === text)!;
+    expect(button("采用云端版本").disabled).toBe(false);
+    expect(button("保留本地版本").disabled).toBe(remoteDeleted);
+    expect(button("另存副本").disabled).toBe(!remoteDeleted);
+  } finally { flushSync(() => root.unmount()); container.remove(); }
 });
 
 it("refreshes a visible settings page after native authentication failure and keeps blocked work out of the synced state", async () => {

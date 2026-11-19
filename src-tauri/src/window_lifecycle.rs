@@ -102,7 +102,7 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
             _ => {}
         })
         .build(app)?;
-    tray.set_visible(false)
+    tray.set_visible(cfg!(target_os = "macos"))
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -113,6 +113,7 @@ fn hide_in_tray(window: &Window) -> Result<()> {
         .expect("workspace tray");
     tray.set_visible(true).map_err(window_error)?;
     if let Err(error) = window.hide() {
+        #[cfg(windows)]
         if let Err(error) = tray.set_visible(false) {
             eprintln!("Could not hide the workspace tray icon: {error}");
         }
@@ -135,7 +136,7 @@ pub fn restore_window(app: &AppHandle) {
         #[cfg(windows)]
         crate::graphics::ensure_usable_window_size(&window)?;
         window.show()?;
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(windows)]
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
             tray.set_visible(false)?;
         }
