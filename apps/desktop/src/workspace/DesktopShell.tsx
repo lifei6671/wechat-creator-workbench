@@ -2223,5 +2223,6 @@ export function DesktopShell() {
 function ActivePreview({ queue, projectLinks }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null }) {
   const materialized = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const { fields, revision } = useMemo(() => queue.capture(), [queue, materialized]);
-  return <MarkdownPreview markdown={fields.contentMd} themeId={fields.themeId} revision={revision} projectLinks={projectLinks} />;
+  return <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
+    projectLinks={projectLinks} />;
 }

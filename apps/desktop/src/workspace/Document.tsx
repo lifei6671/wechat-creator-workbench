@@ -336,12 +336,13 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   </div>;
 }
 
-export function MarkdownPreview({ markdown, themeId, revision, projectLinks }: {
-  markdown: string; themeId?: string | null; revision: number; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null;
+export function MarkdownPreview({ title, markdown, themeId, revision, projectLinks }: {
+  title: string; markdown: string; themeId?: string | null; revision: number; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null;
 }) {
   const snapshot = useMemo(() => ({ markdown, themeId, revision }), [markdown, themeId, revision]);
   const deferred = useDeferredValue(snapshot);
   const host = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const body = useRef<HTMLElement>(null);
   const displayed = useRef<RenderedWechat | null>(null);
   const [assetRevision, setAssetRevision] = useState(0);
@@ -352,8 +353,13 @@ export function MarkdownPreview({ markdown, themeId, revision, projectLinks }: {
     const style = document.createElement("style");
     style.textContent = previewCss;
     const article = document.createElement("article");
+    const titleElement = document.createElement("h1");
+    titleElement.className = "preview-title";
+    const content = document.createElement("div");
+    article.append(titleElement, content);
     root.replaceChildren(style, article);
-    body.current = article;
+    heading.current = titleElement;
+    body.current = content;
     const cache = resources.current;
     return () => {
       displayed.current?.dispose();
@@ -361,6 +367,10 @@ export function MarkdownPreview({ markdown, themeId, revision, projectLinks }: {
       cache.clear();
     };
   }, []);
+
+  useLayoutEffect(() => {
+    heading.current!.textContent = title || untitled;
+  }, [title]);
 
   useEffect(() => {
     const listener = desktop.onAssetsChanged(() => {
@@ -395,14 +405,14 @@ export function MarkdownPreview({ markdown, themeId, revision, projectLinks }: {
       if (!alive) { result.dispose(); return; }
       displayed.current?.dispose();
       displayed.current = result;
-      const article = body.current!;
-      article.innerHTML = result.html;
-      for (const link of article.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const content = body.current!;
+      content.innerHTML = result.html;
+      for (const link of content.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         const href = link.getAttribute("href")!;
         if (href.startsWith("#") && footnoteId.test(href.slice(1))) {
           link.addEventListener("click", event => {
             event.preventDefault();
-            article.querySelector(`#${CSS.escape(href.slice(1))}`)?.scrollIntoView({ block: "nearest" });
+            content.querySelector(`#${CSS.escape(href.slice(1))}`)?.scrollIntoView({ block: "nearest" });
           });
         } else {
           link.removeAttribute("href");
@@ -424,7 +434,11 @@ export function MarkdownPreview({ markdown, themeId, revision, projectLinks }: {
     return () => { alive = false; controller.abort(); };
   }, [deferred.markdown, deferred.themeId, deferred.revision, assetRevision, projectLinks]);
 
-  return <div className="markdown-preview" ref={host} aria-label="公众号排版预览" />;
+  return <div className="preview-phone">
+    <div className="preview-phone-screen">
+      <div className="markdown-preview" ref={host} role="region" aria-label="公众号排版预览" tabIndex={0} />
+    </div>
+  </div>;
 }
 
 export interface DocumentActions {

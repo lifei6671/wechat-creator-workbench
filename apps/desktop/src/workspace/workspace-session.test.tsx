@@ -445,6 +445,9 @@ it("restores the last sidebar and document views while keeping their defaults", 
   expect(links("second")).toBe("false");
   flushSync(() => preview().click());
   expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("preview");
+  const screen = container.querySelector<HTMLElement>('[role="region"][aria-label="公众号排版预览"]');
+  expect(screen?.tabIndex).toBe(0);
+  expect(screen?.shadowRoot?.querySelector("article > h1:first-child")?.textContent).toBe("first");
   click("#hide-sidebar");
   expect(container.querySelector("#show-sidebar")).not.toBeNull();
   click("#tab-second");
