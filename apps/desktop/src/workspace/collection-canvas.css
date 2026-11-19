@@ -25,15 +25,43 @@
 .collection-flow .react-flow__edge-text { font-size: var(--small-font); }
 .collection-guides { position: absolute; inset: 0 auto auto 0; overflow: visible; pointer-events: none; }
 .collection-guides line { stroke: var(--accent-9); stroke-width: 1; }
-.collection-flow .react-flow__handle {
-  width: 9px;
-  height: 9px;
-  border: 0.5px solid var(--gray-8);
-  background: var(--gray-2);
+.collection-card > .react-flow__handle {
+  /* React Flow measures this box for edge endpoints. The visible dot is drawn separately. */
+  width: 0;
+  height: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
 }
-.collection-flow .react-flow__handle:hover, .collection-flow .react-flow__handle.connectingfrom {
-  border-color: var(--accent-9);
-  background: var(--accent-9);
+.collection-card > .react-flow__handle-left { left: calc(0px - var(--card-border-width)); }
+.collection-card > .react-flow__handle-right { right: calc(0px - var(--card-border-width)); }
+.collection-card > .react-flow__handle::before,
+.collection-card > .react-flow__handle::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+}
+.collection-card > .react-flow__handle::before { inset: -16px; }
+.collection-card > .react-flow__handle::after {
+  inset: -8px;
+  border: 2px solid var(--card-border);
+  background: var(--color-panel-solid);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--card-border) 25%, transparent), 0 0 10px var(--card-border);
+}
+.collection-card > .react-flow__handle:is(:hover, .connectingfrom, .connectingto, .clickconnecting),
+.react-flow__node:focus-visible > .collection-card > .react-flow__handle {
+  opacity: 1;
+}
+.collection-card > .react-flow__handle:is(.connectingfrom, .valid, .clickconnecting)::after {
+  background: var(--card-border);
+}
+@media (hover: none) {
+  .collection-card[data-selected="true"] > .react-flow__handle { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .collection-card > .react-flow__handle { transition: none; }
 }
 .collection-card {
   --card-border: var(--card-color, var(--divider-color));

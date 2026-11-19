@@ -131,7 +131,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   const savedViewport = useRef(initial.collection.viewport);
   const viewportTimer = useRef<number | undefined>(undefined);
   const prepareWebZoom = useRef<(() => Promise<void> | undefined) | undefined>(undefined);
-  const cancelWheelZoom = useRef<() => void>(undefined);
+  const cancelViewportMotion = useRef<() => void>(undefined);
   const zoomIntent = useRef(0);
   const viewportWrite = useRef<{ view: Viewport; saving: Promise<void> } | undefined>(undefined);
   const loadedRevision = useRef(revision);
@@ -142,7 +142,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   const activeWebNodeId = activePreview?.id ?? null;
 
   const animateZoom = useCallback((action: () => void) => {
-    cancelWheelZoom.current?.();
+    cancelViewportMotion.current?.();
     const intent = ++zoomIntent.current;
     void (async () => {
       await prepareWebZoom.current?.();
@@ -152,47 +152,48 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
 
   useEffect(() => {
     const canvas = area.current!;
-    let pending: { zoom: number; x: number; y: number } | undefined;
+    const mac = /Mac/.test(navigator.platform);
+    let pending: { zoom: number; anchorX: number; anchorY: number; panX: number; panY: number } | undefined;
+    let gestureScale: number | undefined;
     let frame: number | undefined;
     let waiting = false, disposed = false;
 
-    function applyWheelZoom() {
+    function applyMotion() {
       frame = undefined;
       const target = pending;
       pending = undefined;
       if (!target) return;
       const view = flow.getViewport();
-      if (target.zoom === view.zoom) return;
+      if (target.zoom === view.zoom && !target.panX && !target.panY) return;
       const scale = target.zoom / view.zoom;
       void flow.setViewport({
-        x: target.x - (target.x - view.x) * scale,
-        y: target.y - (target.y - view.y) * scale,
+        x: target.anchorX - (target.anchorX - view.x) * scale + target.panX,
+        y: target.anchorY - (target.anchorY - view.y) * scale + target.panY,
         zoom: target.zoom,
       }, { duration: 0 }).catch(onError);
     }
 
     function scheduleFrame() {
-      if (!disposed && pending && frame === undefined) frame = requestAnimationFrame(applyWheelZoom);
+      if (!disposed && pending && frame === undefined) frame = requestAnimationFrame(applyMotion);
     }
 
-    function cancelWheel() {
+    function cancelMotion() {
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = undefined;
       pending = undefined;
     }
 
-    function wheel(event: WheelEvent) {
-      if (event.defaultPrevented || selectingCards.current || !event.deltaY || !(event.target instanceof Element)
-        || event.target.closest(".nowheel, input, textarea, [contenteditable=true], [role=dialog]")) return;
-      event.preventDefault();
-      event.stopPropagation();
+    function canMoveCanvas(event: Event) {
+      return !event.defaultPrevented && !selectingCards.current && event.target instanceof Element
+        && !event.target.closest(".nowheel, input, textarea, [contenteditable=true], [role=dialog]");
+    }
+
+    function motionTarget() {
+      return pending ??= { zoom: flow.getViewport().zoom, anchorX: 0, anchorY: 0, panX: 0, panY: 0 };
+    }
+
+    function requestMotion() {
       ++zoomIntent.current;
-      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1);
-      const pinchGain = event.ctrlKey && commandKey === "⌘" ? 10 : 1;
-      const base = pending?.zoom ?? flow.getViewport().zoom;
-      const zoom = Math.max(0.1, Math.min(3, base * 2 ** (-delta * 0.002 * pinchGain)));
-      const rect = canvas.getBoundingClientRect();
-      pending = { zoom, x: event.clientX - rect.left, y: event.clientY - rect.top };
       const prepared = prepareWebZoom.current?.();
       if (!prepared) scheduleFrame();
       else if (!waiting) {
@@ -205,22 +206,74 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
         }).catch(onError);
       } else void prepared.catch(onError);
     }
-    function pinch(event: TouchEvent) {
+
+    function zoomAt(event: Pick<MouseEvent, "clientX" | "clientY">, factor: number) {
+      const target = motionTarget();
+      const rect = canvas.getBoundingClientRect();
+      target.zoom = Math.max(0.1, Math.min(3, target.zoom * factor));
+      target.anchorX = event.clientX - rect.left;
+      target.anchorY = event.clientY - rect.top;
+      requestMotion();
+    }
+
+    function wheel(event: WheelEvent) {
+      const zooming = !mac || event.ctrlKey || event.metaKey;
+      const mode = event.deltaMode;
+      if (!canMoveCanvas(event) || (!event.deltaY && (zooming || !event.deltaX))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // WebKit can send a Ctrl-wheel event during the same pinch gesture.
+      if (gestureScale !== undefined && event.ctrlKey) return;
+      const deltaY = event.deltaY * (mode === 1 ? 16 : mode === 2 ? canvas.clientHeight : 1);
+      if (zooming) {
+        const pinchGain = mac && event.ctrlKey ? 10 : 1;
+        zoomAt(event, 2 ** (-deltaY * 0.002 * pinchGain));
+      } else {
+        const target = motionTarget();
+        target.panX -= event.deltaX * (mode === 1 ? 16 : mode === 2 ? canvas.clientWidth : 1);
+        target.panY -= deltaY;
+        requestMotion();
+      }
+    }
+
+    function gesture(event: Event) {
+      if (event.type === "gesturestart") {
+        if (!canMoveCanvas(event)) return;
+        gestureScale = 1;
+      }
+      if (gestureScale === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.type === "gestureend") {
+        gestureScale = undefined;
+      } else if (event.type === "gesturechange") {
+        const pinch = event as Event & { scale: number; clientX: number; clientY: number };
+        if (!Number.isFinite(pinch.scale) || pinch.scale <= 0 || pinch.scale === gestureScale) return;
+        const factor = pinch.scale / gestureScale;
+        gestureScale = pinch.scale;
+        zoomAt(pinch, factor);
+      }
+    }
+
+    function prepareTouchZoom(event: TouchEvent) {
       if (event.touches.length === 2 && event.target instanceof Element && !event.target.closest(".nowheel, [contenteditable=true]")) {
         void prepareWebZoom.current?.()?.catch(onError);
       }
     }
+    const webkitGestures = ["gesturestart", "gesturechange", "gestureend"];
     canvas.addEventListener("wheel", wheel, { passive: false, capture: true });
-    canvas.addEventListener("touchstart", pinch, { passive: true, capture: true });
-    canvas.addEventListener("touchmove", pinch, { passive: true, capture: true });
-    cancelWheelZoom.current = cancelWheel;
+    if (mac) for (const name of webkitGestures) canvas.addEventListener(name, gesture, { passive: false, capture: true });
+    canvas.addEventListener("touchstart", prepareTouchZoom, { passive: true, capture: true });
+    canvas.addEventListener("touchmove", prepareTouchZoom, { passive: true, capture: true });
+    cancelViewportMotion.current = cancelMotion;
     return () => {
       disposed = true;
-      cancelWheelZoom.current = undefined;
-      cancelWheel();
+      cancelViewportMotion.current = undefined;
+      cancelMotion();
       canvas.removeEventListener("wheel", wheel, true);
-      canvas.removeEventListener("touchstart", pinch, true);
-      canvas.removeEventListener("touchmove", pinch, true);
+      if (mac) for (const name of webkitGestures) canvas.removeEventListener(name, gesture, true);
+      canvas.removeEventListener("touchstart", prepareTouchZoom, true);
+      canvas.removeEventListener("touchmove", prepareTouchZoom, true);
     };
   }, [flow, onError]);
 

@@ -567,6 +567,39 @@ it("coalesces wheel input into one viewport update per frame and preserves the l
   }
 });
 
+it("pans both axes on macOS and zooms once per WebKit pinch", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  const canvas = await mountCanvas(undefined, false);
+  const area = canvas.container.querySelector(".collection-flow")!;
+  area.getBoundingClientRect = () => new DOMRect(100, 80, 480, 420);
+  const input = { clientX: 300, clientY: 240, bubbles: true, cancelable: true };
+  const gesture = (type: string, scale: number) => area.dispatchEvent(Object.assign(new MouseEvent(type, input), { scale }));
+  try {
+    viewportControl.set.mockClear();
+    const cardEditor = area.appendChild(document.createElement("div"));
+    cardEditor.className = "nowheel";
+    expect(cardEditor.dispatchEvent(new WheelEvent("wheel", { ...input, deltaY: 32 }))).toBe(true);
+    expect(area.dispatchEvent(new WheelEvent("wheel", { ...input, deltaX: 16, deltaY: 48 }))).toBe(false);
+    expect(area.dispatchEvent(new WheelEvent("wheel", { ...input, deltaX: -6 }))).toBe(false);
+    await vi.waitFor(() => expect(viewportControl.set).toHaveBeenCalledExactlyOnceWith({ x: 2, y: -24, zoom: 1 }, { duration: 0 }));
+
+    viewportControl.set.mockClear();
+    expect(gesture("gesturestart", 1)).toBe(false);
+    gesture("gesturechange", 1.2);
+    expect(area.dispatchEvent(new WheelEvent("wheel", { ...input, deltaY: -20, ctrlKey: true }))).toBe(false);
+    gesture("gesturechange", 1.5);
+    gesture("gestureend", 1.5);
+    await vi.waitFor(() => expect(viewportControl.set).toHaveBeenCalledExactlyOnceWith({ x: -82, y: -44, zoom: 1.5 }, { duration: 0 }));
+
+    viewportControl.set.mockClear();
+    area.dispatchEvent(new WheelEvent("wheel", { ...input, deltaY: -10, ctrlKey: true }));
+    await vi.waitFor(() => expect(viewportControl.set).toHaveBeenCalledOnce());
+    expect(viewportControl.set.mock.calls[0][0].zoom).toBeCloseTo(2 ** 0.2);
+  } finally {
+    canvas.unmount();
+  }
+});
+
 it("waits for the latest queued write, including a return to the original Markdown", async () => {
   const canvas = await mountCanvas();
   const first = deferred<void>(), latest = deferred<void>();
