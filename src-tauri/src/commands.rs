@@ -277,6 +277,7 @@ pub async fn cancel_exit(
     sync.wake();
     assets.kick();
     mcp.resume(&app, &state).await;
+    crate::window_lifecycle::restore_window(&app);
     Ok(())
 }
 

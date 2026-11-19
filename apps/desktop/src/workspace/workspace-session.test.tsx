@@ -230,6 +230,40 @@ it("waits for the topic name committed on blur before closing the workspace", as
   expect(beginExit).toHaveBeenCalledOnce();
 });
 
+it.each([true, false])("saves pending edits on tray exit and cancels exit on failure (save succeeds: %s)", async succeeds => {
+  let requestExit!: () => void;
+  vi.mocked(desktop.onExit).mockImplementation(async callback => { requestExit = callback; return () => {}; });
+  vi.spyOn(desktop, "beginExit").mockResolvedValue();
+  const finish = vi.spyOn(desktop, "finishExit").mockResolvedValue();
+  const cancel = vi.spyOn(desktop, "cancelExit").mockResolvedValue();
+  let saveSucceeded!: (result: { version: number }) => void;
+  let saveFailed!: (error: Error) => void;
+  const save = vi.spyOn(desktop, "save").mockReturnValue(new Promise((resolve, reject) => {
+    saveSucceeded = resolve;
+    saveFailed = reject;
+  }));
+  saveDocumentTabs(workspaceId, { ids: ["tray-exit"], activeId: "tray-exit" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("tray-exit")).toBe(true));
+  editorQueues.get("tray-exit")!.edit({ contentMd: "退出前的最后修改" });
+  flushSync(requestExit);
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(save.mock.calls[0][2].contentMd).toBe("退出前的最后修改");
+  expect(finish).not.toHaveBeenCalled();
+  if (succeeds) {
+    saveSucceeded({ version: 2 });
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+    expect(cancel).not.toHaveBeenCalled();
+  } else {
+    saveFailed(new Error("disk full"));
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(finish).not.toHaveBeenCalled();
+    expect(editorQueues.get("tray-exit")!.isDirty()).toBe(true);
+    expect(container.textContent).toContain("有内容未保存");
+  }
+});
+
 it("saves the final document edit before confirming a tray hide without starting exit", async () => {
   let requestHide!: () => void;
   vi.mocked(desktop.onHideRequested).mockImplementation(async callback => { requestHide = callback; return () => {}; });

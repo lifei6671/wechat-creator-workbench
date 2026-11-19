@@ -95,10 +95,7 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "workspace-open" => restore_window(app),
-            "workspace-quit" => {
-                restore_window(app);
-                crate::request_exit(app);
-            }
+            "workspace-quit" => crate::request_exit(app),
             _ => {}
         })
         .build(app)?;

@@ -272,12 +272,6 @@ fn main() {
             && !app.state::<Workspace>().exit_committed()
         {
             api.prevent_exit();
-            if app
-                .get_window("main")
-                .is_some_and(|window| matches!(window.is_visible(), Ok(false)))
-            {
-                restore_window(app);
-            }
             request_exit(app);
         }
     });
@@ -317,5 +311,6 @@ fn registered_commands_are_available_to_the_desktop_window() {
 fn request_exit(app: &tauri::AppHandle) {
     if let Err(error) = app.emit_to("main", "workspace-exit-requested", ()) {
         eprintln!("Could not request workspace exit: {error}");
+        restore_window(app);
     }
 }
