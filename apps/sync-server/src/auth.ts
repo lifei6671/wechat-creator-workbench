@@ -1,6 +1,38 @@
 import { equalDigest, hashPattern, invalid, sha256, SyncError, token } from "./protocol.js";
 import { query, type Database, type Device } from "./storage.js";
 
+export async function connect(db: Database, setupSecret: string | undefined, accessKey: unknown,
+  deviceToken: unknown, name: string, instanceId: string, epoch: string) {
+  if (typeof accessKey !== "string" || !hashPattern.test(accessKey)) throw new SyncError(401, "invalid_access_key");
+  const [hash, accessHash] = await Promise.all([deviceHash(deviceToken), sha256(accessKey)]);
+  const setupMatches = setupSecret && hashPattern.test(setupSecret)
+    ? Number(equalDigest(accessHash, await sha256(setupSecret))) : 0;
+  const authorized = "instance_id = ? AND epoch = ? AND (access_hash = ? OR (access_hash IS NULL AND ? = 1))";
+  const authorization = [instanceId, epoch, accessHash, setupMatches] as const;
+  const [, , devices, states] = await db.batch([
+    [`INSERT INTO sync_devices (id, name, token_hash, created_at)
+      SELECT ?, ?, ?, ? FROM sync_identity WHERE ${authorized}
+      ON CONFLICT(token_hash) DO NOTHING`, crypto.randomUUID(), name, hash, Date.now(), ...authorization],
+    [`UPDATE sync_identity SET access_hash = COALESCE(access_hash, ?),
+        claim_device = CASE WHEN claimed = 0 THEN (SELECT id FROM sync_devices WHERE token_hash = ?) ELSE claim_device END,
+        claimed = 1
+      WHERE ${authorized}
+        AND EXISTS (SELECT 1 FROM sync_devices WHERE token_hash = ? AND revoked_at IS NULL)`,
+      accessHash, hash, ...authorization, hash],
+    [`SELECT d.id FROM sync_devices d CROSS JOIN sync_identity s
+      WHERE d.token_hash = ? AND d.revoked_at IS NULL AND s.instance_id = ? AND s.epoch = ? AND s.access_hash = ?`,
+      hash, instanceId, epoch, accessHash],
+    ["SELECT instance_id, epoch, seed_status, seed_device FROM sync_identity"],
+  ]);
+  const state = states[0] as { instance_id: string; epoch: string; seed_status: string; seed_device: string | null };
+  if (state.instance_id !== instanceId) throw new SyncError(409, "reset_required", "instance_changed");
+  if (state.epoch !== epoch) throw new SyncError(409, "reset_required", "epoch_changed");
+  if (!devices.length) throw new SyncError(401, "invalid_access_key");
+  return { protocolVersion: 1, deviceId: (devices[0] as { id: string }).id,
+    serverInstanceId: state.instance_id, syncEpoch: state.epoch,
+    seedStatus: state.seed_status, seedDeviceId: state.seed_device };
+}
+
 export type DeviceAuthorization = { id: string; tokenHash: string };
 
 export async function authenticate(db: Database, authorization: string | undefined): Promise<DeviceAuthorization> {

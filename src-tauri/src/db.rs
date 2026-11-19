@@ -110,6 +110,7 @@ const MIGRATIONS: &[&str] = &[
     TIMELINE_ENTRY_PINS,
     EXTERNAL_ARTICLES,
     ENTRY_SOURCE_DETAILS,
+    include_str!("../migrations/0026_sync_reconciliation.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -427,6 +428,46 @@ pub fn workspace_id(conn: &Connection) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reconciliation_migration_freezes_old_operation_origin_and_pause_reason() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::migrate(&mut conn, 0, 25).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sync_binding VALUES (1,'https://sync.example.test/','instance','epoch','original-device',1);
+             INSERT INTO sync_outbox VALUES (1,'{\"operationId\":\"frozen\",\"mutations\":[]}','[]');
+             UPDATE sync_progress SET cursor=41;",
+        ).unwrap();
+        super::migrate(&mut conn, 25, super::SCHEMA_VERSION).unwrap();
+        let state = conn
+            .query_row(
+                "SELECT origin_device_id,pause_reason,(SELECT cursor FROM sync_progress)
+             FROM sync_outbox CROSS JOIN sync_binding",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            ("original-device".into(), "legacy_review".into(), 41)
+        );
+        conn.execute("UPDATE sync_binding SET device_id='registered-again'", [])
+            .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT origin_device_id FROM sync_outbox", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "original-device"
+        );
+    }
+
     #[test]
     fn canvas_migration_enrolls_existing_items_without_resetting_the_sync_cursor() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();

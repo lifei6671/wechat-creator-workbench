@@ -36,10 +36,19 @@ export type LinkImportResult = { kind: "wechat"; job: WechatImportJob } | {
 };
 export interface McpConfig { enabled: boolean; port: number; permission: "read" | "write" }
 export interface McpStatus { config: McpConfig; running: boolean; error: string | null }
-export interface SyncBinding { url: string; instanceId: string; epoch: string; deviceId: string; paused: boolean }
+export interface SyncBinding { url: string; instanceId: string; epoch: string; deviceId: string; paused: boolean; pauseReason?: string | null }
+export interface SyncActivity {
+  hasLocalContent: boolean;
+  initialized: boolean;
+  pending: boolean;
+  incoming: boolean;
+  issues: number;
+  phase: "idle" | "connecting" | "downloading" | "merging" | "syncing" | "waiting_seed";
+  error: { code: string; message: string } | null;
+  lastExchangeAt: number | null;
+}
 export interface SyncDevice { deviceId: string; name: string; createdAt: number; revokedAt: number | null }
 export interface SyncDevices { currentDeviceId: string; devices: SyncDevice[] }
-export type SyncConnectMethod = "claim" | "join" | "recover";
 export type SyncResolution = "cloud" | "local" | "copy";
 export interface SyncApplied { changedEntries: string[]; changedCollections: string[]; mergeArchive?: string }
 export interface SyncConflict {
@@ -100,6 +109,7 @@ export const desktop = {
   setWindowBackground: (color: string) => getCurrentWebviewWindow().setBackgroundColor(color),
   openLink: (url: string) => openUrl(url),
   gpuAcceleration: (enabled?: boolean) => invoke<boolean>("gpu_acceleration", { enabled }),
+  closeToTray: (enabled?: boolean) => invoke<boolean>("close_to_tray", { enabled }),
   library: (includeArticleCounts = false) => invoke<Library>("library", { includeArticleCounts }),
   entries: (filter: EntryFilter) => invoke<EntryPage>("entries", { filter }),
   entry: (id: string) => invoke<Entry>("get_entry", { id }),
@@ -166,15 +176,22 @@ export const desktop = {
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
   syncStatus: () => invoke<SyncBinding | null>("sync_status"),
   syncDefaultDeviceName: () => invoke<string | null>("sync_default_device_name"),
-  syncConnect: (url: string, name: string, method: SyncConnectMethod, code: string, rebuild?: boolean) =>
-    invoke<SyncBinding>("sync_connect", { url, name, method, code, rebuild }),
+  syncConnect: (url: string, name: string, accessKey?: string) =>
+    invoke<SyncBinding>("sync_connect", { url, name, accessKey }),
+  syncRecover: (url: string, name: string, recoveryKey: string) =>
+    invoke<SyncBinding>("sync_recover", { url, name, recoveryKey }),
+  syncReauthorize: (url: string, name: string, accessKey: string) =>
+    invoke<SyncBinding>("sync_reauthorize", { url, name, accessKey }),
+  syncConnectionInfo: () => invoke<{ url: string; accessKey: string }>("sync_connection_info"),
   syncDevices: () => invoke<SyncDevices>("sync_devices"),
   syncCreateAccessKey: () => invoke<string>("sync_create_access_key"),
   syncCreateRecoveryKey: () => invoke<string>("sync_create_recovery_key"),
   syncRevokeDevice: (deviceId: string) => invoke<void>("sync_revoke_device", { deviceId }),
   syncGenerateSecret: () => invoke<string>("sync_generate_secret"),
   syncRun: () => invoke<void>("sync_run"),
-  syncActivity: () => invoke<{ pending: boolean; incoming: boolean } | null>("sync_activity"),
+  syncWake: (source?: "foreground" | "immediate") => invoke<void>("sync_wake", { source }),
+  syncActivity: () => invoke<SyncActivity | null>("sync_activity"),
+  onSyncStatusChanged: (callback: () => void) => listen("sync-status-changed", callback),
   syncApply: () => invoke<SyncApplied>("sync_apply"),
   syncRebuildStage: () => invoke<void>("sync_rebuild_stage"),
   syncRebuildApply: () => invoke<SyncApplied & { recoveryArchive: string }>("sync_rebuild_apply"),
@@ -233,6 +250,9 @@ export const desktop = {
   saveImage: (url: string) => invoke<boolean>("asset_save_image", { url }),
   exportWechatHtml: (html: string, images: ExportImage[]) => invoke<boolean>("wechat_export_html", { html, images }),
   onExit: (callback: () => void) => listen("workspace-exit-requested", callback),
+  onHideRequested: (callback: () => void) => listen("app-hide-requested", callback),
+  confirmHide: () => invoke<void>("app_hide_confirm"),
+  cancelHide: () => invoke<void>("app_hide_cancel"),
   beginExit: () => invoke<void>("begin_exit"),
   cancelExit: () => invoke<void>("cancel_exit"),
   finishExit: () => invoke<void>("finish_exit"),

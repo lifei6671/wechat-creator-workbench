@@ -6,18 +6,28 @@ use reqwest::{Client, RequestBuilder, StatusCode};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
-use std::{fmt::Write, net::IpAddr, time::Duration};
+use std::{
+    fmt::Write,
+    net::IpAddr,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 use tauri::State;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use url::{Host, Url};
 
 pub(crate) mod contents;
+pub(crate) mod scheduler;
 pub(crate) use contents::{finish_category_delete, record_category_delete, synced_blob};
 
 pub struct SyncConnection {
     http: Client,
     local_http: Client,
     gate: Mutex<()>,
+    wake: Notify,
+    wake_sources: AtomicU8,
+    runtime: std::sync::Mutex<scheduler::RuntimeState>,
+    app: std::sync::OnceLock<tauri::AppHandle>,
 }
 
 impl SyncConnection {
@@ -32,7 +42,35 @@ impl SyncConnection {
             http: client().build().map_err(network_error)?,
             local_http: client().no_proxy().build().map_err(network_error)?,
             gate: Mutex::new(()),
+            wake: Notify::new(),
+            wake_sources: AtomicU8::new(0),
+            runtime: std::sync::Mutex::new(scheduler::RuntimeState::default()),
+            app: std::sync::OnceLock::new(),
         })
+    }
+
+    pub(crate) fn wake(&self) {
+        self.request_wake(WakeSource::Immediate);
+    }
+
+    fn request_wake(&self, source: WakeSource) {
+        self.wake_sources.fetch_or(source as u8, Ordering::AcqRel);
+        self.wake.notify_one();
+    }
+
+    fn phase(&self, phase: &str) {
+        self.runtime
+            .lock()
+            .expect("sync runtime lock poisoned")
+            .phase = phase.into();
+        if let Some(app) = self.app.get() {
+            self.changed(app);
+        }
+    }
+
+    pub(crate) fn changed(&self, app: &tauri::AppHandle) {
+        use tauri::Emitter;
+        let _ = app.emit("sync-status-changed", ());
     }
 
     fn client(&self, url: &Url) -> &Client {
@@ -58,7 +96,7 @@ impl SyncConnection {
                 "同步服务协议或实例标识不兼容",
             ));
         }
-        if !meta.canvas_sync {
+        if !meta.canvas_sync || !meta.unified_connect || !meta.operation_receipt_lookup {
             return Err(AppError::new(
                 "SYNC_SERVER_UPDATE",
                 "请先更新同步服务和数据库迁移，再继续同步",
@@ -76,6 +114,7 @@ pub struct Binding {
     epoch: String,
     device_id: String,
     paused: bool,
+    pause_reason: Option<String>,
 }
 
 impl Binding {
@@ -83,7 +122,7 @@ impl Binding {
         db.read(|conn| {
             Ok(conn
                 .query_row(
-                    "SELECT url,instance_id,epoch,device_id,paused FROM sync_binding WHERE id=1",
+                    "SELECT url,instance_id,epoch,device_id,paused,pause_reason FROM sync_binding WHERE id=1",
                     [],
                     |row| {
                         Ok(Self {
@@ -92,6 +131,7 @@ impl Binding {
                             epoch: row.get(2)?,
                             device_id: row.get(3)?,
                             paused: row.get(4)?,
+                            pause_reason: row.get(5)?,
                         })
                     },
                 )
@@ -118,9 +158,15 @@ struct Meta {
     connection_recovery: bool,
     #[serde(default)]
     workspace_access: bool,
+    #[serde(default)]
+    unified_connect: bool,
+    #[serde(default)]
+    operation_receipt_lookup: bool,
     server_instance_id: String,
     sync_epoch: String,
     seed_status: String,
+    #[serde(default)]
+    seed_device_id: Option<String>,
 }
 
 impl Meta {
@@ -226,8 +272,16 @@ fn service_url(input: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn network_error(_: reqwest::Error) -> AppError {
-    AppError::new("SYNC_NETWORK", "无法连接同步服务，请检查地址和网络")
+fn network_error(error: reqwest::Error) -> AppError {
+    let message = if error.is_timeout() {
+        "同步请求超时，请稍后重试"
+    } else if error.is_connect() {
+        "无法连接同步服务，请检查地址和网络"
+    } else {
+        "同步传输中断，请稍后重试"
+    };
+    eprintln!("Sync transport failed: {:?}", error.without_url());
+    AppError::new("SYNC_NETWORK", message)
 }
 
 fn invalid_response(_: impl std::fmt::Display) -> AppError {
@@ -243,14 +297,29 @@ async fn send(request: RequestBuilder) -> Result<reqwest::Response> {
     let code: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
     let error = match code["error"].as_str() {
         Some("invalid_setup_secret") => AppError::new("SYNC_CODE", "认领密钥无效"),
-        Some("invalid_access_key") => AppError::new("SYNC_CODE", "工作区接入密钥无效或已更换"),
+        Some("invalid_access_key") => AppError::new("SYNC_CODE", "连接密钥无效或已更换"),
         Some("invalid_recovery_key") => AppError::new("SYNC_CODE", "恢复密钥无效、已使用或已撤销"),
-        Some("already_claimed") => AppError::new("SYNC_CLAIMED", "服务已认领，请使用接入密钥或恢复连接"),
+        Some("already_claimed") => {
+            AppError::new("SYNC_CLAIMED", "服务已认领，请使用接入密钥或恢复连接")
+        }
         Some("device_required") => AppError::new(
             "SYNC_DEVICE_REQUIRED",
             "请保留首次上传设备和至少一台有效设备",
         ),
-        Some("reset_required") => AppError::new("SYNC_RESET", "同步基线已失效，需重新建立"),
+        Some("reset_required") => match code["reason"].as_str() {
+            Some("cursor_expired") => AppError::new("SYNC_CURSOR_EXPIRED", "正在重新核对云端内容"),
+            Some("cursor_ahead") => {
+                AppError::new("SYNC_HISTORY", "云端同步历史与本机不一致，已暂停同步")
+            }
+            Some("instance_changed" | "epoch_changed") => {
+                AppError::new("SYNC_IDENTITY", "同步服务身份已变化，已暂停同步")
+            }
+            _ => AppError::new("SYNC_RESET_LEGACY", "同步基线需要人工核对，已暂停同步"),
+        },
+        Some("operation_id_reused") => {
+            AppError::new("SYNC_OPERATION_MISMATCH", "原操作回执与本地载荷不匹配")
+        }
+        Some("seed_in_progress") => AppError::new("SYNC_WAITING_SEED", "等待云端初始化"),
         _ if status == StatusCode::UNAUTHORIZED => {
             AppError::new("SYNC_CREDENTIAL", "同步设备凭据已失效")
         }
@@ -284,6 +353,8 @@ fn credential(db: &Workspace, url: &str, instance: &str, epoch: &str) -> Result<
 struct Credential {
     active: Option<String>,
     pending: Option<String>,
+    #[serde(default)]
+    access_key: Option<String>,
 }
 
 impl Credential {
@@ -303,8 +374,15 @@ impl Credential {
 }
 
 fn pause(db: &Workspace) -> Result<()> {
+    pause_with_reason(db, "legacy_review")
+}
+
+fn pause_with_reason(db: &Workspace, reason: &str) -> Result<()> {
     db.write(|tx| {
-        tx.execute("UPDATE sync_binding SET paused=1 WHERE id=1", [])?;
+        tx.execute(
+            "UPDATE sync_binding SET paused=1,pause_reason=?1 WHERE id=1",
+            [reason],
+        )?;
         Ok(())
     })
 }
@@ -329,7 +407,7 @@ async fn connected(db: &Workspace, sync: &SyncConnection) -> Result<(Url, String
     let url = service_url(&binding.url)?;
     let meta = sync.meta(&url).await?;
     if !binding.matches(&meta) {
-        pause(db)?;
+        pause_with_reason(db, "identity_changed")?;
         return Err(AppError::new(
             "SYNC_PAUSED",
             "同步服务身份已变化，连接已暂停",
@@ -351,7 +429,9 @@ pub async fn sync_default_device_name() -> Option<String> {
     #[cfg(windows)]
     let name = {
         use windows::{
-            Win32::System::SystemInformation::{ComputerNamePhysicalDnsHostname, GetComputerNameExW},
+            Win32::System::SystemInformation::{
+                ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+            },
             core::PWSTR,
         };
         let mut buffer = [0u16; 256];
@@ -397,18 +477,124 @@ pub fn sync_generate_secret() -> Result<String> {
 
 #[tauri::command]
 pub async fn sync_connect(
+    app: tauri::AppHandle,
     db: State<'_, Workspace>,
     sync: State<'_, SyncConnection>,
     url: String,
     name: String,
-    method: ConnectWith,
-    code: String,
-    rebuild: Option<bool>,
+    access_key: Option<String>,
 ) -> Result<Binding> {
-    if rebuild == Some(true) {
-        return register(&db, &sync, &url, &name, method, &code, true).await;
+    scheduler::set_phase(&sync, &app, "connecting");
+    let result = connect(
+        &db,
+        &sync,
+        &url,
+        &name,
+        ConnectWith::Join,
+        access_key.as_deref().unwrap_or(""),
+    )
+    .await;
+    if result.is_ok() {
+        sync.runtime
+            .lock()
+            .expect("sync runtime lock poisoned")
+            .error = None;
     }
-    connect(&db, &sync, &url, &name, method, &code).await
+    scheduler::settled(&sync, &app, result.as_ref().err());
+    result
+}
+
+#[tauri::command]
+pub async fn sync_recover(
+    app: tauri::AppHandle,
+    db: State<'_, Workspace>,
+    sync: State<'_, SyncConnection>,
+    url: String,
+    name: String,
+    recovery_key: String,
+) -> Result<Binding> {
+    let rebuild = Binding::read(&db)?.is_some_and(|binding| binding.paused);
+    scheduler::set_phase(&sync, &app, "connecting");
+    let result = register(
+        &db,
+        &sync,
+        &url,
+        &name,
+        ConnectWith::Recover,
+        &recovery_key,
+        rebuild,
+    )
+    .await;
+    if result.is_ok() {
+        sync.runtime
+            .lock()
+            .expect("sync runtime lock poisoned")
+            .error = None;
+    }
+    scheduler::settled(&sync, &app, result.as_ref().err());
+    result
+}
+
+#[tauri::command]
+pub async fn sync_reauthorize(
+    app: tauri::AppHandle,
+    db: State<'_, Workspace>,
+    sync: State<'_, SyncConnection>,
+    url: String,
+    name: String,
+    access_key: String,
+) -> Result<Binding> {
+    scheduler::set_phase(&sync, &app, "connecting");
+    let result = register(
+        &db,
+        &sync,
+        &url,
+        &name,
+        ConnectWith::Join,
+        &access_key,
+        true,
+    )
+    .await;
+    if result.is_ok() {
+        sync.runtime
+            .lock()
+            .expect("sync runtime lock poisoned")
+            .error = None;
+    }
+    scheduler::settled(&sync, &app, result.as_ref().err());
+    result
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionInfo {
+    url: String,
+    access_key: String,
+}
+
+#[tauri::command]
+pub fn sync_connection_info(db: State<'_, Workspace>) -> Result<ConnectionInfo> {
+    let binding = Binding::read(&db)?.ok_or_else(|| AppError::invalid("请先连接同步服务"))?;
+    let access_key = Credential::read(&binding.key(&db)?)?
+        .access_key
+        .ok_or_else(|| AppError::new("SYNC_KEY_MISSING", "请填写现有连接密钥，或更换连接密钥"))?;
+    Ok(ConnectionInfo {
+        url: binding.url,
+        access_key,
+    })
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[repr(u8)]
+pub enum WakeSource {
+    Immediate = 1,
+    Foreground = 2,
+}
+
+#[tauri::command]
+pub fn sync_wake(sync: State<'_, SyncConnection>, source: Option<WakeSource>) {
+    sync.request_wake(source.unwrap_or(WakeSource::Immediate));
 }
 
 async fn connect(
@@ -435,10 +621,8 @@ async fn register(
     let url = service_url(url)?;
     let name = name.trim();
     let code = code.trim();
-    if !valid_device_name(name) || !valid_token(code) {
-        return Err(AppError::invalid(
-            "请填写设备名和 64 位十六进制密钥",
-        ));
+    if !valid_device_name(name) || (!code.is_empty() && !valid_token(code)) {
+        return Err(AppError::invalid("请填写设备名和 64 位十六进制密钥"));
     }
     let old = Binding::read(db)?;
     if rebuild && old.as_ref().is_none_or(|binding| !binding.paused) {
@@ -454,21 +638,17 @@ async fn register(
     }
     let meta = sync.meta(&url).await?;
     if !rebuild && old.as_ref().is_some_and(|binding| !binding.matches(&meta)) {
-        pause(db)?;
+        pause_with_reason(db, "identity_changed")?;
         return Err(AppError::new(
             "SYNC_PAUSED",
             "同步服务身份已变化，连接已暂停",
         ));
     }
     match method {
-        ConnectWith::Join => meta.require_workspace_access()?,
+        ConnectWith::Join | ConnectWith::Claim => {}
         ConnectWith::Recover => {
             meta.require_connection_recovery()?;
-            if old.is_none() && meta.seed_status == "ready" {
-                db.read(contents::require_empty)?;
-            }
         }
-        ConnectWith::Claim => {}
     }
     let key = credential(db, url.as_str(), &meta.server_instance_id, &meta.sync_epoch)?;
     let client = sync.client(&url);
@@ -479,8 +659,29 @@ async fn register(
         None
     };
     let device_id = if let Some(id) = active_id {
+        if !matches!(method, ConnectWith::Recover) && !code.is_empty() {
+            let confirmed: Registration = response(
+                client
+                    .post(url.join("v1/connect").map_err(invalid_response)?)
+                    .header("X-Sync-Instance", &meta.server_instance_id)
+                    .header("X-Sync-Epoch", &meta.sync_epoch)
+                    .json(&json!({"name":name,"accessKey":code,"deviceToken":credential.active})),
+            )
+            .await?;
+            if confirmed.device_id != id {
+                return Err(invalid_response("device identity changed"));
+            }
+            credential.access_key = Some(code.to_owned());
+            credential.store(&key)?;
+        }
         id
     } else {
+        if code.is_empty() {
+            return Err(AppError::new(
+                "SYNC_CREDENTIAL",
+                "请填写连接密钥重新授权此设备",
+            ));
+        }
         let (token, pending_id) = if let Some(token) = credential.pending.take() {
             let id = registered_device(client, &url, &token).await?;
             (token, id)
@@ -494,12 +695,8 @@ async fn register(
             id
         } else {
             let (route, payload) = match method {
-                ConnectWith::Claim => (
-                    "v1/setup/claim",
-                    json!({ "name": name, "setupSecret": code, "deviceToken": token }),
-                ),
-                ConnectWith::Join => (
-                    "v1/devices/join",
+                ConnectWith::Claim | ConnectWith::Join => (
+                    "v1/connect",
                     json!({ "name": name, "accessKey": code, "deviceToken": token }),
                 ),
                 ConnectWith::Recover => (
@@ -510,6 +707,8 @@ async fn register(
             let result: Registration = response(
                 client
                     .post(url.join(route).map_err(invalid_response)?)
+                    .header("X-Sync-Instance", &meta.server_instance_id)
+                    .header("X-Sync-Epoch", &meta.sync_epoch)
                     .json(&payload),
             )
             .await?;
@@ -524,6 +723,11 @@ async fn register(
         Credential {
             active: Some(token),
             pending: None,
+            access_key: if matches!(method, ConnectWith::Recover) {
+                credential.access_key
+            } else {
+                Some(code.to_owned())
+            },
         }
         .store(&key)?;
         id
@@ -540,18 +744,25 @@ async fn register(
         epoch: meta.sync_epoch,
         device_id,
         paused: rebuild,
+        pause_reason: if rebuild {
+            old.as_ref()
+                .and_then(|binding| binding.pause_reason.clone())
+        } else {
+            None
+        },
     };
     db.write(|tx| {
         tx.execute(
-            "INSERT INTO sync_binding (id,url,instance_id,epoch,device_id,paused) VALUES (1,?1,?2,?3,?4,?5)
+            "INSERT INTO sync_binding (id,url,instance_id,epoch,device_id,paused,pause_reason) VALUES (1,?1,?2,?3,?4,?5,?6)
              ON CONFLICT (id) DO UPDATE SET device_id=excluded.device_id,
-               instance_id=excluded.instance_id,epoch=excluded.epoch,paused=excluded.paused",
+               instance_id=excluded.instance_id,epoch=excluded.epoch,paused=excluded.paused,pause_reason=excluded.pause_reason",
             params![
                 binding.url,
                 binding.instance_id,
                 binding.epoch,
                 binding.device_id,
                 binding.paused,
+                binding.pause_reason,
             ],
         )?;
         if rebuild {
@@ -559,6 +770,7 @@ async fn register(
         }
         Ok(())
     })?;
+    sync.wake();
     Ok(binding)
 }
 
@@ -599,8 +811,16 @@ async fn create_access_key(db: &Workspace, sync: &SyncConnection) -> Result<Stri
     )
     .await?;
     if !valid_token(&result.access_key) {
-        return Err(AppError::new("SYNC_PROTOCOL", "同步服务返回了无效的接入密钥"));
+        return Err(AppError::new(
+            "SYNC_PROTOCOL",
+            "同步服务返回了无效的接入密钥",
+        ));
     }
+    let binding = Binding::read(db)?.ok_or_else(|| AppError::invalid("请先连接同步服务"))?;
+    let key = binding.key(db)?;
+    let mut credential = Credential::read(&key)?;
+    credential.access_key = Some(result.access_key.clone());
+    credential.store(&key)?;
     Ok(result.access_key)
 }
 
@@ -655,6 +875,36 @@ pub async fn sync_revoke_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn network_errors_distinguish_timeouts_from_connection_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let error = client
+            .get(format!("http://{address}/"))
+            .timeout(std::time::Duration::from_millis(100))
+            .send()
+            .await
+            .unwrap_err();
+        let timeout = network_error(error);
+        assert_eq!(timeout.code(), "SYNC_NETWORK");
+        assert!(timeout.to_string().contains("请求超时"));
+        server.abort();
+        let _ = server.await;
+        let error = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        let connection = network_error(error);
+        assert_eq!(connection.code(), "SYNC_NETWORK");
+        assert!(connection.to_string().contains("无法连接同步服务"));
+    }
 
     #[test]
     fn service_addresses_protect_credentials() {

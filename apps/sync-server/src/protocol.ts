@@ -11,7 +11,7 @@ const identifier = /^[a-zA-Z0-9_-]{1,128}$/;
 export const hashPattern = /^[a-f0-9]{64}$/;
 
 export class SyncError extends Error {
-  constructor(readonly status: ContentfulStatusCode, readonly code: string) {
+  constructor(readonly status: ContentfulStatusCode, readonly code: string, readonly reason?: string) {
     super(code);
   }
 }

@@ -10,7 +10,7 @@ import { ArrowUp, Check, ChevronDown, Copy, FileText, History, PencilLine, Plus,
 import { diffLines } from "diff";
 import type { MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { renderMarkdown } from "../../../../packages/markdown-core";
-import { desktop, errorMessage, type AiPropertyField, type AiPropertyValues, type AiProposalStatus, type AiSelection } from "../desktop";
+import { desktop, errorMessage, windowsTitleBar, type AiPropertyField, type AiPropertyValues, type AiProposalStatus, type AiSelection } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import { aiActions, captureAiIntent, matchesAiTarget, messageText, requestedProperties, scopeLabels, type AiAction, type CapturedTarget, type ChatSelection, type ScopeChoice } from "../ai/context";
 import { propertyProposalOf, proposalOf, useWritingRuntime, type WritingThreads } from "../ai/runtime";
@@ -40,7 +40,6 @@ interface Props {
   target: { label?: string; hint?: string };
   selection?: AiSelection;
   targetPicker: ReactNode;
-  windowControls?: ReactNode;
   canChat: boolean;
   canEdit: boolean;
   canSend?(): boolean;
@@ -211,7 +210,7 @@ function AiConversation(props: Props & { session: ConversationSession; onIdle: (
 }
 
 function ConversationView({
-  open, queue, editor, target, selection, targetPicker, windowControls, canChat, canEdit, canSend, tagSuggestions, selectionRequest, onClose, onSettings,
+  open, queue, editor, target, selection, targetPicker, canChat, canEdit, canSend, tagSuggestions, selectionRequest, onClose, onSettings,
   runtime, session, onIdle, loadHistory, trackWork, error, report, clear, targets, stored, progress, unavailable, apply, applyProperties, reject,
 }: Props & {
   runtime: AssistantRuntime; loadHistory(): Promise<void>; error: string; report(failure: unknown): void;
@@ -357,12 +356,11 @@ function ConversationView({
       <h2>AI 聊天</h2>
       <Tool label="新对话" className="chrome-icon" color="gray" disabled={!ready || running || switching}
         onClick={() => void switchThread()}><Plus size={18} strokeWidth={1.8} /></Tool>
-      {open && windowControls && <WindowDragRegion onError={report} />}
+      {open && windowsTitleBar && <WindowDragRegion onError={report} />}
       <div className="ai-chat-header-tools">
         <Tool label="对话记录" className="chrome-icon" color="gray" aria-pressed={view === "threads"} disabled={!ready || switching || historyLoading}
           onClick={toggleHistory}><History size={18} strokeWidth={1.8} /></Tool>
       </div>
-      {open && windowControls}
     </header>
     <ThreadPrimitive.Viewport className="ai-transcript">
       {view === "threads"

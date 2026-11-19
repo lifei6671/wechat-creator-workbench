@@ -50,6 +50,8 @@ pub fn gpu_acceleration(app: AppHandle, enabled: Option<bool>) -> Result<bool> {
 
 #[cfg(windows)]
 pub fn create_main_window(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+
     let config = app
         .config()
         .app
@@ -60,7 +62,7 @@ pub fn create_main_window(app: &tauri::App) -> std::result::Result<(), Box<dyn s
     if config.create {
         return Ok(());
     }
-    let mut window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
+    let mut window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.visible(false);
     if !gpu_preference(&marker_path(app.handle())?, None)? {
         // Supplying arguments replaces Wry's defaults, including its autoplay policy.
         let args = config.additional_browser_args.as_deref().unwrap_or(
@@ -70,6 +72,39 @@ pub fn create_main_window(app: &tauri::App) -> std::result::Result<(), Box<dyn s
     }
     let window = window.build()?;
     set_window_small_icon(window.hwnd()?)?;
+    // Validate the normal bounds before showing the window or restoring maximized state.
+    window.restore_state(StateFlags::SIZE | StateFlags::POSITION)?;
+    ensure_usable_window_size(&window.as_ref().window())?;
+    window.restore_state(StateFlags::MAXIMIZED | StateFlags::FULLSCREEN)?;
+    if config.visible {
+        window.show()?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_usable_window_size(window: &tauri::Window) -> tauri::Result<()> {
+    if window.is_minimized()? || window.is_maximized()? || window.is_fullscreen()? {
+        return Ok(());
+    }
+    let config = window
+        .app_handle()
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == window.label())
+        .expect("main window configuration");
+    let minimum = tauri::LogicalSize::new(
+        config.min_width.unwrap_or(0.0),
+        config.min_height.unwrap_or(0.0),
+    )
+    .to_physical::<u32>(window.scale_factor()?);
+    let size = window.inner_size()?;
+    if size.width < minimum.width || size.height < minimum.height {
+        window.set_size(tauri::LogicalSize::new(config.width, config.height))?;
+        window.center()?;
+    }
     Ok(())
 }
 

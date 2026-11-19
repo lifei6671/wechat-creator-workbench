@@ -89,7 +89,7 @@ fn stage_pauses_saved_sync_binding() {
     let workspace = db.read(workspace_id).unwrap();
     db.write(|tx| {
         tx.execute(
-            "INSERT INTO sync_binding VALUES (1,'https://sync.example.test/','instance','epoch','device',0)",
+            "INSERT INTO sync_binding (id,url,instance_id,epoch,device_id,paused) VALUES (1,'https://sync.example.test/','instance','epoch','device',0)",
             [],
         )?;
         Ok(())
@@ -106,12 +106,14 @@ fn stage_pauses_saved_sync_binding() {
     )
     .unwrap();
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    let binding: (String, bool) = conn
-        .query_row("SELECT device_id,paused FROM sync_binding", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+    let binding: (String, bool, String) = conn
+        .query_row(
+            "SELECT device_id,paused,pause_reason FROM sync_binding",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .unwrap();
-    assert_eq!(binding, ("device".into(), true));
+    assert_eq!(binding, ("device".into(), true, "backup_restored".into()));
 }
 
 #[test]

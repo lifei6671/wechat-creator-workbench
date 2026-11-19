@@ -1,15 +1,16 @@
 import { useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Spinner } from "@radix-ui/themes";
 import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Trash2 } from "lucide-react";
-import { desktop, type UploadProgress } from "../desktop";
+import { desktop, type SyncActivity, type SyncBinding, type UploadProgress } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import { recordEditorPerformance } from "../../../../packages/editor-react/performance";
 import { commandKey } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
+import { SyncStatus } from "./SyncStatus";
 
 export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, backupProgress, migrationProgress,
-  imageStorageEnabled, assetRevision, imageUpload, onError, onMcp, onPalette, onTrash, onSettings }: {
+  imageStorageEnabled, assetRevision, imageUpload, syncBinding, syncActivity, syncError, onSync, onError, onMcp, onPalette, onTrash, onSettings }: {
   queue?: SaveQueue;
   actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat">;
   trashActive: boolean;
@@ -20,6 +21,10 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
   imageStorageEnabled: boolean;
   assetRevision: number;
   imageUpload: UploadProgress | null;
+  syncBinding: SyncBinding | null | undefined;
+  syncActivity: SyncActivity | null | undefined;
+  syncError: string;
+  onSync(trigger: HTMLButtonElement): void;
   onError(error: unknown): void;
   onMcp(trigger: HTMLButtonElement): void;
   onPalette: (trigger: HTMLButtonElement) => void;
@@ -48,6 +53,10 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
         <Plug size={15} aria-hidden="true" /><span>MCP</span>
       </button></Tooltip>
     </div>}
+    <Tooltip content="同步设置"><button type="button" className="plain-button status-button status-sync"
+      aria-label="同步设置" aria-haspopup="dialog" onClick={event => onSync(event.currentTarget)}>
+      <SyncStatus binding={syncBinding} activity={syncActivity} error={syncError} />
+    </button></Tooltip>
     {backup && <Tooltip content={backup}><span className="background-status" role="status" aria-label={backup}>
       <span className="background-status-icon" aria-hidden="true"><DatabaseBackup size={15} /></span>
       <span className="background-status-label">{backup}</span>

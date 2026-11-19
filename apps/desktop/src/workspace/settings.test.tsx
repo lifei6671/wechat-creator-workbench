@@ -12,6 +12,9 @@ import { SyncSettings } from "./SyncSettings";
 
 let enterSection: (section: HTMLElement) => void;
 beforeEach(() => {
+  vi.spyOn(desktop, "onSyncStatusChanged").mockResolvedValue(() => {});
+  vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
   vi.stubGlobal("ResizeObserver", class {
     observe() {}
     unobserve() {}
@@ -41,12 +44,13 @@ it("explains what to enter in every first-time sync setting", async () => {
     await vi.waitFor(() => expect(container.querySelector<HTMLInputElement>("#sync-name")?.value).toBe("办公电脑"));
     for (const [id, context] of [
       ["sync-url", "HTTPS 根地址"], ["sync-name", "设备列表"],
-      ["sync-method", "先备份再合并"], ["sync-code", "SETUP_SECRET"],
+      ["sync-code", "SETUP_SECRET"],
     ]) {
       const description = container.querySelector(`#${id}`)?.getAttribute("aria-describedby");
       expect(description).toBe(`${id}-hint`);
       expect(document.getElementById(description!)?.textContent).toContain(context);
     }
+    expect(container.querySelector("#sync-method")).toBeNull();
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -78,7 +82,7 @@ it("does not replace a device name edited before the computer name arrives", asy
   }
 });
 
-it("copies access and recovery secrets with feedback and keeps them out of the settings view", async () => {
+it("copies saved connection information without rotating its key and keeps secrets out of the settings view", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -92,6 +96,7 @@ it("copies access and recovery secrets with feedback and keeps them out of the s
     devices: [{ deviceId: "local", name: "工作电脑", createdAt: 0, revokedAt: null }],
   });
   vi.spyOn(desktop, "syncCreateAccessKey").mockResolvedValue(accessKey);
+  vi.spyOn(desktop, "syncConnectionInfo").mockResolvedValue({ url: "https://sync.example.test/", accessKey });
   vi.spyOn(desktop, "syncCreateRecoveryKey").mockResolvedValue(recoveryKey);
   vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
   const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
@@ -99,12 +104,13 @@ it("copies access and recovery secrets with feedback and keeps them out of the s
     flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()}
       automaticError="后台同步超时" /></Theme>));
     await vi.waitFor(() => expect(container.textContent).toContain("工作电脑"));
-    expect(container.textContent).toContain("设备已绑定");
+    expect(container.textContent).toContain("同步失败");
     expect(container.textContent).toContain("当前设备");
-    const button = [...container.querySelectorAll("button")].find(item => item.textContent === "生成并复制接入密钥")!;
+    const button = [...container.querySelectorAll("button")].find(item => item.textContent === "复制连接信息")!;
     flushSync(() => button.click());
-    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(accessKey));
-    await vi.waitFor(() => expect(container.textContent).toContain("接入密钥已复制"));
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(`服务地址：https://sync.example.test/\n连接密钥：${accessKey}`));
+    await vi.waitFor(() => expect(container.textContent).toContain("连接信息已复制"));
+    expect(desktop.syncCreateAccessKey).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("后台同步超时");
     expect(container.textContent).not.toContain(accessKey);
     const recovery = container.querySelector<HTMLButtonElement>("#sync-recovery-key")!;
@@ -118,7 +124,7 @@ it("copies access and recovery secrets with feedback and keeps them out of the s
   }
 });
 
-it("switches a claimed service to joining and reuses the connection feedback line", async () => {
+it("retries unified connection and applies a first merge once without using its archive as a scheduling signal", async () => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   const url = "https://sync.example.test";
@@ -130,7 +136,7 @@ it("switches a claimed service to joining and reuses the connection feedback lin
   vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
   vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "new", devices: [] });
   const connect = vi.spyOn(desktop, "syncConnect")
-    .mockRejectedValueOnce({ code: "SYNC_CLAIMED", message: "服务已认领，请使用接入密钥" })
+    .mockRejectedValueOnce({ code: "SYNC_CODE", message: "连接密钥无效" })
     .mockResolvedValueOnce({ url, deviceId: "new", instanceId: "instance", epoch: "epoch", paused: false });
   try {
     flushSync(() => root.render(<Theme><SyncSettings onSync={synchronize} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
@@ -146,20 +152,20 @@ it("switches a claimed service to joining and reuses the connection feedback lin
     fill("sync-url", url);
     fill("sync-code", setupSecret);
     submit();
-    await vi.waitFor(() => expect(feedback.textContent).toContain("用接入密钥加入或用恢复密钥连接"));
+    await vi.waitFor(() => expect(feedback.textContent).toContain("连接密钥无效"));
     expect(form.querySelector(".sync-connect-footer > [role=alert]")).toBe(feedback);
-    expect(form.querySelector("#sync-method")?.textContent).toBe("加入已有服务");
-    expect(form.querySelector("#sync-code-hint")?.textContent).toContain("工作区接入密钥");
-    expect(form.querySelector<HTMLInputElement>("#sync-code")?.value).toBe("");
+    expect(form.querySelector("#sync-method")).toBeNull();
+    expect(form.querySelector("#sync-code-hint")?.textContent).toContain("连接密钥");
+    expect(form.querySelector<HTMLInputElement>("#sync-code")?.value).toBe(setupSecret);
     expect(form.querySelector<HTMLInputElement>("#sync-url")?.value).toBe(url);
 
     fill("sync-code", accessCode);
     submit();
-    await vi.waitFor(() => expect(container.textContent).toContain("设备已绑定"));
+    await vi.waitFor(() => expect(container.textContent).toContain("已合并本地与云端内容"));
     await vi.waitFor(() => expect(container.textContent).toContain("打开恢复副本位置"));
-    expect(synchronize).toHaveBeenCalledTimes(2);
-    expect(connect).toHaveBeenNthCalledWith(1, url, "新电脑", "claim", setupSecret, undefined);
-    expect(connect).toHaveBeenNthCalledWith(2, url, "新电脑", "join", accessCode, undefined);
+    expect(synchronize).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenNthCalledWith(1, url, "新电脑", setupSecret);
+    expect(connect).toHaveBeenNthCalledWith(2, url, "新电脑", accessCode);
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -179,9 +185,9 @@ it("offers reconnecting against the saved instance when its device credential wa
     flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
     await vi.waitFor(() => expect(container.textContent).toContain("需要重新连接"));
     expect(container.querySelector<HTMLInputElement>("#sync-bound-url")?.readOnly).toBe(true);
-    expect(container.querySelector('label[for="sync-code"]')?.textContent).toBe("接入密钥");
+    expect(container.querySelector('label[for="sync-code"]')?.textContent).toBe("连接密钥");
     expect(container.querySelector("#sync-code")?.getAttribute("aria-describedby")).toBe("sync-code-hint");
-    expect(container.querySelector("#sync-code-hint")?.textContent).toContain("工作区接入密钥");
+    expect(container.querySelector("#sync-code-hint")?.textContent).toContain("连接密钥");
     expect([...container.querySelectorAll("button")].some(button => button.textContent === "生成并复制接入密钥")).toBe(false);
   } finally {
     flushSync(() => root.unmount());
@@ -212,6 +218,125 @@ it("keeps a local canvas edit by sending the displayed conflict version", async 
     flushSync(() => keep.click());
     await vi.waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith("collection_node", "note", "local", 3, 8));
     await vi.waitFor(() => expect(container.textContent).toContain("本地版本已排队上传"));
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("refreshes a visible settings page after native authentication failure and keeps blocked work out of the synced state", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let changed!: () => void;
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.spyOn(desktop, "syncDefaultDeviceName").mockResolvedValue("本机");
+  const state = { hasLocalContent: true, initialized: true, pending: false, incoming: false, issues: 1, phase: "idle" as const, error: null, lastExchangeAt: 1 };
+  vi.mocked(desktop.syncActivity).mockResolvedValue(state);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("有内容需要处理"));
+    expect(container.textContent).not.toContain("已同步");
+    vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, error: { code: "SYNC_CREDENTIAL", message: "同步设备已撤销" } });
+    flushSync(changed);
+    await vi.waitFor(() => expect(container.textContent).toContain("需要重新连接"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("同步设备已撤销");
+    expect(container.querySelector("#sync-code")).not.toBeNull();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("refreshes local status when a hidden settings page becomes visible again", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("等待检查"));
+    vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: false, incoming: true, issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(container.textContent).toContain("已下载，等待应用"));
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("shows live sync progress and keeps the merge completion notice on one line", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let changed!: () => void;
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  const state = { hasLocalContent: true, initialized: true, pending: false, incoming: false, issues: 0,
+    phase: "idle" as const, error: null, lastExchangeAt: 1 };
+  vi.mocked(desktop.syncActivity).mockResolvedValue(state);
+  let finish!: (archive: string) => void;
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={() => new Promise(resolve => { finish = resolve; })}
+      onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("已同步"));
+    const sync = [...container.querySelectorAll("button")].find(button => button.textContent === "立即同步")!;
+    flushSync(() => sync.click());
+    for (const phase of ["connecting", "downloading", "merging"] as const) {
+      vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase });
+      flushSync(changed);
+      await vi.waitFor(() => expect(container.querySelector('.sync-state[data-tone="busy"]')).not.toBeNull());
+    }
+    vi.mocked(desktop.syncActivity).mockResolvedValue(state);
+    finish("C:/recovery.zip");
+    await vi.waitFor(() => expect(container.querySelector(".sync-feedback")?.textContent).toBe("已合并本地与云端内容"));
+    expect(container.querySelector(".sync-feedback")?.getAttribute("title")).toBe("已合并本地与云端内容");
+    expect(container.querySelector(".sync-advanced > summary svg")).not.toBeNull();
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each([
+  { hasLocalContent: true, initialized: false, bound: false, visible: true },
+  { hasLocalContent: false, initialized: false, bound: false, visible: false },
+  { hasLocalContent: true, initialized: false, bound: true, visible: true },
+  { hasLocalContent: true, initialized: true, bound: true, visible: false },
+])("shows the accessible merge notice only for first nonempty connection: %j", async state => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue(state.bound ? {
+    url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false,
+  } : null);
+  vi.spyOn(desktop, "syncDefaultDeviceName").mockResolvedValue("本机");
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: state.hasLocalContent, initialized: state.initialized,
+    pending: false, incoming: false, issues: 0, phase: "idle", lastExchangeAt: null,
+    error: state.bound ? { code: "SYNC_CREDENTIAL", message: "设备凭据已失效" } : null });
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.querySelector("#sync-name")).not.toBeNull());
+    const notice = container.querySelector("#sync-merge-hint");
+    const form = container.querySelector("form")!;
+    const connect = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(Boolean(notice)).toBe(state.visible);
+    if (state.visible) {
+      expect(notice!.textContent).toBe("连接后将合并本地与云端内容；同一内容存在不同修改时，会保留双方版本供你处理。");
+      expect(connect.getAttribute("aria-describedby")).toBe(notice!.id);
+      expect(notice!.classList.contains("setting-hint")).toBe(true);
+      expect(notice!.closest(".sync-feedback")).toBeNull();
+      expect(notice!.getAttribute("role")).toBeNull();
+    } else expect(connect.hasAttribute("aria-describedby")).toBe(false);
+    expect(connect.textContent).toBe("连接");
+    expect(form.querySelectorAll('button[type="submit"]')).toHaveLength(1);
+    if (state.bound) expect(form.querySelector('[role="alert"]')?.textContent).toContain("设备凭据已失效");
   } finally {
     flushSync(() => root.unmount());
     container.remove();

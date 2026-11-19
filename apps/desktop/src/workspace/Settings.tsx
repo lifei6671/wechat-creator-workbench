@@ -11,7 +11,7 @@ export type ViewShortcut = "none" | "shift-m" | "alt-v";
 
 const groups = [
   { label: "工作区", items: [
-    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: `外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 默认展开文档大纲 下载粘贴和链接导入的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数${windowsTitleBar ? " GPU 硬件加速 渲染" : ""}` },
+    { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: `外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 默认展开文档大纲 下载粘贴和链接导入的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数 关闭窗口 退出应用 托盘 菜单栏${windowsTitleBar ? " GPU 硬件加速 渲染" : ""}` },
     { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 查找与替换 全文搜索 保存版本 新建笔记" },
     { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
@@ -198,25 +198,27 @@ export function S3Fields({ scope, initial, hasKey, publicBase, credentials }: {
   </>;
 }
 
-function GpuAccelerationSetting() {
+function NativeToggleSetting({ id, label, hint, warning, preference }: {
+  id: string; label: string; hint: string; warning?: string; preference(enabled?: boolean): Promise<boolean>;
+}) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     let current = true;
-    void desktop.gpuAcceleration().then(value => {
+    void preference().then(value => {
       if (current) setEnabled(value);
     }, failure => {
       if (current) setError(errorMessage(failure));
     });
     return () => { current = false; };
-  }, []);
+  }, [preference]);
 
   async function save(value: boolean) {
     setSaving(true);
     setError("");
     try {
-      setEnabled(await desktop.gpuAcceleration(value));
+      setEnabled(await preference(value));
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -225,10 +227,8 @@ function GpuAccelerationSetting() {
   }
 
   return <>
-    <SettingRow id="gpu-acceleration" label="硬件加速"
-      hint="启用后由 GPU 加速界面渲染，让滚动与界面切换更流畅。重启工作台后生效。"
-      warning="关闭后将使用软件渲染，界面可能明显变慢。">
-      {hintId => <Switch id="gpu-acceleration" aria-describedby={hintId} radius="full"
+    <SettingRow id={id} label={label} hint={hint} warning={warning}>
+      {hintId => <Switch id={id} aria-describedby={hintId} radius="full"
         checked={enabled === true} disabled={enabled === null || saving} onCheckedChange={save} />}
     </SettingRow>
     {error && <p className="settings-feedback inline-error" role="alert">{error}</p>}
@@ -270,7 +270,16 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
       <SettingRow id="explorer-visibility" label="显示资源导航" hint="设置启动时是否显示左侧栏。">
         {hintId => <Switch id="explorer-visibility" aria-describedby={hintId} radius="full" checked={explorer} onCheckedChange={onExplorer} />}
       </SettingRow>
-      {windowsTitleBar && <GpuAccelerationSetting />}
+      {(windowsTitleBar || macTitleBar) && <NativeToggleSetting id="close-to-tray"
+        label={macTitleBar ? "关闭时收起到菜单栏" : "关闭时收起到托盘"}
+        hint={macTitleBar
+          ? "从菜单栏图标恢复窗口。停用此设置后，点击关闭按钮会保存并退出应用。"
+          : "从任务栏通知区域的图标恢复窗口。停用此设置后，点击关闭按钮会保存并退出应用。"}
+        preference={desktop.closeToTray} />}
+      {windowsTitleBar && <NativeToggleSetting id="gpu-acceleration" label="硬件加速"
+        hint="启用后由 GPU 加速界面渲染，让滚动与界面切换更流畅。重启工作台后生效。"
+        warning="关闭后将使用软件渲染，界面可能明显变慢。"
+        preference={desktop.gpuAcceleration} />}
     </div>
     <div className="settings-group-title">编辑与预览</div>
     <div className="settings-card">

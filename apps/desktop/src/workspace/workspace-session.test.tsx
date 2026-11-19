@@ -14,12 +14,16 @@ import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./prefe
 import { SaveQueue } from "../editor/save-queue";
 import * as markdown from "../../../../packages/markdown-core";
 
+const { editorQueues } = vi.hoisted(() => ({ editorQueues: new Map<string, SaveQueue>() }));
 vi.mock(import("./Document"), async importOriginal => ({
   ...await importOriginal(),
-  DocumentEditor: ({ queue, display, onDisplayChange }: ComponentProps<typeof DocumentEditor>) => (
+  DocumentEditor: ({ queue, display, onDisplayChange }: ComponentProps<typeof DocumentEditor>) => {
+    editorQueues.set(queue.entry.id, queue);
+    return (
     <button data-document={queue.entry.id} data-links={display.convertLinks} data-body={queue.snapshot().fields.contentMd}
       onClick={() => onDisplayChange("convertLinks", !display.convertLinks)}>切换链接脚注</button>
-  ),
+    );
+  },
 }));
 
 const { flushCanvas } = vi.hoisted(() => ({ flushCanvas: vi.fn<() => Promise<void>>() }));
@@ -47,6 +51,7 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
+  editorQueues.clear();
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -59,7 +64,10 @@ beforeEach(() => {
   vi.spyOn(desktop, "imageStorageTarget").mockResolvedValue(null);
   vi.spyOn(desktop, "mcpStatus").mockResolvedValue({ running: false, config: { enabled: false, port: 8787, permission: "read" }, error: null });
   vi.spyOn(desktop, "restoreNotice").mockResolvedValue(null);
-  for (const event of ["onExit", "onWorkspaceChanged", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
+  vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue(null);
+  vi.spyOn(desktop, "syncWake").mockResolvedValue();
+  for (const event of ["onExit", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
     vi.spyOn(desktop, event).mockResolvedValue(() => {});
   }
   container = document.createElement("div");
@@ -222,6 +230,67 @@ it("waits for the topic name committed on blur before closing the workspace", as
   expect(beginExit).toHaveBeenCalledOnce();
 });
 
+it("saves the final document edit before confirming a tray hide without starting exit", async () => {
+  let requestHide!: () => void;
+  vi.mocked(desktop.onHideRequested).mockImplementation(async callback => { requestHide = callback; return () => {}; });
+  const confirm = vi.spyOn(desktop, "confirmHide").mockResolvedValue();
+  const beginExit = vi.spyOn(desktop, "beginExit").mockResolvedValue();
+  const cancel = vi.spyOn(desktop, "cancelHide").mockResolvedValue();
+  let finishSave!: (result: { version: number }) => void;
+  const save = vi.spyOn(desktop, "save").mockReturnValue(new Promise(resolve => { finishSave = resolve; }));
+  saveDocumentTabs(workspaceId, { ids: ["last-edit"], activeId: "last-edit" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("last-edit")).toBe(true));
+  editorQueues.get("last-edit")!.edit({ contentMd: "最后输入的几个字" });
+  flushSync(() => requestHide());
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(save.mock.calls[0][2].contentMd).toBe("最后输入的几个字");
+  expect(confirm).not.toHaveBeenCalled();
+  finishSave({ version: 2 });
+  await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+  expect(beginExit).not.toHaveBeenCalled();
+  expect(cancel).not.toHaveBeenCalled();
+});
+
+it("cancels the tray hide and keeps save feedback when a document cannot be saved", async () => {
+  let requestHide!: () => void;
+  vi.mocked(desktop.onHideRequested).mockImplementation(async callback => { requestHide = callback; return () => {}; });
+  const confirm = vi.spyOn(desktop, "confirmHide").mockResolvedValue();
+  const cancel = vi.spyOn(desktop, "cancelHide").mockResolvedValue();
+  vi.spyOn(desktop, "save").mockRejectedValue(new Error("disk full"));
+  saveDocumentTabs(workspaceId, { ids: ["unsaved"], activeId: "unsaved" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("unsaved")).toBe(true));
+  editorQueues.get("unsaved")!.edit({ contentMd: "保留在编辑缓冲" });
+  flushSync(() => requestHide());
+  await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  expect(confirm).not.toHaveBeenCalled();
+  expect(container.textContent).toContain("有文稿未能保存");
+  expect(editorQueues.get("unsaved")!.isDirty()).toBe(true);
+});
+
+it("waits for the open canvas save before confirming a tray hide", async () => {
+  let requestHide!: () => void;
+  vi.mocked(desktop.onHideRequested).mockImplementation(async callback => { requestHide = callback; return () => {}; });
+  const confirm = vi.spyOn(desktop, "confirmHide").mockResolvedValue();
+  let saved!: () => void;
+  flushCanvas.mockReset().mockReturnValue(new Promise(resolve => { saved = resolve; }));
+  vi.mocked(desktop.collections).mockResolvedValue([{ id: "canvas-open", title: "画布", description: "", createdAt: 0, updatedAt: 0,
+    nodeCount: 1, viewport: { x: 0, y: 0, zoom: 1 } }]);
+  saveWorkspaceLayout({ section: "collections", explorerOverride: true, timelineDirectory: "shown", focusMode: false, aiOpen: false });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector("#collection-row-canvas-open")).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#collection-row-canvas-open")!.click());
+  await vi.waitFor(() => expect(container.querySelector('[data-canvas="canvas-open"]')).not.toBeNull());
+  flushSync(() => requestHide());
+  await vi.waitFor(() => expect(flushCanvas).toHaveBeenCalledOnce());
+  expect(confirm).not.toHaveBeenCalled();
+  saved();
+  await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+});
+
 it("switches between and restores open topic and article tabs", async () => {
   const topics = ["topic-one", "topic-two"].map(id => ({ id, title: id, description: "", createdAt: 0, updatedAt: 0,
     viewport: { x: 0, y: 0, zoom: 1 }, nodeCount: 0 }));
@@ -335,7 +404,7 @@ it("flushes the open canvas before replay and reloads a remotely changed canvas 
   await vi.waitFor(() => expect(container.querySelector("#collection-row-canvas-open")).not.toBeNull());
   click("#collection-row-canvas-open");
   await vi.waitFor(() => expect(container.querySelector('[data-canvas="canvas-open"]')).not.toBeNull());
-  activity.mockResolvedValue({ pending: false, incoming: true });
+  activity.mockResolvedValue({ hasLocalContent: true, initialized: true, pending: false, incoming: true, issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
   window.dispatchEvent(new Event("focus"));
   await vi.waitFor(() => expect(flushCanvas).toHaveBeenCalledOnce());
   expect(apply).not.toHaveBeenCalled();
@@ -349,6 +418,135 @@ it("flushes the open canvas before replay and reloads a remotely changed canvas 
   await vi.waitFor(() => expect(canvas()?.textContent).toBe("云端标题"));
   expect(canvas()).not.toBe(original);
   expect(apply).toHaveBeenCalledOnce();
+});
+
+it("updates the status bar through sync phases and opens sync settings from it", async () => {
+  let changed!: () => void;
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  const state = { hasLocalContent: true, initialized: true, pending: false, incoming: false, issues: 0,
+    phase: "downloading" as const, error: null, lastExchangeAt: 1 };
+  vi.mocked(desktop.syncActivity).mockResolvedValue(state);
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
+  flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
+  const indicator = () => container.querySelector<HTMLButtonElement>(".status-sync")!;
+  await vi.waitFor(() => expect(indicator()?.textContent).toBe("正在下载"));
+  expect(indicator().getAttribute("aria-label")).toBe("同步设置");
+  expect(indicator().querySelector(".rt-Spinner")).not.toBeNull();
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase: "merging" });
+  flushSync(changed);
+  await vi.waitFor(() => expect(indicator().textContent).toBe("正在合并"));
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase: "idle", issues: 1 });
+  flushSync(changed);
+  await vi.waitFor(() => expect(indicator().textContent).toBe("有内容需要处理"));
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase: "idle" });
+  flushSync(changed);
+  await vi.waitFor(() => expect(indicator().textContent).toBe("已同步"));
+  expect(indicator().querySelector(".rt-Spinner")).toBeNull();
+  flushSync(() => indicator().click());
+  await vi.waitFor(() => expect(document.querySelector('.settings-nav-item[aria-current="location"]')?.textContent).toBe("同步"));
+});
+
+it("does not replay again when a phase read finishes after its own replay", async () => {
+  let changed!: () => void;
+  let holdPhaseRead = false;
+  let releasePhaseRead!: () => void;
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  const binding = { url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false };
+  vi.mocked(desktop.syncStatus).mockImplementation(async () => {
+    if (holdPhaseRead) await new Promise<void>(resolve => { releasePhaseRead = resolve; });
+    return binding;
+  });
+  const state = { hasLocalContent: true, initialized: true, pending: false, incoming: false, issues: 1,
+    phase: "idle" as const, error: null, lastExchangeAt: 1 };
+  vi.mocked(desktop.syncActivity).mockResolvedValue(state);
+  const apply = vi.spyOn(desktop, "syncApply").mockImplementation(async () => {
+    holdPhaseRead = true;
+    changed();
+    holdPhaseRead = false;
+    return { changedEntries: [], changedCollections: [] };
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("有内容需要处理"));
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, incoming: true });
+  flushSync(changed);
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  // Let the application loop finish before releasing its own delayed status read.
+  await new Promise(resolve => setTimeout(resolve, 30));
+  releasePhaseRead();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(apply).toHaveBeenCalledOnce();
+});
+
+it("requests one foreground check per restoration and leaves startup and online wake semantics intact", async () => {
+  let focused = true;
+  let visibility: DocumentVisibilityState = "visible";
+  vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(desktop.syncActivity).toHaveBeenCalled());
+  window.dispatchEvent(new Event("focus"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(desktop.syncWake).not.toHaveBeenCalled();
+
+  focused = false;
+  window.dispatchEvent(new Event("blur"));
+  focused = true;
+  window.dispatchEvent(new Event("focus"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  window.dispatchEvent(new Event("focus"));
+  expect(desktop.syncWake).toHaveBeenCalledExactlyOnceWith("foreground");
+
+  visibility = "hidden";
+  document.dispatchEvent(new Event("visibilitychange"));
+  focused = false;
+  window.dispatchEvent(new Event("blur"));
+  visibility = "visible";
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(desktop.syncWake).toHaveBeenCalledTimes(1);
+  focused = true;
+  window.dispatchEvent(new Event("focus"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(desktop.syncWake).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(desktop.syncWake).mock.calls).toEqual([["foreground"], ["foreground"]]);
+  window.dispatchEvent(new Event("online"));
+  expect(desktop.syncWake).toHaveBeenLastCalledWith();
+  expect(desktop.syncWake).toHaveBeenCalledTimes(3);
+});
+
+it("checks the remote on restoration while unsaved input keeps downloaded changes deferred", async () => {
+  let focused = false;
+  let statusChanged!: () => void;
+  vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { statusChanged = callback; return () => {}; });
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: true,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
+  const apply = vi.spyOn(desktop, "syncApply").mockResolvedValue({ changedEntries: [], changedCollections: [] });
+  vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  saveDocumentTabs(workspaceId, { ids: ["foreground-edit"], activeId: "foreground-edit" });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("foreground-edit")).toBe(true));
+  const queue = editorQueues.get("foreground-edit")!;
+  queue.edit({ contentMd: "仍在输入的本地正文" });
+  const input = container.appendChild(document.createElement("input"));
+  input.focus();
+  focused = true;
+  window.dispatchEvent(new Event("focus"));
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.waitFor(() => expect(desktop.syncWake).toHaveBeenCalledExactlyOnceWith("foreground"));
+  expect(apply).not.toHaveBeenCalled();
+  expect(queue.snapshot().fields.contentMd).toBe("仍在输入的本地正文");
+  expect(queue.isDirty()).toBe(true);
+
+  await queue.flush();
+  input.blur();
+  statusChanged();
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  expect(desktop.syncWake).toHaveBeenCalledOnce();
 });
 
 it("marks joined topics and updates the menu after adding an article without opening the topic", async () => {

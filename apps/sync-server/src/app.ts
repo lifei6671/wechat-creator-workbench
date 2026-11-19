@@ -1,12 +1,12 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { authenticate, claim, createAccessKey, createRecoveryKey, join, listDevices, recover, revoke, type DeviceAuthorization } from "./auth.js";
+import { authenticate, claim, connect, createAccessKey, createRecoveryKey, join, listDevices, recover, revoke, type DeviceAuthorization } from "./auth.js";
 import {
   entityType, hashPattern, id, integer, invalid, MAX_BLOB_BYTES, MAX_PUSH_BYTES,
   operation, queryInteger, record, SyncError, text,
 } from "./protocol.js";
 import { identity, query, type BlobStore, type Database, type Identity } from "./storage.js";
-import { apply, bootstrap, checkIdentity, checkPush, getEntity, pull, seed, type Client } from "./sync.js";
+import { apply, bootstrap, checkIdentity, checkPush, getEntity, lookupReceipt, pull, seed, type Client } from "./sync.js";
 
 type Variables = { device: DeviceAuthorization; client: Client; identity: Identity };
 type Route = Context<{ Variables: Variables }>;
@@ -29,7 +29,7 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     await next();
   });
   app.onError((error, c) => {
-    if (error instanceof SyncError) return c.json({ error: error.code }, error.status);
+    if (error instanceof SyncError) return c.json({ error: error.code, ...error.reason ? { reason: error.reason } : {} }, error.status);
     console.error("Sync request failed", error);
     return c.json({ error: "internal_error" }, 500);
   });
@@ -40,6 +40,7 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
       protocolVersion: 1, serverInstanceId: state.instance_id, syncEpoch: state.epoch,
       claimed: Boolean(state.claimed), seedStatus: state.seed_status,
       canvasSync: true, connectionRecovery: true, workspaceAccess: true,
+      unifiedConnect: true, operationReceiptLookup: true, seedDeviceId: state.seed_device,
     });
   });
 
@@ -47,6 +48,11 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     maxSize, onError: (c) => c.json({ error: "request_too_large" }, 413),
   });
   const smallBody = limitBody(4096);
+  app.post("/v1/connect", smallBody, async (c) => {
+    const input = await json(c);
+    return c.json(await connect(db, setupSecret, input.accessKey, input.deviceToken, text(input.name, 128),
+      c.req.header("X-Sync-Instance") ?? "", c.req.header("X-Sync-Epoch") ?? ""));
+  });
   app.post("/v1/setup/claim", smallBody, async (c) => {
     const input = await json(c);
     return c.json(await claim(db, setupSecret, input.setupSecret, input.deviceToken, text(input.name, 128)), 201);
@@ -118,6 +124,10 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
       results.push({ index, ...await apply(db, c.get("client"), cursor, parsed) });
     }
     return c.json({ results });
+  });
+  app.post("/v1/sync/receipts/lookup", limitBody(MAX_PUSH_BYTES), async (c) => {
+    const input = await json(c);
+    return c.json(await lookupReceipt(db, c.get("client"), id(input.originDeviceId), operation(input.operation)));
   });
   app.get("/v1/sync/bootstrap", async (c) => {
     const afterType = c.req.query("afterType");

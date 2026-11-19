@@ -2,7 +2,7 @@ services:
   sync:
     build: .
     environment:
-      SETUP_SECRET: ${SETUP_SECRET:?Set a random 32-byte SETUP_SECRET in .env}
+      SETUP_SECRET: ${SETUP_SECRET:?Set a random 32-byte hex connection key in .env}
     ports:
       - "127.0.0.1:${SYNC_PORT:-8787}:8787"
     volumes:

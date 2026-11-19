@@ -15,7 +15,7 @@
   },
   "cloudflare": {
     "bindings": {
-      "SETUP_SECRET": { "description": "Paste the 32-byte initialization secret generated for this workspace." }
+      "SETUP_SECRET": { "description": "Paste a random 32-byte hex connection key. Keep the same key for new devices and reinstalls until explicitly rotated." }
     }
   },
   "dependencies": {

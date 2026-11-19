@@ -32,6 +32,12 @@
     "allow-sync-status",
     "allow-sync-default-device-name",
     "allow-sync-connect",
+    "allow-sync-recover",
+    "allow-sync-reauthorize",
+    "allow-sync-connection-info",
+    "allow-sync-wake",
+    "allow-app-hide-confirm",
+    "allow-app-hide-cancel",
     "allow-sync-devices",
     "allow-sync-create-access-key",
     "allow-sync-create-recovery-key",
@@ -115,6 +121,7 @@
     "allow-cancel-exit",
     "allow-finish-exit",
     "allow-gpu-acceleration",
+    "allow-close-to-tray",
     "allow-asset-import",
     "allow-asset-library",
     "allow-asset-upload-progress",
@@ -132,9 +139,9 @@
     "core:window:allow-set-background-color",
     "core:webview:allow-set-webview-background-color",
     "core:window:allow-start-dragging",
-    "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
+    "core:window:allow-minimize",
     "core:window:allow-close"
   ]
 }

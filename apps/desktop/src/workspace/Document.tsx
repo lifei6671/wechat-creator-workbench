@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
@@ -67,21 +67,38 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
     return null;
   }, (item, target) => onReorder(item.id, target.id, target.placement));
 
+  const updateViewport = useCallback((revealActive: boolean) => {
+    const viewport = list.current!;
+    if (revealActive && viewport.clientWidth) {
+      const selected = viewport.querySelector<HTMLElement>('.tab[data-active="true"]');
+      if (selected) {
+        const tab = selected.getBoundingClientRect();
+        const area = viewport.getBoundingClientRect();
+        const distance = selected === viewport.lastElementChild
+          ? viewport.scrollWidth - viewport.clientWidth - viewport.scrollLeft
+          : tab.left < area.left ? tab.left - area.left : Math.max(0, tab.right - area.right);
+        if (Math.abs(distance) > 0.5) {
+          cancelAnimationFrame(wheelFrame.current);
+          wheelFrame.current = 0;
+          viewport.scrollLeft += distance;
+        }
+      }
+    }
+    const next = {
+      overflow: viewport.scrollWidth > strip.current!.clientWidth + 1,
+      left: viewport.scrollLeft > 1,
+      right: viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - 1,
+    };
+    setEdges(current => current.overflow === next.overflow && current.left === next.left && current.right === next.right ? current : next);
+  }, []);
+
   useLayoutEffect(() => {
     const viewport = list.current!;
-    const holder = strip.current!;
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
     let target = 0;
     let position = 0;
     let lastTime = 0;
-    function measure() {
-      const next = {
-        overflow: viewport.scrollWidth > holder.clientWidth + 1,
-        left: viewport.scrollLeft > 1,
-        right: viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - 1,
-      };
-      setEdges(current => current.overflow === next.overflow && current.left === next.left && current.right === next.right ? current : next);
-    }
+    const measure = () => updateViewport(false);
     function animate(time: number) {
       const elapsed = lastTime ? time - lastTime : 16;
       lastTime = time;
@@ -105,12 +122,11 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
       if (reducedMotion.matches) viewport.scrollLeft = target;
       else if (!wheelFrame.current) { lastTime = 0; wheelFrame.current = requestAnimationFrame(animate); }
     }
-    const resize = new ResizeObserver(measure);
+    const resize = new ResizeObserver(() => updateViewport(true));
     resize.observe(viewport);
-    resize.observe(holder);
+    resize.observe(strip.current!);
     viewport.addEventListener("scroll", measure);
     viewport.addEventListener("wheel", wheel, { passive: false });
-    measure();
     return () => {
       resize.disconnect();
       viewport.removeEventListener("scroll", measure);
@@ -118,21 +134,11 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
       cancelAnimationFrame(wheelFrame.current);
       wheelFrame.current = 0;
     };
-  }, [sessions.length, collections.length]);
+  }, [updateViewport]);
 
   useLayoutEffect(() => {
-    const viewport = list.current!;
-    const selected = viewport.querySelector<HTMLElement>('.tab[data-active="true"]');
-    if (!selected) return;
-    const tab = selected.getBoundingClientRect();
-    const area = viewport.getBoundingClientRect();
-    const distance = tab.left < area.left ? tab.left - area.left : Math.max(0, tab.right - area.right);
-    if (distance) {
-      cancelAnimationFrame(wheelFrame.current);
-      wheelFrame.current = 0;
-      viewport.scrollLeft += distance;
-    }
-  }, [activeId, activeCollectionId, edges.overflow]);
+    updateViewport(true);
+  }, [activeId, activeCollectionId, sessions, collections.length, edges.overflow, updateViewport]);
 
   function scroll(direction: -1 | 1) {
     const viewport = list.current!;

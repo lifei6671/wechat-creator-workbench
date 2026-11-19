@@ -10,12 +10,13 @@ mod commands;
 mod content;
 mod db;
 mod github_import;
-mod link_import;
 mod graphics;
+mod link_import;
 mod mcp;
 mod secrets;
 mod sync;
 mod wechat_import;
+mod window_lifecycle;
 
 use ai::conversations::*;
 use ai::{
@@ -34,35 +35,41 @@ use canvas_webview::{canvas_webview, canvas_webview_page, canvas_webview_snapsho
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
 use db::Workspace;
-use link_import::import_link;
 use graphics::gpu_acceleration;
+use link_import::import_link;
 use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
 use sync::contents::{
     sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
     sync_resolve, sync_run,
 };
 use sync::{
-    sync_connect, sync_create_access_key, sync_create_recovery_key, sync_default_device_name,
-    sync_devices, sync_generate_secret, sync_revoke_device, sync_status,
+    sync_connect, sync_connection_info, sync_create_access_key, sync_create_recovery_key,
+    sync_default_device_name, sync_devices, sync_generate_secret, sync_reauthorize, sync_recover,
+    sync_revoke_device, sync_status, sync_wake,
 };
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 use wechat_import::{Imports, wechat_retry_images};
+use window_lifecycle::{
+    app_hide_cancel, app_hide_confirm, close_to_tray, close_workspace, restore_window,
+};
 
 fn main() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(window_lifecycle::macos_instance());
+    let window_state_flags = StateFlags::all().difference(StateFlags::DECORATIONS);
+    let window_state =
+        tauri_plugin_window_state::Builder::default().with_state_flags(window_state_flags);
+    #[cfg(windows)]
+    let window_state = window_state
+        .with_state_flags(window_state_flags.difference(StateFlags::VISIBLE))
+        .skip_initial_state("main");
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_window("main")
-                && let Err(error) = window.unminimize().and_then(|()| window.set_focus())
-            {
-                eprintln!("Could not focus workspace: {error}");
-            }
+            restore_window(app);
         }))
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(StateFlags::all().difference(StateFlags::DECORATIONS))
-                .build(),
-        )
+        .plugin(window_state.build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_opener::Builder::new()
@@ -86,9 +93,12 @@ fn main() {
             app.manage(db);
             app.manage(McpServer::default());
             app.manage(sync::SyncConnection::new()?);
+            app.manage(window_lifecycle::HideRequest::default());
             app.manage(canvas_webview::PreviewState::default());
             #[cfg(windows)]
             graphics::create_main_window(app)?;
+            #[cfg(any(windows, target_os = "macos"))]
+            window_lifecycle::create_tray(app)?;
             #[cfg(target_os = "macos")]
             graphics::align_main_titlebar(app)?;
             let handle = app.handle().clone();
@@ -99,6 +109,7 @@ fn main() {
                     .await;
             });
             Assets::spawn(app.handle().clone());
+            sync::scheduler::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -140,6 +151,7 @@ fn main() {
             cancel_exit,
             finish_exit,
             gpu_acceleration,
+            close_to_tray,
             asset_import,
             asset_library,
             asset_upload_progress,
@@ -172,6 +184,12 @@ fn main() {
             sync_status,
             sync_default_device_name,
             sync_connect,
+            sync_recover,
+            sync_reauthorize,
+            sync_connection_info,
+            sync_wake,
+            app_hide_confirm,
+            app_hide_cancel,
             sync_devices,
             sync_create_access_key,
             sync_create_recovery_key,
@@ -219,19 +237,47 @@ fn main() {
             backup_restore_notice,
         ])
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                request_exit(window.app_handle());
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    if let Err(error) = close_workspace(window) {
+                        eprintln!("Could not close workspace window: {error:?}");
+                    }
+                }
+                #[cfg(windows)]
+                WindowEvent::Resized(_) if matches!(window.is_visible(), Ok(true)) => {
+                    if let Err(error) = graphics::ensure_usable_window_size(window) {
+                        eprintln!("Could not restore usable workspace bounds: {error}");
+                    }
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())
         .expect("could not start the desktop workspace");
 
     app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } = event
+        {
+            restore_window(app);
+        }
         if let RunEvent::ExitRequested { api, .. } = event
             && !app.state::<Workspace>().exit_committed()
         {
             api.prevent_exit();
+            if app
+                .get_window("main")
+                .is_some_and(|window| matches!(window.is_visible(), Ok(false)))
+            {
+                restore_window(app);
+            }
             request_exit(app);
         }
     });

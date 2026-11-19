@@ -5,7 +5,7 @@ import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizab
 import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, TimelineSelection, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
-import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncApplied, type UploadProgress } from "../desktop";
+import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncActivity, type SyncApplied, type SyncBinding, type UploadProgress } from "../desktop";
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
@@ -23,7 +23,7 @@ import { Outline } from "./Outline";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { SyncSettings } from "./SyncSettings";
-import { startSyncScheduler } from "./sync-scheduler";
+import { startSyncApplication } from "./sync-scheduler";
 import { flushSync } from "react-dom";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
@@ -270,6 +270,7 @@ export function DesktopShell() {
   const navigationWidth = useRef(initialNavigationWidth);
   const timelineWidth = useRef(initialTimelineWidth);
   const sidebarGroup = useRef<HTMLDivElement>(null);
+  const writingChrome = useRef<HTMLElement>(null);
   const navigationElement = useRef<HTMLDivElement>(null);
   const layoutSuspended = useRef(false);
   const timelineLayoutReady = useRef(false);
@@ -290,13 +291,15 @@ export function DesktopShell() {
   }
   const syncing = useRef(false);
   const [automaticSyncError, setAutomaticSyncError] = useState("");
+  const [syncState, setSyncState] = useState<{ binding: SyncBinding | null; activity: SyncActivity | null }>();
 
   async function flushWorkspaceForSync() {
+    await Promise.all(writing.current);
     const failed = (await waitForCollectionWrites()).find(write => write.status === "rejected");
     if (failed) throw failed.reason;
     await collectionCanvas.current?.flush();
     const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
-    if (saved.some(result => !result)) throw new Error("有文稿未能保存，请处理后重试同步");
+    if (saved.some(result => !result)) throw new Error("有文稿未能保存，请处理后重试");
   }
 
   async function applySync(operation: () => Promise<SyncApplied>) {
@@ -371,8 +374,7 @@ export function DesktopShell() {
   }
 
   const isAutomaticSyncActive = useEffectEvent(() => !syncing.current && !globalLock && !modal && !exit.current &&
-    navigator.onLine && document.visibilityState === "visible" && document.hasFocus());
-  const runAutomaticSync = useEffectEvent(() => withSync(desktop.syncRun));
+    document.visibilityState === "visible" && document.hasFocus());
   const canApplyAutomatically = useEffectEvent(() => isAutomaticSyncActive() &&
     (collectionCanvas.current?.canApplySync() ?? true) &&
     !document.activeElement?.closest("[contenteditable=true],textarea,input,select") &&
@@ -386,21 +388,50 @@ export function DesktopShell() {
   });
   useEffect(() => {
     if (!workspaceId) return;
-    const scheduler = startSyncScheduler({
-      isActive: () => isAutomaticSyncActive(),
-      read: desktop.syncActivity,
-      run: () => runAutomaticSync(),
+    let live = true;
+    let request = 0;
+    setSyncState(undefined);
+    async function readSyncStatus() {
+      const current = ++request;
+      const [binding, activity] = await Promise.all([desktop.syncStatus(), desktop.syncActivity()]);
+      if (live && current === request) setSyncState({ binding, activity });
+      return activity;
+    }
+    const scheduler = startSyncApplication({
+      read: readSyncStatus,
       apply: () => applyAutomaticSync(),
       report: error => setAutomaticSyncError(error ? errorMessage(error) : ""),
     });
-    window.addEventListener("focus", scheduler.wake);
-    window.addEventListener("online", scheduler.wake);
-    document.addEventListener("visibilitychange", scheduler.wake);
+    const statusChanged = desktop.onSyncStatusChanged(() => {
+      scheduler.wake();
+      // Phase updates must remain visible while local replay holds the application loop.
+      void readSyncStatus().catch(error => { if (live) setAutomaticSyncError(errorMessage(error)); });
+    });
+    void statusChanged.catch(error => setAutomaticSyncError(errorMessage(error)));
+    let foreground = document.visibilityState === "visible" && document.hasFocus();
+    const foregroundChanged = () => {
+      const next = document.visibilityState === "visible" && document.hasFocus();
+      const restored = next && !foreground;
+      foreground = next;
+      if (restored) void desktop.syncWake("foreground").catch(error => setAutomaticSyncError(errorMessage(error)));
+      scheduler.wake();
+    };
+    const online = () => {
+      void desktop.syncWake().catch(error => setAutomaticSyncError(errorMessage(error)));
+      scheduler.wake();
+    };
+    window.addEventListener("focus", foregroundChanged);
+    window.addEventListener("blur", foregroundChanged);
+    window.addEventListener("online", online);
+    document.addEventListener("visibilitychange", foregroundChanged);
     return () => {
+      live = false;
       scheduler.dispose();
-      window.removeEventListener("focus", scheduler.wake);
-      window.removeEventListener("online", scheduler.wake);
-      document.removeEventListener("visibilitychange", scheduler.wake);
+      void statusChanged.then(unlisten => unlisten(), () => {});
+      window.removeEventListener("focus", foregroundChanged);
+      window.removeEventListener("blur", foregroundChanged);
+      window.removeEventListener("online", online);
+      document.removeEventListener("visibilitychange", foregroundChanged);
     };
   }, [workspaceId]);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
@@ -660,7 +691,7 @@ export function DesktopShell() {
     }
     if (collectionMode) switchSection("folders");
     revealFolder(queues.current.get(id)!.snapshot().fields.categoryId);
-    if (active.current === id) document.getElementById(`tab-${id}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (active.current === id) document.getElementById(`tab-${id}`)?.closest(".tab")?.scrollIntoView({ block: "nearest", inline: "nearest" });
     select(id);
   }
 
@@ -1603,6 +1634,23 @@ export function DesktopShell() {
     }
   }
   const closingEvent = useEffectEvent(() => finishWorkspace());
+  const hiding = useRef(false);
+  const hideEvent = useEffectEvent(async () => {
+    if (hiding.current || exit.current) return;
+    hiding.current = true;
+    flushSync(() => setGlobalLock(true));
+    try {
+      (document.activeElement as HTMLElement | null)?.blur();
+      await flushWorkspaceForSync();
+      await desktop.confirmHide();
+    } catch (error) {
+      await desktop.cancelHide();
+      showError(error);
+    } finally {
+      hiding.current = false;
+      setGlobalLock(false);
+    }
+  });
   const clipboardEvent = useEffectEvent((action: ClipboardAction, target: EventTarget | null, plainText?: boolean) => {
     if (exit.current) return false;
     if (collectionMode) {
@@ -1622,6 +1670,7 @@ export function DesktopShell() {
     }
     const detachClipboard = attachClipboard((action, target, plainText) => clipboardEvent(action, target, plainText), showError);
     const listener = desktop.onExit(() => { void closingEvent(); });
+    const hideRequested = desktop.onHideRequested(() => { void hideEvent(); });
     const workspaceChanged = desktop.onWorkspaceChanged(() => setRefreshCount(count => count + 1));
     let mcpRequest = 0;
     function refreshMcp() {
@@ -1652,7 +1701,7 @@ export function DesktopShell() {
     void desktop.restoreNotice().then(value => {
       if (value) setNotice({ type: value.failed ? "error" : "info", text: value.message });
     }, showError);
-    for (const subscription of [listener, workspaceChanged, assetsChanged, backupChanged]) void subscription.catch(showError);
+    for (const subscription of [listener, hideRequested, workspaceChanged, assetsChanged, backupChanged]) void subscription.catch(showError);
     window.addEventListener("keydown", shortcut);
     window.addEventListener("blur", blur);
     window.addEventListener("dragover", preventFileNavigation);
@@ -1667,6 +1716,7 @@ export function DesktopShell() {
       window.removeEventListener("dragover", preventFileNavigation);
       window.removeEventListener("drop", preventFileNavigation);
       void listener.then(unlisten => unlisten(), () => {});
+      void hideRequested.then(unlisten => unlisten(), () => {});
       void workspaceChanged.then(unlisten => unlisten(), () => {});
       void assetsChanged.then(unlisten => unlisten(), () => {});
       void backupChanged.then(unlisten => unlisten(), () => {});
@@ -1718,6 +1768,20 @@ export function DesktopShell() {
     return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {
+    if (!windowsTitleBar) return;
+    const group = sidebarGroup.current!;
+    const chrome = writingChrome.current!;
+    const reserveControls = () => {
+      const space = group.getBoundingClientRect().right - chrome.getBoundingClientRect().right;
+      chrome.style.setProperty("--chrome-trailing-space", `${space}px`);
+    };
+    reserveControls();
+    const observer = new ResizeObserver(reserveControls);
+    observer.observe(group, { box: "border-box" });
+    observer.observe(chrome, { box: "border-box" });
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
     const panel = sidebarPanel.current!;
     const group = sidebarGroup.current!;
     const target = preferredNavigationWidth();
@@ -1765,29 +1829,26 @@ export function DesktopShell() {
     if (!hasWorkspaceSize(group)) return;
     if (showAiPanel !== panel.isCollapsed()) return;
     group.dataset.aiSidebarMoving = "true";
-    const frame = requestAnimationFrame(() => {
-      if (!hasWorkspaceSize(group)) return;
-      if (showAiPanel && !showExplorer && group.clientWidth > dividerWidth) {
-        const available = group.clientWidth - dividerWidth;
-        const aiShare = Math.min(50, aiSidebarWidth.current / available * 100);
-        workspacePanels.current!.setLayout({ navigation: 0, writing: 100 - aiShare, "ai-sidebar": aiShare });
-      } else if (showAiPanel) panel.resize(aiSidebarWidth.current);
-      else if (showExplorer && group.clientWidth > dividerWidth) {
-        const available = group.clientWidth - dividerWidth;
-        const width = Math.min(preferredNavigationWidth(), available - minimumWritingWidth);
-        const share = width / available * 100;
-        workspacePanels.current!.setLayout({ navigation: share, writing: 100 - share, "ai-sidebar": 0 });
-      } else panel.collapse();
-    });
+    if (showAiPanel && !showExplorer) {
+      const available = group.clientWidth - dividerWidth;
+      const aiShare = Math.min(50, aiSidebarWidth.current / available * 100);
+      workspacePanels.current!.setLayout({ navigation: 0, writing: 100 - aiShare, "ai-sidebar": aiShare });
+    } else if (showAiPanel) panel.resize(aiSidebarWidth.current);
+    else if (showExplorer) {
+      const available = group.clientWidth - dividerWidth;
+      const width = Math.min(preferredNavigationWidth(), available - minimumWritingWidth);
+      const share = width / available * 100;
+      workspacePanels.current!.setLayout({ navigation: share, writing: 100 - share, "ai-sidebar": 0 });
+    } else panel.collapse();
     const clear = () => { delete group.dataset.aiSidebarMoving; };
-    const timer = window.setTimeout(() => {
+    const frame = requestAnimationFrame(() => {
       clear();
       if (showAiPanel && !layoutSuspended.current && hasWorkspaceSize(group)) {
         const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
         rememberAiWidth(available * workspacePanels.current!.getLayout()["ai-sidebar"] / 100);
       }
-    }, 220);
-    return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); clear(); };
+    });
+    return () => { cancelAnimationFrame(frame); clear(); };
   }, [showAiPanel, showExplorer, aiSidebarPanel, workspacePanels]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
@@ -1827,7 +1888,6 @@ export function DesktopShell() {
     targetPicker={<AiTargetPicker settings={aiSettings} catalog={agentCatalog} selection={aiSelection}
       label={aiTarget.label ?? aiTarget.hint ?? "选择 AI 目标"} saving={savingAiSettings}
       onSelect={selectAiTarget} />}
-    windowControls={showAiPanel && windowsTitleBar ? <WindowControls onError={showError} /> : undefined}
     canChat={canChat} canEdit={canEditWithAi} tagSuggestions={library?.tagSuggestions} onClose={closeAi} onSettings={showModel}
     canSend={() => !exit.current}
     trackWrite={trackAssetTask}
@@ -1921,7 +1981,8 @@ export function DesktopShell() {
   );
   return <Theme appearance={dark ? "dark" : "light"} accentColor="indigo"
     grayColor="slate" radius="small" scaling="95%" panelBackground="solid" className="theme-root">
-    <div className="workspace-shell" data-mac-titlebar={macTitleBar || undefined} inert={Boolean(exitMessage)}>
+    <div className="workspace-shell" data-mac-titlebar={macTitleBar || undefined} data-windows-titlebar={windowsTitleBar || undefined}
+      inert={Boolean(exitMessage)}>
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup} groupRef={workspacePanels}
         resizeTargetMinimumSize={dividerHitTarget}
         onLayoutChange={layout => {
@@ -2031,7 +2092,7 @@ export function DesktopShell() {
             onPointerDown={timelineMode ? stopDirectoryTransition : undefined} />}
         <Panel id="writing" minSize={minimumWritingWidth} style={{ overflow: "hidden" }}>
           <main className="main-workspace" aria-label="写作工作区">
-            <header className="workbench-chrome chrome-band">
+            <header className="workbench-chrome chrome-band" ref={writingChrome}>
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
               {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} activeId={collectionMode ? null : activeId}
@@ -2047,7 +2108,6 @@ export function DesktopShell() {
               {!reading && !focusMode && !collectionMode && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
                 label={showAiPanel ? "隐藏 AI 侧栏" : "显示 AI 侧栏"} aria-expanded={showAiPanel}
                 aria-controls="ai-sidebar" onClick={toggleAi}><SidebarToggleIcon side="right" expanded={showAiPanel} /></Tool>}
-              {!showAiPanel && windowsTitleBar && <WindowControls onError={showError} />}
             </header>
             {collectionMode && <>
               {activeCollection ? <Suspense fallback={<div id="collection-canvas-panel" role="tabpanel"
@@ -2127,7 +2187,10 @@ export function DesktopShell() {
           </div>
         </Panel>
       </Group>
+      {windowsTitleBar && <WindowControls onError={showError} />}
       <StatusBar queue={collectionMode ? undefined : queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
+        syncBinding={syncState?.binding} syncActivity={syncState?.activity} syncError={automaticSyncError}
+        onSync={trigger => openSettings("sync", trigger)}
         mcpRunning={mcpStatus?.running} onMcp={trigger => openSettings("mcp", trigger)} backupProgress={backupWorking}
         migrationProgress={migrationWorking} assetRevision={assetsRevision} imageStorageEnabled={Boolean(imageTarget)}
         imageUpload={imageUpload?.sessionId === queue?.sessionId ? imageUpload : null} onError={showError}

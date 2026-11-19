@@ -215,7 +215,7 @@ it("shows a tab insertion marker and scrolls overflow by arrow or wheel", async 
   const secondRow = secondTab.closest<HTMLElement>(".tab")!;
   try {
     Object.defineProperties(list, { scrollWidth: { value: 412 }, clientWidth: { value: 280 } });
-    Object.defineProperty(list.parentElement, "clientWidth", { value: 324 });
+    Object.defineProperty(list.parentElement, "clientWidth", { value: 332 });
     list.getBoundingClientRect = () => new DOMRect(0, 0, 280, 32);
     secondRow.getBoundingClientRect = () => new DOMRect(130, 0, 150, 32);
     list.setPointerCapture = vi.fn();
@@ -223,6 +223,9 @@ it("shows a tab insertion marker and scrolls overflow by arrow or wheel", async 
     flushSync(() => imitateResize.mock.calls[0][0]([], {} as ResizeObserver));
     const next = container.querySelector<HTMLButtonElement>('[aria-label="向右滚动标签页"]')!;
     expect(container.querySelector('[aria-label="向左滚动标签页"]')).toBeNull();
+    expect(next.closest(".tab-scroll-slot")).toBe(list.nextElementSibling);
+    const startSlot = list.previousElementSibling;
+    const endSlot = list.nextElementSibling;
     next.click();
     expect(list.scrollBy).toHaveBeenCalledWith({ left: 182, behavior: "smooth" });
     list.dispatchEvent(new WheelEvent("wheel", { deltaY: 18, cancelable: true }));
@@ -232,7 +235,12 @@ it("shows a tab insertion marker and scrolls overflow by arrow or wheel", async 
     list.scrollLeft = 132;
     flushSync(() => list.dispatchEvent(new Event("scroll")));
     expect(container.querySelector('[aria-label="向右滚动标签页"]')).toBeNull();
-    expect(container.querySelector('[aria-label="向左滚动标签页"]')).not.toBeNull();
+    const previous = container.querySelector<HTMLButtonElement>('[aria-label="向左滚动标签页"]')!;
+    expect(previous.closest(".tab-scroll-slot")).toBe(list.previousElementSibling);
+    expect(list.previousElementSibling).toBe(startSlot);
+    expect(list.nextElementSibling).toBe(endSlot);
+    previous.click();
+    expect(list.scrollBy).toHaveBeenLastCalledWith({ left: -182, behavior: "smooth" });
 
     const drag = (name: string, node: Element, x: number, buttons: number) => flushSync(() => node.dispatchEvent(
       new PointerEvent(name, { bubbles: true, button: 0, buttons, pointerId: 1, isPrimary: true, clientX: x, clientY: 14 }),
@@ -243,6 +251,47 @@ it("shows a tab insertion marker and scrolls overflow by arrow or wheel", async 
     expect(container.querySelector(".tab-drag-ghost")?.textContent).toBe("第一篇");
     drag("pointerup", secondTab, 245, 0);
     expect(onReorder).toHaveBeenCalledExactlyOnceWith("one", "two", "after");
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+});
+
+it("keeps the last active tab at the scroll end as the workspace changes width", () => {
+  const first = new SaveQueue(entry("one", "第一篇"), vi.fn(), () => {});
+  const second = new SaveQueue(entry("two", "第二篇"), vi.fn(), () => {});
+  let resize!: ResizeObserverCallback;
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: ResizeObserverCallback) { resize = callback; }
+    observe() {} disconnect() {}
+  });
+  flushSync(() => root.render(<Theme><DocumentTabs sessions={[first, second]} activeId="two" categories={[]}
+    readingIds={[]} lockedIds={[]} onMove={vi.fn()} onSwitch={vi.fn()} onClose={vi.fn()}
+    onAction={vi.fn()} onReorder={vi.fn()} onRename={vi.fn()} onError={vi.fn()} /></Theme>));
+  const viewport = container.querySelector<HTMLDivElement>(".tabs")!;
+  const strip = viewport.parentElement!;
+  let width = 310;
+  Object.defineProperties(viewport, {
+    clientWidth: { get: () => width },
+    scrollWidth: { get: () => Math.max(412, width) },
+  });
+  Object.defineProperty(strip, "clientWidth", { get: () => width + 52 });
+  const resizeTo = (nextWidth: number) => {
+    width = nextWidth;
+    flushSync(() => resize([], {} as ResizeObserver));
+  };
+  try {
+    resizeTo(310);
+    expect(viewport.scrollLeft).toBe(102);
+    expect(strip.children[1]).toBe(viewport);
+    resizeTo(240);
+    expect(viewport.scrollLeft).toBe(172);
+    resizeTo(340);
+    expect(viewport.scrollLeft).toBe(72);
+    resizeTo(420);
+    expect(viewport.scrollLeft).toBe(0);
+    expect(strip.querySelector(".tab-scroll-slot")).toBeNull();
+    expect(strip.firstElementChild).toBe(viewport);
   } finally {
     first.dispose();
     second.dispose();

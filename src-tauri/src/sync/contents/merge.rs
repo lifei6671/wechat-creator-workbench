@@ -30,6 +30,9 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
     for raw in staged.query_map([], |row| row.get::<_, String>(0))? {
         let entity: Entity = serde_json::from_str(&raw?).map_err(invalid_response)?;
         let key = &entity.key;
+        if super::in_outbox(conn, key)? {
+            continue;
+        }
         let local = local_snapshot(conn, key)?;
         let deleted = entity.deleted_at.is_some();
         if let Some(local) = local {
@@ -80,7 +83,7 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
     Ok(changed)
 }
 
-fn same_content(mut local: Value, remote: &Value) -> bool {
+pub(super) fn same_content(mut local: Value, remote: &Value) -> bool {
     let mut remote = remote.clone();
     for payload in [&mut local, &mut remote] {
         if let Some(object) = payload.as_object_mut() {
@@ -264,7 +267,7 @@ fn prepare_categories(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn available_name(
+pub(super) fn available_name(
     conn: &Connection,
     parent: Option<&str>,
     name: &str,

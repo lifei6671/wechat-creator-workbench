@@ -7,7 +7,7 @@ import { createApp } from "./app.js";
 import { hashPattern } from "./protocol.js";
 
 const setupSecret = process.env.SETUP_SECRET;
-if (!setupSecret || !hashPattern.test(setupSecret)) throw new Error("SETUP_SECRET must be a 32-byte hex value");
+if (setupSecret !== undefined && !hashPattern.test(setupSecret)) throw new Error("SETUP_SECRET must be a 32-byte hex connection key");
 const data = process.env.DATA_DIR ?? "./data";
 await mkdir(data, { recursive: true });
 const db = openSqlite(join(data, "sync.db"));

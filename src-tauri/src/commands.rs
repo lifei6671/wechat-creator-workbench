@@ -271,8 +271,10 @@ pub async fn cancel_exit(
     state: State<'_, Workspace>,
     assets: State<'_, crate::assets::Assets>,
     mcp: State<'_, McpServer>,
+    sync: State<'_, crate::sync::SyncConnection>,
 ) -> Result<()> {
     state.cancel_exit();
+    sync.wake();
     assets.kick();
     mcp.resume(&app, &state).await;
     Ok(())

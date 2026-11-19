@@ -42,28 +42,35 @@ export async function runContract(base, setupSecret) {
   assert.equal(meta.canvasSync, true);
   assert.equal(meta.connectionRecovery, true);
   assert.equal(meta.workspaceAccess, true);
+  assert.equal(meta.unifiedConnect, true);
+  assert.equal(meta.operationReceiptLookup, true);
+  assert.equal(meta.seedDeviceId, null);
   assert.equal(meta.claimed, false);
   await ok(401, "devices");
   await ok(401, "setup/claim", "POST", {}, { setupSecret: "0".repeat(64), name: "invalid" });
-  const claimRequests = ["seed A", "seed B"].map((name) => ({ setupSecret, name, deviceToken: deviceToken() }));
-  const claims = await Promise.all(claimRequests.map((input) => request("setup/claim", "POST", {}, input)));
-  assert.deepEqual(claims.map(({ status }) => status).sort(), [201, 409]);
-  const firstIndex = claims.findIndex(({ status }) => status === 201);
+  const connectionHeaders = { "X-Sync-Instance": meta.serverInstanceId, "X-Sync-Epoch": meta.syncEpoch };
+  const claimRequests = ["seed A", "seed B"].map((name) => ({ accessKey: setupSecret, name, deviceToken: deviceToken() }));
+  const claims = await Promise.all(claimRequests.map((input) => request("connect", "POST", connectionHeaders, input)));
+  assert.deepEqual(claims.map(({ status }) => status), [200, 200]);
+  assert.notEqual(claims[0].body.deviceId, claims[1].body.deviceId);
+  const firstIndex = 0;
   const first = claims[firstIndex].body;
-  assert.deepEqual(await ok(201, "setup/claim", "POST", {}, claimRequests[firstIndex]), first);
+  assert.deepEqual(await ok(200, "connect", "POST", connectionHeaders, claimRequests[firstIndex]), first);
+  assert.equal((await ok(409, "connect", "POST", { ...connectionHeaders, "X-Sync-Epoch": "stale" },
+    { ...claimRequests[0], deviceToken: deviceToken() })).reason, "epoch_changed");
   const headers = (token) => ({
     Authorization: "Bearer " + token,
     "X-Sync-Instance": meta.serverInstanceId,
     "X-Sync-Epoch": meta.syncEpoch,
   });
   const a = headers(claimRequests[firstIndex].deviceToken);
-  assert.equal((await ok(409, "devices/" + first.deviceId, "DELETE", a)).error, "device_required");
   const previousAccess = await ok(201, "access-key", "POST", a);
   const { accessKey } = await ok(201, "access-key", "POST", a);
+  await ok(401, "connect", "POST", connectionHeaders, { ...claimRequests[0], deviceToken: deviceToken() });
   await ok(401, "devices/join", "POST", {}, {
     accessKey: previousAccess.accessKey, name: "expired key", deviceToken: deviceToken(),
   });
-  const joinRequest = { accessKey, name: "peer", deviceToken: deviceToken() };
+  const joinRequest = { accessKey, name: "peer", deviceToken: claimRequests[1].deviceToken };
   const [second, retried] = await Promise.all([
     ok(201, "devices/join", "POST", {}, joinRequest),
     ok(201, "devices/join", "POST", {}, joinRequest),
@@ -84,6 +91,14 @@ export async function runContract(base, setupSecret) {
   assert.equal(initial.status, "applied");
   assert.equal(initial.cursor, 2);
   assert.equal((await push(a, seed))[0].status, "already_applied");
+  const lookup = (who, originDeviceId, input) => ok(200, "sync/receipts/lookup", "POST", who,
+    { originDeviceId, operation: input });
+  const { index: initialIndex, ...initialReceipt } = initial;
+  assert.equal(initialIndex, 0);
+  assert.deepEqual(await lookup(b, first.deviceId, seed), initialReceipt);
+  assert.equal((await lookup(b, first.deviceId, { ...seed, operationId: "never-submitted" })).status, "not_found");
+  await ok(409, "sync/receipts/lookup", "POST", b, { originDeviceId: first.deviceId,
+    operation: { ...seed, mutations: [category("changed", "Changed")] } });
   await ok(200, "sync/seed", "POST", a, { action: "finish" });
   await ok(200, "sync/seed", "POST", a, { action: "finish" });
 
@@ -152,7 +167,14 @@ export async function runContract(base, setupSecret) {
   assert.equal(Number(head.headers.get("content-length")), content.length);
   assert.equal(head.bytes, 0);
   assert.equal(digest(await ok(200, "blobs/" + hash, "GET", b)), hash);
-  assert.equal((await push(a, operation(long)))[0].status, "applied");
+  const longOperation = operation(long);
+  assert.equal((await push(a, longOperation))[0].status, "applied");
+  assert.equal((await lookup(b, first.deviceId, longOperation)).status, "applied");
+  const largeLookupOperation = operation(entry("lookup-large", "a".repeat(6000)));
+  assert.equal((await push(a, largeLookupOperation))[0].status, "applied");
+  assert.equal((await lookup(b, first.deviceId, largeLookupOperation)).status, "applied");
+  await ok(413, "sync/receipts/lookup", "POST", { ...b, Connection: "close" }, { originDeviceId: first.deviceId,
+    operation: operation(entry("oversized", "a".repeat(1024 * 1024))) });
   const illustrated = entry("illustrated", "![图](asset://private-image)");
   illustrated.payload.assetIds = ["private-image"];
   illustrated.payload.coverAssetId = "private-image";
@@ -243,11 +265,12 @@ export async function runContract(base, setupSecret) {
   const remainder = await ok(200, "sync/pull?cursor=" + wide.body.nextCursor, "GET", b);
   assert.equal(remainder.changes.length, 1);
   assert.equal(remainder.hasMore, false);
-  assert.equal((await ok(409, "sync/pull?cursor=99999", "GET", a)).error, "reset_required");
+  assert.deepEqual(await ok(409, "sync/pull?cursor=99999", "GET", a), { error: "reset_required", reason: "cursor_ahead" });
   const peerKey = await ok(201, "recovery-key", "POST", b);
   await ok(204, "devices/" + second.deviceId, "DELETE", a);
   await ok(401, "blobs/" + hash, "GET", b);
   await ok(401, "sync/pull", "GET", b);
+  await ok(401, "connect", "POST", connectionHeaders, joinRequest);
   const draftBeforeRecovery = await ok(200, "sync/entities/entry/draft", "GET", a);
   await ok(401, "recovery-key", "POST");
   const oldKey = await ok(201, "recovery-key", "POST", a);
@@ -268,7 +291,7 @@ export async function runContract(base, setupSecret) {
   const deviceList = await ok(200, "devices", "GET", recoveredHeaders);
   assert.deepEqual(deviceList.devices.filter(device => !device.revokedAt).map(device => device.deviceId), [first.deviceId]);
   assert.equal(deviceList.devices.find(device => device.deviceId === first.deviceId).name, "重新安装");
-  assert.deepEqual(await ok(200, "meta"), { ...meta, claimed: true, seedStatus: "ready" });
+  assert.deepEqual(await ok(200, "meta"), { ...meta, claimed: true, seedStatus: "ready", seedDeviceId: first.deviceId });
   assert.deepEqual(await ok(200, "sync/entities/entry/draft", "GET", recoveredHeaders), draftBeforeRecovery);
   assert.equal(digest(await ok(200, "blobs/" + hash, "GET", recoveredHeaders)), hash);
   return { instanceId: meta.serverInstanceId, credentials: recoveredHeaders, retainedHash: hash, pageBytes: wide.bytes };

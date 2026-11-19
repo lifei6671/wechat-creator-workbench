@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { once } from "node:events";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import Sqlite from "better-sqlite3";
 import { issueRecoveryKey, listRecoveryDevices } from "../scripts/cloudflare-recovery.mjs";
 import { openSqlite } from "../dist/adapters/sqlite.js";
-import { authenticate, claim, createAccessKey, createRecoveryKey, join as joinWorkspace, recover, revoke } from "../dist/auth.js";
-import { apply, seed } from "../dist/sync.js";
+import { authenticate, claim, connect, createAccessKey, createRecoveryKey, join as joinWorkspace, recover, revoke } from "../dist/auth.js";
+import { apply, lookupReceipt, pull, seed } from "../dist/sync.js";
 import { identity } from "../dist/storage.js";
 import { runContract } from "./contract.mjs";
 
@@ -23,6 +23,70 @@ async function scratch(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("unified connection migrates a claimed service once and does not bypass rotated keys", async (t) => {
+  const db = openSqlite(":memory:");
+  t.after(() => db.close());
+  const setup = secret(), original = secret(), replacement = secret();
+  const old = await claim(db, setup, setup, original, "原设备");
+  const state = await identity(db);
+  const authorization = await authenticate(db, "Bearer " + original);
+  const client = { instanceId: state.instance_id, epoch: state.epoch, deviceId: old.deviceId, tokenHash: authorization.tokenHash };
+  await seed(db, client, "begin");
+  await seed(db, client, "finish");
+  const before = await identity(db);
+  const joined = await connect(db, setup, setup, replacement, "重装设备", state.instance_id, state.epoch);
+  assert.equal(joined.seedStatus, "ready");
+  assert.notEqual(joined.deviceId, old.deviceId);
+  assert.deepEqual(await identity(db), { ...before, access_hash: createHash("sha256").update(setup).digest("hex") });
+  assert.deepEqual(await authenticate(db, "Bearer " + original), authorization);
+  assert.deepEqual(await connect(db, undefined, setup, replacement, "重装设备", state.instance_id, state.epoch), joined);
+  const { accessKey } = await createAccessKey(db, authorization);
+  await assert.rejects(connect(db, setup, setup, secret(), "旧部署密钥", state.instance_id, state.epoch), { code: "invalid_access_key" });
+  const third = await connect(db, setup, accessKey, secret(), "新设备", state.instance_id, state.epoch);
+  await revoke(db, authorization, joined.deviceId);
+  await assert.rejects(connect(db, setup, accessKey, replacement, "撤销设备", state.instance_id, state.epoch), { code: "invalid_access_key" });
+  assert.notEqual(third.deviceId, joined.deviceId);
+  const [[current]] = await db.batch([["SELECT access_hash FROM sync_identity"]]);
+  const racingDb = { batch: async statements => {
+    await createAccessKey(db, authorization);
+    return db.batch(statements);
+  } };
+  await assert.rejects(connect(racingDb, setup, accessKey, secret(), "轮换期间接入", state.instance_id, state.epoch), { code: "invalid_access_key" });
+  const [[after]] = await db.batch([["SELECT access_hash FROM sync_identity"]]);
+  assert.notEqual(current.access_hash, after.access_hash);
+});
+
+test("receipt lookup survives cursor expiry and revoked origins without writing or changing the receipt", async (t) => {
+  const db = openSqlite(":memory:");
+  t.after(() => db.close());
+  const setup = secret(), a = secret(), b = secret();
+  const state = await identity(db);
+  const [first, second] = await Promise.all([a, b].map((token, i) => connect(db, setup, setup, token, "device-" + i, state.instance_id, state.epoch)));
+  const [authA, authB] = await Promise.all([a, b].map(token => authenticate(db, "Bearer " + token)));
+  const client = { instanceId: state.instance_id, epoch: state.epoch, deviceId: first.deviceId, tokenHash: authA.tokenHash };
+  const peer = { ...client, deviceId: second.deviceId, tokenHash: authB.tokenHash };
+  await seed(db, client, "begin");
+  const operation = { operationId: "receipt", mutations: [{ entityType: "category", entityId: "folder",
+    baseRevision: 0, operation: "upsert", payload: { name: "目录", parentId: null } }] };
+  const applied = await apply(db, client, 0, operation);
+  const conflicting = { ...operation, operationId: "conflict" };
+  const conflict = await apply(db, client, 0, conflicting);
+  await seed(db, client, "finish");
+  await revoke(db, authB, first.deviceId);
+  await db.batch([["UPDATE sync_identity SET min_cursor = 1"]]);
+  await assert.rejects(pull(db, peer, 0, undefined, 100), { code: "reset_required", reason: "cursor_expired" });
+  assert.deepEqual(await lookupReceipt(db, peer, first.deviceId, operation), applied);
+  assert.deepEqual(await lookupReceipt(db, peer, first.deviceId, conflicting), conflict);
+  const before = await db.batch([["SELECT * FROM sync_operations ORDER BY operation_id"], ["SELECT * FROM sync_entities"]]);
+  await assert.rejects(lookupReceipt(db, peer, first.deviceId, { ...operation,
+    mutations: [{ ...operation.mutations[0], baseRevision: 1 }] }), { code: "operation_id_reused" });
+  assert.equal((await lookupReceipt(db, peer, first.deviceId, { ...operation, operationId: "absent" })).status, "not_found");
+  assert.deepEqual(await db.batch([["SELECT * FROM sync_operations ORDER BY operation_id"], ["SELECT * FROM sync_entities"]]), before);
+  await assert.rejects(lookupReceipt(db, { ...peer, epoch: "old" }, first.deviceId, operation), { reason: "epoch_changed" });
+  await assert.rejects(lookupReceipt(db, { ...peer, instanceId: "old" }, first.deviceId, operation), { reason: "instance_changed" });
+  await assert.rejects(pull(db, peer, 2, undefined, 100), { reason: "cursor_ahead" });
+});
 
 test("upgrading a populated sync database preserves the device and cloud data", async (t) => {
   const path = join(await scratch(t), "sync.db");
@@ -57,6 +121,37 @@ test("upgrading a populated sync database preserves the device and cloud data", 
   } finally {
     db.close();
   }
+});
+
+test("ordinary asset validation does not scan existing asset payloads", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "wcb-sync-validation-"));
+  const path = join(directory, "validation.db");
+  openSqlite(path).close();
+  const conn = new Sqlite(path);
+  t.after(() => {
+    conn.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+  const insert = conn.prepare("INSERT INTO sync_entities VALUES ('asset', ?, 1, ?, NULL, 1)");
+  conn.transaction(() => {
+    for (let i = 0; i < 1_000; i++) insert.run("asset-" + i, JSON.stringify({ kind: "original" }));
+  })();
+  conn.exec("INSERT INTO sync_blobs VALUES ('hash', 1)");
+  conn.prepare("INSERT INTO sync_pending VALUES ('asset', 'new', 0, 1, 'upsert', ?, NULL, 0)")
+    .run(JSON.stringify({ kind: "original", sha256: "hash", bytes: 1 }));
+  let inspected = 0;
+  conn.function("json_extract", { deterministic: true }, (value, path) => {
+    inspected++;
+    return JSON.parse(value)[path.slice(2)] ?? null;
+  });
+  assert.deepEqual(conn.prepare("SELECT * FROM sync_article_dependencies").get(), { dependency_reason: null });
+  assert.ok(inspected < 20, `ordinary asset inspected ${inspected} JSON fields`);
+  conn.exec("DELETE FROM sync_blobs");
+  assert.deepEqual(conn.prepare("SELECT * FROM sync_article_dependencies").get(), { dependency_reason: "blob_missing" });
+  conn.exec("UPDATE sync_pending SET payload_json = '{\"kind\":\"derived\",\"sourceKey\":\"render\",\"sha256\":\"hash\"}'");
+  conn.prepare("UPDATE sync_entities SET payload_json = ? WHERE entity_id = 'asset-999'")
+    .run(JSON.stringify({ kind: "derived", sourceKey: "render", sha256: "hash" }));
+  assert.deepEqual(conn.prepare("SELECT * FROM sync_article_dependencies").get(), { dependency_reason: "derived_asset_conflict" });
 });
 
 test("a Cloudflare administrator can recover the only device without existing keys", async (t) => {

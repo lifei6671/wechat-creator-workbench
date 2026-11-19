@@ -4,7 +4,8 @@ import { query, type Database, type Identity } from "./storage.js";
 export type Client = { instanceId: string; epoch: string; deviceId: string; tokenHash: string };
 
 export function checkIdentity(state: Identity, client: Client) {
-  if (state.instance_id !== client.instanceId || state.epoch !== client.epoch) throw new SyncError(409, "reset_required");
+  if (state.instance_id !== client.instanceId) throw new SyncError(409, "reset_required", "instance_changed");
+  if (state.epoch !== client.epoch) throw new SyncError(409, "reset_required", "epoch_changed");
 }
 
 function checkReady(state: Identity) {
@@ -12,7 +13,8 @@ function checkReady(state: Identity) {
 }
 
 function checkCursor(state: Identity, cursor: number) {
-  if (cursor < state.min_cursor || cursor > state.head_cursor) throw new SyncError(409, "reset_required");
+  if (cursor < state.min_cursor) throw new SyncError(409, "reset_required", "cursor_expired");
+  if (cursor > state.head_cursor) throw new SyncError(409, "reset_required", "cursor_ahead");
 }
 
 export function checkPush(state: Identity, client: Client, cursor: number) {
@@ -45,6 +47,30 @@ type Receipt = {
   versions_json: string;
   cursor: number | null;
 };
+
+function receiptResult(receipt: Receipt, operationId: string) {
+  return { operationId, status: receipt.status,
+    ...receipt.reason === null ? {} : { reason: receipt.reason },
+    versions: JSON.parse(receipt.versions_json) as EntityVersion[],
+    ...receipt.cursor === null ? {} : { cursor: receipt.cursor } };
+}
+
+export async function lookupReceipt(db: Database, client: Client, originDeviceId: string, input: ReturnType<typeof operation>) {
+  const digest = await sha256(JSON.stringify(input.mutations));
+  const [receipts, states] = await db.batch([
+    ["SELECT * FROM sync_operations WHERE (epoch, device_id, operation_id) = (?, ?, ?)",
+      client.epoch, originDeviceId, input.operationId],
+    [`SELECT sync_watermarks.*, EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL) AS active
+      FROM sync_watermarks`, client.deviceId, client.tokenHash],
+  ]);
+  const state = states[0] as Identity & { active: number };
+  if (!state.active) throw new SyncError(401, "invalid_device");
+  checkIdentity(state, client);
+  const receipt = receipts[0] as Receipt | undefined;
+  if (!receipt) return { operationId: input.operationId, status: "not_found" };
+  if (receipt.request_hash !== digest) throw new SyncError(409, "operation_id_reused");
+  return receiptResult(receipt, input.operationId);
+}
 
 const applyGate = `
   instance_id = ? AND epoch = ?
@@ -130,11 +156,8 @@ export async function apply(db: Database, client: Client, cursor: number, input:
     return { operationId: input.operationId, status: "rejected", reason: "operation_id_reused" };
   }
   return {
-    operationId: input.operationId,
+    ...receiptResult(receipt, input.operationId),
     status: receipt.status === "applied" && receipt.group_id !== groupId ? "already_applied" : receipt.status,
-    ...receipt.reason === null ? {} : { reason: receipt.reason },
-    versions: JSON.parse(receipt.versions_json) as EntityVersion[],
-    ...receipt.cursor === null ? {} : { cursor: receipt.cursor },
   };
 }
 
