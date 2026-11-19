@@ -194,6 +194,8 @@ function syntaxAtCaret(state: EditorState, delimiterWidget: DelimiterWidget) {
       const marker = document.createElement("span");
       marker.className = "rich-markdown-syntax";
       marker.dataset.markdown = text;
+      // Generated text in these widgets can stall WebKit when it computes the visible text range.
+      marker.textContent = text;
       if (task) marker.dataset.markdownTask = "";
       marker.setAttribute("aria-hidden", "true");
       return marker;

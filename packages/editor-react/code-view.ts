@@ -68,7 +68,8 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
   input.autocomplete = "off";
   open.classList.add("rich-code-fence-open");
   open.removeAttribute("aria-hidden");
-  open.append(input);
+  const openTicks = document.createTextNode("");
+  open.append(openTicks, input);
   pre.append(label, passiveLabel, open, contentDOM, close);
   const diagram = document.createElement("div");
   diagram.className = "rich-mermaid rich-graphic-preview";
@@ -142,6 +143,8 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
     pre.dataset.language = language;
     open.dataset.markdown = fence;
     close.dataset.markdown = fence;
+    openTicks.data = fence;
+    close.textContent = fence;
     label.textContent = language || "纯文本";
     passiveLabel.textContent = label.textContent;
     label.setAttribute("aria-label", `修改代码块语言（${label.textContent}）`);

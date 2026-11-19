@@ -81,7 +81,6 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 .rich-code-language-passive { display: none; }
 .rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-language { display: none; }
 .rich-code-fence { display: none; color: var(--gray-11); user-select: none; }
-.rich-code-fence::before { content: attr(data-markdown); }
 .rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-fence { display: block; }
 .rich-code-fence-open input {
   width: auto; min-width: 4ch; max-width: calc(100% - 4ch); field-sizing: content;
@@ -307,9 +306,7 @@ button.rich-slash-group { border: 0; background: transparent; cursor: pointer; }
 .rich-editor .workspace-search-highlight { background: var(--amber-5); color: inherit; }
 
 .rich-editor .rich-markdown-syntax { color: var(--gray-10); font-weight: inherit; font-style: normal; user-select: none; }
-.rich-editor .rich-markdown-syntax::before { content: attr(data-markdown); }
 .rich-editor .rich-markdown-syntax:last-child { overflow-wrap: anywhere; }
-.rich-editor .rich-strong-delimiter::before { content: none; }
 .rich-strong-delimiter input {
   field-sizing: content; min-inline-size: 0; padding: 0; border: 0;
   background: transparent; color: inherit; font: inherit; cursor: text; user-select: text;

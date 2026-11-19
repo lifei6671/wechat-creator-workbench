@@ -1130,9 +1130,14 @@ it.each([
       onDocumentChanged={() => {}} onBlur={() => {}} ref={value => { handle = value; }} />));
     await vi.waitFor(() => expect(handle).not.toBeNull());
     const editor = container.querySelector(".ProseMirror")!;
+    const paragraphText = () => {
+      const paragraph = editor.querySelector("p")?.cloneNode(true) as HTMLParagraphElement | undefined;
+      paragraph?.querySelectorAll(".rich-markdown-syntax").forEach(marker => marker.remove());
+      return paragraph?.textContent;
+    };
     handle!.focus();
     expect(handle!.clipboard("paste", clipboard)).toBe(true);
-    await vi.waitFor(() => expect(editor.querySelector("p")?.textContent).toBe(source + tail));
+    await vi.waitFor(() => expect(paragraphText()).toBe(source + tail));
     expect(editor.querySelector("strong")).toBeNull();
     const paragraph = editor.querySelector("p")!;
     const text = paragraph.firstChild as Text;
@@ -1151,7 +1156,7 @@ it.each([
     expect(handle!.captureMarkdown().markdown).toContain(source.replace(changed, replacement));
     handle!.command("undo");
     expect(editor.querySelector("strong")).toBeNull();
-    expect(editor.querySelector("p")?.textContent).toBe(source + tail);
+    expect(paragraphText()).toBe(source + tail);
     handle!.command("redo");
     expect(editor.querySelector("strong")?.textContent).toBe(title);
     expect(clipboard.onError).not.toHaveBeenCalled();
@@ -2165,7 +2170,7 @@ it("shows fences while editing a code block and uses the chosen language after b
     handle!.contextCaret!(false);
     expect(block.classList).not.toContain("rich-code-active");
     handle!.focus();
-    expect([...block.querySelectorAll<HTMLElement>(".rich-code-fence")].map(fence => fence.dataset.markdown)).toEqual(["\x60\x60\x60", "\x60\x60\x60"]);
+    expect([...block.querySelectorAll<HTMLElement>(".rich-code-fence")].map(fence => fence.textContent)).toEqual(["\x60\x60\x60", "\x60\x60\x60"]);
     const input = block.querySelector<HTMLInputElement>("input")!;
     expect(input.closest(".rich-code-fence-open")).not.toBeNull();
     expect(input.value).toBe("javascript");
@@ -2301,7 +2306,7 @@ it("shows Markdown at the caret and folds only the selected heading section with
     setCaret(document.createTreeWalker(editor.querySelector("a")!, NodeFilter.SHOW_TEXT).nextNode()!, 1);
     await vi.waitFor(() => expect(markers()).toEqual(["[", "**", "**", "](https://example.com)"]));
     setCaret(firstHeading.lastChild!, 1);
-    await vi.waitFor(() => expect(markers()).toEqual(["## "]));
+    await vi.waitFor(() => expect(firstHeading.querySelector(".rich-markdown-syntax")?.textContent).toBe("## "));
     const quote = editor.querySelectorAll(":scope > blockquote")[1];
     const [firstQuote, secondQuote] = quote.querySelectorAll(":scope > p");
     const nestedHeading = quote.querySelector("blockquote h3")!;
