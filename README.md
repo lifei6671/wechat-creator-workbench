@@ -23,14 +23,27 @@ Obsidian Web Clipper 中选择「复制到剪贴板」后，在工作区空白�
 
 回收站右上角的垃圾桶按钮可清空全部已删除内容，操作前会确认。可在「设置 → 通用 → 回收站保留时间」选择 1、7、14、30、90 天或不自动清理，默认 7 天；应用启动时及运行期间每小时清理过期内容。清理会移除正文、历史版本及关联 AI 记录，其他文档共用的素材仍会保留。
 
+### macOS 固定自签名
+
+macOS 打包固定使用钥匙串中的 `Wechat Creator Workbench Self-Signed` 代码签名身份。首次配置可在「钥匙串访问 → 证书助理 → 创建证书」中使用这个名称，身份类型选择「自签名根」，证书类型选择「代码签名」，并设置较长的有效期。后续构建持续复用同一张证书及其私钥，不要每次重新生成。
+
+```sh
+security find-identity -p codesigning
+make build-desktop
+```
+
+当前平台的 `.app` 输出到 `src-tauri/target/release/bundle/macos/`。首次签名时，macOS 可能要求授权 `codesign` 使用私钥；从临时签名切换到固定证书后，应用访问已有凭据也可能需要重新授权一次。
+
+更换构建电脑或在 GitHub Actions 中签名时，应导入同一份含私钥的 `.p12`，而不是创建另一张同名证书。证书和私钥不进入 Git 仓库；CI 使用受保护的 Secrets。自签名版本可发布到 GitHub Releases，但没有 Apple 公证，下载者可能仍需手动允许打开。需要改用其他签名身份时，可通过 `APPLE_SIGNING_IDENTITY` 环境变量覆盖。
+
 ### macOS 通用安装包
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-APPLE_SIGNING_IDENTITY=- pnpm build --target universal-apple-darwin --bundles app,dmg
+pnpm build --target universal-apple-darwin --bundles app,dmg
 ```
 
-`src-tauri/target/universal-apple-darwin/release/bundle/` 下的 `.app` 和 `.dmg` 同时包含 Apple Silicon 和 Intel 架构。示例使用临时签名，供本机验证。对外分发时使用 Developer ID 签名并完成 Apple 公证。
+`src-tauri/target/universal-apple-darwin/release/bundle/` 下的 `.app` 和 `.dmg` 同时包含 Apple Silicon 和 Intel 架构，并使用上述固定自签名身份。需要通过标准 Gatekeeper 验证时，使用 Developer ID 签名并完成 Apple 公证。
 
 ## S3 数据库备份
 

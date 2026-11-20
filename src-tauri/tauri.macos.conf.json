@@ -15,7 +15,8 @@
   },
   "bundle": {
     "macOS": {
-      "minimumSystemVersion": "14.0"
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "Wechat Creator Workbench Self-Signed"
     }
   }
 }
