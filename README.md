@@ -6,12 +6,16 @@
 
 ```sh
 pnpm install --frozen-lockfile
+cargo install cargo-about --version 0.9.3 --locked --features cli
+cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+pnpm web:build
 pnpm dev
 ```
 
 - `pnpm typecheck` 检查 TypeScript，`pnpm test` 运行前端单元测试。首次进行全仓类型检查前，先运行 `npm ci --prefix apps/sync-server` 安装同步服务的依赖。
 - `cargo test --manifest-path src-tauri/Cargo.toml --locked` 验证迁移和内容服务。
 - `pnpm tauri build --debug --no-bundle` 生成用于本机验证的桌面程序；`pnpm build` 构建桌面安装包。
+- 「设置 → 关于」显示本机版本、更新状态和离线开源组件清单。开发构建未配置更新签名时禁用检查；正式发行、签名配置及部署包说明见 [发行指南](docs/release-guide.md)。
 
 面向 `master` 的 Pull Request 和推送到 `master` 后，GitHub Actions 会运行前端类型检查和测试、同步服务的 Node/Workers 本地契约测试，以及 macOS、Windows 的 Clippy、Rust 测试和桌面编译。Clippy 将警告视为失败。`master` 要求通过 Pull Request 合并，且 `Frontend and sync server`、`Desktop (macos-latest)`、`Desktop (windows-latest)` 三项检查全部通过，分支与最新 `master` 保持同步；管理员同样受约束，无需额外审批。CI 不部署服务，也不发布安装包。
 

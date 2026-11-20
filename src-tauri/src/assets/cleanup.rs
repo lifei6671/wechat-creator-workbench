@@ -17,6 +17,10 @@ impl Assets {
 
     pub async fn cleanup(&self, db: &Workspace) -> Result<()> {
         self.uploads_stopped.cancel();
+        self.cleanup_for_update(db).await
+    }
+
+    pub async fn cleanup_for_update(&self, db: &Workspace) -> Result<()> {
         let _uploads = self.upload_gate.lock().await;
         db.maintenance(|tx| {
             tx.execute(
@@ -352,6 +356,29 @@ fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn update_cleanup_keeps_uploads_resumable_after_installer_failure() {
+        let (_dir, db, assets) = super::super::tests::setup();
+        db.write(|tx| {
+            tx.execute("INSERT INTO storage_profiles VALUES ('images','images','https://s3.example.test','auto','bucket','','https://cdn.example.test','images')", [])?;
+            tx.execute("INSERT INTO app_settings VALUES ('image_storage_profile','images')", [])?;
+            Ok(())
+        }).unwrap();
+        db.begin_exit();
+        db.prepare_update_install().unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(!assets.uploads_stopped.is_cancelled());
+        db.finish_exit();
+        db.cancel_exit();
+        let asset = assets
+            .import(&db, "after-update.png", &super::super::tests::png())
+            .unwrap();
+        assets.upload(&db, &asset).unwrap();
+        assert!(super::super::claim(&db).unwrap().is_some());
+        assets.cleanup(&db).await.unwrap();
+        assert!(assets.uploads_stopped.is_cancelled());
+    }
 
     #[test]
     fn text_cards_retain_images_and_derived_assets_until_the_last_reference_is_removed() {

@@ -15,6 +15,7 @@ mod link_import;
 mod mcp;
 mod secrets;
 mod sync;
+mod updater;
 mod wechat_import;
 mod window_lifecycle;
 
@@ -50,6 +51,10 @@ use sync::{
 };
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
+use updater::{
+    AppUpdater, app_info, app_update_check, app_update_download, app_update_install,
+    app_update_status,
+};
 use wechat_import::{Imports, wechat_retry_images};
 use window_lifecycle::{
     app_hide_cancel, app_hide_confirm, close_to_tray, close_workspace, restore_window,
@@ -107,6 +112,7 @@ fn main() {
         }))
         .plugin(window_state.build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
@@ -128,6 +134,7 @@ fn main() {
             app.manage(AiService::new(&db)?);
             app.manage(db);
             app.manage(McpServer::default());
+            app.manage(AppUpdater::default());
             app.manage(sync::SyncConnection::new()?);
             app.manage(window_lifecycle::HideRequest::default());
             app.manage(canvas_webview::PreviewState::default());
@@ -150,6 +157,11 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_info,
+            app_update_status,
+            app_update_check,
+            app_update_download,
+            app_update_install,
             library,
             entries,
             get_entry,

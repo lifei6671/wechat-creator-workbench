@@ -57,6 +57,33 @@
   position: relative; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain;
   scrollbar-gutter: stable; padding-inline: 24px 20px;
 }
+.settings-pages[hidden] { display: none; }
+.settings-about { padding-bottom: 24px; }
+.about-page { padding: 8px; }
+.about-identity { display: flex; align-items: center; gap: 16px; padding-block: 8px 24px; }
+.about-identity h3 { margin: 0 0 8px; font-size: 18px; font-weight: 500; }
+.about-identity p { margin: 4px 0 0; font-size: var(--workspace-font); }
+.about-version { user-select: text; }
+.about-update { padding-block: 16px; border-block: var(--hairline); }
+.about-update-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 32px; }
+.about-update-row > span { color: var(--text-muted); }
+.about-update p { margin: 12px 0 0; overflow-wrap: anywhere; }
+.about-update progress { width: 100%; height: 6px; margin-top: 12px; accent-color: var(--accent-9); }
+.about-link { display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; color: var(--accent-11); font-size: var(--small-font); }
+.about-link:hover { text-decoration: underline; background: transparent; }
+.about-links { display: flex; flex-wrap: wrap; gap: 16px; padding-block: 12px 24px; }
+.about-components-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.about-components h3 { margin: 0; font-size: var(--workspace-font); font-weight: 500; }
+.about-components-heading > span { font-size: var(--small-font); }
+.about-component-list { list-style: none; padding: 0; margin: 12px 0; }
+.about-component-list li { border-bottom: var(--hairline); }
+.about-component-list summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding-block: 10px; cursor: pointer; }
+.about-component-name { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
+.about-component-version { user-select: text; }
+.about-component-list summary > .muted-text { width: 64px; text-align: right; font-size: var(--small-font); }
+.about-license { padding-bottom: 12px; }
+.about-license > .about-link { margin-inline-start: 12px; }
+.about-page pre { font: var(--small-font)/1.6 var(--code-font, monospace); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .settings-page { padding-block: 4px 24px; }
 .settings-page:last-child { min-height: 100%; }
 .settings-page-title, .settings-group-title {

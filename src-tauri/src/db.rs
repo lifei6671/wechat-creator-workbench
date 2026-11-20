@@ -263,6 +263,15 @@ impl Workspace {
     pub fn start_cleaning(&self) {
         self.lock().phase = Phase::Cleaning;
     }
+    pub fn prepare_update_install(&self) -> Result<()> {
+        let mut db = self.lock();
+        if db.phase != Phase::SavingForExit {
+            return Err(AppError::new("UPDATE_PHASE", "请先保存并停止工作区"));
+        }
+        checkpoint(db.conn.as_ref().ok_or_else(closed)?)?;
+        db.phase = Phase::Cleaning;
+        Ok(())
+    }
     pub fn finish_exit(&self) {
         self.lock().phase = Phase::Exiting;
     }

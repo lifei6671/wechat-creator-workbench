@@ -379,6 +379,50 @@ it.each([true, false])("saves pending edits on tray exit and cancels exit on fai
   }
 });
 
+it.each(["success", "save failure", "installer failure", "cancel"])("saves before handing off an update and recovers on %s", async outcome => {
+  vi.spyOn(desktop, "appInfo").mockResolvedValue({ name: "workbench", version: "0.1.0", platform: "windows", arch: "x86_64", updatesEnabled: true });
+  vi.spyOn(desktop, "appUpdateStatus").mockResolvedValue({ phase: "ready", version: "0.2.0", downloaded: 100, total: 100, error: null });
+  vi.spyOn(desktop, "onAppUpdateChanged").mockResolvedValue(() => {});
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ components: [], notices: "" }) }));
+  vi.spyOn(desktop, "beginExit").mockResolvedValue();
+  const finish = vi.spyOn(desktop, "finishExit").mockResolvedValue();
+  const install = vi.spyOn(desktop, "appUpdateInstall");
+  if (outcome === "installer failure") install.mockRejectedValue(new Error("安装器无法启动"));
+  else install.mockResolvedValue();
+  const cancel = vi.spyOn(desktop, "cancelExit").mockResolvedValue();
+  let saveSucceeded!: (result: { version: number }) => void;
+  let saveFailed!: (error: Error) => void;
+  vi.spyOn(desktop, "save").mockReturnValue(new Promise((resolve, reject) => { saveSucceeded = resolve; saveFailed = reject; }));
+  saveDocumentTabs(workspaceId, { ids: ["update-draft"], activeId: "update-draft" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("update-draft")).toBe(true));
+  editorQueues.get("update-draft")!.edit({ contentMd: "安装前的最后修改" });
+  flushSync(() => container.querySelector<HTMLButtonElement>('.status-bar [aria-label="设置"]')!.click());
+  const nav = document.querySelector<HTMLButtonElement>('[aria-controls="settings-section-about"]')!;
+  flushSync(() => nav.click());
+  const installButton = await vi.waitFor(() => {
+    const button = [...document.querySelectorAll("button")].find(button => button.textContent === "退出并安装");
+    expect(button).toBeDefined(); return button!;
+  });
+  flushSync(() => installButton.click());
+  await vi.waitFor(() => expect(desktop.save).toHaveBeenCalledOnce());
+  expect(install).not.toHaveBeenCalled(); expect(finish).not.toHaveBeenCalled();
+  if (outcome === "cancel") flushSync(() => container.querySelector<HTMLButtonElement>(".exit-banner button")!.click());
+  if (outcome === "save failure") saveFailed(new Error("磁盘已满"));
+  else saveSucceeded({ version: 2 });
+  if (outcome === "success") {
+    await vi.waitFor(() => expect(install).toHaveBeenCalledOnce()); expect(cancel).not.toHaveBeenCalled();
+  } else {
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    if (outcome !== "installer failure") expect(install).not.toHaveBeenCalled();
+    else await vi.waitFor(() => expect(document.body.textContent).toContain("安装器无法启动"));
+    expect(container.querySelector(".exit-banner")).toBeNull();
+    if (outcome === "save failure") expect(editorQueues.get("update-draft")!.isDirty()).toBe(true);
+  }
+  expect(finish).not.toHaveBeenCalled();
+});
+
 it("saves the final document edit before confirming a tray hide without starting exit", async () => {
   let requestHide!: () => void;
   vi.mocked(desktop.onHideRequested).mockImplementation(async callback => { requestHide = callback; return () => {}; });

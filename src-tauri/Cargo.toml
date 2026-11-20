@@ -55,6 +55,8 @@ rmcp = { version = "=3.10.0", features = ["transport-streamable-http-server"] }
 schemars = "1"
 subtle = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+semver = "1"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"

@@ -9,7 +9,8 @@
 | [MVP 技术方案](./mvp-technical-design.md) | 产品边界、技术架构、Plainly 复用、数据模型、微信公众号导入导出、图片、备份、MCP、AI、测试与开源合规 |
 | [实施计划与验收](./implementation-plan.md) | 分阶段执行任务、任务依赖、验收条件、测试样本及交付顺序 |
 | [桌面界面与交互设计规范](./ui-design-guidelines.md) | Radix UI Themes、工作区布局、设计令牌、交互与快捷键、平台适配及验收规则 |
-| [关于页面、应用更新与 Release 发布需求](./about-updater-and-release-requirements.md) | 待评审：独立关于页、版本与更新、开源组件、中文 NSIS、无账户 Mac 分发、同步服务端部署包及详细发行记录 |
+| [关于页面、应用更新与 Release 发布需求](./about-updater-and-release-requirements.md) | 独立关于页、版本与更新、开源组件、中文 NSIS、无账户 Mac 分发、同步服务端部署包及详细发行记录 |
+| [发行指南](./release-guide.md) | 更新签名、版本注入、标签流水线、部署包验证与实际验收边界 |
 | [AI 写作助手技术方案](./ai-writing-assistant-technical-design.md) | assistant-ui 集成、Milkdown 上下文与改写、流式对话、SQLite 会话、实施步骤及验收矩阵 |
 | [Milkdown 超长文与 AI 编辑性能改造方案](./milkdown-long-document-performance-plan.md) | 本地源码审查、全文序列化与装饰热路径、AI 局部事务、保存一致性、基准压测与阶段任务 |
 | [Obsidian 成熟功能内置化技术方案](./obsidian-feature-integration-plan.md) | 长文大纲、格式规范化、素材增强、快捷采集、写作模板、选题看板、AI 体验与公众号发布的源码复用、任务分解及验收 |

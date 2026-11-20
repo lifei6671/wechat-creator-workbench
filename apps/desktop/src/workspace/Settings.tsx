@@ -1,7 +1,7 @@
 import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
-import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
 import { Tool } from "../ui";
@@ -27,10 +27,13 @@ const groups = [
     { id: "images", label: "S3 图床", icon: Cloud, keywords: "素材 图片 公开访问地址 S3 端点 区域 桶名 对象前缀 访问密钥 ID 秘密访问密钥 R2" },
     { id: "backups", label: "数据库备份", icon: DatabaseBackup, keywords: "SQLite S3 R2 还原 恢复 备份桶 工作区 S3 端点 区域 桶名 对象前缀 访问密钥 ID 秘密访问密钥" },
   ] },
+  { label: "应用", items: [
+    { id: "about", label: "关于", icon: Info, keywords: "版本 更新 开源 组件 许可证 发布说明" },
+  ] },
 ] as const;
 
 export type SettingsPage = typeof groups[number]["items"][number]["id"];
-const allPages = groups.flatMap(group => [...group.items]);
+const allPages = groups.flatMap(group => [...group.items]).filter(item => item.id !== "about");
 const trashRetentionOptions = [1, 7, 14, 30, 90, 0];
 const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync"];
 
@@ -50,8 +53,32 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   useLayoutEffect(() => { onPageChange?.(page); }, [page, onPageChange]);
   const [loaded, setLoaded] = useState<SettingsPage[]>([initialPage]);
   const [query, setQuery] = useState("");
+  function revealSelectedNavigation(nav: HTMLElement | null) {
+    if (!nav) return;
+    const selected = nav.querySelector<HTMLElement>('[aria-current="location"]');
+    if (!selected) return;
+    const viewport = nav.getBoundingClientRect(), item = selected.getBoundingClientRect();
+    if (item.bottom > viewport.bottom) nav.scrollTop += item.bottom - viewport.bottom;
+    else if (item.top < viewport.top) nav.scrollTop -= viewport.top - item.top;
+  }
   const search = useRef<HTMLInputElement>(null);
   const scrollArea = useRef<HTMLDivElement>(null);
+  const aboutArea = useRef<HTMLDivElement>(null);
+  const previousSettings = useRef({ page: initialPage === "about" ? "appearance" : initialPage, top: 0 });
+  const restorePage = useRef<SettingsPage | null>(null);
+  const about = page === "about";
+  const [aboutLoaded, setAboutLoaded] = useState(about);
+  useLayoutEffect(() => {
+    if (about) {
+      aboutArea.current?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
+    } else if (restorePage.current) {
+      const next = restorePage.current;
+      restorePage.current = null;
+      const viewport = scrollArea.current!;
+      viewport.scrollTop = next === previousSettings.current.page ? previousSettings.current.top : settingsSection(viewport, next).offsetTop;
+      settingsSection(viewport, next).querySelector<HTMLElement>("h2")!.focus({ preventScroll: true });
+    }
+  }, [about]);
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const choices = groups.map(group => ({ ...group, items: [...group.items].filter(item =>
     terms.every(term => `${group.label} ${item.label} ${item.keywords}${item.id === "appearance" ? " 回收站 自动清理 保留时间" : ""}`.toLowerCase().includes(term))) }));
@@ -60,7 +87,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   const attachScrollArea = useCallback((viewport: HTMLDivElement | null) => {
     if (!viewport) return;
     scrollArea.current = viewport;
-    viewport.scrollTop = settingsSection(viewport, initialPage).offsetTop;
+    viewport.scrollTop = settingsSection(viewport, initialPage === "about" ? "appearance" : initialPage).offsetTop;
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
@@ -76,6 +103,13 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   }, [initialPage]);
 
   function select(next: SettingsPage) {
+    if (next === "about") {
+      if (!about) previousSettings.current = { page, top: scrollArea.current!.scrollTop };
+      setAboutLoaded(true);
+      setPage(next);
+      return;
+    }
+    if (about) { restorePage.current = next; setPage(next); return; }
     const viewport = scrollArea.current!;
     const section = settingsSection(viewport, next);
     viewport.scrollTop = section.offsetTop;
@@ -84,6 +118,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   }
 
   function trackScroll(viewport: HTMLDivElement) {
+    if (about) return;
     let current: SettingsPage = allPages[0].id;
     for (const { id } of allPages) {
       if (settingsSection(viewport, id).offsetTop > viewport.scrollTop + 1) break;
@@ -106,7 +141,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
       }}>
       <header className="settings-window-header" data-mac-titlebar={macTitleBar || undefined}>
         <Dialog.Title className="settings-title">设置</Dialog.Title>
-        {status && page !== "backups" && <span className="settings-header-status" role="status">{status}</span>}
+        {status && page !== "backups" && !about && <span className="settings-header-status" role="status">{status}</span>}
         <Dialog.Close><button className="plain-button settings-close" type="button" aria-label="关闭设置"><X size={17} /></button></Dialog.Close>
       </header>
       <div className="settings-window-body">
@@ -123,9 +158,9 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
                 onClick={() => { setQuery(""); search.current?.focus(); }}><X size={13} /></button></TextField.Slot>}
             </TextField.Root>
           </div>
-          <nav aria-label="设置分类" className="settings-nav">
+          <nav aria-label="设置分类" className="settings-nav" ref={revealSelectedNavigation}>
             {choices.map(group => group.items.length > 0 && <div className="settings-nav-group" key={group.label}>
-              <div className="settings-nav-label">{group.label}</div>
+              {group.label !== "应用" && <div className="settings-nav-label">{group.label}</div>}
               {group.items.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-current={id === page ? "location" : undefined}
                 aria-controls={`settings-section-${id}`}
                 className="plain-button settings-nav-item" onClick={() => select(id)}><Icon size={17} strokeWidth={1.75} /><span>{label}</span></button>)}
@@ -133,12 +168,18 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
             {!first && <p className="settings-no-results" role="status">没有匹配的设置</p>}
           </nav>
         </div>
-        <div className="settings-pages" ref={attachScrollArea} onScroll={event => trackScroll(event.currentTarget)}>
+        <div className="settings-pages" hidden={about} ref={attachScrollArea} onScroll={event => trackScroll(event.currentTarget)}>
           {allPages.map(({ id, label }) => <section className="settings-page" key={id} id={`settings-section-${id}`} aria-labelledby={`settings-${id}`}>
             <h2 id={`settings-${id}`} className="settings-page-title" tabIndex={-1}>{label}</h2>
             {!deferredPages.includes(id) || loaded.includes(id) ? renderPage(id)
               : <div className="settings-card"><p className="settings-feedback muted-text">正在读取设置…</p></div>}
           </section>)}
+        </div>
+        <div className="settings-pages settings-about" hidden={!about} ref={aboutArea}>
+          {aboutLoaded && <section id="settings-section-about" aria-labelledby="settings-about">
+            <h2 id="settings-about" className="settings-page-title" tabIndex={-1}>关于</h2>
+            {renderPage("about")}
+          </section>}
         </div>
       </div>
       {toast}
