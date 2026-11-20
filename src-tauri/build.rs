@@ -45,6 +45,7 @@ fn main() {
             "close_to_tray",
             "asset_import",
             "asset_library",
+            "asset_detail",
             "asset_upload_progress",
             "asset_thumbnail",
             "asset_read",
