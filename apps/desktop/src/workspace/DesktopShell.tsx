@@ -1447,12 +1447,13 @@ export function DesktopShell() {
         return await desktop.createBackup();
       })());
       setBackupListRevision(value => value + 1);
-      const text = result.warning ?? "数据库已备份";
-      setBackupFeedback({ error: Boolean(result.warning), text });
-      setNotice({ type: result.warning ? "error" : "info", text });
+      setBackupFeedback(result.warning ? { error: true, text: result.warning } : null);
+      if (result.warning) setNotice({ type: "error", text: result.warning });
+      return true;
     } catch (error) {
       setBackupFeedback({ error: true, text: errorMessage(error) });
       showError(error);
+      return false;
     }
     finally { setBackupWorking(null); }
   }
@@ -1463,10 +1464,11 @@ export function DesktopShell() {
     try {
       const ticket = await trackAssetTask(desktop.prepareRestore(workspace, snapshot.name));
       if (exit.current) await desktop.discardRestore(ticket);
-      else setPreparedBackup({ ticket, snapshot, workspaceLabel });
+      else { setPreparedBackup({ ticket, snapshot, workspaceLabel }); return true; }
     } catch (error) {
       setBackupFeedback({ error: true, text: errorMessage(error) });
       showError(error);
+      return false;
     }
     finally { setBackupWorking(null); }
   }
@@ -1475,21 +1477,21 @@ export function DesktopShell() {
     setMigrationWorking(action);
     setMigrationFeedback(null);
     try {
-      await trackAssetTask((async () => {
+      return await trackAssetTask((async () => {
         if (action === "export") {
           await collectionCanvas.current?.flush();
           const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
           if (!saved.every(Boolean)) throw new Error("有稿件尚未保存，请处理后重新导出");
           const path = await desktop.exportWorkspace(workspacePreferences());
-          if (path) setNotice({ type: "info", text: "工作区迁移包已导出" });
+          return path ? true : undefined;
         } else {
           const ticket = await desktop.importWorkspace();
           if (!ticket) return;
           if (exit.current) await desktop.discardRestore(ticket);
-          else setPreparedBackup({ ticket, migration: true });
+          else { setPreparedBackup({ ticket, migration: true }); return true; }
         }
       })());
-    } catch (error) { setMigrationFeedback({ error: true, text: errorMessage(error) }); }
+    } catch (error) { setMigrationFeedback({ error: true, text: errorMessage(error) }); return false; }
     finally { setMigrationWorking(null); }
   }
 
@@ -2296,7 +2298,7 @@ export function DesktopShell() {
         <SettingsDialog initialPage={modal.page} onPageChange={page => {
           if (settingsPage.current !== page) { settingsPage.current = page; wakeAutomaticSync.current?.(); }
         }}
-          status={backupWorking ?? undefined} toast={toast} onClose={closeModal} renderPage={page => {
+          status={backupWorking ?? undefined} toast={notice?.type === "error" ? toast : undefined} onClose={closeModal} renderPage={page => {
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
@@ -2313,7 +2315,7 @@ export function DesktopShell() {
             onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
           if (page === "migration") return <MigrationPanel busy={backupWorking !== null || migrationWorking !== null}
             working={migrationWorking} feedback={migrationFeedback} prepared={preparedBackup?.migration === true}
-            onTransfer={action => void transferWorkspace(action)} onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
+            onTransfer={transferWorkspace} onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
           return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} preferredView={preferredView} explorer={defaultExplorer}
             downloadPastedImages={downloadPastedImages} convertLinks={defaultConvertLinks} defaultOutline={defaultOutline} documentOpenMode={documentOpenMode}
             folderLoading={folderLoading} folderPageSize={folderPageSize}

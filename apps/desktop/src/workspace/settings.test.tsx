@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { useState } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { desktop, type AiSettings } from "../desktop";
+import { BackupPanel } from "./Backup";
 import { ModelSettings } from "./AiSettings";
 import { MigrationPanel } from "./Migration";
 import { McpSettings, S3Fields, SettingsDialog, TrashRetentionSetting, ViewShortcutSetting } from "./Settings";
@@ -118,6 +119,8 @@ it("copies saved connection information without rotating its key and keeps secre
   vi.spyOn(desktop, "syncCreateRecoveryKey").mockResolvedValue(recoveryKey);
   vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
   const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
+  let finishCopy!: () => void;
+  copy.mockImplementationOnce(() => new Promise<void>(resolve => { finishCopy = resolve; }));
   try {
     flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()}
       automaticError="后台同步超时" /></Theme>));
@@ -125,21 +128,109 @@ it("copies saved connection information without rotating its key and keeps secre
     expect(container.textContent).toContain("同步失败");
     expect(container.textContent).toContain("当前设备");
     const button = [...container.querySelectorAll("button")].find(item => item.textContent === "复制连接信息")!;
+    const actions = button.closest(".settings-footer")!;
     flushSync(() => button.click());
     await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(`服务地址：https://sync.example.test/\n连接密钥：${accessKey}`));
-    await vi.waitFor(() => expect(container.textContent).toContain("连接信息已复制"));
+    expect(button.disabled).toBe(true);
+    expect(button.querySelector(".rt-Spinner")).not.toBeNull();
+    finishCopy();
+    await vi.waitFor(() => expect(button.textContent).toBe("复制成功"));
+    expect(actions.querySelector('[role="status"]')).toBeNull();
+    expect(container.textContent).not.toContain("连接信息已复制");
+    expect(actions.querySelector('[role="alert"]')?.getAttribute("data-error")).toBe("true");
+    expect([...container.querySelectorAll(".sync-feedback")].every(item => actions.contains(item))).toBe(true);
     expect(desktop.syncCreateAccessKey).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("后台同步超时");
     expect(container.textContent).not.toContain(accessKey);
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    copy.mockRejectedValueOnce(new Error("剪贴板写入失败"));
+    flushSync(() => button.click());
+    await vi.waitFor(() => expect(actions.querySelector('[role="alert"]')?.textContent).toBe("剪贴板写入失败"));
+    expect(actions.querySelector('[role="status"]')).toBeNull();
     flushSync(() => container.querySelector<HTMLDetailsElement>(".sync-advanced")!.open = true);
     const recovery = container.querySelector<HTMLButtonElement>("#sync-recovery-key")!;
     flushSync(() => recovery.click());
     await vi.waitFor(() => expect(copy).toHaveBeenLastCalledWith(recoveryKey));
-    await vi.waitFor(() => expect(container.textContent).toContain("恢复密钥已复制"));
+    await vi.waitFor(() => expect(recovery.textContent).toBe("复制成功"));
+    expect(container.textContent).not.toContain("恢复密钥已复制");
     expect(container.textContent).not.toContain(recoveryKey);
   } finally {
     flushSync(() => root.unmount());
     container.remove();
+  }
+});
+
+it("holds each sync button result for one second without extending the operation or leaving stale timers", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({
+    url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false,
+  });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.spyOn(desktop, "syncConnectionInfo").mockResolvedValue({ url: "https://sync.example.test/", accessKey: "a".repeat(64) });
+  vi.spyOn(desktop, "syncCreateRecoveryKey").mockResolvedValue("b".repeat(64));
+  let finishCopy!: () => void;
+  const copyText = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
+  copyText.mockImplementationOnce(() => new Promise<void>(resolve => { finishCopy = resolve; }));
+  const busyChanged = vi.fn();
+  const sync = vi.fn().mockResolvedValue(undefined);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Theme><SyncSettings onSync={sync} onResolve={vi.fn()}
+      onRebuild={vi.fn()} onBusyChange={busyChanged} /></Theme>));
+    const buttons = [...container.querySelectorAll("button")];
+    const copy = buttons.find(button => button.textContent === "复制连接信息")!;
+    const synchronize = buttons.find(button => button.textContent === "立即同步")!;
+    await act(async () => copy.click());
+    expect(copy.querySelector(".rt-Spinner")).not.toBeNull();
+    expect(busyChanged).toHaveBeenLastCalledWith(true);
+    await act(async () => finishCopy());
+    expect(copy.textContent).toBe("复制成功");
+    expect(copy.querySelector('[data-result="success"]')).not.toBeNull();
+    expect(copy.disabled).toBe(false);
+    expect(busyChanged).toHaveBeenLastCalledWith(false);
+    await act(async () => { vi.advanceTimersByTime(999); });
+    expect(copy.textContent).toBe("复制成功");
+    await act(async () => { vi.advanceTimersByTime(1); });
+    expect(copy.textContent).toBe("复制连接信息");
+
+    copyText.mockRejectedValueOnce(new Error("剪贴板写入失败"));
+    await act(async () => copy.click());
+    expect(copy.textContent).toBe("复制失败");
+    expect(copy.querySelector('[data-result="error"]')).not.toBeNull();
+    await act(async () => { vi.advanceTimersByTime(500); });
+    await act(async () => synchronize.click());
+    expect(sync).toHaveBeenCalledOnce();
+    expect(synchronize.textContent).toBe("检查完成");
+    expect(synchronize.querySelector('[data-result="success"]')).not.toBeNull();
+    expect(copy.textContent).toBe("复制失败");
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(copy.textContent).toBe("复制连接信息");
+    expect(synchronize.textContent).toBe("检查完成");
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(synchronize.textContent).toBe("立即同步");
+
+    await act(async () => copy.click());
+    await act(async () => { vi.advanceTimersByTime(600); });
+    await act(async () => copy.click());
+    await act(async () => { vi.advanceTimersByTime(400); });
+    expect(copy.textContent).toBe("复制成功");
+    await act(async () => { vi.advanceTimersByTime(600); });
+    expect(copy.textContent).toBe("复制连接信息");
+
+    const recovery = container.querySelector<HTMLButtonElement>("#sync-recovery-key")!;
+    await act(async () => { container.querySelector<HTMLDetailsElement>(".sync-advanced")!.open = true; recovery.click(); });
+    expect(recovery.textContent).toBe("复制成功");
+    expect(recovery.querySelector('[data-result="success"]')).not.toBeNull();
+    expect(copyText).toHaveBeenLastCalledWith("b".repeat(64));
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.advanceTimersByTime(0);
+    const timers = vi.getTimerCount();
+    vi.useRealTimers();
+    expect(timers).toBe(0);
   }
 });
 
@@ -161,7 +252,7 @@ it("retries unified connection and applies a first merge once without using its 
     flushSync(() => root.render(<Theme><SyncSettings onSync={synchronize} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
     await vi.waitFor(() => expect(container.querySelector<HTMLInputElement>("#sync-name")?.value).toBe("新电脑"));
     const form = container.querySelector("form")!;
-    const feedback = form.querySelector(".sync-feedback")!;
+
     const fill = (id: string, value: string) => {
       const input = form.querySelector(`#${id}`)!;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
@@ -171,8 +262,7 @@ it("retries unified connection and applies a first merge once without using its 
     fill("sync-url", url);
     fill("sync-code", setupSecret);
     submit();
-    await vi.waitFor(() => expect(feedback.textContent).toContain("连接密钥无效"));
-    expect(form.querySelector(".sync-connect-footer > [role=alert]")).toBe(feedback);
+    await vi.waitFor(() => expect(form.querySelector(".sync-connect-footer [role=alert]")?.textContent).toContain("连接密钥无效"));
     expect(form.querySelector("#sync-method")).toBeNull();
     expect(form.querySelector("#sync-code-hint")?.textContent).toContain("连接密钥");
     expect(form.querySelector<HTMLInputElement>("#sync-code")?.value).toBe(setupSecret);
@@ -180,7 +270,8 @@ it("retries unified connection and applies a first merge once without using its 
 
     fill("sync-code", accessCode);
     submit();
-    await vi.waitFor(() => expect(container.textContent).toContain("已合并本地与云端内容"));
+    await vi.waitFor(() => expect(container.querySelector(".sync-connect-footer")).toBeNull());
+    expect(container.querySelector(".sync-action-feedback [role=status]")).toBeNull();
     await vi.waitFor(() => expect(container.textContent).toContain("打开恢复副本位置"));
     expect(synchronize).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenNthCalledWith(1, url, "新电脑", setupSecret);
@@ -241,7 +332,8 @@ it.each(["local", "cloud", "copy"] as const)("resolves a canvas edit with %s usi
     expect(container.textContent).toContain("完整复制本地白板");
     flushSync(() => keep.click());
     await vi.waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith("collection_node", "note", choice, 3, 8));
-    await vi.waitFor(() => expect(container.textContent).toContain(choice === "local" ? "本地版本已排队上传" : choice === "copy" ? "已另存本地白板副本" : "冲突已处理"));
+    await vi.waitFor(() => expect(container.querySelector(".sync-conflict")).toBeNull());
+    expect(container.querySelector(".sync-action-feedback [role=status]")).toBeNull();
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -339,7 +431,7 @@ it("refreshes local status when a hidden settings page becomes visible again", a
   }
 });
 
-it("shows live sync progress and keeps the merge completion notice on one line", async () => {
+it("shows live sync progress and reports completion only inside the button", async () => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   let changed!: () => void;
@@ -365,8 +457,10 @@ it("shows live sync progress and keeps the merge completion notice on one line",
     }
     vi.mocked(desktop.syncActivity).mockResolvedValue(state);
     finish("C:/recovery.zip");
-    await vi.waitFor(() => expect(container.querySelector(".sync-feedback")?.textContent).toBe("已合并本地与云端内容"));
-    expect(container.querySelector(".sync-feedback")?.getAttribute("title")).toBe("已合并本地与云端内容");
+    await vi.waitFor(() => expect(sync.textContent).toBe("检查完成"));
+    expect(container.querySelector(".sync-feedback")).toBeNull();
+    expect(container.textContent).not.toContain("已合并本地与云端内容");
+    expect(container.textContent).toContain("打开恢复副本位置");
     expect(container.querySelector(".sync-advanced > summary svg")).not.toBeNull();
   } finally {
     flushSync(() => root.unmount());
@@ -421,7 +515,7 @@ it("associates visible help and warnings with the settings controls they describ
       loadError="" onStatus={() => {}} />
     <S3Fields scope="backup" initial={null} hasKey={false} />
     <MigrationPanel busy={false} working={null} feedback={null} prepared
-      onTransfer={() => {}} onConfirmRestore={() => {}} onDiscardRestore={() => {}} />
+      onTransfer={async () => undefined} onConfirmRestore={() => {}} onDiscardRestore={() => {}} />
   </Theme>));
   try {
     const help = (control: Element) => {
@@ -712,5 +806,131 @@ it("keeps only core connected actions visible and refreshes devices without a re
     names.push("切回窗口后加入的电脑");
     window.dispatchEvent(new Event("focus"));
     await vi.waitFor(() => expect(advanced.textContent).toContain("切回窗口后加入的电脑"));
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+
+it("reports MCP results only on the buttons and keeps failure reasons visible after their result expires", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
+  vi.spyOn(desktop, "mcpToken").mockResolvedValue(undefined);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Theme><McpSettings
+      status={{ config: { enabled: true, port: 8787, permission: "read" }, running: true, error: null }}
+      loadError="" onStatus={vi.fn()} /></Theme>));
+    const button = [...container.querySelectorAll("button")].find(button => button.textContent === "复制地址")!;
+    await act(async () => button.click());
+    expect(copy).toHaveBeenCalledWith("http://127.0.0.1:8787/mcp");
+    expect(button.textContent).toBe("复制成功");
+    expect(button.disabled).toBe(false);
+    expect(container.querySelector(".mcp-feedback")?.textContent).toBe("");
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(button.textContent).toBe("复制地址");
+    copy.mockRejectedValueOnce(new Error("剪贴板不可用"));
+    await act(async () => button.click());
+    expect(button.textContent).toBe("复制失败");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("剪贴板不可用");
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(button.textContent).toBe("复制地址");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("剪贴板不可用");
+    const token = [...container.querySelectorAll("button")].find(button => button.textContent === "复制令牌")!;
+    await act(async () => token.click());
+    expect(token.textContent).toBe("复制成功");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    const timers = vi.getTimerCount();
+    vi.useRealTimers();
+    expect(timers).toBe(0);
+  }
+});
+
+it("puts AI connection outcomes on the model button and only shows a separate failure reason", async () => {
+  vi.spyOn(desktop, "aiAgentVersions").mockResolvedValue([]);
+  const test = vi.spyOn(desktop, "testAiTarget").mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("接口返回 401"));
+  const initial: AiSettings = {
+    preferences: { enabled: true, defaultTarget: null }, agents: [],
+    models: [{ id: "api", kind: "custom", name: "API", endpoint: "https://ai.example.test/v1", model: "model", timeoutSeconds: 60 }],
+  };
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    flushSync(() => root.render(<Theme><ModelSettings settings={initial} loadError="" onSave={vi.fn()} /></Theme>));
+    const tab = container.querySelector('[role="tab"][aria-controls$="-content-custom"]')!;
+    flushSync(() => tab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="测试 API"]')!;
+    flushSync(() => button.click());
+    await vi.waitFor(() => expect(button.textContent).toBe("连接成功"));
+    expect(test).toHaveBeenCalledWith({ kind: "model", id: "api" });
+    expect(container.querySelector(".settings-feedback")).toBeNull();
+    flushSync(() => button.click());
+    await vi.waitFor(() => expect(button.textContent).toBe("连接失败"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("接口返回 401");
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it("shows migration completion on its button and leaves canceled file selection without a result", async () => {
+  const transfer = vi.fn<(action: "export" | "import") => Promise<boolean | undefined>>()
+    .mockResolvedValueOnce(undefined).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const render = (feedback: { error: boolean; text: string } | null = null) => root.render(<Theme>
+    <MigrationPanel busy={false} working={null} feedback={feedback} prepared={false}
+      onTransfer={transfer} onConfirmRestore={vi.fn()} onDiscardRestore={vi.fn()} />
+  </Theme>);
+  try {
+    flushSync(() => render());
+    const [exportButton, importButton] = container.querySelectorAll("button");
+    flushSync(() => exportButton.click());
+    await vi.waitFor(() => expect(transfer).toHaveBeenCalledOnce());
+    expect(exportButton.textContent).toBe("导出迁移包");
+    expect(exportButton.querySelector('[data-result]')).toBeNull();
+    flushSync(() => exportButton.click());
+    await vi.waitFor(() => expect(exportButton.textContent).toBe("导出成功"));
+    flushSync(() => render({ error: false, text: "旧成功提示" }));
+    expect(container.textContent).not.toContain("旧成功提示");
+    flushSync(() => importButton.click());
+    await vi.waitFor(() => expect(importButton.textContent).toBe("导入失败"));
+    flushSync(() => render({ error: true, text: "迁移包校验失败" }));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("迁移包校验失败");
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it("shows backup results on their own buttons and preserves failure details", async () => {
+  vi.spyOn(desktop, "backupSettings").mockResolvedValue({ currentWorkspace: "local", hasKey: true,
+    target: { endpoint: "https://s3.example.test", region: "auto", bucket: "backup", prefix: "" } });
+  vi.spyOn(desktop, "backupWorkspaces").mockResolvedValue([]);
+  const snapshot = { name: "snapshot", createdAt: 1, bytes: 1024 };
+  vi.spyOn(desktop, "backupList").mockResolvedValue([snapshot]);
+  const create = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  const restore = vi.fn().mockResolvedValue(true);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const render = (feedback: { error: boolean; text: string } | null = null) => root.render(<Theme>
+    <BackupPanel busy={false} progress="" feedback={feedback} listRevision={0} prepared={null}
+      onCreate={create} onRestore={restore} onConfirmRestore={vi.fn()} onDiscardRestore={vi.fn()} />
+  </Theme>);
+  try {
+    flushSync(() => render());
+    const createButton = await vi.waitFor(() => {
+      const button = [...container.querySelectorAll("button")].find(button => button.textContent === "立即备份");
+      expect(button).toBeDefined(); return button!;
+    });
+    flushSync(() => createButton.click());
+    await vi.waitFor(() => expect(createButton.textContent).toBe("备份完成"));
+    flushSync(() => render({ error: false, text: "数据库已备份" }));
+    expect(container.textContent).not.toContain("数据库已备份");
+    const prepare = [...container.querySelectorAll("button")].find(button => button.textContent === "准备恢复")!;
+    flushSync(() => prepare.click());
+    await vi.waitFor(() => expect(prepare.textContent).toBe("校验完成"));
+    expect(restore).toHaveBeenCalledWith("local", snapshot, "当前工作区");
+    flushSync(() => createButton.click());
+    await vi.waitFor(() => expect(createButton.textContent).toBe("备份失败"));
+    flushSync(() => render({ error: true, text: "备份上传失败" }));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("备份上传失败");
   } finally { flushSync(() => root.unmount()); container.remove(); }
 });

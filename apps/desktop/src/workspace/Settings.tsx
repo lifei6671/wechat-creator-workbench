@@ -1,3 +1,4 @@
+import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
@@ -434,15 +435,16 @@ export function McpSettings({ status, loadError, onStatus }: { status?: McpStatu
   const [permission, setPermission] = useState<McpConfig["permission"]>();
   const [busy, setBusy] = useState<"save" | "stop" | "address" | "token" | "reset" | null>(null);
   const [error, setError] = useState("");
-  const [feedback, setFeedback] = useState("");
+  const buttons = useSettingsButtonFeedback();
 
   async function perform(kind: NonNullable<typeof busy>, action: () => Promise<void>) {
     if (busy) return;
     setBusy(kind);
     setError("");
-    setFeedback("");
-    try { await action(); }
+    buttons.start(kind);
+    try { await action(); buttons.finish(kind, true); }
     catch (failure) {
+      buttons.finish(kind, false);
       setError(errorMessage(failure));
       if (kind === "save" || kind === "stop") {
         try { onStatus(await desktop.mcpStatus()); }
@@ -458,7 +460,6 @@ export function McpSettings({ status, loadError, onStatus }: { status?: McpStatu
   const apply = () => perform("save", async () => {
     const current = await desktop.saveMcp({ port: Number(portValue), permission: permissionValue, enabled: true });
     onStatus(current);
-    setFeedback("设置已保存");
   });
   const failure = error || loadError || status?.error;
   return <form className="settings-card mcp-settings" onSubmit={event => { event.preventDefault(); void apply(); }}>
@@ -482,30 +483,29 @@ export function McpSettings({ status, loadError, onStatus }: { status?: McpStatu
       {hintId => <div className="mcp-address">
         <TextField.Root id="mcp-address" aria-describedby={hintId} readOnly value={address} disabled={!status?.running} />
         <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "address"} disabled={!status?.running || busy !== null}
-          onClick={() => void perform("address", async () => { await desktop.copyText(address); setFeedback("已复制本机地址"); })}>复制地址</Button>
+          onClick={() => void perform("address", async () => { await desktop.copyText(address); })}>{buttons.label("address", "复制地址", "复制成功", "复制失败")}</Button>
       </div>}
     </SettingRow>
     <SettingRow label="访问令牌" hint="用于验证连接到 MCP 的客户端。"
       warning="重置后，使用旧令牌的客户端需要更新配置。">
       {hintId => <div className="button-strip setting-actions">
         <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "token"} disabled={!status || busy !== null}
-          onClick={() => void perform("token", async () => { await desktop.mcpToken(false); setFeedback("已复制令牌"); })}>复制令牌</Button>
+          onClick={() => void perform("token", async () => { await desktop.mcpToken(false); })}>{buttons.label("token", "复制令牌", "复制成功", "复制失败")}</Button>
         <Button type="button" aria-describedby={hintId} variant="ghost" color="gray" loading={busy === "reset"} disabled={!status || status.running || busy !== null}
-          onClick={() => void perform("reset", async () => { await desktop.mcpToken(true); setFeedback("令牌已重置并复制"); })}>重置令牌</Button>
+          onClick={() => void perform("reset", async () => { await desktop.mcpToken(true); })}>{buttons.label("reset", "重置令牌", "已重置", "重置失败")}</Button>
       </div>}
     </SettingRow>
     <div className="settings-footer mcp-footer">
       <div className="mcp-feedback">
-        <span role="status" className="muted-text">{failure ? "" : feedback}</span>
         {failure && <span role="alert" className="inline-error">{failure}</span>}
       </div>
       <Button type="button" variant="soft" color="gray" data-available={Boolean(status?.config.enabled)}
         loading={busy === "stop"} disabled={!status?.config.enabled || busy !== null}
         onClick={() => void perform("stop", async () => {
           if (status) onStatus(await desktop.saveMcp({ ...status.config, enabled: false }));
-        })}>停止 MCP</Button>
+        })}>{buttons.label("stop", "停止 MCP", "已停止", "停止失败")}</Button>
       <Button type="submit" className="mcp-submit" loading={busy === "save"} disabled={!status || busy !== null}>
-        {status?.running ? "保存设置" : "启用 MCP"}
+        {buttons.label("save", status?.running ? "保存设置" : "启用 MCP", "已保存", "保存失败")}
       </Button>
     </div>
   </form>;

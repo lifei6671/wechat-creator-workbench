@@ -1,3 +1,4 @@
+import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, Select, Switch, Tabs, TextField } from "@radix-ui/themes";
 import { desktop, errorMessage, type AiAgent, type AiModel, type AiModelKind, type AiSettings, type AiTarget } from "../desktop";
@@ -34,7 +35,7 @@ export function aiAvailability(settings: AiSettings, target = settings.preferenc
 }
 
 type Group = AiModelKind | "preferences";
-type Run = (group: Group, action: string, operation: () => Promise<void>, success?: string) => Promise<void>;
+type Run = (group: Group, action: string, operation: () => Promise<void>) => Promise<void>;
 type SaveSettings = (operation: () => Promise<AiSettings>) => Promise<void>;
 
 export function ModelSettings({ settings, loadError, saving = false, onSave }: {
@@ -44,6 +45,7 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
   onSave: SaveSettings;
 }) {
   const [working, setWorking] = useState("");
+  const buttons = useSettingsButtonFeedback();
   const [feedback, setFeedback] = useState<{ group: Group; error: boolean; text: string }>();
   const [versions, setVersions] = useState<Partial<Record<AiAgent, string | null>>>();
   useEffect(() => {
@@ -56,13 +58,15 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
     return () => { current = false; };
   }, []);
 
-  const run: Run = async (group, action, operation, success) => {
+  const run: Run = async (group, action, operation) => {
+    buttons.start(action);
     setWorking(action);
     setFeedback(undefined);
     try {
       await operation();
-      if (success) setFeedback({ group, error: false, text: success });
+      buttons.finish(action, true);
     } catch (error) {
+      buttons.finish(action, false);
       setFeedback({ group, error: true, text: errorMessage(error) });
     } finally {
       setWorking("");
@@ -70,7 +74,7 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
   };
 
   function message(group: Group) {
-    return feedback?.group === group && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
+    return feedback?.error && feedback.group === group && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
       role={feedback.error ? "alert" : "status"}>{feedback.text}</p>;
   }
 
@@ -150,7 +154,7 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
       {(["local", "custom"] as const).map(kind => <Tabs.Content key={kind} value={kind} forceMount
         className="settings-card ai-settings-card ai-target-pane">
         <ModelPane kind={kind} models={settings.models.filter(model => model.kind === kind)}
-          working={working} disabled={disabled} onSave={onSave} run={run} feedback={message(kind)} />
+          buttons={buttons} working={working} disabled={disabled} onSave={onSave} run={run} feedback={message(kind)} />
       </Tabs.Content>)}
     </Tabs.Root>
   </div>;
@@ -169,9 +173,10 @@ function emptyDraft(kind: AiModelKind): Draft {
     keyMode: kind === "local" ? "none" : "system" };
 }
 
-function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
+function ModelPane({ kind, models, buttons, working, disabled, onSave, run, feedback }: {
   kind: AiModelKind;
   models: AiModel[];
+  buttons: ReturnType<typeof useSettingsButtonFeedback>;
   working: string;
   disabled: boolean;
   onSave: SaveSettings;
@@ -192,7 +197,7 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
     void run(kind, `save-${kind}`, async () => {
       await onSave(() => desktop.saveAiModel(draft.id, kind, draft.name, config, key));
       reset();
-    }, "模型已保存");
+    });
   }
 
   return <>
@@ -209,20 +214,20 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
           </div>
           <div className="button-strip setting-actions">
             <Button type="button" size="1" variant="soft" color="gray" disabled={disabled || draft.id === model.id}
-              aria-label={`编辑 ${labelModel(model)}`} onClick={() => void run(kind, `edit-${kind}`, async () => {
+              aria-label={`编辑 ${labelModel(model)}`} onClick={() => void run(kind, `edit-${model.id}`, async () => {
                 const hasKey = await desktop.aiModelHasKey(model.id);
                 setKeyEndpoint(hasKey ? model.endpoint : undefined);
                 setDraft({ ...model, preset: "", key: "", keyMode: hasKey ? "system" : "none" });
                 requestAnimationFrame(() => form.current?.querySelector<HTMLInputElement>('[name="model-name"]')?.focus());
-              })}>编辑</Button>
+              })}>{buttons.label(`edit-${model.id}`, "编辑", "已打开")}</Button>
             <Button type="button" size="1" variant="soft" color="gray" disabled={disabled} loading={working === targetValue(target)}
               aria-label={`测试 ${labelModel(model)}`} onClick={() => void run(kind, targetValue(target),
-                () => desktop.testAiTarget(target), "连接成功")}>测试连接</Button>
+                () => desktop.testAiTarget(target))}>{buttons.label(targetValue(target), "测试连接", "连接成功", "连接失败")}</Button>
             <Button type="button" size="1" variant="soft" color="red" disabled={disabled} loading={working === `remove-${model.id}`}
               aria-label={`移除 ${labelModel(model)}`} onClick={() => void run(kind, `remove-${model.id}`, async () => {
                 await onSave(() => desktop.deleteAiModel(model.id));
                 if (draft.id === model.id) reset();
-              }, "模型已移除")}>移除</Button>
+              })}>{buttons.label(`remove-${model.id}`, "移除", "已移除")}</Button>
           </div>
         </div>;
       })}
@@ -287,12 +292,12 @@ function ModelPane({ kind, models, working, disabled, onSave, run, feedback }: {
       </div>
       <div className="settings-footer ai-model-actions">
         <Button type="submit" disabled={disabled || !draft.model.trim() || !draft.endpoint.trim()}
-          loading={working === `save-${kind}`}>{draft.id ? "保存模型" : addLabel}</Button>
+          loading={working === `save-${kind}`}>{buttons.label(`save-${kind}`, draft.id ? "保存模型" : addLabel, "已保存", "保存失败")}</Button>
         <Button type="button" variant="soft" color="gray" loading={working === `test-${kind}`}
           disabled={disabled || !draft.model.trim() || !draft.endpoint.trim()} onClick={() => {
             if (form.current?.reportValidity()) void run(kind, `test-${kind}`,
-              () => desktop.testAiModel(kind, draft.id, config, key), "连接成功");
-          }}>测试模型</Button>
+              () => desktop.testAiModel(kind, draft.id, config, key));
+          }}>{buttons.label(`test-${kind}`, "测试模型", "连接成功", "连接失败")}</Button>
         {draft.id && <Button type="button" variant="soft" color="gray" disabled={disabled} onClick={reset}>取消编辑</Button>}
       </div>
     </form>
