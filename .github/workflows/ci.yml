@@ -29,9 +29,15 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
       - run: npm ci --prefix apps/sync-server
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm test:release
       - run: pnpm web:build
       - run: npm test --prefix apps/sync-server
 
@@ -58,6 +64,10 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - run: pnpm tauri build --debug --no-bundle

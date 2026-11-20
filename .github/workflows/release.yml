@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            try {
+              const {data} = await github.rest.repos.getReleaseByTag({...context.repo, tag: context.ref.slice(10)});
+              if (!data.draft) core.setFailed('该标签已经正式发布，请使用新版本标签。');
+            } catch (error) { if (error.status !== 404) throw error; }
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: apps/sync-server/package-lock.json
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: pnpm install --frozen-lockfile
+      - run: npm ci --prefix apps/sync-server
+      - run: node scripts/release.mjs version "$RELEASE_TAG"
+      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:release
+      - run: pnpm web:build
+      - run: npm test --prefix apps/sync-server
+      - run: node scripts/package-sync.mjs "$RELEASE_TAG"
+      - run: node --test scripts/package-sync.test.mjs scripts/docker-sync.test.mjs
+        env:
+          RELEASE_PACKAGE_TEST: '1'
+          RELEASE_DOCKER_TEST: '1'
+      - uses: actions/upload-artifact@v6
+        with:
+          name: sync-packages
+          path: release-output/*.tar.gz
+          if-no-files-found: error
+
+  desktop:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    env:
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/release.mjs prepare "$RELEASE_TAG"
+      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config .generated/release-config.json
+      - run: node scripts/release.mjs collect "$RELEASE_TAG" "$CARGO_BUILD_TARGET"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: desktop-${{ matrix.target }}
+          path: release-output/*
+          if-no-files-found: error
+
+  publish:
+    needs: [checks, desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@v7
+        with:
+          path: release-output
+          merge-multiple: true
+      - run: mkdir -p .generated && node scripts/release.mjs manifest "$RELEASE_TAG"
+      - run: sudo apt-get update && sudo apt-get install -y minisign
+      - run: node scripts/verify-signatures.mjs
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = process.env.RELEASE_TAG;
+            const body = fs.readFileSync('.generated/release-notes.md', 'utf8');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({...context.repo, tag})).data;
+              if (!release.draft) throw new Error('已公开的版本不能覆盖，请使用新版本标签。');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({...context.repo, tag_name: tag,
+                name: tag, body, draft: true, prerelease: false})).data;
+            }
+            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, name: tag, body});
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {...context.repo, release_id: release.id});
+            for (const asset of assets) await github.rest.repos.deleteReleaseAsset({...context.repo, asset_id: asset.id});
+            for (const name of fs.readdirSync('release-output')) {
+              await github.rest.repos.uploadReleaseAsset({...context.repo, release_id: release.id, name,
+                data: fs.readFileSync('release-output/' + name)});
+            }
+            const uploaded = await github.paginate(github.rest.repos.listReleaseAssets, {...context.repo, release_id: release.id});
+            for (const name of fs.readdirSync('release-output')) {
+              if (!uploaded.some(asset => asset.name === name && asset.size === fs.statSync('release-output/' + name).size))
+                throw new Error('附件上传不完整：' + name);
+            }
+            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, draft: false, make_latest: 'true'});

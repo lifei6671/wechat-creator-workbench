@@ -3,6 +3,11 @@
   "identifier": "desktop",
   "webviews": ["main"],
   "permissions": [
+    "allow-app-info",
+    "allow-app-update-status",
+    "allow-app-update-check",
+    "allow-app-update-download",
+    "allow-app-update-install",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:menu:allow-new",

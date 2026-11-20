@@ -13,6 +13,11 @@ import type {
 } from "../../../packages/shared-types";
 
 export interface ImageTarget { endpoint: string; region: string; bucket: string; prefix: string; publicBase: string }
+export interface AppInfo { name: string; version: string; platform: string; arch: string; updatesEnabled: boolean }
+export interface AppUpdateStatus {
+  phase: "idle" | "checking" | "current" | "available" | "downloading" | "ready" | "installing";
+  version: string | null; downloaded: number; total: number | null; error: string | null;
+}
 export interface ImageSecret { accessKey: string; secretKey: string }
 export interface ImageUploadOptions { filenameTemplate: string; quality: "original" | "high" | "standard" | "economy"; autoUpload: boolean }
 export interface ActiveImageStorage extends ImageTarget { autoUpload: boolean }
@@ -111,6 +116,13 @@ export const macTitleBar = /Mac/.test(navigator.platform);
 export const nativeWindow = () => getCurrentWindow();
 
 export const desktop = {
+  appInfo: () => invoke<AppInfo>("app_info"),
+  appUpdateStatus: () => invoke<AppUpdateStatus>("app_update_status"),
+  appUpdateCheck: () => invoke<AppUpdateStatus>("app_update_check"),
+  appUpdateDownload: () => invoke<AppUpdateStatus>("app_update_download"),
+  appUpdateInstall: () => invoke<void>("app_update_install"),
+  onAppUpdateChanged: (callback: (status: AppUpdateStatus) => void) =>
+    listen<AppUpdateStatus>("app-update-changed", event => callback(event.payload)),
   setWindowBackground: (color: string) => getCurrentWebviewWindow().setBackgroundColor(color),
   openLink: (url: string) => openUrl(url),
   gpuAcceleration: (enabled?: boolean) => invoke<boolean>("gpu_acceleration", { enabled }),

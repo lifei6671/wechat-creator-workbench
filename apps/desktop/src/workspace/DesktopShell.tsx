@@ -24,6 +24,7 @@ import type { EditorDisplay } from "./EditorContextMenu";
 import { Outline } from "./Outline";
 import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type ExplorerHandle, type RowActions, type Section } from "./Explorer";
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
+import { AboutPage } from "./About";
 import { SyncSettings } from "./SyncSettings";
 import { startSyncApplication } from "./sync-scheduler";
 import { matchesViewShortcut } from "./view-shortcut";
@@ -1662,13 +1663,13 @@ export function DesktopShell() {
     if (command) { event.preventDefault(); if (!event.repeat) command(); }
   });
 
-  async function finishWorkspace(ticket?: string) {
+  async function finishWorkspace(ticket?: string, updating = false) {
     if (exit.current) return;
     const attempt = { cancelled: false, restoring: ticket !== undefined };
     exit.current = attempt;
     let committed = false;
     (document.activeElement as HTMLElement | null)?.blur();
-    setExitMessage(attempt.restoring ? "正在保存并停止工作区…" : "正在保存并退出…");
+    setExitMessage(updating ? "正在保存并准备更新…" : attempt.restoring ? "正在保存并停止工作区…" : "正在保存并退出…");
     try {
       const failedWrite = (await waitForCollectionWrites()).find(write => write.status === "rejected");
       if (failedWrite) throw failedWrite.reason;
@@ -1684,6 +1685,11 @@ export function DesktopShell() {
           setRestoreRestarting(true);
           setExitMessage("正在等待任务结束并重启…");
           await desktop.commitRestore(ticket);
+          committed = true;
+        } else if (updating) {
+          setRestoreRestarting(true);
+          setExitMessage("正在安装更新…");
+          await desktop.appUpdateInstall();
           committed = true;
         } else {
           committed = true;
@@ -2302,6 +2308,7 @@ export function DesktopShell() {
           if (settingsPage.current !== page) { settingsPage.current = page; wakeAutomaticSync.current?.(); }
         }}
           status={backupWorking ?? undefined} toast={notice?.type === "error" ? toast : undefined} onClose={closeModal} renderPage={page => {
+          if (page === "about") return <AboutPage onInstall={() => finishWorkspace(undefined, true)} />;
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
