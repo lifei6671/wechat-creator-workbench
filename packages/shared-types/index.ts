@@ -41,6 +41,7 @@ export interface EntryRow {
   createdAt?: number;
   updatedAt: number;
   deletedAt: number | null;
+  purgedAt?: number | null;
   categoryId: string | null;
   pinned?: boolean;
   preview?: { summary: string; image: string | null; tags?: string[] };

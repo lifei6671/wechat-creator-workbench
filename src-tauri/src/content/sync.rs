@@ -45,6 +45,9 @@ pub fn snapshot(conn: &Connection, id: &str) -> Result<Option<Value>> {
 }
 
 pub fn apply(conn: &Connection, id: &str, payload: &Value, deleted: Option<i64>) -> Result<()> {
+    let purged = payload["purgedAt"].as_i64().or(conn.query_row(
+        "SELECT purged_at FROM entries WHERE id=?1", [id], |row| row.get::<_,Option<i64>>(0),
+    ).optional()?.flatten());
     let kind = match payload["kind"].as_str() {
         Some("article") => Kind::Article,
         Some("idea") => Kind::Idea,
@@ -94,10 +97,14 @@ pub fn apply(conn: &Connection, id: &str, payload: &Value, deleted: Option<i64>)
     )?;
     taxonomy::replace_tags(conn, id, &fields.tags)?;
     crate::assets::references::sync_entry(conn, id, &fields.content_md)?;
+    if let Some(timestamp) = purged { super::trash::purge_entry(conn, id, timestamp)?; }
     Ok(())
 }
 
 pub fn apply_links(conn: &Connection, id: &str, payload: &Value) -> Result<()> {
+    if conn.query_row("SELECT purged_at IS NOT NULL FROM entries WHERE id=?1", [id], |row| row.get::<_,bool>(0))? {
+        return Ok(());
+    }
     conn.execute("DELETE FROM entry_links WHERE article_id=?1", [id])?;
     if let Some(ids) = payload["sourceEntryIds"].as_array() {
         for source in ids {

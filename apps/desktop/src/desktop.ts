@@ -6,6 +6,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { SourceFragment } from "../../../packages/wechat-renderer";
+import type { WebClipping } from "./editor/web-clipping";
 import type {
   CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
   Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection,
@@ -155,9 +156,12 @@ export const desktop = {
   save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode) =>
     invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode }),
   setDeleted: (id: string, expectedVersion: number, deleted: boolean) => invoke<Entry>("set_deleted", { id, expectedVersion, deleted }),
+  emptyTrash: () => invoke<string[]>("empty_trash"),
+  trashRetention: (days?: number) => invoke<number>("trash_retention", { days }),
+  onTrashEmptied: (callback: (ids: string[]) => void) => listen<string[]>("trash-emptied", event => callback(event.payload)),
   saveCategory: (id: string | null, parentId: string | null, name: string, icon: CategoryIcon) =>
     invoke<Category>("save_category", { id, parentId, name, icon }),
-  deleteCategory: (id: string) => invoke<{ id: string; categoryId: string | null; version: number }[]>("delete_category", { id }),
+  deleteCategory: (id: string, mode: "promote" | "trash") => invoke<{ id: string; categoryId: string | null; version: number }[]>("delete_category", { id, mode }),
   moveCategory: (id: string, up: boolean) => invoke<void>("move_category", { id, up }),
   reorderCategory: (id: string, anchor: string, placement: CategoryPlacement) =>
     invoke<void>("reorder_category", { id, anchor, placement }),
@@ -174,6 +178,8 @@ export const desktop = {
   copyHtml: (html: string, text: string) => invoke<void>("clipboard_write_html", { html, text }),
   importLink: (url: string, categoryId: string | null, downloadImages: boolean) =>
     invoke<LinkImportResult>("import_link", { url, categoryId, downloadImages }),
+  importClipping: (clipping: Omit<WebClipping, "unavailableAttachments">, categoryId: string | null, downloadImages: boolean) =>
+    invoke<Extract<LinkImportResult, { kind: "article" }>["article"]>("import_clipping", { clipping, categoryId, downloadImages }),
   importMarkdown: (categoryId: string | null) => invoke<{ entry: Entry; unavailableImages: number } | null>("import_markdown", { categoryId }),
   retryWechatImages: (entry: string) => invoke<WechatImportJob>("wechat_retry_images", { entry }),
   wechatGraphics: (markdown: string) => invoke<SourceFragment[]>("wechat_graphics", { markdown }),

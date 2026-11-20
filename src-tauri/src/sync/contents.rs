@@ -295,16 +295,21 @@ pub async fn synced_blob(db: &Workspace, hash: &str, size: i64) -> Result<Vec<u8
     result
 }
 
-pub fn record_category_delete(conn: &Connection, category: &str) -> Result<()> {
+pub fn record_category_delete(
+    conn: &Connection,
+    category: &str,
+    mode: crate::content::taxonomy::CategoryDeleteMode,
+) -> Result<()> {
     let capture: bool =
         conn.query_row("SELECT capture FROM sync_progress", [], |row| row.get(0))?;
     if !capture {
         return Ok(());
     }
+    let trash = matches!(mode, crate::content::taxonomy::CategoryDeleteMode::Trash);
     let count: i64 = conn.query_row(
         "SELECT (SELECT COUNT(*) FROM categories WHERE id=?1 OR parent_id=?1)
-               +(SELECT COUNT(*) FROM entries WHERE category_id IN (SELECT id FROM categories WHERE id=?1 OR parent_id=?1))",
-        [category], |row| row.get(0),
+               +(SELECT COUNT(*) FROM entries WHERE category_id=?1 OR (?2 AND category_id IN (SELECT id FROM categories WHERE parent_id=?1)))",
+        params![category, trash], |row| row.get(0),
     )?;
     if count > MAX_GROUP as i64 {
         return Err(AppError::new(
@@ -318,8 +323,8 @@ pub fn record_category_delete(conn: &Connection, category: &str) -> Result<()> {
            SELECT batch_id FROM sync_dirty WHERE
              (entity_type='category' AND entity_id IN (SELECT id FROM categories WHERE id=?1 OR parent_id=?1))
              OR (entity_type='entry' AND entity_id IN
-                (SELECT id FROM entries WHERE category_id IN (SELECT id FROM categories WHERE id=?1 OR parent_id=?1)))
-        )", params![category,batch],
+                 (SELECT id FROM entries WHERE category_id=?1 OR (?3 AND category_id IN (SELECT id FROM categories WHERE parent_id=?1))))
+        )", params![category,batch,trash],
     )?;
     conn.execute("UPDATE sync_progress SET active_batch=?1", [batch])?;
     Ok(())
@@ -2108,6 +2113,125 @@ mod tests {
     }
 
     #[test]
+    fn folder_delete_choices_replay_as_one_atomic_sync_group() {
+        use crate::content::taxonomy::CategoryDeleteMode;
+        for mode in [CategoryDeleteMode::Promote, CategoryDeleteMode::Trash] {
+            let setup = || {
+                let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+                db.write(|tx| {
+                    tx.execute_batch("INSERT INTO sync_binding (id,url,instance_id,epoch,device_id) VALUES (1,'https://sync.example.test','server','epoch','device');
+                        INSERT INTO categories (id,name,depth,sort_order) VALUES ('folder','parent',1,3);
+                        INSERT INTO categories (id,parent_id,name,depth,sort_order) VALUES ('child','folder','child',2,0);
+                        INSERT INTO entries (id,kind,title,status,category_id,content_md,created_at,updated_at)
+                        VALUES ('direct','article','direct','draft','folder','direct',1,1),('nested','article','nested','draft','child','nested',1,1);
+                        UPDATE sync_progress SET capture=1,initialized=1;")?;
+                    for (kind, id) in [(Kind::Category,"folder"),(Kind::Category,"child"),(Kind::Entry,"direct"),(Kind::Entry,"nested")] {
+                        remember(tx, &Key { entity_type: kind, entity_id: id.into() }, 1, false)?;
+                    }
+                    Ok(())
+                }).unwrap();
+                db
+            };
+            let a = setup();
+            let b = setup();
+            a.delete_category("folder", mode).unwrap();
+            let (operation, _) = stage_outbox(&a).unwrap().unwrap();
+            let trash = matches!(mode, CategoryDeleteMode::Trash);
+            assert_eq!(operation.mutations.len(), if trash { 4 } else { 3 });
+            b.write(|tx| {
+                for (cursor, mutation) in operation.mutations.iter().enumerate() {
+                    let entity = Entity {
+                        key: mutation.key.clone(),
+                        remote_revision: 2,
+                        deleted_at: (mutation.operation == "delete").then_some(2),
+                        payload: mutation.payload.clone().unwrap_or_else(|| json!({})),
+                    };
+                    tx.execute(
+                        "INSERT INTO sync_inbox VALUES (?1,'delete-folder',?2,?3)",
+                        params![
+                            cursor as i64 + 1,
+                            operation.mutations.len() as i64,
+                            encode(&entity)?
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+            let applied = apply_received(&b).unwrap();
+            assert_eq!(applied.changed_entries.len(), if trash { 2 } else { 1 });
+            b.read(|conn| {
+                assert_eq!(
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM categories WHERE id='folder'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )?,
+                    0
+                );
+                assert_eq!(
+                    conn.query_row("SELECT COUNT(*) FROM sync_inbox", [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+                let nested = entries::snapshot(conn, "nested")?.unwrap();
+                if trash {
+                    assert!(nested["deletedAt"].is_number());
+                    assert!(nested["categoryId"].is_null());
+                } else {
+                    assert!(nested["deletedAt"].is_null());
+                    assert_eq!(nested["categoryId"], "child");
+                    assert!(conn.query_row(
+                        "SELECT parent_id IS NULL AND depth=1 FROM categories WHERE id='child'",
+                        [],
+                        |r| r.get::<_, bool>(0)
+                    )?);
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn promoting_a_large_subtree_only_captures_changed_folders() {
+        let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding (id,url,instance_id,epoch,device_id) VALUES (1,'https://sync.example.test','server','epoch','device');
+                INSERT INTO categories (id,name,depth,sort_order) VALUES ('folder','parent',1,3);
+                INSERT INTO categories (id,parent_id,name,depth,sort_order) VALUES ('child','folder','child',2,0);")?;
+            for i in 0..300 {
+                tx.execute("INSERT INTO entries (id,kind,title,status,category_id,content_md,created_at,updated_at) VALUES (?1,'article','nested','draft','child','preserve',1,1)", [format!("nested-{i}")])?;
+            }
+            for id in ["folder", "child"] {
+                remember(tx, &Key { entity_type: Kind::Category, entity_id: id.into() }, 1, false)?;
+            }
+            tx.execute("UPDATE sync_progress SET capture=1,initialized=1", [])?;
+            Ok(())
+        }).unwrap();
+        assert!(
+            db.delete_category(
+                "folder",
+                crate::content::taxonomy::CategoryDeleteMode::Promote
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let (operation, _) = stage_outbox(&db).unwrap().unwrap();
+        assert_eq!(operation.mutations.len(), 2);
+        assert!(
+            operation
+                .mutations
+                .iter()
+                .all(|mutation| mutation.key.entity_type == Kind::Category)
+        );
+        db.read(|conn| {
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM entries WHERE category_id='child' AND version=1 AND deleted_at IS NULL", [], |row| row.get::<_,i64>(0))?, 300);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
     fn oversized_directory_delete_rolls_back_entry_moves() {
         let root = tempfile::tempdir().unwrap();
         let db = Workspace::open(&root.path().join("workspace.sqlite")).unwrap();
@@ -2122,7 +2246,7 @@ mod tests {
             Ok(())
         }).unwrap();
         assert_eq!(
-            db.delete_category("folder").err().unwrap().code(),
+            db.delete_category("folder", crate::content::taxonomy::CategoryDeleteMode::Promote).err().unwrap().code(),
             "SYNC_SIZE"
         );
         db.read(|conn| {
@@ -2536,7 +2660,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(copy["contentMd"], "B 的离线正文");
-        a.delete_category("sync-folder").unwrap();
+        a.delete_category("sync-folder", crate::content::taxonomy::CategoryDeleteMode::Promote).unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
         exchange(&b, &b_assets, &sync).await.unwrap();
         apply_received(&b).unwrap();

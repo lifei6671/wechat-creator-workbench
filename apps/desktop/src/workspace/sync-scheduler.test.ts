@@ -89,3 +89,18 @@ it("does not apply or report a read completed after disposal", async () => {
   expect(apply).not.toHaveBeenCalled();
   expect(report).not.toHaveBeenCalled();
 });
+
+
+it("rereads notifications arriving during a status read without waiting for a foreground event or timer", async () => {
+  let finish!: (activity: SyncActivity) => void;
+  const read = vi.fn<() => Promise<SyncActivity>>().mockReturnValueOnce(new Promise(resolve => { finish = resolve; })).mockResolvedValue(incoming);
+  const apply = vi.fn(async () => true);
+  const application = startSyncApplication({ read, apply, report: vi.fn() });
+  application.wake();
+  application.wake();
+  finish({ ...incoming, incoming: false });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(apply).toHaveBeenCalledOnce();
+  application.dispose();
+});

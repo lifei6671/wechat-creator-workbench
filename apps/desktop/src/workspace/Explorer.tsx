@@ -105,6 +105,7 @@ interface ExplorerProps {
   onTimelineSelect?(selection: TimelineSelection): void;
   includeTimelineChildren?: boolean;
   directoryTrailingAction?: ReactNode;
+  onEmptyTrash?(): void;
   onCreateCurrent?(): void;
   onToggleAll?(expand: boolean): void;
   onLocateCurrent?(): void;
@@ -417,7 +418,10 @@ export function Explorer(props: ExplorerProps) {
         </Select.Root>
       </div>}
     </>}
-    {!isTree && !isSearch && <div className="section-bar explorer-title"><h1>{listLabel}</h1></div>}
+    {!isTree && !isSearch && <div className="section-bar explorer-title"><h1>{listLabel}</h1>
+      {section === "trash" && <Tool id="empty-trash" label="清空回收站" className="chrome-icon"
+        disabled={props.treeLocked || !page?.items.length} onClick={props.onEmptyTrash}><Trash2 size={16} /></Tool>}
+    </div>}
 
     <div className="explorer-scroll explorer-list-scroll" data-root-drop={drag.hint?.id === null || undefined}>
       {isTree ? <ul className={`explorer-content folder-tree${isTimeline ? " timeline-folders" : ""}`} data-tree-container=""

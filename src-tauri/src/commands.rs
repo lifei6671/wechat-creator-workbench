@@ -3,7 +3,9 @@ use crate::{
     assets::Assets,
     content::{
         Entry, Fields, Filter, Kind, Page, Revision, SaveMode, SaveResult, TimelineSelection,
-        taxonomy::{Category, CategoryChange, CategoryIcon, CategoryPlacement, Library},
+        taxonomy::{
+            Category, CategoryChange, CategoryDeleteMode, CategoryIcon, CategoryPlacement, Library,
+        },
     },
     db::{AppError, Result, Workspace},
     mcp::McpServer,
@@ -168,8 +170,9 @@ pub async fn save_category(
 pub async fn delete_category(
     state: State<'_, Workspace>,
     id: String,
+    mode: Option<CategoryDeleteMode>,
 ) -> Result<Vec<CategoryChange>> {
-    state.delete_category(&id)
+    state.delete_category(&id, mode.unwrap_or_default())
 }
 
 #[tauri::command]

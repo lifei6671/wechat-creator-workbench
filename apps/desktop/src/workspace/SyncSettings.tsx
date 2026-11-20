@@ -56,7 +56,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
   const [name, setName] = useState<string>();
   const [code, setCode] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
-  const [busy, setBusy] = useState<"connect" | "reauthorize" | "secret" | "devices" | "info" | "access" | "recovery" | "recover" | "revoke" | "sync" | "resolve" | "rebuild">();
+  const [busy, setBusy] = useState<"connect" | "reauthorize" | "secret" | "info" | "access" | "recovery" | "recover" | "revoke" | "sync" | "resolve" | "rebuild">();
   const blocked = Boolean(busy) || applicationBusy;
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -70,6 +70,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
   useEffect(() => {
     let live = true;
     let request = 0;
+    let deviceExchangeAt: number | null | undefined;
     async function refresh(loadDevices = false) {
       const current = ++request;
       try {
@@ -79,9 +80,10 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
         setActivity(state);
         setConflicts(issues);
         if (credentialRejected(state?.error)) setNeedsReconnect(true);
-        if (loadDevices && saved && !saved.paused && !credentialRejected(state?.error)) {
+        const exchanged = state?.lastExchangeAt != null && state.lastExchangeAt !== deviceExchangeAt;
+        if ((loadDevices || exchanged) && saved && !saved.paused && !credentialRejected(state?.error)) {
           const list = await desktop.syncDevices();
-          if (live && current === request) setDevices(list);
+          if (live && current === request) { setDevices(list); deviceExchangeAt = state?.lastExchangeAt; }
         }
       } catch (failure) {
         if (!live || current !== request) return;
@@ -90,15 +92,16 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
       }
     }
     const refreshLocal = () => { void refresh(); };
+    const refreshDevices = () => { if (document.visibilityState === "visible") void refresh(true); };
     const subscription = desktop.onSyncStatusChanged(refreshLocal);
     void subscription.then(() => refresh(true), failure => { if (live) setError(errorMessage(failure)); });
-    window.addEventListener("focus", refreshLocal);
-    document.addEventListener("visibilitychange", refreshLocal);
+    window.addEventListener("focus", refreshDevices);
+    document.addEventListener("visibilitychange", refreshDevices);
     return () => {
       live = false;
       void subscription.then(unlisten => unlisten(), () => {});
-      window.removeEventListener("focus", refreshLocal);
-      document.removeEventListener("visibilitychange", refreshLocal);
+      window.removeEventListener("focus", refreshDevices);
+      document.removeEventListener("visibilitychange", refreshDevices);
     };
   }, []);
 
@@ -133,6 +136,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
       const archive = await onSync();
       if (archive) setRecoveryArchive(archive);
       setActivity(await desktop.syncActivity());
+      setDevices(await desktop.syncDevices());
       setNotice(archive ? "已合并本地与云端内容" : "同步检查完成");
     } finally { setConflicts(await desktop.syncConflicts()); }
   }
@@ -145,7 +149,6 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     setNotice("设备已连接，正在同步");
     if (current.paused) return;
     await synchronize();
-    setDevices(await desktop.syncDevices());
   }
 
   async function resolve(issue: SyncConflict, choice: SyncResolution) {
@@ -203,30 +206,14 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
       </div>
     </form>}
     {binding && !binding.paused && !needsReconnect && <>
-      {active.map(device => <SettingRow key={device.deviceId} label={device.name}>
-        {() => device.deviceId === devices?.currentDeviceId ? <span className="muted-text">当前设备</span>
-          : <Button type="button" size="1" color="red" variant="soft" disabled={blocked} onClick={() => setConfirm(device)}>撤销</Button>}
-      </SettingRow>)}
-      <SettingRow label="连接信息">
-        {() => <Flex wrap="wrap" gap="2">
-          <Button type="button" variant="soft" loading={busy === "info"} disabled={blocked} onClick={() => void perform("info", async () => {
-            const info = await desktop.syncConnectionInfo();
-            await desktop.copyText(`服务地址：${info.url}\n连接密钥：${info.accessKey}`);
-            setNotice("连接信息已复制");
-          })}>复制连接信息</Button>
-          <Button type="button" color="gray" variant="soft" disabled={blocked} onClick={() => setNeedsReconnect(true)}>输入连接密钥</Button>
-        </Flex>}
-      </SettingRow>
-      <SettingRow label="更换连接密钥" hint="旧连接密钥将失效，已连接的设备继续同步。">
-        {() => <Button type="button" variant="soft" loading={busy === "access"} disabled={blocked} onClick={() => void perform("access", async () => {
-          await desktop.copyText(await desktop.syncCreateAccessKey());
-          setNotice("新连接密钥已复制，请更新保存的连接信息");
-        })}>更换并复制密钥</Button>}
-      </SettingRow>
+      {deviceName && <SettingRow label="当前设备">{() => <span className="muted-text">{deviceName}</span>}</SettingRow>}
       <div className="settings-footer">
+        <Button type="button" color="gray" variant="soft" loading={busy === "info"} disabled={blocked} onClick={() => void perform("info", async () => {
+          const info = await desktop.syncConnectionInfo();
+          await desktop.copyText(`服务地址：${info.url}\n连接密钥：${info.accessKey}`);
+          setNotice("连接信息已复制");
+        })}>复制连接信息</Button>
         <Button type="button" variant="soft" loading={busy === "sync"} disabled={blocked} onClick={() => void perform("sync", synchronize)}>立即同步</Button>
-        <Button type="button" color="gray" variant="soft" loading={busy === "devices"} disabled={blocked}
-          onClick={() => void perform("devices", async () => setDevices(await desktop.syncDevices()))}>刷新设备</Button>
       </div>
     </>}
     {conflicts.map(issue => <SettingRow key={issue.entityType + "/" + issue.entityId}
@@ -260,6 +247,18 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     </SettingRow>)}
     <details className="sync-advanced">
       <summary><ChevronRight size={16} strokeWidth={1.65} aria-hidden="true" />高级操作</summary>
+      {binding && !binding.paused && !needsReconnect && <>
+        {active.map(device => <SettingRow key={device.deviceId} label={device.name}>
+          {() => device.deviceId === devices?.currentDeviceId ? <span className="muted-text">当前设备</span>
+            : <Button type="button" size="1" color="red" variant="soft" disabled={blocked} onClick={() => setConfirm(device)}>撤销</Button>}
+        </SettingRow>)}
+        <SettingRow label="更换连接密钥" hint="旧连接密钥将失效，已连接的设备继续同步。">
+          {() => <Button type="button" variant="soft" loading={busy === "access"} disabled={blocked} onClick={() => void perform("access", async () => {
+            await desktop.copyText(await desktop.syncCreateAccessKey());
+            setNotice("新连接密钥已复制，请更新保存的连接信息");
+          })}>更换并复制密钥</Button>}
+        </SettingRow>
+      </>}
       {binding?.paused && <form onSubmit={event => {
         event.preventDefault();
         void perform("reauthorize", async () => {

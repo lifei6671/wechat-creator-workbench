@@ -35,7 +35,7 @@ export function SyncStatus({ binding, activity, reconnect = false, error, waitin
   } else if (activity?.incoming) {
     label = waitingReason ?? "已下载，准备应用"; Icon = Clock3;
   } else if (activity?.pending) {
-    label = "有内容待上传"; Icon = CloudUpload;
+    label = "正在处理上传任务"; Icon = CloudUpload;
   } else if (activity?.initialized && activity.lastExchangeAt !== null) {
     label = "已同步"; tone = "success"; Icon = CloudCheck;
   } else {

@@ -14,11 +14,15 @@ import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./prefe
 import { SaveQueue } from "../editor/save-queue";
 import * as markdown from "../../../../packages/markdown-core";
 
-const { editorQueues } = vi.hoisted(() => ({ editorQueues: new Map<string, SaveQueue>() }));
+const { editorQueues, editorClipboards } = vi.hoisted(() => ({
+  editorQueues: new Map<string, SaveQueue>(),
+  editorClipboards: new Map<string, ComponentProps<typeof DocumentEditor>["clipboard"]>(),
+}));
 vi.mock(import("./Document"), async importOriginal => ({
   ...await importOriginal(),
-  DocumentEditor: ({ queue, display, onDisplayChange }: ComponentProps<typeof DocumentEditor>) => {
+  DocumentEditor: ({ queue, display, onDisplayChange, clipboard }: ComponentProps<typeof DocumentEditor>) => {
     editorQueues.set(queue.entry.id, queue);
+    editorClipboards.set(queue.entry.id, clipboard);
     return (
     <button data-document={queue.entry.id} data-links={display.convertLinks} data-body={queue.snapshot().fields.contentMd}
       onClick={() => onDisplayChange("convertLinks", !display.convertLinks)}>切换链接脚注</button>
@@ -67,7 +71,7 @@ beforeEach(() => {
   vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);
   vi.spyOn(desktop, "syncStatus").mockResolvedValue(null);
   vi.spyOn(desktop, "syncWake").mockResolvedValue();
-  for (const event of ["onExit", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
+  for (const event of ["onExit", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onTrashEmptied", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
     vi.spyOn(desktop, event).mockResolvedValue(() => {});
   }
   container = document.createElement("div");
@@ -81,11 +85,122 @@ afterEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  editorClipboards.clear();
 });
 
 function openTabs() {
   return [...container.querySelectorAll('[role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
+
+it("clears all trash after confirmation and disables the clear icon when empty", async () => {
+  let cleared = false;
+  const trashed = { ...entry("trashed"), deletedAt: 1 };
+  vi.spyOn(desktop, "entries").mockImplementation(async filter => ({ items: filter.deleted && !cleared ? [trashed] : [], nextOffset: null }));
+  const empty = vi.spyOn(desktop, "emptyTrash").mockImplementation(async () => { cleared = true; return [trashed.id]; });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('button[aria-label="回收站"]')).not.toBeNull());
+  expect(container.querySelector('button[aria-label="回收站"] svg')?.classList.contains("lucide-trash")).toBe(true);
+  flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label="回收站"]')!.click());
+  await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>("#empty-trash")?.disabled).toBe(false));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#empty-trash")!.click());
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')?.textContent).toContain("无法恢复"));
+  const dialog = () => document.querySelector('[role="dialog"]')!;
+  flushSync(() => [...dialog().querySelectorAll("button")].find(button => button.textContent === "取消")!.click());
+  expect(empty).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#empty-trash")!.click());
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
+  flushSync(() => [...dialog().querySelectorAll("button")].find(button => button.textContent === "清空回收站")!.click());
+  await vi.waitFor(() => expect(empty).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>("#empty-trash")?.disabled).toBe(true));
+  await vi.waitFor(() => expect(container.textContent).toContain("回收站为空"));
+});
+
+it("closes permanently removed tabs when the background trash cleaner reports them", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["old", "keep"], activeId: "old" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  let cleaned!: (ids: string[]) => void;
+  vi.spyOn(desktop, "onTrashEmptied").mockImplementation(async callback => { cleaned = callback; return () => {}; });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(openTabs()).toEqual(["old", "keep"]));
+  flushSync(() => cleaned(["old"]));
+  await vi.waitFor(() => expect(openTabs()).toEqual(["keep"]));
+  expect(container.querySelector('[role="tab"][aria-selected=true]')?.id).toBe("tab-keep");
+});
+
+const webClipping = `---
+title: 剪藏文章
+source: https://example.com/clipping
+author: ["[[作者]]"]
+published: 2026-11-18
+created: 2026-11-20
+description: 摘要
+tags: [clippings]
+---
+**原始正文**
+
+![[视频.mp4]]`;
+
+it("creates and opens a clipped article when pasting in the workspace without an editor", async () => {
+  vi.spyOn(desktop, "readClipboard").mockResolvedValue({ kind: "text", text: webClipping });
+  const imported = vi.spyOn(desktop, "importClipping").mockResolvedValue({ entryId: "clipped", existing: false, deleted: false, unavailableImages: 0 });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector(".workspace-shell")).not.toBeNull());
+  container.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true }));
+  await vi.waitFor(() => expect(openTabs()).toContain("clipped"));
+  expect(imported).toHaveBeenCalledExactlyOnceWith({
+    title: "剪藏文章", contentMd: "**原始正文**\n\n![[视频.mp4]]", summary: "摘要", tags: ["clippings"],
+    source: { url: "https://example.com/clipping", author: "作者", accountName: "example.com",
+      originalPublishedAt: Date.parse("2026-11-18"), importedAt: Date.parse("2026-11-20") },
+  }, null, false);
+  expect(container.textContent).toContain("1 个本地附件缺少文件，已保留引用");
+});
+
+it("imports a rich clipboard clipping in a new tab and leaves the current article intact", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["original"], activeId: "original" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), contentMd: id === "original" ? "未覆盖的正文" : "新正文" }));
+  vi.spyOn(desktop, "readClipboard").mockResolvedValue({ kind: "html", html: "<p>网页内容</p>", text: webClipping });
+  vi.spyOn(desktop, "importClipping").mockResolvedValue({ entryId: "clipped", existing: false, deleted: false, unavailableImages: 2 });
+  const saved = vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorClipboards.has("original")).toBe(true));
+  editorQueues.get("original")!.edit({ contentMd: "未保存的正文" });
+  expect(await editorClipboards.get("original")!.read()).toBe("");
+  await vi.waitFor(() => expect(openTabs()).toEqual(["original", "clipped"]));
+  expect(editorQueues.get("original")!.snapshot().fields.contentMd).toBe("未保存的正文");
+  await vi.waitFor(() => expect(saved).toHaveBeenCalledWith("original", 1, expect.objectContaining({ contentMd: "未保存的正文" }), "auto"));
+  expect(container.textContent).toContain("2 张图片未能下载，已保留原链接");
+});
+
+it("preserves plain-text paste and ordinary Markdown instead of importing them", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["original"], activeId: "original" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  const read = vi.spyOn(desktop, "readClipboard").mockResolvedValue({ kind: "text", text: webClipping });
+  const imported = vi.spyOn(desktop, "importClipping");
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorClipboards.has("original")).toBe(true));
+  expect(await editorClipboards.get("original")!.read(true)).toBe(webClipping);
+  read.mockResolvedValue({ kind: "text", text: "# 普通 Markdown" });
+  expect(await editorClipboards.get("original")!.read()).toBe("# 普通 Markdown");
+  expect(imported).not.toHaveBeenCalled();
+});
+
+it("opens an already collected clipping without overwriting it and reports deleted sources", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["original"], activeId: "original" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "readClipboard").mockResolvedValue({ kind: "text", text: webClipping });
+  const imported = vi.spyOn(desktop, "importClipping").mockResolvedValue({ entryId: "existing", existing: true, deleted: false, unavailableImages: 0 });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorClipboards.has("original")).toBe(true));
+  await editorClipboards.get("original")!.read();
+  await vi.waitFor(() => expect(openTabs()).toContain("existing"));
+  expect(container.textContent).toContain("原文已收录，已打开已有文章");
+  imported.mockResolvedValue({ entryId: "deleted", existing: true, deleted: true, unavailableImages: 0 });
+  await editorClipboards.get("existing")!.read();
+  await vi.waitFor(() => expect(container.textContent).toContain("请先从回收站恢复"));
+  expect(openTabs()).not.toContain("deleted");
+});
 
 it("keeps the writing pane itself from showing a scrollbar", async () => {
   saveDocumentTabs(workspaceId, { ids: ["article-one"], activeId: "article-one" });
@@ -522,6 +637,7 @@ it("applies while viewing sync settings and explains waits for other pages and c
   expect(apply).toHaveBeenCalledOnce();
 
   flushSync(() => nav("同步").click());
+  flushSync(() => document.querySelector<HTMLDetailsElement>(".sync-advanced")!.open = true);
   const revoke = [...document.querySelectorAll<HTMLButtonElement>(".sync-settings button")].find(button => button.textContent === "撤销")!;
   flushSync(() => revoke.click());
   await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
@@ -650,7 +766,7 @@ it("checks the remote on restoration while unsaved input keeps downloaded change
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { statusChanged = callback; return () => {}; });
   vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
-  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: true,
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: false,
     issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
   const apply = vi.spyOn(desktop, "syncApply").mockResolvedValue({ changedEntries: [], changedCollections: [] });
   vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
@@ -660,6 +776,8 @@ it("checks the remote on restoration while unsaved input keeps downloaded change
   await vi.waitFor(() => expect(editorQueues.has("foreground-edit")).toBe(true));
   const queue = editorQueues.get("foreground-edit")!;
   queue.edit({ contentMd: "仍在输入的本地正文" });
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: true,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
   const input = container.appendChild(document.createElement("input"));
   input.focus();
   focused = true;
@@ -1572,4 +1690,83 @@ it("bounds mounted AI sessions and Markdown renders while a hidden reply finishe
   } finally {
     for (const queue of queues) queue.dispose();
   }
+});
+
+
+it.each(["visible", "hidden"] as const)("applies downloaded changes without foreground focus when visibility is %s", async visibility => {
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue(visibility);
+  let incoming = false;
+  let notify!: () => void;
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async listener => { notify = listener; return () => {}; });
+  vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.mocked(desktop.syncActivity).mockImplementation(async () => ({ hasLocalContent: true, initialized: true, pending: false, incoming,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: 1 }));
+  const apply = vi.spyOn(desktop, "syncApply").mockImplementation(async () => {
+    incoming = false;
+    queueMicrotask(notify);
+    return { changedEntries: [], changedCollections: [] };
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  incoming = true;
+  const input = container.appendChild(document.createElement("input"));
+  input.focus();
+  notify();
+  await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+});
+
+it("reports pending uploads as processing upload tasks", async () => {
+  vi.mocked(desktop.syncStatus).mockResolvedValue({ url: "https://sync.example.test", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: false,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("正在处理上传任务"));
+});
+
+it("uses a recorded shortcut immediately without firing for a different chord or repeat", async () => {
+  const chord = { code: "KeyJ", ctrlKey: true, metaKey: false, altKey: true, shiftKey: true };
+  localStorage.setItem("view-shortcut", JSON.stringify(chord));
+  saveDocumentTabs(workspaceId, { ids: ["custom-shortcut"], activeId: "custom-shortcut" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("custom-shortcut")).toBe(true));
+  const preview = () => container.querySelector(".status-bar")?.textContent?.includes("继续编辑");
+  expect(preview()).toBe(false);
+  window.dispatchEvent(new KeyboardEvent("keydown", { ...chord, shiftKey: false, key: "j", bubbles: true, cancelable: true }));
+  expect(preview()).toBe(false);
+  flushSync(() => window.dispatchEvent(new KeyboardEvent("keydown", { ...chord, key: "j", bubbles: true, cancelable: true })));
+  expect(preview()).toBe(true);
+  flushSync(() => window.dispatchEvent(new KeyboardEvent("keydown", { ...chord, key: "j", repeat: true, bubbles: true, cancelable: true })));
+  expect(preview()).toBe(true);
+});
+
+it.each(["empty", "promote", "trash"] as const)("deletes a folder with the %s choice", async choice => {
+  saveWorkspaceLayout({ section: "folders", explorerOverride: true, timelineDirectory: "shown", focusMode: false, aiOpen: false });
+  if (choice !== "empty") vi.mocked(desktop.entries).mockImplementation(async filter => ({
+    items: filter.categoryId === "closed" ? [entry("inside", "closed")] : [], nextOffset: null,
+  }));
+  const deleted = vi.spyOn(desktop, "deleteCategory").mockResolvedValue([]);
+  flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
+  await vi.waitFor(() => expect(container.querySelector("#folder-row-closed")).not.toBeNull());
+  flushSync(() => container.querySelector("#folder-row-closed")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })));
+  const menuItem = await vi.waitFor(() => {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "删除目录");
+    expect(item).toBeDefined(); return item!;
+  });
+  flushSync(() => menuItem.click());
+  if (choice === "empty") {
+    await vi.waitFor(() => expect(deleted).toHaveBeenCalledExactlyOnceWith("closed", "promote"));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    return;
+  }
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(deleted).not.toHaveBeenCalled();
+  const checkbox = dialog.querySelector<HTMLButtonElement>('[role="checkbox"]')!;
+  expect(checkbox.getAttribute("aria-checked")).toBe("false");
+  if (choice === "trash") flushSync(() => checkbox.click());
+  flushSync(() => [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "删除文件夹")!.click());
+  await vi.waitFor(() => expect(deleted).toHaveBeenCalledExactlyOnceWith("closed", choice));
 });

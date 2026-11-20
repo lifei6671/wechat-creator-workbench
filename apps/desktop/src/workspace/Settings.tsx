@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
-import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
 import { commandKey } from "../labels";
+import { Tool } from "../ui";
 import type { ViewMode } from "./Document";
 import type { DocumentOpenMode } from "./preferences";
+import { isViewShortcut, shortcutCode, shortcutConflict, shortcutLabel, type RecordedShortcut, type ViewShortcut } from "./view-shortcut";
 
 export type Appearance = "system" | "light" | "dark";
-export type ViewShortcut = "none" | "shift-m" | "alt-v";
+export type { ViewShortcut } from "./view-shortcut";
 
 const groups = [
   { label: "工作区", items: [
@@ -28,6 +30,7 @@ const groups = [
 
 export type SettingsPage = typeof groups[number]["items"][number]["id"];
 const allPages = groups.flatMap(group => [...group.items]);
+const trashRetentionOptions = [1, 7, 14, 30, 90, 0];
 const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync"];
 
 function settingsSection(viewport: HTMLElement, page: SettingsPage) {
@@ -50,7 +53,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   const scrollArea = useRef<HTMLDivElement>(null);
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const choices = groups.map(group => ({ ...group, items: [...group.items].filter(item =>
-    terms.every(term => `${group.label} ${item.label} ${item.keywords}`.toLowerCase().includes(term))) }));
+    terms.every(term => `${group.label} ${item.label} ${item.keywords}${item.id === "appearance" ? " 回收站 自动清理 保留时间" : ""}`.toLowerCase().includes(term))) }));
   const first = choices.find(group => group.items.length)?.items[0];
 
   const attachScrollArea = useCallback((viewport: HTMLDivElement | null) => {
@@ -91,7 +94,10 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
     <Dialog.Content className="settings-dialog" maxWidth="912px" aria-describedby={undefined}
       onPointerDownOutside={event => event.preventDefault()}
-      onEscapeKeyDown={event => { if (query) { event.preventDefault(); setQuery(""); search.current?.focus(); } }}
+      onEscapeKeyDown={event => {
+        if (event.target instanceof HTMLElement && event.target.closest('.shortcut-binding[data-recording="true"]')) event.preventDefault();
+        else if (query) { event.preventDefault(); setQuery(""); search.current?.focus(); }
+      }}
       onOpenAutoFocus={event => {
         event.preventDefault();
         if (initialPage === "appearance") search.current?.focus();
@@ -200,6 +206,36 @@ export function S3Fields({ scope, initial, hasKey, publicBase, credentials }: {
   </>;
 }
 
+export function TrashRetentionSetting() {
+  const [days, setDays] = useState<number>();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    void desktop.trashRetention().then(value => { if (current) setDays(value); },
+      failure => { if (current) setError(errorMessage(failure)); });
+    return () => { current = false; };
+  }, []);
+  async function save(value: string) {
+    setSaving(true);
+    setError("");
+    try { setDays(await desktop.trashRetention(Number(value))); }
+    catch (failure) { setError(errorMessage(failure)); }
+    finally { setSaving(false); }
+  }
+  return <>
+    <SettingRow id="trash-retention" label="回收站保留时间" hint="按移入回收站的时间计算，过期内容将永久删除。">
+      {hintId => <Select.Root size="2" value={days?.toString() ?? ""} disabled={days === undefined || saving} onValueChange={save}>
+        <Select.Trigger id="trash-retention" aria-describedby={hintId} />
+        <Select.Content>{trashRetentionOptions.map(days => <Select.Item key={days} value={String(days)}>
+          {days ? `${days} 天` : "不自动清理"}
+        </Select.Item>)}</Select.Content>
+      </Select.Root>}
+    </SettingRow>
+    {error && <p className="settings-feedback inline-error" role="alert">{error}</p>}
+  </>;
+}
+
 function NativeToggleSetting({ id, label, hint, warning, preference }: {
   id: string; label: string; hint: string; warning?: string; preference(enabled?: boolean): Promise<boolean>;
 }) {
@@ -278,6 +314,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
           ? "从菜单栏图标恢复窗口。停用此设置后，点击关闭按钮会保存并退出应用。"
           : "从任务栏通知区域的图标恢复窗口。停用此设置后，点击关闭按钮会保存并退出应用。"}
         preference={desktop.closeToTray} />}
+      <TrashRetentionSetting />
       {windowsTitleBar && <NativeToggleSetting id="gpu-acceleration" label="硬件加速"
         hint="启用后由 GPU 加速界面渲染，让滚动与界面切换更流畅。重启工作台后生效。"
         warning="关闭后将使用软件渲染，界面可能明显变慢。"
@@ -331,10 +368,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   return <>
     <div className="settings-card">
       <SettingRow id="view-shortcuts" label="切换编辑视图" hint="设置在编辑与排版预览之间切换的快捷键。">
-        {hintId => <Select.Root size="2" value={shortcut} onValueChange={value => onShortcut(value as ViewShortcut)}>
-          <Select.Trigger id="view-shortcuts" aria-describedby={hintId} />
-          <Select.Content><Select.Item value="none">未设置</Select.Item><Select.Item value="shift-m">{commandKey}Shift+M</Select.Item><Select.Item value="alt-v">{commandKey}Alt+V</Select.Item></Select.Content>
-        </Select.Root>}
+        {hintId => <ViewShortcutSetting value={shortcut} hintId={hintId} onChange={onShortcut} />}
       </SettingRow>
     </div>
     <div className="settings-group-title">工作区操作</div>
@@ -346,6 +380,53 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
         <div><dt>查找与替换</dt><dd><kbd>{commandKey}F</kbd></dd></div>
     </dl>
   </>;
+}
+
+export function ViewShortcutSetting({ value, hintId, onChange }: {
+  value: ViewShortcut; hintId: string; onChange(value: ViewShortcut): void;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState("");
+  const trigger = useRef<HTMLButtonElement>(null);
+  function finishRecording() {
+    setRecording(false);
+    setError("");
+    requestAnimationFrame(() => trigger.current?.focus());
+  }
+  return <div className="shortcut-setting">
+    <div className="shortcut-binding" data-recording={recording || undefined} onKeyDownCapture={event => {
+      if (recording && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finishRecording(); }
+    }}>
+      {recording ? <>
+        <TextField.Root id="view-shortcuts" className="shortcut-recorder" size="2" autoFocus readOnly value=""
+          placeholder="按下快捷键" aria-label="录入切换编辑视图快捷键"
+          aria-describedby={error ? `${hintId} view-shortcut-error` : hintId} aria-invalid={Boolean(error)}
+          onKeyDown={event => {
+            if (event.key === "Tab") return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat
+              || ["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
+            const stroke: RecordedShortcut = { code: shortcutCode(event), ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+              altKey: event.altKey, shiftKey: event.shiftKey };
+            if (!isViewShortcut(stroke)) { setError("请使用修饰键组合或功能键"); return; }
+            if (event.getModifierState("AltGraph") || shortcutConflict(stroke)) { setError("该快捷键已被其他操作占用"); return; }
+            onChange(stroke);
+            finishRecording();
+          }} />
+        <button type="button" className="plain-button shortcut-cancel" aria-label="取消快捷键设置" onClick={finishRecording}>ESC 取消</button>
+      </> : <button ref={trigger} id="view-shortcuts" type="button" className="plain-button shortcut-trigger"
+        data-configured={value !== "none"} aria-describedby={hintId} aria-label="设置切换编辑视图快捷键"
+        onClick={() => { setRecording(true); setError(""); }}>
+        {value === "none" ? <><span className="shortcut-empty-icon"><Keyboard size={16} aria-hidden="true" /></span>点击设置</>
+          : <kbd>{shortcutLabel(value)}</kbd>}
+      </button>}
+      <Tool label="删除快捷键" color="gray" className="shortcut-clear" disabled={value === "none"} onClick={() => {
+        onChange("none"); finishRecording();
+      }}><Trash2 size={17} strokeWidth={1.75} /></Tool>
+    </div>
+    {error && <p id="view-shortcut-error" role="alert" className="inline-error">{error}</p>}
+  </div>;
 }
 
 export function McpSettings({ status, loadError, onStatus }: { status?: McpStatus; loadError: string; onStatus(status: McpStatus): void }) {

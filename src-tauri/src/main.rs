@@ -34,9 +34,10 @@ use canvas_preview_cache::canvas_preview_cache_read;
 use canvas_webview::{canvas_webview, canvas_webview_page, canvas_webview_snapshot};
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
+use content::trash::{empty_trash, trash_retention};
 use db::Workspace;
 use graphics::gpu_acceleration;
-use link_import::import_link;
+use link_import::{import_clipping, import_link};
 use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
 use sync::contents::{
     sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
@@ -110,6 +111,7 @@ fn main() {
             });
             Assets::spawn(app.handle().clone());
             sync::scheduler::spawn(app.handle().clone());
+            content::trash::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -139,6 +141,8 @@ fn main() {
             list_entry_collections,
             save_entry,
             set_deleted,
+            empty_trash,
+            trash_retention,
             save_category,
             delete_category,
             move_category,
@@ -169,6 +173,7 @@ fn main() {
             clipboard_read,
             clipboard_write,
             import_link,
+            import_clipping,
             wechat_retry_images,
             clipboard_write_html,
             asset_derive,

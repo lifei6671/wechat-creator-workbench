@@ -7,10 +7,26 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { desktop, type AiSettings } from "../desktop";
 import { ModelSettings } from "./AiSettings";
 import { MigrationPanel } from "./Migration";
-import { McpSettings, S3Fields, SettingsDialog } from "./Settings";
+import { McpSettings, S3Fields, SettingsDialog, TrashRetentionSetting, ViewShortcutSetting } from "./Settings";
 import { SyncSettings } from "./SyncSettings";
 
 let enterSection: (section: HTMLElement) => void;
+it("shows seven-day trash retention and persists changes including disabling automatic cleanup", async () => {
+  const preference = vi.spyOn(desktop, "trashRetention").mockImplementation(async days => days ?? 7);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    flushSync(() => root.render(<Theme><form><TrashRetentionSetting /></form></Theme>));
+    await vi.waitFor(() => expect(container.querySelector("#trash-retention")?.textContent).toContain("7 天"));
+    expect(container.querySelector("#trash-retention")?.getAttribute("aria-describedby")).toBe("trash-retention-hint");
+    for (const days of [30, 0]) {
+      const select = container.querySelector("select")!;
+      flushSync(() => { select.value = String(days); select.dispatchEvent(new Event("change", { bubbles: true })); });
+      await vi.waitFor(() => expect(preference).toHaveBeenLastCalledWith(days));
+      await vi.waitFor(() => expect(container.querySelector("#trash-retention")?.textContent).toContain(days ? "30 天" : "不自动清理"));
+    }
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
 beforeEach(() => {
   vi.spyOn(desktop, "onSyncStatusChanged").mockResolvedValue(() => {});
   vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);
@@ -115,6 +131,7 @@ it("copies saved connection information without rotating its key and keeps secre
     expect(desktop.syncCreateAccessKey).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("后台同步超时");
     expect(container.textContent).not.toContain(accessKey);
+    flushSync(() => container.querySelector<HTMLDetailsElement>(".sync-advanced")!.open = true);
     const recovery = container.querySelector<HTMLButtonElement>("#sync-recovery-key")!;
     flushSync(() => recovery.click());
     await vi.waitFor(() => expect(copy).toHaveBeenLastCalledWith(recoveryKey));
@@ -567,4 +584,133 @@ it.each(["local", "custom"] as const)("removes a saved %s model with one click",
     flushSync(() => root.unmount());
     container.remove();
   }
+});
+
+
+it("records shortcuts through the inline input and preserves bindings on cancellation", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const changed = vi.fn();
+  function Setting() {
+    const [value, setValue] = useState<import("./view-shortcut").ViewShortcut>("none");
+    return <ViewShortcutSetting value={value} hintId="shortcut-hint" onChange={value => { setValue(value); changed(value); }} />;
+  }
+  try {
+    flushSync(() => root.render(<Theme><Setting /></Theme>));
+    const trigger = () => container.querySelector<HTMLButtonElement>("button#view-shortcuts")!;
+    const clear = () => container.querySelector<HTMLButtonElement>('button[aria-label="删除快捷键"]')!;
+    const press = (init: KeyboardEventInit) => flushSync(() => container.querySelector<HTMLInputElement>("input#view-shortcuts")!
+      .dispatchEvent(new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true })));
+    expect(trigger().textContent).toBe("点击设置");
+    expect(trigger().querySelector(".shortcut-empty-icon svg")).not.toBeNull();
+    expect(clear().disabled).toBe(true);
+    flushSync(() => trigger().click());
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="按下快捷键"]')!;
+    expect(input).not.toBeNull();
+    expect(input.readOnly).toBe(true);
+    expect(document.activeElement).toBe(input);
+    expect(container.querySelector('[aria-label="取消快捷键设置"]')?.textContent).toBe("ESC 取消");
+    press({ key: "Control", code: "ControlLeft", ctrlKey: true });
+    expect(changed).not.toHaveBeenCalled();
+    for (const binding of [
+      { key: "s", code: "KeyS" }, { key: "e", code: "KeyE" }, { key: "[", code: "BracketLeft" },
+      { key: "1", code: "Digit1", altKey: true }, { key: "c", code: "KeyC", altKey: true }, { key: "x", code: "KeyX", altKey: true },
+    ]) {
+      press({ ...binding, ctrlKey: true });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("已被其他操作占用");
+      expect(changed).not.toHaveBeenCalled();
+    }
+    press({ key: "j", ctrlKey: true, altKey: true });
+    expect(changed).toHaveBeenCalledExactlyOnceWith({ code: "KeyJ", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false });
+    expect(trigger().querySelector("kbd")?.textContent).toBe("Ctrl+Alt+J");
+    expect(trigger().dataset.configured).toBe("true");
+    expect(clear().disabled).toBe(false);
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger()));
+
+    flushSync(() => trigger().click());
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="取消快捷键设置"]')!.click());
+    expect(trigger().textContent).toBe("Ctrl+Alt+J");
+    expect(changed).toHaveBeenCalledOnce();
+    flushSync(() => trigger().click());
+    press({ key: "e", code: "KeyE", ctrlKey: true });
+    press({ key: "Escape", code: "Escape" });
+    expect(trigger().textContent).toBe("Ctrl+Alt+J");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(changed).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger()));
+
+    flushSync(() => trigger().click());
+    flushSync(() => clear().click());
+    expect(changed).toHaveBeenLastCalledWith("none");
+    expect(trigger().textContent).toBe("点击设置");
+    expect(container.querySelector("input#view-shortcuts")).toBeNull();
+    expect(clear().disabled).toBe(true);
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it.each(["input", "cancel"])("cancels shortcut recording with Escape from %s without closing settings", async focus => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const closed = vi.fn();
+  const changed = vi.fn();
+  try {
+    flushSync(() => root.render(<Theme><SettingsDialog initialPage="shortcuts" onClose={closed}
+      renderPage={page => page === "shortcuts" ? <ViewShortcutSetting value="shift-m" hintId="shortcut-hint" onChange={changed} /> : null} /></Theme>));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    flushSync(() => dialog.querySelector<HTMLButtonElement>("button#view-shortcuts")!.click());
+    const target = focus === "input" ? dialog.querySelector<HTMLInputElement>("input#view-shortcuts")!
+      : dialog.querySelector<HTMLButtonElement>('[aria-label="取消快捷键设置"]')!;
+    target.focus();
+    flushSync(() => target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
+    expect(closed).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+    expect(dialog.querySelector("button#view-shortcuts")?.textContent).toBe("Ctrl+Shift+M");
+    await vi.waitFor(() => expect(document.activeElement).toBe(dialog.querySelector("button#view-shortcuts")));
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+
+it("keeps only core connected actions visible and refreshes devices without a refresh button", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let notify!: () => void;
+  let exchangeAt = 1;
+  let names = ["当前电脑"];
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { notify = callback; return () => {}; });
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({ url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.mocked(desktop.syncActivity).mockImplementation(async () => ({ hasLocalContent: true, initialized: true, pending: false, incoming: false,
+    issues: 0, phase: "idle", error: null, lastExchangeAt: exchangeAt }));
+  const devices = vi.spyOn(desktop, "syncDevices").mockImplementation(async () => ({ currentDeviceId: "local",
+    devices: names.map((name, index) => ({ name, deviceId: index ? `peer-${index}` : "local", createdAt: 0, revokedAt: null })),
+  }));
+  vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
+  const sync = vi.fn(async () => { exchangeAt += 1; names.push("同步后加入的电脑"); return undefined; });
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={sync} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("当前电脑"));
+    const advanced = container.querySelector<HTMLDetailsElement>(".sync-advanced")!;
+    expect(advanced.open).toBe(false);
+    const primary = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => !advanced.contains(button));
+    expect(primary.map(button => button.textContent)).toEqual(["复制连接信息", "立即同步"]);
+    expect(container.textContent).not.toContain("刷新设备");
+    expect(container.textContent).not.toContain("输入连接密钥");
+    expect([...advanced.querySelectorAll("button")].map(button => button.textContent)).toContain("更换并复制密钥");
+    expect(advanced.querySelector("#sync-recovery-key")).not.toBeNull();
+
+    flushSync(() => primary.find(button => button.textContent === "立即同步")!.click());
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(advanced.textContent).toContain("同步后加入的电脑"));
+    names.push("后台同步加入的电脑");
+    exchangeAt += 1;
+    flushSync(notify);
+    await vi.waitFor(() => expect(advanced.textContent).toContain("后台同步加入的电脑"));
+    const afterExchange = devices.mock.calls.length;
+    flushSync(notify);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(devices).toHaveBeenCalledTimes(afterExchange);
+    names.push("切回窗口后加入的电脑");
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(advanced.textContent).toContain("切回窗口后加入的电脑"));
+  } finally { flushSync(() => root.unmount()); container.remove(); }
 });

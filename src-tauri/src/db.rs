@@ -111,6 +111,7 @@ const MIGRATIONS: &[&str] = &[
     EXTERNAL_ARTICLES,
     ENTRY_SOURCE_DETAILS,
     include_str!("../migrations/0026_sync_reconciliation.sql"),
+    include_str!("../migrations/0027_trash_retention.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 

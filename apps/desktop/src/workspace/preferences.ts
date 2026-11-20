@@ -2,6 +2,7 @@ import { entrySortOrders, type TimelineSelection } from "../../../../packages/sh
 import { persist } from "../ui";
 import type { ViewMode } from "./Document";
 import type { Section } from "./Explorer";
+import { isViewShortcut } from "./view-shortcut";
 
 export type DocumentOpenMode = "current" | "new-tab";
 export type DocumentOptions = { view?: ViewMode; convertLinks?: boolean; outline?: boolean };
@@ -127,7 +128,7 @@ const allowed = {
   appearance: (v: unknown) => v === "system" || v === "light" || v === "dark",
   view: (v: unknown) => v === "edit" || v === "preview",
   "document-open-mode": (v: unknown) => v === "current" || v === "new-tab",
-  "view-shortcut": (v: unknown) => v === "none" || v === "shift-m" || v === "alt-v",
+  "view-shortcut": isViewShortcut,
   "folder-loading": (v: unknown) => v === "all" || v === "paged",
   "folder-page-size": (v: unknown) => [20, 40, 60, 100, 200].includes(v as number),
   "directory-sort": (v: unknown) => v === "manual" || entrySortOrders.some(sort => sort === v),

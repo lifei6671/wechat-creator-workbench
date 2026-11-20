@@ -132,6 +132,14 @@ pub struct CategoryChange {
     version: i64,
 }
 
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CategoryDeleteMode {
+    #[default]
+    Promote,
+    Trash,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Library {
@@ -256,20 +264,25 @@ impl Workspace {
         })
     }
 
-    pub fn delete_category(&self, id: &str) -> Result<Vec<CategoryChange>> {
+    pub fn delete_category(
+        &self,
+        id: &str,
+        mode: CategoryDeleteMode,
+    ) -> Result<Vec<CategoryChange>> {
         self.write(|tx| {
             let parent: Option<String> =
                 tx.query_row("SELECT parent_id FROM categories WHERE id=?1", [id], |r| {
                     r.get(0)
                 })?;
-            crate::sync::record_category_delete(tx, id)?;
+            crate::sync::record_category_delete(tx, id, mode)?;
             let moved = tx
                 .prepare(
-                    "UPDATE entries SET category_id=?2, version=version+1, updated_at=?3
-                 WHERE category_id IN (SELECT id FROM categories WHERE id=?1 OR parent_id=?1)
+                    "UPDATE entries SET category_id=?2, version=version+1, updated_at=?3,
+                        deleted_at=CASE WHEN ?4 THEN COALESCE(deleted_at,?3) ELSE deleted_at END
+                 WHERE category_id=?1 OR (?4 AND category_id IN (SELECT id FROM categories WHERE parent_id=?1))
                  RETURNING id, category_id, version",
                 )?
-                .query_map(params![id, parent, now()], |row| {
+                .query_map(params![id, parent, now(), matches!(mode, CategoryDeleteMode::Trash)], |row| {
                     Ok(CategoryChange {
                         id: row.get(0)?,
                         category_id: row.get(1)?,
@@ -277,7 +290,29 @@ impl Workspace {
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            tx.execute("DELETE FROM categories WHERE parent_id=?1", [id])?;
+            if matches!(mode, CategoryDeleteMode::Trash) {
+                tx.execute("DELETE FROM categories WHERE parent_id=?1", [id])?;
+            } else {
+                let children = tx.prepare("SELECT id,name FROM categories WHERE parent_id=?1 ORDER BY sort_order,id")?
+                    .query_map([id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                // Release the deleted folder's name before promoting a same-named child.
+                if !children.is_empty() {
+                    tx.execute("UPDATE categories SET name=?2 WHERE id=?1", params![id, crate::db::id()])?;
+                }
+                let rank: i64 = tx.query_row("SELECT COALESCE(MAX(sort_order)+1,0) FROM categories WHERE parent_id IS ?1", [&parent], |row| row.get(0))?;
+                for (rank, (child, name)) in (rank..).zip(children) {
+                    let mut promoted_name = name.clone();
+                    let mut suffix = 2;
+                    while tx.query_row("SELECT EXISTS(SELECT 1 FROM categories WHERE parent_id IS ?1 AND name=?2 COLLATE NOCASE)",
+                        params![parent, promoted_name], |row| row.get::<_, bool>(0))? {
+                        promoted_name = format!("{name} ({suffix})");
+                        suffix += 1;
+                    }
+                    tx.execute("UPDATE categories SET parent_id=?2,depth=?3,name=?4,sort_order=?5 WHERE id=?1",
+                        params![child, parent, if parent.is_some() { 2 } else { 1 }, promoted_name, rank])?;
+                }
+            }
             tx.execute("DELETE FROM categories WHERE id=?1", [id])?;
             crate::sync::finish_category_delete(tx)?;
             Ok(moved)

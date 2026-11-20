@@ -15,7 +15,7 @@ pub fn app_hide_confirm(
         return Ok(());
     }
     #[cfg(any(windows, target_os = "macos"))]
-    hide_in_tray(&window)?;
+    window.hide().map_err(window_error)?;
     sync.wake();
     Ok(())
 }
@@ -78,7 +78,7 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "workspace-open", "打开工作台", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "workspace-quit", "退出工作台", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
-    let tray = TrayIconBuilder::with_id(TRAY_ID)
+    TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().expect("application icon").clone())
         .tooltip("微信创作工作台")
         .menu(&menu)
@@ -99,23 +99,6 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
             _ => {}
         })
         .build(app)?;
-    tray.set_visible(cfg!(target_os = "macos"))
-}
-
-#[cfg(any(windows, target_os = "macos"))]
-fn hide_in_tray(window: &Window) -> Result<()> {
-    let tray = window
-        .app_handle()
-        .tray_by_id(TRAY_ID)
-        .expect("workspace tray");
-    tray.set_visible(true).map_err(window_error)?;
-    if let Err(error) = window.hide() {
-        #[cfg(windows)]
-        if let Err(error) = tray.set_visible(false) {
-            eprintln!("Could not hide the workspace tray icon: {error}");
-        }
-        return Err(window_error(error));
-    }
     Ok(())
 }
 
@@ -133,10 +116,6 @@ pub fn restore_window(app: &AppHandle) {
         #[cfg(windows)]
         crate::graphics::ensure_usable_window_size(&window)?;
         window.show()?;
-        #[cfg(windows)]
-        if let Some(tray) = app.tray_by_id(TRAY_ID) {
-            tray.set_visible(false)?;
-        }
         window.set_focus()
     };
     if let Err(error) = restore() {

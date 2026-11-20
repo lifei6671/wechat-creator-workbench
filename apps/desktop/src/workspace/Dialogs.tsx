@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Button, Dialog, DropdownMenu, Select, TextArea } from "@radix-ui/themes";
+import { Button, Checkbox, Dialog, DropdownMenu, Select, TextArea, Text as RadixText } from "@radix-ui/themes";
 import { CalendarDays, Folder, Link, Plus, Tags, Text, Trash2, X } from "lucide-react";
 import type { Category, Collection, CustomProperty, Entry, EntryFields, Revision } from "../../../../packages/shared-types";
 import { statuses } from "../../../../packages/shared-types";
@@ -386,10 +386,27 @@ export function RevisionsDialog({ id, onClose, onCopy }: {
   </Dialog.Content></Dialog.Root>;
 }
 
-export function Confirm({ title, text, action, onClose, onConfirm }: {
+export function DeleteCategoryDialog({ target, onClose, onConfirm }: {
+  target: Category;
+  onClose(): void;
+  onConfirm(trashContents: boolean): Promise<void>;
+}) {
+  const [trashContents, setTrashContents] = useState(false);
+  return <Confirm title="删除文件夹" text={trashContents ? "文档将移入回收站，所有子文件夹将删除。"
+    : target.parentId ? "子文件夹和文档将上移到父文件夹。" : "子文件夹和文档将上移到根目录。"}
+    action="删除文件夹" onClose={onClose} onConfirm={() => onConfirm(trashContents)}>
+    {saving => <RadixText as="label" size="2" className="button-strip" mt="3">
+      <Checkbox checked={trashContents} disabled={saving} onCheckedChange={value => setTrashContents(value === true)} />
+      同时删除所有子文件夹和文档
+    </RadixText>}
+  </Confirm>;
+}
+
+export function Confirm({ title, text, action, children, onClose, onConfirm }: {
   title: string;
   text: string;
   action: string;
+  children?: (saving: boolean) => ReactNode;
   onClose(): void;
   onConfirm(): Promise<void>;
 }) {
@@ -399,6 +416,7 @@ export function Confirm({ title, text, action, onClose, onConfirm }: {
     <Dialog.Content maxWidth="410px">
       <Dialog.Title>{title}</Dialog.Title>
       <Dialog.Description>{text}</Dialog.Description>
+      {children?.(saving)}
       {error && <p role="alert" className="inline-error">{error}</p>}
       <div className="dialog-actions">
         <Dialog.Close><Button variant="soft" color="gray" disabled={saving}>取消</Button></Dialog.Close>

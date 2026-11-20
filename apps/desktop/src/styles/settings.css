@@ -88,6 +88,29 @@
   box-shadow: inset 0 0 0 0.5px var(--divider-color);
 }
 .setting-actions { flex-wrap: wrap; justify-content: end; gap: 6px; }
+.setting-control:has(> .shortcut-setting) { flex: 0 1 310px; }
+.shortcut-setting { width: 100%; min-width: 0; }
+.shortcut-binding { display: flex; align-items: center; gap: 12px; min-height: 32px; }
+.shortcut-trigger {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 32px;
+  font-size: var(--workspace-font); border-radius: 6px;
+}
+.shortcut-trigger[data-configured="true"] { padding: 4px 8px; background: var(--gray-3); color: var(--gray-12); }
+.shortcut-trigger[data-configured="true"]:hover { background: var(--gray-4); }
+.shortcut-trigger kbd { font: inherit; }
+.shortcut-empty-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border-radius: 6px; background: var(--gray-3); color: var(--gray-11);
+}
+.shortcut-recorder.rt-TextFieldRoot {
+  flex: 0 1 180px; width: 180px; min-width: 0;
+  box-shadow: inset 0 0 0 0.5px var(--divider-color);
+}
+.shortcut-cancel { flex: none; white-space: nowrap; font-size: var(--small-font); color: var(--gray-11); }
+.shortcut-cancel:hover { color: var(--gray-12); }
+.shortcut-clear { flex: none; }
+.shortcut-binding:not([data-recording]) { justify-content: flex-end; gap: 8px; }
+.shortcut-binding[data-recording="true"] .shortcut-clear { margin-left: auto; }
 .settings-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-block: 12px; }
 .settings-state { color: var(--text-muted); }
 .settings-state[data-running="true"] { color: var(--green-11); }
