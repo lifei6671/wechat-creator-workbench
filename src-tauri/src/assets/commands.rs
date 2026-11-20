@@ -1,5 +1,5 @@
 use super::{
-    AssetLibrary, Assets,
+    AssetLibrary, AssetRow, Assets,
     s3::{Secret, Target},
     upload_format::UploadOptions,
 };
@@ -51,6 +51,15 @@ pub async fn asset_library(
     page: Option<u32>,
 ) -> Result<AssetLibrary> {
     assets.library(&db, page.unwrap_or(0))
+}
+
+#[tauri::command]
+pub async fn asset_detail(
+    db: State<'_, Workspace>,
+    assets: State<'_, Assets>,
+    id: String,
+) -> Result<Option<AssetRow>> {
+    assets.detail(&db, &id)
 }
 
 #[tauri::command]

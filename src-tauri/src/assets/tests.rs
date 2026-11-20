@@ -965,6 +965,107 @@ fn asset_library_pages_are_disjoint_and_out_of_range_clamps_to_last_page() {
     );
 }
 
+#[test]
+fn asset_detail_refreshes_off_page_uploads_for_the_active_profile() {
+    let (_folder, db, assets) = setup();
+    image_profile(&db);
+    let asset = assets
+        .import_to_library(&db, "上传图片.png", &png())
+        .unwrap();
+    assets.upload(&db, &asset).unwrap();
+    db.write(|tx| {
+        let mut insert = tx
+            .prepare("INSERT INTO assets (id,kind,created_at,name) VALUES (?1,'original',?2,?1)")?;
+        for index in 0..48 {
+            insert.execute(params![format!("other-{index}"), index])?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        assets
+            .library(&db, 1)
+            .unwrap()
+            .items
+            .iter()
+            .all(|row| row.id != asset)
+    );
+    for status in ["queued", "running", "failed", "retrying"] {
+        let error = (status == "failed").then_some("上传连接失败");
+        db.write(|tx| {
+            tx.execute(
+                "UPDATE jobs SET status=?1,error=?2 WHERE kind='upload' AND asset_id=?3",
+                params![status, error, asset],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let detail = assets.detail(&db, &asset).unwrap().unwrap();
+        assert_eq!(detail.id, asset);
+        assert_eq!(detail.upload_status.as_deref(), Some(status));
+        assert_eq!(detail.upload_error.as_deref(), error);
+        assert!(detail.public_url.is_none());
+        let listed = assets.library(&db, 0).unwrap();
+        let listed = listed.items.iter().find(|row| row.id == asset).unwrap();
+        assert_eq!(
+            serde_json::to_value(&detail).unwrap(),
+            serde_json::to_value(listed).unwrap()
+        );
+    }
+    db.write(|tx| {
+        tx.execute("UPDATE jobs SET status='completed',error=NULL WHERE asset_id=?1", [&asset])?;
+        tx.execute(
+            "INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at)
+             SELECT sha256,'test-images','done.png','https://cdn.example.test/done.png',1 FROM assets WHERE id=?1",
+            [&asset],
+        )?;
+        tx.execute(
+            "INSERT INTO jobs (id,kind,status,sha256,error,created_at,updated_at)
+             SELECT 'cleanup','cleanup','failed',sha256,'远程清理失败',1,1 FROM assets WHERE id=?1",
+            [&asset],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let detail = assets.detail(&db, &asset).unwrap().unwrap();
+    assert!(detail.upload_status.is_none());
+    assert!(detail.upload_error.is_none());
+    assert_eq!(
+        detail.public_url.as_deref(),
+        Some("https://cdn.example.test/done.png")
+    );
+    assert_eq!(detail.cleanup_error.as_deref(), Some("远程清理失败"));
+    db.write(|tx| {
+        tx.execute("INSERT INTO storage_profiles VALUES ('other-images','images','https://other-s3.example.test','auto','images','','https://other-cdn.example.test','other-images')", [])?;
+        tx.execute("UPDATE app_settings SET value='other-images' WHERE key='image_storage_profile'", [])?;
+        Ok(())
+    })
+    .unwrap();
+    assets.upload(&db, &asset).unwrap();
+    let other = assets.detail(&db, &asset).unwrap().unwrap();
+    assert!(other.public_url.is_none());
+    assert_eq!(other.upload_status.as_deref(), Some("queued"));
+    db.write(|tx| {
+        tx.execute(
+            "DELETE FROM app_settings WHERE key='image_storage_profile'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let local = assets.detail(&db, &asset).unwrap().unwrap();
+    assert!(local.public_url.is_none());
+    assert!(local.upload_status.is_none());
+    assert_eq!(local.cleanup_error, detail.cleanup_error);
+    assert!(assets.detail(&db, "missing").unwrap().is_none());
+    db.write(|tx| {
+        tx.execute("DELETE FROM assets WHERE id=?1", [&asset])?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(assets.detail(&db, &asset).unwrap().is_none());
+}
+
 #[tokio::test]
 async fn library_thumbnail_is_small_and_keeps_original_bytes() {
     let (directory, db, assets) = setup();
