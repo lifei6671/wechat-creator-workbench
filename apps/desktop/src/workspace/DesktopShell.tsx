@@ -9,6 +9,7 @@ import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageSt
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
+import { editHistory } from "../editor/history";
 import { parseWebClipping } from "../editor/web-clipping";
 import { commandKey, untitled } from "../labels";
 import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
@@ -1751,6 +1752,7 @@ export function DesktopShell() {
     }
     const detachClipboard = attachClipboard((action, target, plainText) => clipboardEvent(action, target, plainText), showError);
     const listener = desktop.onExit(() => { void closingEvent(); });
+    const historyRequested = desktop.onHistory(editHistory);
     const hideRequested = desktop.onHideRequested(() => { void hideEvent(); });
     const workspaceChanged = desktop.onWorkspaceChanged(() => setRefreshCount(count => count + 1));
     const trashEmptied = desktop.onTrashEmptied(ids => trashEmptiedEvent(ids));
@@ -1783,7 +1785,7 @@ export function DesktopShell() {
     void desktop.restoreNotice().then(value => {
       if (value) setNotice({ type: value.failed ? "error" : "info", text: value.message });
     }, showError);
-    for (const subscription of [listener, hideRequested, workspaceChanged, trashEmptied, assetsChanged, backupChanged]) void subscription.catch(showError);
+    for (const subscription of [listener, historyRequested, hideRequested, workspaceChanged, trashEmptied, assetsChanged, backupChanged]) void subscription.catch(showError);
     window.addEventListener("keydown", shortcut);
     window.addEventListener("blur", blur);
     window.addEventListener("dragover", preventFileNavigation);
@@ -1798,6 +1800,7 @@ export function DesktopShell() {
       window.removeEventListener("dragover", preventFileNavigation);
       window.removeEventListener("drop", preventFileNavigation);
       void listener.then(unlisten => unlisten(), () => {});
+      void historyRequested.then(unlisten => unlisten(), () => {});
       void hideRequested.then(unlisten => unlisten(), () => {});
       void workspaceChanged.then(unlisten => unlisten(), () => {});
       void trashEmptied.then(unlisten => unlisten(), () => {});

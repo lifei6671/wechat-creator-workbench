@@ -59,6 +59,41 @@ fn main() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(window_lifecycle::macos_instance());
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(|app| {
+            use tauri::menu::{Menu, MenuItem, MenuItemKind};
+
+            let menu = Menu::default(app)?;
+            for item in menu.items()? {
+                if let MenuItemKind::Submenu(edit) = item
+                    && edit.text()? == "Edit"
+                {
+                    // Native undo uses WebKit's history, which misses editor transactions such as paste.
+                    for (index, id, label, shortcut) in [
+                        (0, "workspace-undo", "撤销", "CmdOrCtrl+Z"),
+                        (1, "workspace-redo", "重做", "CmdOrCtrl+Shift+Z"),
+                    ] {
+                        edit.remove_at(index)?;
+                        edit.insert(
+                            &MenuItem::with_id(app, id, label, true, Some(shortcut))?,
+                            index,
+                        )?;
+                    }
+                }
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            let action = match event.id.as_ref() {
+                "workspace-undo" => "undo",
+                "workspace-redo" => "redo",
+                _ => return,
+            };
+            if let Err(error) = app.emit_to("main", "workspace-history-requested", action) {
+                eprintln!("Could not request editor history action: {error}");
+            }
+        });
     let window_state_flags = StateFlags::all().difference(StateFlags::DECORATIONS);
     let window_state =
         tauri_plugin_window_state::Builder::default().with_state_flags(window_state_flags);

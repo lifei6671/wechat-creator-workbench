@@ -11,6 +11,7 @@ import type { Entry } from "../../../../packages/shared-types";
 import { parseWechat } from "../../../../packages/wechat-renderer";
 import { desktop, type AiHistoryItem, type AiStreamEvent, type AiThread } from "../desktop";
 import { attachClipboard } from "./clipboard";
+import { editHistory } from "./history";
 import { SaveQueue } from "./save-queue";
 import { captureAiIntent, matchesAiTarget, requestedProperties, type ChatSelection } from "../ai/context";
 import { messageTimeLabel } from "../labels";
@@ -231,6 +232,61 @@ it("keeps unhandled Tab in editable body text while leaving reverse navigation a
     expect(pressTab(true)).toBe(true);
     render(true);
     expect(pressTab()).toBe(true);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each(["", "const value = 1;"])("deletes the preceding code block at a paragraph start without absorbing its text (%s)", async code => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const original = "```javascript\n" + (code ? code + "\n" : "") + "```\n\n代码之后的正文";
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="delete-code-boundary" value={original} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const before = handle!.captureMarkdown().markdown;
+    await select(container, 0, 0, handle!);
+    const body = container.querySelector<HTMLElement>(".ProseMirror")!;
+    expect(body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Backspace", keyCode: 8, bubbles: true, cancelable: true,
+    }))).toBe(false);
+    expect(container.querySelector(".rich-code-block")).toBeNull();
+    expect(handle!.captureMarkdown().markdown).toBe("代码之后的正文");
+    handle!.command("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(before);
+    handle!.command("redo");
+    handle!.insert("开头");
+    expect(handle!.captureMarkdown().markdown).toBe("开头代码之后的正文");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each(["原有正文", "```javascript\nconst value = 1;\n```"])("routes macOS menu undo and redo through editor history (%s)", async value => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const render = (readOnly = false) => flushSync(() => root.render(<RichEditor entryId="native-history" value={value} readOnly={readOnly}
+    ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+  try {
+    render();
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const before = handle!.captureMarkdown().markdown;
+    handle!.focus();
+    handle!.insert("新增");
+    const after = handle!.captureMarkdown().markdown;
+    expect(after).not.toBe(before);
+    editHistory("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(before);
+    editHistory("redo");
+    expect(handle!.captureMarkdown().markdown).toBe(after);
+    render(true);
+    editHistory("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(after);
   } finally {
     flushSync(() => root.unmount());
     container.remove();
