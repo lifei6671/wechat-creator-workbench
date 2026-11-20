@@ -36,6 +36,10 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
         let local = local_snapshot(conn, key)?;
         let deleted = entity.deleted_at.is_some();
         if let Some(local) = local {
+            if key.entity_type == Kind::Entry && local["purgedAt"].is_i64() && !entity.payload["purgedAt"].is_i64() {
+                remember(conn, key, entity.remote_revision, deleted)?;
+                continue;
+            }
             if key.entity_type == Kind::Asset
                 && local["sha256"].is_string()
                 && entity.payload["sha256"].is_null()
@@ -50,6 +54,7 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
                 continue;
             }
             if (key.entity_type == Kind::Entry || key.entity_type.is_canvas())
+                && !entity.payload["purgedAt"].is_i64()
                 && !same_content(local, &entity.payload)
             {
                 issue(

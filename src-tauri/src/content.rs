@@ -2,6 +2,7 @@ pub mod collections;
 mod search;
 pub(crate) mod sync;
 pub mod taxonomy;
+pub mod trash;
 #[cfg(test)]
 mod tests;
 
@@ -15,7 +16,7 @@ use std::{collections::HashSet, num::NonZeroU32};
 use url::Url;
 
 const PAGE_SIZE: i64 = 60;
-const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id";
+const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id, e.purged_at";
 const DIRECTORY_PIN: &str = "e.pinned_order";
 const ENTRY_TAG_NAMES: &str = "SELECT t.name FROM tags t JOIN entry_tags r ON r.tag_id=t.id WHERE r.entry_id=?1 ORDER BY t.normalized";
 
@@ -110,6 +111,8 @@ pub struct EntryRow {
     created_at: i64,
     updated_at: i64,
     deleted_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purged_at: Option<i64>,
     category_id: Option<String>,
     pinned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -335,6 +338,7 @@ impl Workspace {
         markdown: String,
         summary: String,
         category_id: Option<String>,
+        tags: Vec<String>,
     ) -> Result<(String, bool, bool)> {
         self.write(|tx| {
             if let Some((entry_id, deleted)) = web_reference(tx, &source.url)? {
@@ -344,6 +348,7 @@ impl Workspace {
             fields.title = title;
             fields.content_md = markdown;
             fields.summary = summary;
+            fields.tags = tags;
             fields.category_id = category_id;
             fields.source = Some(source);
             let entry = insert_entry(tx, Kind::Article, fields, None)?;
@@ -365,7 +370,7 @@ impl Workspace {
                 (DIRECTORY_PIN, "")
             };
             let mut sql = format!("SELECT {HEAD}, {pin_order} IS NOT NULL AS pinned{preview_columns}{search_columns}
-                FROM entries e{pin_join} WHERE e.deleted_at IS {}NULL",
+                FROM entries e{pin_join} WHERE e.purged_at IS NULL AND e.deleted_at IS {}NULL",
                 if filter.deleted { "NOT " } else { "" });
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
@@ -655,6 +660,9 @@ impl Workspace {
 
     pub fn set_deleted(&self, id: &str, expected_version: i64, deleted: bool) -> Result<Entry> {
         self.write(|tx| {
+            if tx.query_row("SELECT purged_at IS NOT NULL FROM entries WHERE id=?1", [id], |row| row.get::<_,bool>(0))? {
+                return Err(AppError::invalid("内容已永久删除"));
+            }
             let version: i64 =
                 tx.query_row("SELECT version FROM entries WHERE id=?1", [id], |row| {
                     row.get(0)
@@ -736,6 +744,7 @@ fn entry_row(row: &Row<'_>) -> rusqlite::Result<EntryRow> {
         created_at: row.get("created_at")?,
         updated_at: row.get(4)?,
         deleted_at: row.get(5)?,
+        purged_at: row.get("purged_at")?,
         category_id: row.get("category_id")?,
         pinned: row.get("pinned")?,
         preview: None,

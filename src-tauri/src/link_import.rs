@@ -8,7 +8,7 @@ use crate::{
 use encoding_rs::{Encoding, UTF_8};
 use reqwest::header::CONTENT_TYPE;
 use scraper::{Html, Selector};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use url::Url;
 
@@ -28,6 +28,59 @@ pub struct ImportedLink {
 pub enum LinkImportResult {
     Wechat { job: ImportJob },
     Article { article: ImportedLink },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClippedArticle {
+    title: String,
+    content_md: String,
+    source: Source,
+    summary: String,
+    tags: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn import_clipping(
+    app: AppHandle,
+    db: State<'_, Workspace>,
+    assets: State<'_, Assets>,
+    clipping: ClippedArticle,
+    category_id: Option<String>,
+    download_images: bool,
+) -> Result<ImportedLink> {
+    let mut source = clipping.source;
+    let mut address = http_url(&source.url)?;
+    address.set_fragment(None);
+    source.url = address.into();
+    if let Some((entry_id, deleted)) = db.web_reference(&source.url)? {
+        return Ok(ImportedLink {
+            entry_id,
+            existing: true,
+            deleted,
+            unavailable_images: 0,
+        });
+    }
+    let (markdown, unavailable_images) = assets
+        .import_link_images(&db, clipping.content_md, download_images)
+        .await?;
+    let (entry_id, existing, deleted) = db.import_web_article(
+        source,
+        clipping.title,
+        markdown,
+        clipping.summary,
+        category_id,
+        clipping.tags,
+    )?;
+    if download_images && !existing {
+        let _ = app.emit("assets-changed", ());
+    }
+    Ok(ImportedLink {
+        entry_id,
+        existing,
+        deleted,
+        unavailable_images: if existing { 0 } else { unavailable_images },
+    })
 }
 
 #[tauri::command]
@@ -145,8 +198,14 @@ async fn import_page(
     let (markdown, unavailable_images) = assets
         .import_link_images(db, page.markdown, download_images)
         .await?;
-    let (entry_id, existing, deleted) =
-        db.import_web_article(page.source, page.title, markdown, page.summary, category_id)?;
+    let (entry_id, existing, deleted) = db.import_web_article(
+        page.source,
+        page.title,
+        markdown,
+        page.summary,
+        category_id,
+        vec![],
+    )?;
     Ok(ImportedLink {
         entry_id,
         existing,

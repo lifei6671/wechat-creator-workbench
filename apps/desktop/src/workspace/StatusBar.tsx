@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Spinner } from "@radix-ui/themes";
-import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Trash2 } from "lucide-react";
+import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Trash } from "lucide-react";
 import { desktop, type SyncActivity, type SyncBinding, type UploadProgress } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import { commandKey } from "../labels";
@@ -46,7 +46,7 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
         </button>
       </Tooltip>
       <Tool label="回收站" className="chrome-icon" aria-current={trashActive ? "page" : undefined} onClick={onTrash}>
-        <Trash2 size={15} strokeWidth={1.65} />
+        <Trash size={16} strokeWidth={1.8} />
       </Tool>
       <Tooltip content="MCP 设置"><button type="button" className="plain-button status-button status-mcp"
         aria-label={mcpLabel} aria-haspopup="dialog" data-running={mcpRunning} onClick={event => onMcp(event.currentTarget)}>

@@ -9,13 +9,14 @@ import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageSt
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard } from "../editor/clipboard";
+import { parseWebClipping } from "../editor/web-clipping";
 import { commandKey, untitled } from "../labels";
 import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
 import { readCollectionTabs, readDocumentTabs, readWorkspaceLayout, readWorkspaceNavigation, saveCollectionTabs, saveDocumentTabs, saveWorkspaceLayout,
   saveWorkspaceNavigation, workspacePreferences, type CollectionTabsPreference, type DocumentOpenMode, type DocumentOptions, type TimelineDirectory } from "./preferences";
-import { Confirm, PropertiesDialog, RevisionsDialog } from "./Dialogs";
+import { Confirm, DeleteCategoryDialog, PropertiesDialog, RevisionsDialog } from "./Dialogs";
 import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
@@ -24,6 +25,7 @@ import { CreateMenu, Explorer, type CategoryAction, type EntryRowAction, type Ex
 import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type SettingsPage, type ViewShortcut } from "./Settings";
 import { SyncSettings } from "./SyncSettings";
 import { startSyncApplication } from "./sync-scheduler";
+import { matchesViewShortcut } from "./view-shortcut";
 import { flushSync } from "react-dom";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
@@ -54,7 +56,7 @@ function hasWorkspaceSize(group: HTMLDivElement | null): group is HTMLDivElement
 }
 
 type Modal =
-  | { type: "palette" | "reload" }
+  | { type: "palette" | "reload" | "emptyTrash" }
   | { type: "properties" | "revisions"; id: string }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
@@ -317,7 +319,8 @@ export function DesktopShell() {
         return queue ? [desktop.entry(id).then(entry => ({ queue, entry }))] : [];
       }));
       for (const { queue, entry } of reopened) {
-        if (!queue.isDirty() && queues.current.get(entry.id) === queue) install(entry, queue);
+        if (entry.purgedAt != null) removePurgedEntries([entry.id]);
+        else if (!queue.isDirty() && queues.current.get(entry.id) === queue) install(entry, queue);
       }
       if (changedCollections.length) {
         collectionListRevision.current += 1;
@@ -378,16 +381,17 @@ export function DesktopShell() {
   }
 
   const automaticSyncWaitingReason = useEffectEvent(() => {
+    if (!tabsRestored) return "等待工作区加载完成";
     if (exit.current) return "等待工作区保存退出";
     if (syncing.current || globalLock || syncSettingsBusy.current) return "等待当前操作完成";
-    if (document.visibilityState !== "visible" || !document.hasFocus()) return "等待返回工作台";
     const viewingSyncSettings = modal?.type === "settings" && settingsPage.current === "sync";
     if (modal && !viewingSyncSettings) return "等待关闭当前弹窗";
     if (document.querySelector('[role="alertdialog"]')) return "等待关闭确认对话框";
     const unsaved = [...queues.current.values()].filter(queue => queue.isDirty() || queue.isSaving());
     if (unsaved.length) return unsaved.some(queue => queue.saveError()) ? "等待重试文稿保存" : "等待文稿保存完成";
     if (!(collectionCanvas.current?.canApplySync() ?? true)) return "等待画布操作结束";
-    if (!viewingSyncSettings && document.activeElement?.closest("[contenteditable=true],textarea,input,select")) return "等待结束编辑";
+    if (!viewingSyncSettings && document.visibilityState === "visible" && document.hasFocus()
+      && document.activeElement?.closest("[contenteditable=true],textarea,input,select")) return "等待结束编辑";
     return undefined;
   });
   const applyAutomaticSync = useEffectEvent(async () => {
@@ -458,7 +462,7 @@ export function DesktopShell() {
       document.removeEventListener("focusout", scheduler.wake);
     };
   }, [workspaceId]);
-  useEffect(() => { wakeAutomaticSync.current?.(); }, [modal]);
+  useEffect(() => { wakeAutomaticSync.current?.(); }, [modal, tabsRestored]);
   const showError = useCallback((error: unknown) => setNotice({ type: "error", text: errorMessage(error) }), []);
   useEffect(() => installInputContextMenu(showError), [showError]);
   function updateDocumentOptions(id: string, patch: DocumentOptions) {
@@ -644,8 +648,8 @@ export function DesktopShell() {
       if (exit.current) return "";
       const result = await trackAssetTask(desktop.readClipboard(!plainText, !plainText));
       if (!result) return "";
-      if (result.kind === "text") return result.text;
-      if (result.kind === "html") return { html: result.html, text: result.text };
+      if (result.kind === "text") return !plainText && pasteWebClipping(result.text) ? "" : result.text;
+      if (result.kind === "html") return !plainText && result.text && pasteWebClipping(result.text) ? "" : { html: result.html, text: result.text };
       if (result.errors.length) showError(result.errors.join("；"));
       const images = result.images.map(image => imageMarkdown(image.id, image.name));
       return images.length ? "\n" + images.join("\n") + "\n" : "";
@@ -693,6 +697,7 @@ export function DesktopShell() {
     if (!queues.current.has(id)) {
       const entry = await desktop.entry(id);
       if (superseded()) return;
+      if (entry.purgedAt != null) throw new Error("内容已永久删除");
       while (replacing && queues.current.get(replacing.entry.id) === replacing && !queues.current.has(id)) {
         const currentId = replacing.entry.id;
         if (locking.current.has(currentId)) throw new Error("当前标签页正在处理，请稍后再试");
@@ -1182,6 +1187,42 @@ export function DesktopShell() {
     });
   }
 
+  function pasteWebClipping(text: string) {
+    const parsed = parseWebClipping(text);
+    if (!parsed) return false;
+    const { unavailableAttachments, ...clipping } = parsed;
+    const parent = currentFolder;
+    run(async () => {
+      const result = await trackAssetTask(desktop.importClipping(clipping, parent, downloadPastedImages));
+      if (exit.current) return;
+      if (result.deleted) throw new Error("该链接已收录，请先从回收站恢复");
+      refresh();
+      await open(result.entryId, "new-tab");
+      const details: string[] = [];
+      if (!result.existing && result.unavailableImages) details.push(`${result.unavailableImages} 张图片未能下载，已保留原链接`);
+      if (!result.existing && unavailableAttachments.length) details.push(`${unavailableAttachments.length} 个本地附件缺少文件，已保留引用`);
+      setNotice({ type: "info", text: (result.existing ? "原文已收录，已打开已有文章" : "已导入剪藏文章")
+        + (details.length ? `，${details.join("；")}` : "") });
+    });
+    return true;
+  }
+
+  function removePurgedEntries(ids: string[]) {
+    for (const id of ids) if (queues.current.has(id)) remove(id);
+    reloadCanvases(collectionTabs?.ids ?? []);
+    refresh();
+    setAssetsRevision(value => value + 1);
+  }
+
+  async function clearTrash() {
+    flushSync(() => setGlobalLock(true));
+    try {
+      const ids = await desktop.emptyTrash();
+      removePurgedEntries(ids);
+      setNotice({ type: "info", text: ids.length ? `已清空回收站，共 ${ids.length} 项` : "回收站为空" });
+    } finally { setGlobalLock(false); }
+  }
+
   async function saveConflictCopy(id: string) {
     const queue = queues.current.get(id);
     if (queue && isConflict(queue.snapshot().error)) {
@@ -1326,7 +1367,12 @@ export function DesktopShell() {
 
   function categoryAction(target: Category, action: CategoryAction) {
     if (action === "up" || action === "down") run(async () => { await desktop.moveCategory(target.id, action === "up"); refresh(); });
-    else showModal({ type: "deleteCategory", target }, document.getElementById(`folder-row-${target.id}`));
+    else run(async () => {
+      const hasChildren = library?.categories.some(category => category.parentId === target.id);
+      const contents = await desktop.entries({ categoryId: target.id, exactCategory: true, deleted: false, offset: 0, limit: 1 });
+      if (!hasChildren && !contents.items.length) await deleteCategory(target, false);
+      else showModal({ type: "deleteCategory", target }, document.getElementById(`folder-row-${target.id}`));
+    });
   }
 
   async function saveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon) {
@@ -1350,24 +1396,25 @@ export function DesktopShell() {
     })));
   }
 
-  async function deleteCategory(target: Category) {
-    const removed = new Set([target.id, ...(library?.categories ?? []).filter(cat => cat.parentId === target.id).map(cat => cat.id)]);
-    const affected = [...queues.current.values()].filter(queue => {
-      const category = queue.snapshot().fields.categoryId;
-      return category && removed.has(category);
-    });
+  async function deleteCategory(target: Category, trashContents: boolean) {
+    const removed = new Set([target.id, ...(trashContents ? library?.categories ?? [] : []).filter(cat => cat.parentId === target.id).map(cat => cat.id)]);
     commitBreadcrumb();
-    setGlobalLock(true);
+    flushSync(() => setGlobalLock(true));
     try {
-      const results = await Promise.all(affected.map(queue => queue.flush()));
-      if (!results.every(Boolean)) throw new Error("关联内容未能保存，请先处理保存错误");
-      const moved = await desktop.deleteCategory(target.id);
+      const failed = (await waitForCollectionWrites()).find(write => write.status === "rejected");
+      if (failed) throw failed.reason;
+      await collectionCanvas.current?.flush();
+      const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
+      if (saved.some(result => !result)) throw new Error("文稿未能保存，请先处理保存错误");
+      const moved = await desktop.deleteCategory(target.id, trashContents ? "trash" : "promote");
       for (const change of moved) {
-        queues.current.get(change.id)?.categoryMoved(change.categoryId, change.version);
+        if (trashContents && queues.current.has(change.id)) remove(change.id);
+        else queues.current.get(change.id)?.categoryMoved(change.categoryId, change.version);
       }
       if (categoryId && removed.has(categoryId)) setCategoryId(undefined);
       setTimelineSelection(selection => selection.kind === "folder" && removed.has(selection.id) ? { kind: "root" } : selection);
       setExpandedFolders(current => current.filter(id => !removed.has(id)));
+      if (trashContents) reloadCanvases(collectionTabs?.ids ?? []);
       refresh();
     } finally { setGlobalLock(false); }
   }
@@ -1595,19 +1642,20 @@ export function DesktopShell() {
 
   const shortcutEvent = useEffectEvent((event: KeyboardEvent) => {
     if (event.isComposing || event.keyCode === 229 || exit.current || modal || event.defaultPrevented) return;
+    if (selected && !collectionMode && matchesViewShortcut(shortcut, event)) {
+      event.preventDefault();
+      if (!event.repeat) cycleView();
+      return;
+    }
     const mod = commandKey === "⌘" ? event.metaKey : event.ctrlKey;
     if (!mod) return;
     const key = event.key.toLowerCase();
-    if (event.altKey) {
-      if (shortcut !== "alt-v" || event.code !== "KeyV" || event.shiftKey || !selected || collectionMode) return;
-      event.preventDefault(); cycleView(); return;
-    }
+    if (event.altKey) return;
     const command = key === "k" && !event.shiftKey ? actions.onPalette
       : key === "n" && !event.shiftKey ? () => create()
         : key === "s" && !event.shiftKey && !collectionMode ? actions.onSave
           : key === "f" && event.shiftKey ? openSearch
-            : key === "f" && selected && !collectionMode ? actions.onSearch
-              : key === "m" && event.shiftKey && shortcut === "shift-m" && selected && !collectionMode ? cycleView : undefined;
+            : key === "f" && selected && !collectionMode ? actions.onSearch : undefined;
     if (command) { event.preventDefault(); if (!event.repeat) command(); }
   });
 
@@ -1677,6 +1725,7 @@ export function DesktopShell() {
       setGlobalLock(false);
     }
   });
+  const trashEmptiedEvent = useEffectEvent(removePurgedEntries);
   const clipboardEvent = useEffectEvent((action: ClipboardAction, target: EventTarget | null, plainText?: boolean) => {
     if (exit.current) return false;
     if (collectionMode) {
@@ -1684,8 +1733,14 @@ export function DesktopShell() {
       return (canvas?.clipboard(action, target, plainText) ?? false) || (action === "paste" && (canvas?.paste(target) ?? false));
     }
     const activeId = active.current;
-    if (!activeId) return false;
-    return handles.current.get(activeId)?.clipboard(action, editorClipboard, target, plainText) ?? false;
+    if (activeId && handles.current.get(activeId)?.clipboard(action, editorClipboard, target, plainText)) return true;
+    if (action !== "paste" || plainText || modal || globalLock || (target instanceof Element
+      && target.closest("input, textarea, [contenteditable=true], [role=dialog]"))) return false;
+    run(async () => {
+      const content = await trackAssetTask(desktop.readClipboard(false));
+      if (!exit.current && content?.kind === "text") pasteWebClipping(content.text);
+    });
+    return true;
   });
 
   useEffect(() => {
@@ -1698,6 +1753,7 @@ export function DesktopShell() {
     const listener = desktop.onExit(() => { void closingEvent(); });
     const hideRequested = desktop.onHideRequested(() => { void hideEvent(); });
     const workspaceChanged = desktop.onWorkspaceChanged(() => setRefreshCount(count => count + 1));
+    const trashEmptied = desktop.onTrashEmptied(ids => trashEmptiedEvent(ids));
     let mcpRequest = 0;
     function refreshMcp() {
       const request = ++mcpRequest;
@@ -1727,7 +1783,7 @@ export function DesktopShell() {
     void desktop.restoreNotice().then(value => {
       if (value) setNotice({ type: value.failed ? "error" : "info", text: value.message });
     }, showError);
-    for (const subscription of [listener, hideRequested, workspaceChanged, assetsChanged, backupChanged]) void subscription.catch(showError);
+    for (const subscription of [listener, hideRequested, workspaceChanged, trashEmptied, assetsChanged, backupChanged]) void subscription.catch(showError);
     window.addEventListener("keydown", shortcut);
     window.addEventListener("blur", blur);
     window.addEventListener("dragover", preventFileNavigation);
@@ -1744,6 +1800,7 @@ export function DesktopShell() {
       void listener.then(unlisten => unlisten(), () => {});
       void hideRequested.then(unlisten => unlisten(), () => {});
       void workspaceChanged.then(unlisten => unlisten(), () => {});
+      void trashEmptied.then(unlisten => unlisten(), () => {});
       void assetsChanged.then(unlisten => unlisten(), () => {});
       void backupChanged.then(unlisten => unlisten(), () => {});
       void mcpChanged.then(unlisten => unlisten(), () => {});
@@ -1977,6 +2034,7 @@ export function DesktopShell() {
         }
       }} />
       : <Explorer {...rowActions} ref={explorerTree} section={section} library={library} page={page}
+        onEmptyTrash={() => showModal({ type: "emptyTrash" }, document.getElementById("empty-trash"))}
         activeFolder={queue?.entry.deletedAt === null ? queue.snapshot().fields.categoryId : undefined}
         timelineSelection={timelineSelection} onTimelineSelect={setTimelineSelection} includeTimelineChildren={includeTimelineChildren}
         directoryTrailingAction={showTimelineDirectory ? timelineDirectoryToggle : undefined}
@@ -2289,6 +2347,8 @@ export function DesktopShell() {
       }} />}
       {modal?.type === "deleteCollection" && <Confirm title="删除专题" text={`将删除「${modal.collection.title}」中的卡片和连线。引用的文章会保留。`}
         action="删除专题" onClose={closeModal} onConfirm={() => deleteCollection(modal.collection)} />}
+      {modal?.type === "emptyTrash" && <Confirm title="清空回收站" text="将永久删除回收站中的全部内容及其历史版本，无法恢复。"
+        action="清空回收站" onClose={closeModal} onConfirm={clearTrash} />}
       {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} onClose={closeModal} />}
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
@@ -2298,8 +2358,8 @@ export function DesktopShell() {
         onSave={(entry, change) => trackAssetTask(saveEntryFields(entry, change))} onClose={closeModal} onOpen={id => run(() => open(id))}
         onOpenCollection={openCollection} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
-      {modal?.type === "deleteCategory" && <Confirm title="删除文件夹" text={modal.target.parentId ? "其中的内容将移到上一级文件夹。" : "子文件夹也将删除，其中的内容将移到根目录。"}
-        action="删除文件夹" onClose={closeModal} onConfirm={() => deleteCategory(modal.target)} />}
+      {modal?.type === "deleteCategory" && <DeleteCategoryDialog target={modal.target}
+        onClose={closeModal} onConfirm={trashContents => deleteCategory(modal.target, trashContents)} />}
       {modal?.type === "reload" && queue && <Confirm title="重新加载内容" text="重新加载将丢弃这篇内容尚未保存的修改。"
         action="重新加载" onClose={closeModal} onConfirm={async () => {
           const entry = await desktop.entry(queue.entry.id);

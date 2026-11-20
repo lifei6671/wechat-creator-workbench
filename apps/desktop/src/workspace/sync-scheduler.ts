@@ -8,19 +8,31 @@ export function startSyncApplication({ read, apply, report }: {
 }) {
   let stopped = false;
   let running = false;
+  let reading = false;
+  let reread = false;
 
   async function check() {
     if (stopped) return;
-    if (running) return;
+    if (running) {
+      if (reading) reread = true;
+      return;
+    }
     running = true;
     try {
-      const activity = await read();
+      let activity: SyncActivity | null;
+      do {
+        reread = false;
+        reading = true;
+        activity = await read();
+      } while (reread && !stopped);
+      reading = false;
       if (stopped) return;
       report(activity?.error ?? undefined);
       if (activity?.incoming) await apply();
     } catch (error) {
       if (!stopped) report(error);
     } finally {
+      reading = false;
       running = false;
     }
   }

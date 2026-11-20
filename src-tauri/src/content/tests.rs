@@ -35,15 +35,24 @@ fn external_imports_are_listed_once_and_keep_typed_properties_in_sync() {
         url: url.into(),
         author: "作者".into(),
         account_name: "示例".into(),
-        imported_at: None,
-        original_published_at: None,
+        imported_at: Some(1_795_132_800_000),
+        original_published_at: Some(1_794_960_000_000),
     };
     let folder = db.save_category(None, None, "外部资料", None).unwrap();
     let mut local = article("手写文章", "");
     local.source = Some(source("https://example.com/local"));
     db.create_entry(Kind::Article, Some(local), None).unwrap();
-    let import = || db.import_web_article(source("https://example.com/article"), "导入文章".into(), "# Markdown".into(),
-        "简介".into(), Some(folder.id.clone())).unwrap();
+    let import = || {
+        db.import_web_article(
+            source("https://example.com/article"),
+            "导入文章".into(),
+            "# Markdown".into(),
+            "简介".into(),
+            Some(folder.id.clone()),
+            vec!["clippings".into()],
+        )
+        .unwrap()
+    };
     let (id, existing, deleted) = import();
     assert!(!existing && !deleted);
     assert_eq!(import(), (id.clone(), true, false));
@@ -52,6 +61,17 @@ fn external_imports_are_listed_once_and_keep_typed_properties_in_sync() {
     assert_eq!(listed.iter().map(|entry| &entry.id).collect::<Vec<_>>(), [&id]);
 
     let entry = db.get_entry(&id).unwrap();
+    assert_eq!(entry.fields.tags, ["clippings"]);
+    assert_eq!(db.library().unwrap().tags[0].name, "clippings");
+    assert_eq!(entry.fields.title, "导入文章");
+    assert_eq!(entry.fields.content_md, "# Markdown");
+    assert_eq!(entry.fields.summary, "简介");
+    assert_eq!(entry.fields.status, "draft");
+    assert_eq!(entry.fields.published_at, None);
+    let source = entry.fields.source.as_ref().unwrap();
+    assert_eq!(source.author, "作者");
+    assert_eq!(source.original_published_at, Some(1_794_960_000_000));
+    assert_eq!(source.imported_at, Some(1_795_132_800_000));
     let mut fields = entry.fields;
     assert_eq!(fields.category_id.as_deref(), Some(folder.id.as_str()));
     let properties = serde_json::json!([
@@ -939,7 +959,7 @@ fn literal_search_combines_category_and_normalized_tag_and_tracks_visibility() {
             .is_err()
     );
     assert!(db.save_category(None, Some(&root), "访谈", None).is_err());
-    db.delete_category(&child).unwrap();
+    db.delete_category(&child, crate::content::taxonomy::CategoryDeleteMode::Promote).unwrap();
     let moved = db.get_entry(&entry.row.id).unwrap();
     assert_eq!(moved.fields.category_id, Some(root));
     assert_eq!(moved.version, 2);
@@ -1322,4 +1342,181 @@ fn another_reference_cannot_overwrite_existing_source_metadata() {
             .author,
         "作者乙"
     );
+}
+
+
+#[test]
+fn deleting_a_folder_promotes_children_and_preserves_document_locations() {
+    let db = memory();
+    let root = db.save_category(None, None, "parent", None).unwrap().id;
+    let child = db
+        .save_category(None, Some(&root), "child", None)
+        .unwrap()
+        .id;
+    let sibling = db.save_category(None, None, "child", None).unwrap().id;
+    let mut fields = article("direct", "kept");
+    fields.category_id = Some(root.clone());
+    let direct = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    let mut fields = article("nested", "kept nested");
+    fields.category_id = Some(child.clone());
+    let nested = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    let changed = db
+        .delete_category(&root, taxonomy::CategoryDeleteMode::Promote)
+        .unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&changed[0]).unwrap()["id"],
+        direct.row.id
+    );
+    assert!(
+        db.get_entry(&direct.row.id)
+            .unwrap()
+            .fields
+            .category_id
+            .is_none()
+    );
+    let nested = db.get_entry(&nested.row.id).unwrap();
+    assert_eq!(nested.fields.category_id.as_deref(), Some(child.as_str()));
+    assert!(nested.row.deleted_at.is_none());
+    let categories = db.library().unwrap().categories;
+    assert!(!categories.iter().any(|item| item.id == root));
+    let promoted = categories.iter().find(|item| item.id == child).unwrap();
+    assert!(promoted.parent_id.is_none());
+    assert_eq!(serde_json::to_value(promoted).unwrap()["name"], "child (2)");
+    let sibling = categories.iter().find(|item| item.id == sibling).unwrap();
+    assert_eq!(serde_json::to_value(sibling).unwrap()["name"], "child");
+    // Promoted folders really become roots and can accept a child of their own.
+    db.save_category(None, Some(&child), "new child", None)
+        .unwrap();
+}
+
+#[test]
+fn deleting_a_child_folder_moves_its_documents_to_its_parent() {
+    let db = memory();
+    let parent = db.save_category(None, None, "parent", None).unwrap().id;
+    let child = db
+        .save_category(None, Some(&parent), "child", None)
+        .unwrap()
+        .id;
+    let mut fields = article("direct", "preserved");
+    fields.category_id = Some(child.clone());
+    let entry = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    db.delete_category(&child, taxonomy::CategoryDeleteMode::Promote)
+        .unwrap();
+    let entry = db.get_entry(&entry.row.id).unwrap();
+    assert_eq!(entry.fields.category_id.as_deref(), Some(parent.as_str()));
+    assert_eq!(entry.fields.content_md, "preserved");
+    assert!(entry.row.deleted_at.is_none());
+}
+
+#[test]
+fn deleting_folder_contents_trashes_all_documents_and_keeps_existing_deletion_age() {
+    let db = memory();
+    let root = db.save_category(None, None, "parent", None).unwrap().id;
+    let child = db
+        .save_category(None, Some(&root), "child", None)
+        .unwrap()
+        .id;
+    let outside = db
+        .create_entry(Kind::Article, Some(article("outside", "keep")), None)
+        .unwrap();
+    let mut ids = Vec::new();
+    for category in [&root, &child] {
+        let mut fields = article("inside", "recoverable");
+        fields.category_id = Some(category.clone());
+        ids.push(
+            db.create_entry(Kind::Article, Some(fields), None)
+                .unwrap()
+                .row
+                .id,
+        );
+    }
+    db.write(|tx| {
+        tx.execute("UPDATE entries SET deleted_at=123 WHERE id=?1", [&ids[1]])?;
+        Ok(())
+    })
+    .unwrap();
+    let changed = db
+        .delete_category(&root, taxonomy::CategoryDeleteMode::Trash)
+        .unwrap();
+    assert_eq!(changed.len(), 2);
+    for id in &ids {
+        let entry = db.get_entry(id).unwrap();
+        assert!(entry.row.deleted_at.is_some());
+        assert!(entry.fields.category_id.is_none());
+        assert_eq!(entry.fields.content_md, "recoverable");
+    }
+    assert_eq!(db.get_entry(&ids[1]).unwrap().row.deleted_at, Some(123));
+    assert!(
+        db.get_entry(&outside.row.id)
+            .unwrap()
+            .row
+            .deleted_at
+            .is_none()
+    );
+    assert!(
+        !db.library()
+            .unwrap()
+            .categories
+            .iter()
+            .any(|item| item.id == root || item.id == child)
+    );
+}
+
+#[test]
+fn failed_folder_delete_rolls_back_promotions_and_documents() {
+    let db = memory();
+    let root = db.save_category(None, None, "parent", None).unwrap().id;
+    let child = db
+        .save_category(None, Some(&root), "child", None)
+        .unwrap()
+        .id;
+    let mut fields = article("direct", "kept");
+    fields.category_id = Some(root.clone());
+    let entry = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    db.write(|tx| { tx.execute_batch("CREATE TRIGGER fail_folder_delete BEFORE DELETE ON categories BEGIN SELECT RAISE(ABORT,'test failure'); END;")?; Ok(()) }).unwrap();
+    assert!(
+        db.delete_category(&root, taxonomy::CategoryDeleteMode::Promote)
+            .is_err()
+    );
+    assert_eq!(
+        db.get_entry(&entry.row.id)
+            .unwrap()
+            .fields
+            .category_id
+            .as_deref(),
+        Some(root.as_str())
+    );
+    assert_eq!(
+        db.library()
+            .unwrap()
+            .categories
+            .iter()
+            .find(|item| item.id == child)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(root.as_str())
+    );
+}
+
+#[test]
+fn promoting_a_same_named_child_keeps_its_name() {
+    let db = memory();
+    let parent = db.save_category(None, None, "same name", None).unwrap().id;
+    let child = db
+        .save_category(None, Some(&parent), "same name", None)
+        .unwrap()
+        .id;
+    db.delete_category(&parent, taxonomy::CategoryDeleteMode::Promote)
+        .unwrap();
+    let categories = serde_json::to_value(db.library().unwrap().categories).unwrap();
+    let promoted = categories
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == child)
+        .unwrap();
+    assert_eq!(promoted["name"], "same name");
+    assert!(promoted["parentId"].is_null());
 }

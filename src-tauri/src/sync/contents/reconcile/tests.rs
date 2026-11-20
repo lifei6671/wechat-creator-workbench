@@ -10,6 +10,17 @@ use crate::db::Workspace;
 use reqwest::Method;
 use serde_json::json;
 
+#[test]
+fn a_recoverable_cloud_deletion_does_not_acknowledge_a_permanent_purge() {
+    let key = Key { entity_type: Kind::Entry, entity_id: "purged".into() };
+    let mutation = Mutation { key: key.clone(), base_revision: 1, operation: "delete".into(),
+        payload: Some(json!({"purgedAt":2,"deletedAt":1})) };
+    let mut remote = Entity { key, payload: json!({"deletedAt":1}), remote_revision: 2, deleted_at: Some(1) };
+    assert!(!target_matches(&mutation,Some(&remote)));
+    remote.payload["purgedAt"] = json!(3);
+    assert!(target_matches(&mutation,Some(&remote)));
+}
+
 fn workspace() -> (tempfile::TempDir, Workspace) {
     let root = tempfile::tempdir().unwrap();
     let db = Workspace::open(&root.path().join("workspace.sqlite")).unwrap();
