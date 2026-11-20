@@ -92,6 +92,33 @@ function openTabs() {
   return [...container.querySelectorAll('[role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
 
+it.each([false, true])("resolves pasted local images through the active host only when automatic upload is %s", async autoUpload => {
+  const target = { endpoint: "https://s3.example.test", region: "auto", bucket: "images", prefix: "workspace", publicBase: "https://images.example.test", autoUpload };
+  vi.mocked(desktop.imageStorageTarget).mockResolvedValue(target);
+  const hosted = "https://images.example.test/workspace/pasted.webp";
+  const host = vi.spyOn(desktop, "hostImage").mockResolvedValue(hosted);
+  const localize = vi.spyOn(desktop, "localizeImage").mockResolvedValue("asset://downloaded");
+  saveDocumentTabs(workspaceId, { ids: ["auto-images"], activeId: "auto-images" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorClipboards.has("auto-images")).toBe(true));
+  if (autoUpload) {
+    await vi.waitFor(() => expect(editorClipboards.get("auto-images")!.localizeImage).toBeTypeOf("function"));
+    const resolve = editorClipboards.get("auto-images")!.localizeImage!;
+    expect(await resolve("asset://pasted")).toBe(hosted);
+    expect(host).toHaveBeenCalledWith("asset://pasted", target);
+    const external = "https://external.example.test/picture.png";
+    expect(await resolve(external)).toBe(hosted);
+    expect(host).toHaveBeenCalledWith(external, target);
+    expect(await resolve(hosted)).toBe(hosted);
+    expect(host).toHaveBeenCalledTimes(2);
+  } else {
+    expect(editorClipboards.get("auto-images")!.localizeImage).toBeUndefined();
+    expect(host).not.toHaveBeenCalled();
+  }
+  expect(localize).not.toHaveBeenCalled();
+});
+
 it("clears all trash after confirmation and disables the clear icon when empty", async () => {
   let cleared = false;
   const trashed = { ...entry("trashed"), deletedAt: 1 };

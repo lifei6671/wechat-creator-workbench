@@ -640,7 +640,14 @@ export function DesktopShell() {
   }, []);
   const waitForCollectionWrites = useCallback(() => Promise.allSettled(collectionWrites.current), []);
 
-  const localizeImage = (url: string) => trackAssetTask(desktop.localizeImage(url));
+  const localizeImage = (url: string) => {
+    if (imageTarget?.autoUpload) {
+      return canHostImage(imageTarget, url)
+        ? trackAssetTask(desktop.hostImage(url, imageTarget))
+        : Promise.resolve(url);
+    }
+    return url.startsWith("asset://") ? Promise.resolve(url) : trackAssetTask(desktop.localizeImage(url));
+  };
   const editorClipboard: ClipboardIO = {
     write: (text, html) => html ? desktop.copyHtml(html, text) : desktop.copyText(text),
     localizeImage: downloadPastedImages || imageTarget?.autoUpload ? localizeImage : undefined,

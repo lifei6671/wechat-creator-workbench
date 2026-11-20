@@ -309,7 +309,7 @@ function cellRange(selection: CellSelection) {
 function pastedImages(doc: ProseNode, from: number, to: number): PastedImage[] {
   const images: PastedImage[] = [];
   doc.nodesBetween(from, to, (node, pos) => {
-    if (node.type.name === "image" && pos >= from && pos + node.nodeSize <= to && /^https?:\/\//i.test(node.attrs.src)) {
+    if (node.type.name === "image" && pos >= from && pos + node.nodeSize <= to && /^(?:https?|asset):\/\//i.test(node.attrs.src)) {
       images.push({ node, from: pos, to: pos + node.nodeSize, src: node.attrs.src });
     }
   });
@@ -627,6 +627,17 @@ export function MarkdownEditor(props: Props) {
       }
     }
 
+    function insertImageMarkdown(view: EditorView, { from, to }: Range, source: string, scroll = false) {
+      const { localizeImageLink, onError } = latest.current;
+      const tr = view.state.tr.replaceRange(from, to, markdownSlice(editor, source));
+      const images: PastedImage[] = [];
+      if (localizeImageLink) tr.mapping.maps[0]?.forEach((_oldFrom, _oldTo, start, end) => {
+        if (start < end) images.push(...pastedImages(tr.doc, start, end));
+      });
+      view.dispatch(scroll ? tr.scrollIntoView() : tr);
+      if (localizeImageLink) localizeImages(view, images, localizeImageLink, onError, tr.doc);
+    }
+
     const editor = Editor.make()
       .config(ctx => {
         ctx.inject(clipboardMarkdownCtx);
@@ -704,7 +715,7 @@ export function MarkdownEditor(props: Props) {
               event.preventDefault();
               const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? view.state.selection.from;
               track(view, { from: pos, to: pos }, () => insert(files), ({ from, to }, text) => {
-                if (text) view.dispatch(view.state.tr.replaceRange(from, to, markdownSlice(editor, text)));
+                if (text) insertImageMarkdown(view, { from, to }, text);
               }, latest.current.onError);
               return true;
             },
@@ -737,7 +748,7 @@ export function MarkdownEditor(props: Props) {
       .use($prose(() => editorBlockTools({
         canEdit: view => isWritable(view) && latest.current.active !== false,
         command: (view, name, value) => runCommand(editor, view, name, value),
-        insertMarkdown: (view, source) => view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, source)).scrollIntoView()),
+        insertMarkdown: (view, source) => insertImageMarkdown(view, view.state.selection, source, true),
         insertImage: (view, src) => {
           const { schema, tr } = view.state;
           const { localizeImageLink, onError } = latest.current;
@@ -755,7 +766,7 @@ export function MarkdownEditor(props: Props) {
           if (!insert) return;
           const { from, to } = view.state.selection;
           track(view, { from, to }, () => insert(files), ({ from, to }, source) => {
-            if (source) view.dispatch(view.state.tr.replaceRange(from, to, markdownSlice(editor, source)).scrollIntoView());
+            if (source) insertImageMarkdown(view, { from, to }, source, true);
           }, latest.current.onError);
         },
       })))
@@ -966,7 +977,7 @@ export function MarkdownEditor(props: Props) {
           return handle.hasSelection(false) ? doc.textBetween(selection.from, selection.to, " ") : "";
         },
         insert: text => {
-          if (isWritable(view)) view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, text)));
+          if (isWritable(view)) insertImageMarkdown(view, view.state.selection, text);
         },
         linkFootnoteMarkdown(source) {
           if (disposed) return source;

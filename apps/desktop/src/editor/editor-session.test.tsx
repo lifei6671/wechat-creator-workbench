@@ -2253,7 +2253,7 @@ it("shows fences while editing a code block and uses the chosen language after b
   }
 });
 
-it("inserts pasted images with their document, then localizes external URLs in place", async () => {
+it("inserts pasted images with their document, then resolves external and local image URLs in place", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -2278,7 +2278,8 @@ it("inserts pasted images with their document, then localizes external URLs in p
       value="" readOnly={false} onChange={onChange} onBlur={() => {}} />));
     await vi.waitFor(() => expect(handle).not.toBeNull());
     handle!.clipboard("paste", io);
-    await vi.waitFor(() => expect(localizeImage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(localizeImage).toHaveBeenCalledTimes(3));
+    expect(localizeImage).toHaveBeenCalledWith("asset://embedded-graph");
     expect(importImage.mock.lastCall?.[0]).toMatchObject({ type: "image/png", size: 3 });
     expect(container.querySelector("h2")?.textContent).toBe("资料");
     expect(onChange.mock.lastCall![2]).toContain(external);
@@ -2299,6 +2300,65 @@ it("inserts pasted images with their document, then localizes external URLs in p
     flushSync(() => root.unmount());
     container.remove();
   }
+});
+
+it.each(["paste", "insert"] as const)("replaces a new local image after automatic hosting through %s while keeping paste undoable", async method => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  let finish!: (url: string) => void;
+  const hosted = new Promise<string>(resolve => { finish = resolve; });
+  const resolveImage = vi.fn(() => hosted);
+  const onError = vi.fn();
+  const onChange = vi.fn();
+  const source = "![粘贴图片](asset://pasted)";
+  try {
+    flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="auto-hosted"
+      value="" readOnly={false} localizeImageLink={resolveImage} onError={onError} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    if (method === "paste") handle!.clipboard("paste", { read: async () => source, write: vi.fn(), onError, localizeImage: resolveImage });
+    else handle!.insert(source);
+    await vi.waitFor(() => expect(resolveImage).toHaveBeenCalledExactlyOnceWith("asset://pasted"));
+    expect(container.querySelector(".rich-image")).not.toBeNull();
+    expect(onChange.mock.lastCall![2]).toContain(source);
+    finish("https://images.example.test/pasted.webp");
+    await vi.waitFor(() => expect(onChange.mock.lastCall![2]).toContain("![粘贴图片](https://images.example.test/pasted.webp)"));
+    handle!.command("undo");
+    expect(container.querySelector(".rich-image")).toBeNull();
+    handle!.command("redo");
+    expect(onChange.mock.lastCall![2]).toContain("https://images.example.test/pasted.webp");
+    expect(onError).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it.each(["removed", "failed"] as const)("keeps the user's local image state when automatic hosting is %s", async outcome => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  let finish!: (url: string) => void;
+  let fail!: (error: Error) => void;
+  const pending = new Promise<string>((resolve, reject) => { finish = resolve; fail = reject; });
+  const resolveImage = vi.fn(() => pending);
+  const onChange = vi.fn(), onError = vi.fn();
+  try {
+    flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="pending-host"
+      value="" readOnly={false} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.clipboard("paste", { read: async () => "![图](asset://pasted)", write: vi.fn(), onError, localizeImage: resolveImage });
+    await vi.waitFor(() => expect(resolveImage).toHaveBeenCalledOnce());
+    if (outcome === "removed") {
+      handle!.command("undo");
+      finish("https://images.example.test/pasted.webp");
+      await handle!.pendingEdits();
+      expect(container.querySelector(".rich-image")).toBeNull();
+      expect(onChange.mock.lastCall![2]).not.toContain("images.example.test");
+    } else {
+      const error = new Error("公开图片校验失败");
+      fail(error);
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error));
+      expect(onChange.mock.lastCall![2]).toContain("asset://pasted");
+    }
+  } finally { flushSync(() => root.unmount()); container.remove(); }
 });
 
 it("lets the caret enter and edit a bold delimiter without changing the surrounding text", async () => {
