@@ -147,6 +147,33 @@ pub struct AssetRow {
     public_url: Option<String>,
 }
 
+const ASSET_ROW_QUERY: &str =
+    "SELECT a.id,a.name,a.width,a.height,a.bytes,
+            CASE WHEN j.status<>'completed' THEN j.status END,j.error,c.error,
+            CASE WHEN l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL THEN l.public_url END
+     FROM assets a
+     LEFT JOIN asset_locations l ON l.sha256=a.sha256 AND l.storage_profile_id=:profile
+     LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE kind='upload' AND sha256=a.sha256
+        AND storage_profile_id=:profile ORDER BY created_at DESC, id DESC LIMIT 1)
+     LEFT JOIN jobs c ON c.id=(SELECT id FROM jobs WHERE kind='cleanup' AND sha256=a.sha256
+        AND status='failed' ORDER BY updated_at DESC, id DESC LIMIT 1)";
+
+impl AssetRow {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            width: row.get(2)?,
+            height: row.get(3)?,
+            bytes: row.get(4)?,
+            upload_status: row.get(5)?,
+            upload_error: row.get(6)?,
+            cleanup_error: row.get(7)?,
+            public_url: row.get(8)?,
+        })
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetLibrary {
@@ -386,25 +413,29 @@ impl Assets {
             let last_page = count.saturating_sub(1) / PAGE_SIZE;
             let page = page.min(last_page);
             let mut query = conn.prepare(&format!(
-                "SELECT a.id,a.name,a.width,a.height,a.bytes,
-                        CASE WHEN j.status<>'completed' THEN j.status END,j.error,c.error,
-                        CASE WHEN l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL THEN l.public_url END
-                 FROM assets a
-                 LEFT JOIN asset_locations l ON l.sha256=a.sha256 AND l.storage_profile_id=:profile
-                 LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE kind='upload' AND sha256=a.sha256
-                    AND storage_profile_id=:profile ORDER BY created_at DESC, id DESC LIMIT 1)
-                 LEFT JOIN jobs c ON c.id=(SELECT id FROM jobs WHERE kind='cleanup' AND sha256=a.sha256
-                    AND status='failed' ORDER BY updated_at DESC, id DESC LIMIT 1)
-                 {visible} ORDER BY a.created_at DESC, a.id DESC LIMIT :limit OFFSET :offset",
+                "{ASSET_ROW_QUERY} {visible} ORDER BY a.created_at DESC, a.id DESC LIMIT :limit OFFSET :offset",
             ))?;
             let items = query.query_map(rusqlite::named_params! {
                 ":profile": active_id, ":limit": PAGE_SIZE, ":offset": page * PAGE_SIZE,
                 ":ids": ids, ":hashes": hashes,
-            }, |r| Ok(AssetRow {
-                id: r.get(0)?, name: r.get(1)?, width: r.get(2)?, height: r.get(3)?, bytes: r.get(4)?,
-                upload_status: r.get(5)?, upload_error: r.get(6)?, cleanup_error: r.get(7)?, public_url: r.get(8)?,
-            }))?.collect::<rusqlite::Result<_>>()?;
+            }, AssetRow::from_row)?.collect::<rusqlite::Result<_>>()?;
             Ok(AssetLibrary { items, target: active.map(|p| p.target), page, has_next: page < last_page })
+        })
+    }
+
+    pub fn detail(&self, db: &Workspace, asset_id: &str) -> Result<Option<AssetRow>> {
+        db.read(|conn| {
+            let active = Profile::active(conn)?;
+            Ok(conn
+                .query_row(
+                    &format!("{ASSET_ROW_QUERY} WHERE a.id=:id"),
+                    rusqlite::named_params! {
+                        ":profile": active.as_ref().map(|profile| profile.id.as_str()),
+                        ":id": asset_id,
+                    },
+                    AssetRow::from_row,
+                )
+                .optional()?)
         })
     }
 

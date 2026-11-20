@@ -45,6 +45,7 @@ it("loads tiles near the viewport and keeps the selected thumbnail visible until
     ],
     target: null, page, hasNext: page === 0,
   }));
+  vi.spyOn(desktop, "assetDetail").mockImplementation(async id => id === "two" ? { ...row, id, name: "图二.png", width: 200, height: 400 } : row);
   vi.spyOn(desktop, "onAssetsChanged").mockResolvedValue(() => {});
   const small = vi.spyOn(desktop, "assetThumbnail").mockResolvedValue(new ArrayBuffer(1));
   const full = vi.spyOn(desktop, "assetRead").mockResolvedValue(new ArrayBuffer(2));
@@ -148,10 +149,12 @@ it("keeps the selected preview and its actions mounted while paging, then switch
   const nextPage = new Promise<AssetLibrary>(resolve => { finishPage = resolve; });
   vi.spyOn(desktop, "assetLibrary").mockImplementation((page = 0) => page ? nextPage
     : Promise.resolve({ items: [first], target: null, page: 0, hasNext: true }));
-  let assetsChanged!: () => void;
+  vi.spyOn(desktop, "assetDetail").mockImplementation(async id => id === first.id ? first : second);
+  const listeners = new Set<() => void>();
+  const assetsChanged = () => listeners.forEach(callback => callback());
   vi.spyOn(desktop, "onAssetsChanged").mockImplementation(async callback => {
-    assetsChanged = callback;
-    return () => {};
+    listeners.add(callback);
+    return () => { listeners.delete(callback); };
   });
   const read = vi.spyOn(desktop, "assetRead").mockResolvedValue(new ArrayBuffer(2));
   const insert = vi.fn();
@@ -258,4 +261,130 @@ it("edits saved S3 credentials in place and disables hosting without clearing fi
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   }
+});
+
+
+it("refreshes an off-page selection through upload failure, retry and completion without replacing its preview", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("Image", class { src = ""; decode() { return Promise.resolve(); } });
+  const revoke = vi.fn();
+  let urls = 0;
+  vi.stubGlobal("URL", Object.assign(class extends URL {}, {
+    createObjectURL: () => `blob:asset-${++urls}`, revokeObjectURL: revoke,
+  }));
+  let first: AssetRow = {
+    id: "uploading", name: "正在上传.png", width: 400, height: 200, bytes: 1700,
+    uploadStatus: "running", uploadError: null, cleanupError: null, publicUrl: null,
+  };
+  const second: AssetRow = { ...first, id: "second", name: "另一页.png", uploadStatus: null };
+  const target = { endpoint: "https://s3.example.test", region: "auto", bucket: "images", prefix: "", publicBase: "https://cdn.example.test" };
+  const library = vi.spyOn(desktop, "assetLibrary").mockImplementation(async (page = 0) => ({
+    items: [page ? second : first], target, page, hasNext: page === 0,
+  }));
+  const detail = vi.spyOn(desktop, "assetDetail").mockImplementation(async id => id === first.id ? first : second);
+  const listeners = new Set<() => void>();
+  const changed = () => flushSync(() => listeners.forEach(listener => listener()));
+  vi.spyOn(desktop, "onAssetsChanged").mockImplementation(async listener => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  });
+  const read = vi.spyOn(desktop, "assetRead").mockResolvedValue(new ArrayBuffer(2));
+  const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
+  const upload = vi.spyOn(desktop, "assetUpload").mockImplementation(async () => {
+    first = { ...first, uploadStatus: "retrying", uploadError: null };
+    changed();
+  });
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const preview = () => container.querySelector<HTMLImageElement>(".asset-details img");
+  const button = (text: string) => [...container.querySelectorAll<HTMLButtonElement>(".asset-controls button")]
+    .find(button => button.textContent === text);
+  try {
+    flushSync(() => root.render(<Theme><AssetPanel onImport={vi.fn()} onInsert={vi.fn()} onCover={vi.fn()}
+      onConfigure={vi.fn()} canInsert={false} canCover={false} /></Theme>));
+    const tile = await vi.waitFor(() => {
+      const tile = container.querySelector<HTMLButtonElement>(".asset-tile");
+      expect(tile).not.toBeNull(); return tile!;
+    });
+    flushSync(() => tile.click());
+    await vi.waitFor(() => expect(preview()?.alt).toBe(first.name));
+    const image = preview();
+    const details = container.querySelector(".asset-details");
+    expect(button("上传")?.disabled).toBe(true);
+    let finishList!: (value: AssetLibrary) => void;
+    library.mockImplementationOnce(() => new Promise(resolve => { finishList = resolve; }));
+    first = { ...first, uploadStatus: "failed", uploadError: "上传连接失败" };
+    changed();
+    await vi.waitFor(() => expect(button("重试上传")?.disabled).toBe(false));
+    flushSync(() => tile.click());
+    expect(button("重试上传")?.disabled).toBe(false);
+    expect(container.querySelector(".asset-details [role=alert]")?.textContent).toBe("上传连接失败");
+    finishList({ items: [first], target, page: 0, hasNext: true });
+    first = { ...first, uploadStatus: "running", uploadError: null };
+    changed();
+    await vi.waitFor(() => expect(button("上传")?.disabled).toBe(true));
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="下一页"]')!.click());
+    await vi.waitFor(() => expect(container.querySelector(".asset-tile")?.textContent).toBe(second.name));
+    expect(library).toHaveBeenLastCalledWith(1);
+    first = { ...first, uploadStatus: "failed", uploadError: "上传连接失败" };
+    changed();
+    await vi.waitFor(() => expect(button("重试上传")?.disabled).toBe(false));
+    expect(container.querySelector(".asset-details [role=alert]")?.textContent).toBe("上传连接失败");
+    expect(preview()).toBe(image);
+    flushSync(() => button("重试上传")!.click());
+    await vi.waitFor(() => expect(container.querySelector(".asset-dimensions")?.textContent).toContain("等待重试"));
+    expect(upload).toHaveBeenCalledExactlyOnceWith(first.id);
+    expect(button("上传")?.disabled).toBe(true);
+    expect(container.querySelector(".asset-details [role=alert]")).toBeNull();
+    first = { ...first, uploadStatus: null, publicUrl: "https://cdn.example.test/done.png" };
+    changed();
+    await vi.waitFor(() => expect(button("复制图床链接")).toBeDefined());
+    expect(container.querySelector(".asset-dimensions")?.textContent).toContain("图床");
+    expect(container.querySelector(".asset-details")).toBe(details);
+    expect(preview()).toBe(image);
+    expect(read).toHaveBeenCalledExactlyOnceWith("asset://uploading");
+    expect(revoke).not.toHaveBeenCalled();
+    flushSync(() => button("复制图床链接")!.click());
+    expect(copy).toHaveBeenCalledWith(first.publicUrl);
+
+    let oldResult!: (row: AssetRow) => void;
+    detail.mockImplementationOnce(() => new Promise(resolve => { oldResult = resolve; }));
+    changed();
+    first = { ...first, publicUrl: "https://cdn.example.test/newer.png" };
+    changed();
+    await vi.waitFor(() => expect(detail).toHaveBeenLastCalledWith(first.id));
+    oldResult({ ...first, publicUrl: null, uploadStatus: "running" });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(button("复制图床链接")).toBeDefined();
+    flushSync(() => button("复制图床链接")!.click());
+    expect(copy).toHaveBeenLastCalledWith(first.publicUrl);
+
+    let oldSelection!: (row: AssetRow) => void;
+    detail.mockImplementationOnce(() => new Promise(resolve => { oldSelection = resolve; }));
+    changed();
+    flushSync(() => container.querySelector<HTMLButtonElement>(".asset-tile")!.click());
+    await vi.waitFor(() => expect(preview()?.alt).toBe(second.name));
+    oldSelection(first);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(preview()?.alt).toBe(second.name);
+    expect(button("复制图床链接")).toBeUndefined();
+    expect(read).toHaveBeenLastCalledWith("asset://second");
+    detail.mockRejectedValueOnce(new Error("详情读取失败"));
+    changed();
+    await vi.waitFor(() => expect(container.querySelector(".asset-details [role=alert]")?.textContent).toBe("详情读取失败"));
+    expect(preview()?.alt).toBe(second.name);
+    changed();
+    await vi.waitFor(() => expect(container.querySelector(".asset-details [role=alert]")).toBeNull());
+    detail.mockResolvedValueOnce(null);
+    changed();
+    await vi.waitFor(() => expect(container.querySelector(".asset-details")).toBeNull());
+  } finally {
+    flushSync(() => root.unmount());
+    await Promise.resolve();
+    container.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+  expect(listeners.size).toBe(0);
 });

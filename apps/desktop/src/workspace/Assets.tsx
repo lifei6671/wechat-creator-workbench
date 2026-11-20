@@ -28,7 +28,7 @@ const states = {
 } as const;
 
 function assetImageKey(item: AssetRow) {
-  return `${item.id}:${item.bytes}:${item.publicUrl}`;
+  return `${item.id}:${item.bytes ?? item.publicUrl}`;
 }
 
 const tileGap = 4;
@@ -65,6 +65,8 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
 }) {
   const [library, setLibrary] = useState<AssetLibrary | null>(null);
   const [selected, setSelected] = useState<{ item: AssetRow; key: string; thumbnail?: string } | null>(null);
+  const selectedId = selected?.item.id;
+  const [selectedError, setSelectedError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
@@ -93,11 +95,6 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
       void desktop.assetLibrary(page).then(value => {
         if (live && request === started) {
           setLibrary(value);
-          setSelected(selected => {
-            if (!selected) return selected;
-            const item = value.items.find(item => item.id === selected.item.id);
-            return item ? { ...selected, item } : selected;
-          });
           setError("");
         }
       }, error => { if (live && request === started) setError(errorMessage(error)); }).finally(() => {
@@ -109,6 +106,28 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
     void unlisten.then(load, error => { if (live) setError(errorMessage(error)); });
     return () => { live = false; void unlisten.then(remove => remove(), () => {}); };
   }, [page, refresh]);
+  useEffect(() => {
+    setSelectedError("");
+    if (!selectedId) return;
+    const id = selectedId;
+    let live = true;
+    let request = 0;
+    function load() {
+      const started = ++request;
+      void desktop.assetDetail(id).then(item => {
+        if (!live || request !== started) return;
+        setSelected(selected => {
+          if (selected?.item.id !== id) return selected;
+          return item ? { ...selected, item } : null;
+        });
+        setSelectedError("");
+      }, error => { if (live && request === started) setSelectedError(errorMessage(error)); });
+    }
+    load();
+    const unlisten = desktop.onAssetsChanged(load);
+    void unlisten.then(() => { if (live) load(); }, error => { if (live) setSelectedError(errorMessage(error)); });
+    return () => { live = false; void unlisten.then(remove => remove(), () => {}); };
+  }, [selectedId, refresh]);
   useLayoutEffect(() => {
     if (scroll.current) scroll.current.scrollTop = 0;
   }, [library?.page]);
@@ -171,7 +190,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
             const key = assetImageKey(item);
             return <AssetTile key={key} item={item} position={position} imageHeight={imageHeight}
               selected={selected?.item.id === item.id} onSelect={thumbnail => {
-              setSelected({ item, key, thumbnail });
+              setSelected(selected => selected?.item.id === item.id ? selected : { item, key, thumbnail });
               setNotice("");
             }} />;
           })}
@@ -185,6 +204,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         onClick={() => turnPage(library.page + 1)}><ChevronRight size={16} /></Tool>
     </div>}
     {current && <section className="asset-details asset-library-details" aria-label="所选图片">
+      {selectedError && <p className="inline-error" role="alert">{selectedError}</p>}
       <AssetThumb key={currentKey} id={current.id} name={current.name}
         thumbnail={selected?.key === currentKey ? selected?.thumbnail : undefined} />
       <div className="asset-dimensions">

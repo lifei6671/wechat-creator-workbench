@@ -269,6 +269,7 @@ export const desktop = {
   finishExit: () => invoke<void>("finish_exit"),
   cancelCleanup: () => invoke<void>("cancel_asset_cleanup"),
   assetLibrary: (page = 0) => invoke<AssetLibrary>("asset_library", { page }),
+  assetDetail: (id: string) => invoke<AssetRow | null>("asset_detail", { id }),
   onAssetsChanged: (callback: () => void) => listen("assets-changed", callback),
   assetImport: async (file: File, origin: "attachment" | "library" = "attachment") => {
     if (file.size > 20 * 1024 * 1024) throw new Error("单张图片不能超过 20 MB");
