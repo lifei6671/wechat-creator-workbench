@@ -42,9 +42,13 @@ html { background: var(--workbench-bg); }
   background: var(--app-bg);
 }
 button, input, textarea { font-family: inherit; }
-button:focus-visible, input:focus-visible, [data-separator]:focus-visible {
+input:focus-visible, [data-separator]:focus-visible {
   outline: 2px solid var(--focus-color);
   outline-offset: -2px;
+}
+.radix-themes :is(button, [role="button"]):focus-visible {
+  outline: 0.5px solid var(--gray-a9);
+  outline-offset: -0.5px;
 }
 [hidden] { display: none !important; }
 .plain-button {

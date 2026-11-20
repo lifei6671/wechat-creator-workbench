@@ -27,6 +27,8 @@ GitHub README 导入使用 [base64](https://github.com/marshallpierce/rust-base6
 
 P3 复用 Plainly 的三套 Rico 微信主题和公众号表格处理规则。固定来源、版权、许可和修改范围见 [排版来源](packages/wechat-renderer/SOURCES.md)。
 
+六套 GZH 排版主题改编自 [isjiamu/gzh-design-skill](https://github.com/isjiamu/gzh-design-skill)，Copyright (C) 2026 甲木 (Jiamu) × 摸鱼小李 (Moyu Xiaoli)，采用 AGPL-3.0-or-later，完整许可见 [LICENSE-GZH-DESIGN](packages/wechat-renderer/themes/LICENSE-GZH-DESIGN)。本项目其余部分仍依各自许可，GPLv3 与 AGPLv3 依第 13 条组合；组合使用须遵守该条规定的网络交互源码提供要求。改编范围和固定版本见 [排版来源](packages/wechat-renderer/SOURCES.md)。
+
 Rust 导入使用 [scraper](https://github.com/rust-scraper/scraper) 提取公众号正文，使用 [Ammonia](https://github.com/rust-ammonia/ammonia) 净化，使用 [htmd](https://github.com/letmutex/htmd) 生成 Markdown。浏览器端用 [Juice](https://github.com/Automattic/juice) 内联主题样式，使用 [MathJax](https://github.com/mathjax/MathJax) 及 [Mermaid](https://github.com/mermaid-js/mermaid) 生成公式和图表。
 
 P4 使用官方 [rmcp](https://github.com/modelcontextprotocol/rust-sdk) 实现 MCP 协议和 Streamable HTTP 传输（Apache-2.0），使用 [Axum](https://github.com/tokio-rs/axum) 路由本机端点（MIT），使用 [Hyper](https://github.com/hyperium/hyper) 管理可在退出时关闭的 HTTP 连接（MIT）。AI 复用 Rust 的 reqwest 与系统凭据库。

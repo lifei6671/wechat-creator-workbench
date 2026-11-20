@@ -1,5 +1,5 @@
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
-import { Button, ContextMenu, DropdownMenu, Spinner } from "@radix-ui/themes";
+import { useCallback, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { Button, ContextMenu, DropdownMenu, Spinner, Theme } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
   ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
@@ -20,6 +20,7 @@ import { InlineEntryTitle } from "./InlineEntryTitle";
 import { MoveEntryMenu } from "./MoveEntryMenu";
 import { AddToCollectionMenu } from "./CollectionMenu";
 import { usePointerDrag } from "./pointer-drag";
+import { applyPreviewAppearance, type PreviewAppearance } from "./preview-appearance";
 
 export type ViewMode = "edit" | "preview";
 export type TabAction = "closeOthers" | "reading" | "properties" | "search"
@@ -390,6 +391,11 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
   const body = useRef<HTMLElement>(null);
   const displayed = useRef<RenderedWechat | null>(null);
   const [ready, setReady] = useState(false);
+  const [appearance, setAppearance] = useState<PreviewAppearance>("light");
+  const lightStyles = useRef(new WeakMap<HTMLElement, string>());
+  const updateAppearance = useEffectEvent(() => applyPreviewAppearance(body.current!, appearance, lightStyles.current));
+  const [renderedThemeId, setRenderedThemeId] = useState(() => wechatThemeId(themeId));
+  const themeName = wechatThemes.find(theme => theme.id === renderedThemeId)!.label;
   const [assetRevision, setAssetRevision] = useState(0);
   const resources = useRef(new Map<string, { image: ReturnType<typeof loadLocalImage>; failed: boolean }>());
 
@@ -416,6 +422,8 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
   useLayoutEffect(() => {
     heading.current!.textContent = title || untitled;
   }, [title]);
+
+  useLayoutEffect(() => { updateAppearance(); }, [appearance]);
 
   useEffect(() => {
     const listener = desktop.onAssetsChanged(() => {
@@ -450,6 +458,7 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
       if (!alive) { result.dispose(); return; }
       displayed.current?.dispose();
       displayed.current = result;
+      setRenderedThemeId(result.themeId);
       const content = body.current!;
       content.innerHTML = result.html;
       for (const table of content.querySelectorAll("table")) {
@@ -481,6 +490,7 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
           void item.image.then(image => image.dispose(), () => {});
         }
       }
+      updateAppearance();
       setReady(true);
     }, error => {
       if (!alive) return;
@@ -494,10 +504,21 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
     return () => { cancelAnimationFrame(frame); alive = false; controller.abort(); };
   }, [deferred, assetRevision, projectLinks]);
 
-  return <div className="preview-phone">
-    <div className="preview-phone-screen">
-      <div className="markdown-preview" ref={host} role="region" aria-label="公众号排版预览" aria-busy={!ready} tabIndex={0} />
-      {!ready && <div className="preview-loading" role="status"><Spinner aria-hidden="true" />正在渲染预览…</div>}
+  return <div className="preview-device">
+    <div className="preview-phone">
+      <Theme appearance={appearance} className="preview-phone-screen">
+        <div className="markdown-preview" ref={host} role="region" aria-label="公众号排版预览" aria-busy={!ready} tabIndex={0} />
+        {!ready && <div className="preview-loading" role="status"><Spinner aria-hidden="true" />正在渲染预览…</div>}
+      </Theme>
+    </div>
+    <div className="preview-controls">
+      <span className="preview-theme-label" aria-label={`公众号主题：${themeName}`} title={themeName}>
+        <Palette size={12} strokeWidth={1.5} aria-hidden="true" /><span>{themeName}</span>
+      </span>
+      <div className="preview-appearance" role="group" aria-label="微信预览外观">
+        {(["light", "dark"] as const).map(value => <button key={value} type="button" aria-pressed={appearance === value}
+          onClick={() => setAppearance(value)}>{value === "light" ? "亮色" : "暗色"}</button>)}
+      </div>
     </div>
   </div>;
 }

@@ -60,6 +60,62 @@ it("shows preview progress before rendering and gives each table a scroll region
   expect(tables[0].parentElement?.nextElementSibling?.textContent).toBe("中间段落");
 });
 
+it("shows the rendered theme below the phone and updates it when the theme changes", async () => {
+  vi.spyOn(desktop, "onAssetsChanged").mockResolvedValue(() => {});
+  const mount = (themeId: string) => flushSync(() => root.render(<Theme appearance="dark"><MarkdownPreview title="示例" markdown="正文" themeId={themeId} revision={0} /></Theme>));
+  mount("unknown-theme");
+  const preview = container.querySelector<HTMLElement>(".markdown-preview")!;
+  const label = container.querySelector<HTMLElement>(".preview-theme-label")!;
+  await vi.waitFor(() => expect(preview.getAttribute("aria-busy")).toBe("false"));
+  expect(label.textContent).toBe("默认公众号风格");
+  expect(label.parentElement?.previousElementSibling?.className).toBe("preview-phone");
+  expect(container.querySelector(".preview-phone-screen")?.classList.contains("light")).toBe(true);
+  expect(label.closest(".radix-themes")?.classList.contains("dark")).toBe(true);
+  expect(preview.shadowRoot!.textContent).not.toContain("默认公众号风格");
+  mount("gzh-moyu-green");
+  await vi.waitFor(() => expect(label.textContent).toBe("摸鱼绿"));
+  expect(label.getAttribute("aria-label")).toBe("公众号主题：摸鱼绿");
+  expect(label.title).toBe("摸鱼绿");
+  expect(container.querySelector(".markdown-preview")).toBe(preview);
+});
+
+it("switches WeChat preview appearance without rerendering content or changing scroll position", async () => {
+  vi.spyOn(desktop, "onAssetsChanged").mockResolvedValue(() => {});
+  const graphics = vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  const mount = (themeId: string) => flushSync(() => root.render(<Theme appearance="light"><MarkdownPreview title="示例" markdown="正文 $5\n\n> 引用" themeId={themeId} revision={0} /></Theme>));
+  mount("gzh-moyu-green");
+  const preview = container.querySelector<HTMLElement>(".markdown-preview")!;
+  await vi.waitFor(() => expect(preview.getAttribute("aria-busy")).toBe("false"));
+  const article = preview.shadowRoot!.querySelector("article > div")!;
+  const light = article.innerHTML;
+  preview.scrollTop = 120;
+  const buttons = [...container.querySelectorAll<HTMLButtonElement>('.preview-appearance button')];
+  const [bright, dark] = buttons;
+  expect(bright.getAttribute("aria-pressed")).toBe("true");
+  flushSync(() => dark.click());
+  expect(dark.getAttribute("aria-pressed")).toBe("true");
+  expect(container.querySelector(".preview-phone-screen")?.classList.contains("dark")).toBe(true);
+  expect(article.innerHTML).not.toBe(light);
+  expect(preview.scrollTop).toBe(120);
+  expect(graphics).toHaveBeenCalledTimes(1);
+  flushSync(() => bright.click());
+  expect(article.innerHTML).toBe(light);
+  flushSync(() => dark.click());
+  mount("gzh-red-white");
+  await vi.waitFor(() => expect(container.querySelector(".preview-theme-label")?.textContent).toBe("红白色系"));
+  const darkText = (article.firstElementChild as HTMLElement).style.color;
+  expect(container.querySelector(".preview-phone-screen")?.classList.contains("dark")).toBe(true);
+  flushSync(() => bright.click());
+  expect((article.firstElementChild as HTMLElement).style.color).not.toBe(darkText);
+  flushSync(() => dark.click());
+  flushSync(() => bright.click());
+  const restored = article.innerHTML;
+  flushSync(() => dark.click());
+  flushSync(() => bright.click());
+  expect(article.innerHTML).toBe(restored);
+  expect(container.querySelector(".markdown-preview")).toBe(preview);
+});
+
 it("moves complete outline sections through the save queue and restores them with one undo", async () => {
   const fence = String.fromCharCode(96).repeat(3);
   const beginning = ["## 重名", "正文[^ref]", "### 子节", "#### 孙节", "> ## 引用内标题\n>\n> 引用",
@@ -360,6 +416,9 @@ it("renames through the focused breadcrumb and updates the editor theme without 
     expect(editor.dataset.wechatTheme).toBe("plainly-default");
     flushSync(() => queue.edit({ themeId: "plainly-elegant" }));
     expect(editor.dataset.wechatTheme).toBe("plainly-elegant");
+    expect(editor.querySelector(".ProseMirror")).toBe(body);
+    flushSync(() => queue.edit({ themeId: "gzh-zen-whitespace" }));
+    expect(editor.dataset.wechatTheme).toBe("gzh-zen-whitespace");
     expect(editor.querySelector(".ProseMirror")).toBe(body);
     mount(true);
     expect(container.querySelector('input[aria-label="内容标题"]')).toBeNull();

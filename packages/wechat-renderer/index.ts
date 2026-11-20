@@ -6,12 +6,14 @@ import { createMarkdownParser, sanitizeRenderedMarkdown } from "../markdown-core
 import { theme as defaultTheme } from "./themes/wechat-default";
 import { theme as elegant } from "./themes/wechat-elegant";
 import { theme as tech } from "./themes/wechat-tech";
+import { applyGzhDesign, gzhDesignThemes, wrapGzhLeaves } from "./themes/gzh-design";
 import type { GraphicKind } from "./graphics";
 
 export const wechatThemes = [
   { id: "plainly-default", label: defaultTheme.name, styles: defaultTheme.styles },
   { id: "plainly-elegant", label: elegant.name, styles: elegant.styles },
   { id: "plainly-tech", label: tech.name, styles: tech.styles },
+  ...gzhDesignThemes,
 ] as const;
 
 export function wechatThemeId(id?: string | null) {
@@ -158,8 +160,10 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
         }
       }
     }
+    const gzhDesign = "layout" in theme && theme.layout === "gzh-design";
+    if (gzhDesign) applyGzhDesign(article);
     const styleRules = Object.entries(theme.styles).map(([selector, styles]) =>
-      `[class="plainly-article"]${selector === "container" ? "" : ` ${selector}`}{${styles}}`);
+      `${selector.split(",").map(part => `[class="plainly-article"]${part.trim() === "container" ? "" : ` ${part.trim()}`}`).join(",")}{${styles}}`);
     const css = styleRules.join("\n")
       + ".plainly-article mark{background-color:#fff7c2;color:inherit;}"
       + ".plainly-article blockquote.workbench-callout{padding:8px 12px;border-left-width:0.5px;font-style:normal;}"
@@ -181,6 +185,7 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
     for (const table of template.content.querySelectorAll("table")) {
       if (table.style.width === "100%" && !table.hasAttribute("width")) table.setAttribute("width", "100%");
     }
+    if (gzhDesign) wrapGzhLeaves(template.content);
     for (const node of template.content.querySelectorAll("*")) {
       node.removeAttribute("class");
       for (const attribute of Array.from(node.attributes)) {
