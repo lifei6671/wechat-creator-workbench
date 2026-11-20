@@ -280,6 +280,13 @@ it.each(["原有正文", "```javascript\nconst value = 1;\n```"])("routes macOS 
     handle!.insert("新增");
     const after = handle!.captureMarkdown().markdown;
     expect(after).not.toBe(before);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      editHistory("undo");
+      expect(handle!.captureMarkdown().markdown).toBe(after);
+    } finally {
+      focus.mockRestore();
+    }
     editHistory("undo");
     expect(handle!.captureMarkdown().markdown).toBe(before);
     editHistory("redo");

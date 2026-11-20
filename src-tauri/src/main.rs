@@ -90,7 +90,7 @@ fn main() {
                 "workspace-redo" => "redo",
                 _ => return,
             };
-            if let Err(error) = app.emit_to("main", "workspace-history-requested", action) {
+            if let Err(error) = request_history(app, action) {
                 eprintln!("Could not request editor history action: {error}");
             }
         });
@@ -346,6 +346,41 @@ fn registered_commands_are_available_to_the_desktop_window() {
             "missing {permission}"
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+fn request_history(app: &tauri::AppHandle, action: &'static str) -> tauri::Result<()> {
+    use objc2::{MainThreadMarker, sel};
+    use objc2_app_kit::{NSApplication, NSView};
+    use objc2_web_kit::WKWebView;
+
+    let main = app.get_webview("main").expect("main webview exists");
+    let handle = app.clone();
+    main.with_webview(move |platform| {
+        // Tauri supplies the live WKWebView on the AppKit main thread.
+        let main = unsafe { &*platform.inner().cast::<WKWebView>() };
+        let application = NSApplication::sharedApplication(MainThreadMarker::from(main));
+        if let Some(window) = application.keyWindow()
+            && let Some(responder) = window.firstResponder()
+            && let Some(view) = responder.downcast_ref::<NSView>()
+            && view.isDescendantOf(main)
+        {
+            // Emit after with_webview releases the runtime's webview lock.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = handle.emit_to("main", "workspace-history-requested", action) {
+                    eprintln!("Could not send editor history action: {error}");
+                }
+            });
+        } else {
+            let selector = if action == "undo" {
+                sel!(undo:)
+            } else {
+                sel!(redo:)
+            };
+            // A nil target preserves AppKit's native responder-chain dispatch for other webviews.
+            unsafe { application.sendAction_to_from(selector, None, None) };
+        }
+    })
 }
 
 fn request_exit(app: &tauri::AppHandle) {

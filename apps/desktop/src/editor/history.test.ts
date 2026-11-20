@@ -13,6 +13,14 @@ it.each(["input", "textarea"])("keeps native field history and ignores readonly 
     editHistory("redo");
     expect(command.mock.calls).toEqual([["undo"], ["redo"]]);
     command.mockClear();
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      editHistory("undo");
+      editHistory("redo");
+      expect(command).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+    }
     field.readOnly = true;
     editHistory("undo");
     field.readOnly = false;
