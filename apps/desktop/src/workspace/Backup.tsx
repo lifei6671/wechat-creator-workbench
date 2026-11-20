@@ -1,3 +1,4 @@
+import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useState, type FormEvent } from "react";
 import { Button, Select } from "@radix-ui/themes";
 import { readS3Settings, S3Fields, SettingRow } from "./Settings";
@@ -18,11 +19,21 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
   feedback: { error: boolean; text: string } | null;
   listRevision: number;
   prepared: PreparedBackup | null;
-  onCreate(): Promise<void>;
-  onRestore(workspace: string, snapshot: BackupSnapshot, workspaceLabel: string): Promise<void>;
+  onCreate(): Promise<boolean | undefined>;
+  onRestore(workspace: string, snapshot: BackupSnapshot, workspaceLabel: string): Promise<boolean | undefined>;
   onConfirmRestore(): void;
   onDiscardRestore(): void;
 }) {
+  const buttons = useSettingsButtonFeedback();
+  const [working, setWorking] = useState<string>();
+  async function perform(key: string, operation: () => Promise<boolean | undefined>) {
+    buttons.start(key);
+    setWorking(key);
+    try {
+      const result = await operation();
+      if (result !== undefined) buttons.finish(key, result);
+    } finally { setWorking(undefined); }
+  }
   const [settings, setSettings] = useState<BackupSettings>();
   const [remote, setRemote] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>();
@@ -69,6 +80,7 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
   if (configuring && settings) return <BackupStorageSettings initial={settings} onCancel={returnToBackups} onSaved={() => {
     setSettings(undefined); setRemote([]); setSelected(undefined); setListing(undefined); setWorkspacesError("");
     setRefresh(value => value + 1);
+    buttons.finish("configure", true);
     returnToBackups();
   }} />;
 
@@ -80,13 +92,13 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
         {hintId => <Button id="configure-backup" aria-describedby={hintId} size="2" color="gray" variant="soft" disabled={busy} onClick={() => {
           setConfiguring(true);
           requestAnimationFrame(() => document.getElementById("backup-endpoint")?.focus());
-        }}>{configured ? "修改配置" : "配置备份桶"}</Button>}
+        }}>{buttons.label("configure", configured ? "修改配置" : "配置备份桶", "已保存", "保存失败")}</Button>}
       </SettingRow>}
       {configured && <SettingRow label="备份当前工作区" hint="上传当前数据库快照，每个工作区保留最近 5 份。">
-        {hintId => <Button size="2" aria-describedby={hintId} disabled={busy} onClick={() => { void onCreate(); }}>立即备份</Button>}
+        {hintId => <Button size="2" aria-describedby={hintId} disabled={busy} loading={working === "create"} onClick={() => { void perform("create", onCreate); }}>{buttons.label("create", "立即备份", "备份完成", "备份失败")}</Button>}
       </SettingRow>}
       {progress && <p className="settings-feedback muted-text" role="status">{progress}</p>}
-      {feedback && !progress && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
+      {feedback?.error && !progress && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
         role={feedback.error ? "alert" : "status"}>{feedback.text}</p>}
       {error && <div className="settings-feedback backup-feedback">
         <p className="inline-error" role="alert">{error}</p>
@@ -121,7 +133,8 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
             <span className="muted-text">{sizeFormat.format(item.bytes / 1024)} KB</span>
           </div>
           <Button size="1" variant="soft" color="gray" aria-label={`准备恢复 ${backupDate(item.createdAt)} 的备份`} disabled={busy}
-            onClick={() => { void onRestore(workspace, item, workspace === current ? "当前工作区" : workspace); }}>准备恢复</Button>
+            loading={working === item.name}
+            onClick={() => { void perform(item.name, () => onRestore(workspace, item, workspace === current ? "当前工作区" : workspace)); }}>{buttons.label(item.name, "准备恢复", "校验完成", "校验失败")}</Button>
         </li>)}</ul>}
         </div>
       </>}
@@ -133,33 +146,36 @@ function BackupStorageSettings({ initial, onCancel, onSaved }: {
   onCancel(): void;
   onSaved(): void;
 }) {
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"save" | "reuse">();
+  const buttons = useSettingsButtonFeedback();
   const [error, setError] = useState("");
   async function reuse() {
-    setBusy(true);
+    setBusy("reuse");
+    buttons.start("reuse");
     setError("");
     try { await desktop.backupUseImageStorage(); onSaved(); }
-    catch (failure) { setError(errorMessage(failure)); }
-    finally { setBusy(false); }
+    catch (failure) { buttons.finish("reuse", false); setError(errorMessage(failure)); }
+    finally { setBusy(undefined); }
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const { target, secret } = readS3Settings(new FormData(event.currentTarget));
-    setBusy(true);
+    setBusy("save");
+    buttons.start("save");
     setError("");
     try {
       await desktop.configureBackup(target, secret);
       onSaved();
-    } catch (failure) { setError(errorMessage(failure)); }
-    finally { setBusy(false); }
+    } catch (failure) { buttons.finish("save", false); setError(errorMessage(failure)); }
+    finally { setBusy(undefined); }
   }
   return <form className="settings-card" autoComplete="off" onSubmit={event => void submit(event)}>
     <S3Fields scope="backup" initial={initial.target} hasKey={initial.hasKey} />
     {error && <p role="alert" className="settings-feedback inline-error">{error}</p>}
     <div className="settings-footer">
-      <Button type="button" variant="soft" disabled={busy} onClick={() => void reuse()}>复用 S3 图床配置</Button>
-      <Button type="button" variant="soft" color="gray" disabled={busy} onClick={onCancel}>取消</Button>
-      <Button type="submit" loading={busy}>保存</Button>
+      <Button type="button" variant="soft" disabled={Boolean(busy)} loading={busy === "reuse"} onClick={() => void reuse()}>{buttons.label("reuse", "复用 S3 图床配置", "已应用")}</Button>
+      <Button type="button" variant="soft" color="gray" disabled={Boolean(busy)} onClick={onCancel}>取消</Button>
+      <Button type="submit" loading={busy === "save"} disabled={Boolean(busy)}>{buttons.label("save", "保存", "已保存", "保存失败")}</Button>
     </div>
   </form>;
 }

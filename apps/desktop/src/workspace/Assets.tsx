@@ -1,3 +1,4 @@
+import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import { Button, Checkbox, Select, TextField } from "@radix-ui/themes";
 import { readS3Settings, S3Fields, SettingRow } from "./Settings";
@@ -63,7 +64,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   onConfigure(): void;
 }) {
   const [library, setLibrary] = useState<AssetLibrary | null>(null);
-  const [selected, setSelected] = useState<{ id: string; key: string; thumbnail?: string } | null>(null);
+  const [selected, setSelected] = useState<{ item: AssetRow; key: string; thumbnail?: string } | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
@@ -90,7 +91,15 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
     function load() {
       const started = ++request;
       void desktop.assetLibrary(page).then(value => {
-        if (live && request === started) { setLibrary(value); setError(""); }
+        if (live && request === started) {
+          setLibrary(value);
+          setSelected(selected => {
+            if (!selected) return selected;
+            const item = value.items.find(item => item.id === selected.item.id);
+            return item ? { ...selected, item } : selected;
+          });
+          setError("");
+        }
       }, error => { if (live && request === started) setError(errorMessage(error)); }).finally(() => {
         if (live && request === started) setPaging(false);
       });
@@ -103,13 +112,12 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   useLayoutEffect(() => {
     if (scroll.current) scroll.current.scrollTop = 0;
   }, [library?.page]);
-  const current = library?.items.find(item => item.id === selected?.id);
+  const current = selected?.item;
   const currentKey = current && assetImageKey(current);
   const minimum = largeTiles ? 108 : 68;
   const layout = arrangeAssets(library?.items ?? [], gridWidth || minimum, minimum);
 
   function turnPage(next: number) {
-    setSelected(null);
     setNotice("");
     setPaging(true);
     if (next === page) setRefresh(value => value + 1);
@@ -162,8 +170,8 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
           {layout.tiles.map(({ item, position, imageHeight }) => {
             const key = assetImageKey(item);
             return <AssetTile key={key} item={item} position={position} imageHeight={imageHeight}
-              selected={selected?.id === item.id} onSelect={thumbnail => {
-              setSelected({ id: item.id, key, thumbnail });
+              selected={selected?.item.id === item.id} onSelect={thumbnail => {
+              setSelected({ item, key, thumbnail });
               setNotice("");
             }} />;
           })}
@@ -285,6 +293,7 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const buttons = useSettingsButtonFeedback();
   const [options, setOptions] = useState<ImageUploadOptions>({ filenameTemplate: "", quality: "original", autoUpload: false });
   const filename = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -300,17 +309,19 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
     const test = action?.value === "test";
     const { target: base, publicBase, secret } = readS3Settings(new FormData(event.currentTarget));
     const target = { ...base, publicBase };
-    setBusy(test ? "test" : "save");
+    const key = test ? "test" : "save";
+    buttons.start(key);
+    setBusy(key);
     setFeedback(null);
     try {
       if (test) {
         await track(desktop.imageStorageTest(target, secret));
-        setFeedback({ error: false, text: "上传、读取和删除均通过" });
       } else {
         await track(desktop.imageStorageSave(enabled ? target : null, enabled ? secret : undefined, enabled ? options : undefined));
-        setFeedback({ error: false, text: enabled ? "图床设置已保存" : "图床已停用" });
       }
+      buttons.finish(key, true);
     } catch (error) {
+      buttons.finish(key, false);
       setFeedback({ error: true, text: errorMessage(error) });
     } finally { setBusy(null); }
   }
@@ -356,10 +367,10 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
     </>}
     <div className="settings-footer image-storage-footer">
       <span className="image-storage-feedback" role={feedback?.error ? "alert" : "status"} data-error={feedback?.error}
-        title={feedback?.text}>{feedback?.text ?? (!initial ? "正在读取设置…" : busy === "test" ? "正在测试…" : busy ? "正在保存…" : "")}</span>
+        title={feedback?.text}>{feedback?.text ?? (!initial ? "正在读取设置…" : "")}</span>
       {initial && <>
-        <Button type="submit" value="test" variant="soft" disabled={Boolean(busy)}>测试连接</Button>
-        <Button type="submit" value="save" disabled={Boolean(busy)} formNoValidate={!enabled}>保存</Button>
+        <Button type="submit" value="test" variant="soft" loading={busy === "test"} disabled={Boolean(busy)}>{buttons.label("test", "测试连接", "测试通过", "测试失败")}</Button>
+        <Button type="submit" value="save" loading={busy === "save"} disabled={Boolean(busy)} formNoValidate={!enabled}>{buttons.label("save", "保存", "已保存", "保存失败")}</Button>
       </>}
     </div>
   </form>;

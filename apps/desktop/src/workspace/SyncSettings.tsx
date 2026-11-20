@@ -1,3 +1,4 @@
+import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useState } from "react";
 import { AlertDialog, Button, Flex, TextArea, TextField } from "@radix-ui/themes";
 import { ChevronRight } from "lucide-react";
@@ -56,10 +57,10 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
   const [name, setName] = useState<string>();
   const [code, setCode] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
-  const [busy, setBusy] = useState<"connect" | "reauthorize" | "secret" | "info" | "access" | "recovery" | "recover" | "revoke" | "sync" | "resolve" | "rebuild">();
+  const [busy, setBusy] = useState<"connect" | "reauthorize" | "secret" | "info" | "access" | "recovery" | "recover" | "revoke" | "sync" | "resolve" | "rebuild" | "reveal">();
+  const { start, finish, label: buttonLabel } = useSettingsButtonFeedback();
   const blocked = Boolean(busy) || applicationBusy;
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [confirm, setConfirm] = useState<SyncDevice>();
   const [recoveryArchive, setRecoveryArchive] = useState("");
   const [needsReconnect, setNeedsReconnect] = useState(false);
@@ -114,15 +115,17 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     return () => { current = false; };
   }, [showConnectionForm, binding?.paused]);
 
-  async function perform(kind: NonNullable<typeof busy>, operation: () => Promise<void>) {
+  async function perform(kind: NonNullable<typeof busy>, operation: () => Promise<void>, key: string = kind) {
     if (blocked) return;
+    start(key);
     setBusy(kind);
     onBusyChange?.(true);
     setError("");
-    setNotice("");
     try {
       await operation();
+      finish(key, true);
     } catch (failure) {
+      finish(key, false);
       setError(errorMessage(failure));
       if (credentialRejected(failure)) setNeedsReconnect(true);
     } finally {
@@ -137,7 +140,6 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
       if (archive) setRecoveryArchive(archive);
       setActivity(await desktop.syncActivity());
       setDevices(await desktop.syncDevices());
-      setNotice(archive ? "已合并本地与云端内容" : "同步检查完成");
     } finally { setConflicts(await desktop.syncConflicts()); }
   }
 
@@ -146,7 +148,6 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     setNeedsReconnect(false);
     setCode("");
     setRecoveryCode("");
-    setNotice("设备已连接，正在同步");
     if (current.paused) return;
     await synchronize();
   }
@@ -155,13 +156,13 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     if (issue.remoteRevision === null || issue.localGeneration === null) return;
     try { await onResolve(issue.entityType, issue.entityId, choice, issue.remoteRevision, issue.localGeneration); }
     finally { setConflicts(await desktop.syncConflicts()); }
-    setNotice(choice === "local" ? "本地版本已排队上传" : choice === "copy" && issue.entityType !== "entry"
-      ? "已另存本地白板副本；原冲突项已选择云端版本，同组冲突处理完毕后应用" : "冲突已处理；如有同组冲突，请继续处理");
   }
 
   const active = devices?.devices.filter(device => !device.revokedAt) ?? [];
   const failure = error || activity?.error?.message || automaticError;
-  const feedbackText = failure || notice;
+  const feedback = <div className="sync-action-feedback">
+    {failure && <p role="alert" className="sync-feedback" data-error="true" title={failure}>{failure}</p>}
+  </div>;
   const deviceName = name ?? active.find(device => device.deviceId === devices?.currentDeviceId)?.name ?? "";
   const lastExchangeAt = activity?.lastExchangeAt;
   return <div className="settings-card sync-settings">
@@ -192,30 +193,32 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
       </SettingRow>
       {showMergeNotice && <p id="sync-merge-hint" className="setting-hint">连接后将合并本地与云端内容；同一内容存在不同修改时，会保留双方版本供你处理。</p>}
       <div className="settings-footer sync-connect-footer">
-        <p role={failure ? "alert" : "status"} title={feedbackText || undefined}
-          className={`sync-feedback ${failure ? "inline-error" : "muted-text"}`}>{feedbackText}</p>
+        {feedback}
         {!binding && <Button type="button" color="gray" variant="soft" loading={busy === "secret"} disabled={blocked}
           onClick={() => void perform("secret", async () => {
             const generated = await desktop.syncGenerateSecret();
             await desktop.copyText(generated);
             setCode(generated);
-            setNotice("密钥已复制，请先将其保存为服务部署配置的 SETUP_SECRET");
-          })}>生成部署密钥</Button>}
+          })}>{buttonLabel("secret", "生成部署密钥", "复制成功", "生成失败")}</Button>}
         <Button type="submit" aria-describedby={showMergeNotice ? "sync-merge-hint" : undefined}
-          loading={busy === "connect"} disabled={blocked}>连接</Button>
+          loading={busy === "connect"} disabled={blocked}>{buttonLabel("connect", "连接", "连接成功", "连接失败")}</Button>
       </div>
     </form>}
     {binding && !binding.paused && !needsReconnect && <>
       {deviceName && <SettingRow label="当前设备">{() => <span className="muted-text">{deviceName}</span>}</SettingRow>}
-      <div className="settings-footer">
+      <div className="settings-footer sync-actions-footer">
+        {feedback}
         <Button type="button" color="gray" variant="soft" loading={busy === "info"} disabled={blocked} onClick={() => void perform("info", async () => {
           const info = await desktop.syncConnectionInfo();
           await desktop.copyText(`服务地址：${info.url}\n连接密钥：${info.accessKey}`);
-          setNotice("连接信息已复制");
-        })}>复制连接信息</Button>
-        <Button type="button" variant="soft" loading={busy === "sync"} disabled={blocked} onClick={() => void perform("sync", synchronize)}>立即同步</Button>
+        })}>{buttonLabel("info", "复制连接信息", "复制成功", "复制失败")}</Button>
+        <Button type="button" variant="soft" loading={busy === "sync"} disabled={blocked} onClick={() => void perform("sync", synchronize)}>
+          {buttonLabel("sync", "立即同步", "检查完成", "检查失败")}
+        </Button>
       </div>
     </>}
+    {!showConnectionForm && (!binding || binding.paused) && failure &&
+      <div className="settings-footer sync-actions-footer">{feedback}</div>}
     {conflicts.map(issue => <SettingRow key={issue.entityType + "/" + issue.entityId}
       label={issue.local?.title || issue.local?.name || issue.local?.label || issue.remote?.title || issue.remote?.name || issue.remote?.label || conflictLabels[issue.entityType]} hint={issue.reason}>
       {() => issue.resolvable ? <details className="sync-conflict">
@@ -241,7 +244,9 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
             ["cloud", issue.entityType === "entry" ? "采用云端稿" : "采用云端版本"]] as const).map(([choice, label]) =>
             <Button key={choice} type="button" size="1" variant="soft" disabled={blocked || binding?.paused ||
               (issue.entityType !== "entry" && (choice === "local" && !issue.canKeepLocal || choice === "copy" && !issue.local))}
-              onClick={() => void perform("resolve", () => resolve(issue, choice))}>{label}</Button>)}
+              onClick={() => void perform("resolve", () => resolve(issue, choice), `resolve:${issue.entityType}:${issue.entityId}:${choice}`)}>
+              {buttonLabel(`resolve:${issue.entityType}:${issue.entityId}:${choice}`, label, "处理完成")}
+            </Button>)}
         </Flex>
       </details> : null}
     </SettingRow>)}
@@ -250,13 +255,14 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
       {binding && !binding.paused && !needsReconnect && <>
         {active.map(device => <SettingRow key={device.deviceId} label={device.name}>
           {() => device.deviceId === devices?.currentDeviceId ? <span className="muted-text">当前设备</span>
-            : <Button type="button" size="1" color="red" variant="soft" disabled={blocked} onClick={() => setConfirm(device)}>撤销</Button>}
+            : <Button type="button" size="1" color="red" variant="soft" disabled={blocked} onClick={() => setConfirm(device)}>
+              {buttonLabel(`revoke:${device.deviceId}`, "撤销", "已撤销")}
+            </Button>}
         </SettingRow>)}
         <SettingRow label="更换连接密钥" hint="旧连接密钥将失效，已连接的设备继续同步。">
           {() => <Button type="button" variant="soft" loading={busy === "access"} disabled={blocked} onClick={() => void perform("access", async () => {
             await desktop.copyText(await desktop.syncCreateAccessKey());
-            setNotice("新连接密钥已复制，请更新保存的连接信息");
-          })}>更换并复制密钥</Button>}
+          })}>{buttonLabel("access", "更换并复制密钥", "复制成功", "复制失败")}</Button>}
         </SettingRow>
       </>}
       {binding?.paused && <form onSubmit={event => {
@@ -265,7 +271,6 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
           setBinding(await desktop.syncReauthorize(binding.url, deviceName, code));
           setNeedsReconnect(false);
           setCode("");
-          setNotice("已授权，可以采用云端内容恢复本机");
         });
       }}>
         <SettingRow id="sync-review-name" label="设备名称">
@@ -275,14 +280,15 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
           {hintId => <TextField.Root id="sync-review-key" aria-describedby={hintId} type="text" autoComplete="off"
             required minLength={64} maxLength={64} value={code} onChange={event => setCode(event.target.value)} />}
         </SettingRow>
-        <div className="settings-footer"><Button type="submit" variant="soft" loading={busy === "reauthorize"} disabled={blocked}>授权当前服务</Button></div>
+        <div className="settings-footer"><Button type="submit" variant="soft" loading={busy === "reauthorize"} disabled={blocked}>
+          {buttonLabel("reauthorize", "授权当前服务", "授权成功", "授权失败")}
+        </Button></div>
       </form>}
       {binding && !binding.paused && !needsReconnect && <SettingRow label="设备恢复密钥" hint="用于恢复指定设备身份，使用一次后失效。">
         {hintId => <Button id="sync-recovery-key" aria-describedby={hintId} type="button" variant="soft"
           loading={busy === "recovery"} disabled={blocked} onClick={() => void perform("recovery", async () => {
             await desktop.copyText(await desktop.syncCreateRecoveryKey());
-            setNotice("恢复密钥已复制，请保存在应用之外");
-          })}>生成并复制恢复密钥</Button>}
+          })}>{buttonLabel("recovery", "生成并复制恢复密钥", "复制成功", "复制失败")}</Button>}
       </SettingRow>}
       {(showConnectionForm || binding?.paused) && <form onSubmit={event => {
         event.preventDefault();
@@ -293,12 +299,14 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
             required minLength={64} maxLength={64} value={recoveryCode} onChange={event => setRecoveryCode(event.target.value)} />}
         </SettingRow>
         <div className="settings-footer"><Button type="submit" variant="soft" loading={busy === "recover"}
-          disabled={blocked || !deviceName || !(binding?.url ?? url)}>恢复指定设备</Button></div>
+          disabled={blocked || !deviceName || !(binding?.url ?? url)}>{buttonLabel("recover", "恢复指定设备", "恢复成功", "恢复失败")}</Button></div>
       </form>}
       {binding?.paused && !needsReconnect && <div className="settings-footer">
         <AlertDialog.Root>
-          <AlertDialog.Trigger><Button type="button" variant="soft" disabled={blocked} loading={busy === "rebuild"}>采用云端内容恢复本机</Button></AlertDialog.Trigger>
-          <AlertDialog.Content maxWidth="440px">
+          <AlertDialog.Trigger><Button type="button" variant="soft" disabled={blocked} loading={busy === "rebuild"}>
+            {buttonLabel("rebuild", "采用云端内容恢复本机", "恢复完成", "恢复失败")}
+          </Button></AlertDialog.Trigger>
+          <AlertDialog.Content className="sync-confirm-dialog" maxWidth="440px">
             <AlertDialog.Title>采用云端内容恢复本机</AlertDialog.Title>
             <AlertDialog.Description>先保存本地恢复副本，再采用云端内容。本地独有文稿将移入废纸篓，未同步修改可从恢复副本找回。</AlertDialog.Description>
             <Flex gap="3" mt="4" justify="end">
@@ -308,21 +316,20 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
                 setBinding(await desktop.syncStatus());
                 setActivity(await desktop.syncActivity());
                 setConflicts([]);
-                setNotice("已采用云端内容恢复本机");
                 setDevices(await desktop.syncDevices());
-              })}>恢复</Button></AlertDialog.Action>
+              })}>{buttonLabel("rebuild", "恢复", "恢复完成", "恢复失败")}</Button></AlertDialog.Action>
             </Flex>
           </AlertDialog.Content>
         </AlertDialog.Root>
       </div>}
     </details>
     {recoveryArchive && <div className="settings-footer">
-      <Button type="button" variant="soft" disabled={blocked} onClick={() => void perform("rebuild", () => desktop.revealFile(recoveryArchive))}>打开恢复副本位置</Button>
+      <Button type="button" variant="soft" loading={busy === "reveal"} disabled={blocked} onClick={() => void perform("reveal", () => desktop.revealFile(recoveryArchive))}>
+        {buttonLabel("reveal", "打开恢复副本位置", "已打开", "打开失败")}
+      </Button>
     </div>}
-    {!showConnectionForm && notice && <p role="status" className="settings-feedback sync-feedback muted-text" title={notice}>{notice}</p>}
-    {!showConnectionForm && failure && <p role="alert" className="settings-feedback inline-error">{failure}</p>}
     <AlertDialog.Root open={Boolean(confirm)} onOpenChange={open => { if (!open) setConfirm(undefined); }}>
-      <AlertDialog.Content maxWidth="400px">
+      <AlertDialog.Content className="sync-confirm-dialog" maxWidth="400px">
         <AlertDialog.Title>撤销设备</AlertDialog.Title>
         <AlertDialog.Description>{confirm?.name}的设备凭据将失效。更换连接密钥可阻止持有旧密钥的设备再次加入。</AlertDialog.Description>
         <Flex gap="3" mt="4" justify="end">
@@ -332,9 +339,8 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
             void perform("revoke", async () => {
               await desktop.syncRevokeDevice(confirm.deviceId);
               setDevices(await desktop.syncDevices());
-              setNotice("设备已撤销");
-            });
-          }}>撤销</Button></AlertDialog.Action>
+            }, `revoke:${confirm.deviceId}`);
+          }}>{buttonLabel(`revoke:${confirm?.deviceId}`, "撤销", "已撤销")}</Button></AlertDialog.Action>
         </Flex>
       </AlertDialog.Content>
     </AlertDialog.Root>

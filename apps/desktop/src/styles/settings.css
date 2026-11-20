@@ -119,7 +119,7 @@
 }
 .sync-settings .setting-control:has(> :is(.rt-TextFieldRoot, .rt-SelectTrigger)) { max-width: none; }
 .sync-settings .setting-control > .rt-TextFieldRoot { width: 100%; }
-.sync-connect-footer { align-items: center; flex-wrap: nowrap; }
+.sync-connect-footer, .sync-actions-footer { align-items: center; flex-wrap: nowrap; }
 .sync-settings .setting-row:has(.sync-conflict) { display: block; }
 .sync-settings .setting-control:has(.sync-conflict) { display: block; max-width: none; margin-top: 8px; }
 .sync-conflict > summary { cursor: pointer; }
@@ -129,12 +129,24 @@
 @media (max-width: 1100px) {
   .sync-conflict-versions { grid-template-columns: minmax(0, 1fr); }
 }
-.sync-connect-footer > .rt-Button { flex: none; }
+.sync-connect-footer > .rt-Button, .sync-actions-footer > .rt-Button { flex: none; }
+.sync-action-feedback { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.sync-action-feedback > .sync-feedback { flex: 0 1 auto; }
 .sync-feedback {
   margin: 0; min-width: 0; min-height: 1lh; font-size: var(--small-font); line-height: 1.45;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.sync-connect-footer > .sync-feedback { flex: 1; }
+.sync-feedback[data-error="true"] { color: var(--red-11); }
+.settings-button-label { display: inline-grid; place-items: center; min-inline-size: 4em; }
+.settings-button-label > span, .settings-button-label::before, .settings-button-label::after { grid-area: 1 / 1; }
+.settings-button-label::before { content: attr(data-label); visibility: hidden; }
+.settings-button-label::after { content: attr(data-success-label); visibility: hidden; }
+.rt-Button:has(.settings-button-label[data-result="success"]) {
+  background-color: var(--green-4); color: var(--green-11);
+}
+.rt-Button:has(.settings-button-label[data-result="error"]) {
+  background-color: var(--red-4); color: var(--red-11);
+}
 .sync-advanced { padding-block: 8px 16px; }
 .sync-advanced > summary {
   display: flex; align-items: center; gap: 6px; min-height: 32px; width: fit-content;
@@ -156,13 +168,15 @@
 .mcp-feedback { flex: 1 1 90px; min-width: 0; font-size: var(--small-font); min-height: 1lh; }
 .mcp-footer [data-available="false"] { visibility: hidden; }
 .mcp-submit { min-width: 86px; }
-.mcp-settings .rt-Button {
-  transition: background-color 180ms ease-out, color 180ms ease-out, opacity 180ms ease-out, scale 160ms ease-out;
+:is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton) {
+  transition: background-color 250ms ease-out, color 250ms ease-out, opacity 250ms ease-out, scale 250ms ease-out;
 }
-.mcp-settings .rt-Button:active:not(:disabled) { scale: .97; }
+:is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton):active:not(:disabled),
+:is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton).rt-loading { scale: .97; }
 @media (prefers-reduced-motion: reduce) {
-  .mcp-settings .rt-Button { transition: none; }
-  .mcp-settings .rt-Button:active { scale: none; }
+  :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton) { transition: none; }
+  :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton):active:not(:disabled),
+  :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton).rt-loading { scale: none; }
 }
 .ai-settings { display: grid; gap: 14px; }
 .ai-settings-card { border: var(--hairline); border-radius: 8px; }
@@ -245,4 +259,11 @@
   .sync-settings .setting-row:has(> .setting-control > :is(.rt-TextFieldRoot, .rt-SelectTrigger)) {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.settings-dialog .plain-button { transition: background-color 250ms ease-out, color 250ms ease-out, scale 250ms ease-out; }
+.settings-dialog .plain-button:active:not(:disabled) { scale: .97; }
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog .plain-button { transition: none; }
+  .settings-dialog .plain-button:active:not(:disabled) { scale: none; }
 }
