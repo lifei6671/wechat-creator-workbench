@@ -1111,6 +1111,16 @@ fn apply_group(conn: &Connection, entities: Vec<Entity>) -> Result<Applied> {
         ordered.push((apply_order(conn, &entity)?, entity));
     }
     ordered.sort_by_key(|(rank, _)| *rank);
+    // A promoted child may reuse a deleted parent's name before that parent can be removed.
+    let temporary = format!("sync-{}-", id());
+    for (_, entity) in &ordered {
+        if entity.key.entity_type == Kind::Category && entity.deleted_at.is_some() {
+            conn.execute(
+                "UPDATE categories SET name=?1 || id WHERE id=?2",
+                params![temporary, entity.key.entity_id],
+            )?;
+        }
+    }
     let mut changed = Applied {
         network_ready: !ordered.is_empty(),
         ..Applied::default()
@@ -2115,14 +2125,22 @@ mod tests {
     #[test]
     fn folder_delete_choices_replay_as_one_atomic_sync_group() {
         use crate::content::taxonomy::CategoryDeleteMode;
-        for mode in [CategoryDeleteMode::Promote, CategoryDeleteMode::Trash] {
+        for (mode, parent_name, child_name, deferred) in [
+            (CategoryDeleteMode::Promote, "parent", "child", false),
+            (CategoryDeleteMode::Trash, "parent", "child", false),
+            (CategoryDeleteMode::Promote, "资料", "资料", false),
+            (CategoryDeleteMode::Promote, "Same", "same", false),
+            (CategoryDeleteMode::Promote, "资料", "资料", true),
+            (CategoryDeleteMode::Promote, "Same", "same", true),
+        ] {
             let setup = || {
                 let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
                 db.write(|tx| {
-                    tx.execute_batch("INSERT INTO sync_binding (id,url,instance_id,epoch,device_id) VALUES (1,'https://sync.example.test','server','epoch','device');
-                        INSERT INTO categories (id,name,depth,sort_order) VALUES ('folder','parent',1,3);
-                        INSERT INTO categories (id,parent_id,name,depth,sort_order) VALUES ('child','folder','child',2,0);
-                        INSERT INTO entries (id,kind,title,status,category_id,content_md,created_at,updated_at)
+                    tx.execute_batch("DELETE FROM categories;
+                        INSERT INTO sync_binding (id,url,instance_id,epoch,device_id) VALUES (1,'https://sync.example.test','server','epoch','device');")?;
+                    tx.execute("INSERT INTO categories (id,name,depth,sort_order) VALUES ('folder',?1,1,3)", [parent_name])?;
+                    tx.execute("INSERT INTO categories (id,parent_id,name,depth,sort_order) VALUES ('child','folder',?1,2,0)", [child_name])?;
+                    tx.execute_batch("INSERT INTO entries (id,kind,title,status,category_id,content_md,created_at,updated_at)
                         VALUES ('direct','article','direct','draft','folder','direct',1,1),('nested','article','nested','draft','child','nested',1,1);
                         UPDATE sync_progress SET capture=1,initialized=1;")?;
                     for (kind, id) in [(Kind::Category,"folder"),(Kind::Category,"child"),(Kind::Entry,"direct"),(Kind::Entry,"nested")] {
@@ -2146,6 +2164,15 @@ mod tests {
                         deleted_at: (mutation.operation == "delete").then_some(2),
                         payload: mutation.payload.clone().unwrap_or_else(|| json!({})),
                     };
+                    if deferred {
+                        issue(
+                            tx,
+                            &entity.key,
+                            0,
+                            "UNIQUE constraint failed: categories.name",
+                            Some(&entity),
+                        )?;
+                    }
                     tx.execute(
                         "INSERT INTO sync_inbox VALUES (?1,'delete-folder',?2,?3)",
                         params![
@@ -2159,7 +2186,11 @@ mod tests {
             })
             .unwrap();
             let applied = apply_received(&b).unwrap();
-            assert_eq!(applied.changed_entries.len(), if trash { 2 } else { 1 });
+            assert_eq!(
+                applied.changed_entries.len(),
+                if trash { 2 } else { 1 },
+                "{parent_name}/{child_name}, deferred={deferred}"
+            );
             b.read(|conn| {
                 assert_eq!(
                     conn.query_row(
@@ -2174,13 +2205,34 @@ mod tests {
                         .get::<_, i64>(0))?,
                     0
                 );
+                assert_eq!(
+                    conn.query_row("SELECT COUNT(*) FROM sync_issues", [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+                assert_eq!(
+                    conn.query_row("SELECT COUNT(*) FROM sync_dirty", [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+                let direct = entries::snapshot(conn, "direct")?.unwrap();
+                assert!(direct["categoryId"].is_null());
+                assert_eq!(direct["contentMd"], "direct");
                 let nested = entries::snapshot(conn, "nested")?.unwrap();
+                assert_eq!(nested["contentMd"], "nested");
                 if trash {
                     assert!(nested["deletedAt"].is_number());
                     assert!(nested["categoryId"].is_null());
                 } else {
+                    assert!(direct["deletedAt"].is_null());
                     assert!(nested["deletedAt"].is_null());
                     assert_eq!(nested["categoryId"], "child");
+                    assert_eq!(
+                        conn.query_row("SELECT name FROM categories WHERE id='child'", [], |r| {
+                            r.get::<_, String>(0)
+                        })?,
+                        child_name
+                    );
                     assert!(conn.query_row(
                         "SELECT parent_id IS NULL AND depth=1 FROM categories WHERE id='child'",
                         [],
