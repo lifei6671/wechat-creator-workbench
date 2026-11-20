@@ -6,6 +6,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [安装、开发与配置](./getting-started.md) | 本地运行、构建检查、macOS 打包、数据库备份及 MCP / AI 接入 |
 | [MVP 技术方案](./mvp-technical-design.md) | 产品边界、技术架构、Plainly 复用、数据模型、微信公众号导入导出、图片、备份、MCP、AI、测试与开源合规 |
 | [实施计划与验收](./implementation-plan.md) | 分阶段执行任务、任务依赖、验收条件、测试样本及交付顺序 |
 | [桌面界面与交互设计规范](./ui-design-guidelines.md) | Radix UI Themes、工作区布局、设计令牌、交互与快捷键、平台适配及验收规则 |

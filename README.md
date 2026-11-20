@@ -1,87 +1,97 @@
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="88" alt="微信创作工作台图标" />
+</p>
+
 # 微信创作工作台
 
-面向微信公众号创作者的本地桌面应用。支持公开公众号文章导入、Markdown 写作、Plainly 排版、公众号富文本复制、素材库、S3 图床和带图导出。
+**从一条灵感，到一篇可以复制到公众号的文章。**
 
-开发环境为 Node.js 24.19.0、pnpm 12.5.1 和 Rust 1.98.0。Windows 需要 VS C++ 生成工具和 WebView2。macOS 版面向 macOS 14 及以上，构建需要 Xcode Command Line Tools。
+收集公众号文章、网页和 GitHub 项目，把资料放进选题画布，接着写作、调用 AI、预览排版。微信创作工作台把这些步骤放进一个本地桌面应用，让你围绕文章持续创作。
 
-```sh
-pnpm install --frozen-lockfile
-cargo install cargo-about --version 0.9.3 --locked --features cli
-cargo fetch --manifest-path src-tauri/Cargo.toml --locked
-pnpm web:build
-pnpm dev
-```
+[开始使用](#开始使用) / [安装与配置](docs/getting-started.md) / [版本发布](https://github.com/lifei6671/wechat-creator-workbench/releases) / [反馈问题](https://github.com/lifei6671/wechat-creator-workbench/issues)
 
-- `pnpm typecheck` 检查 TypeScript，`pnpm test` 运行前端单元测试。首次进行全仓类型检查前，先运行 `npm ci --prefix apps/sync-server` 安装同步服务的依赖。
-- `cargo test --manifest-path src-tauri/Cargo.toml --locked` 验证迁移和内容服务。
-- `pnpm tauri build --debug --no-bundle` 生成用于本机验证的桌面程序；`pnpm build` 构建桌面安装包。
-- 「设置 → 关于」显示本机版本、更新状态和离线开源组件清单。开发构建未配置更新签名时禁用检查；正式发行、签名配置及部署包说明见 [发行指南](docs/release-guide.md)。
+![微信创作工作台：文章编辑与标题大纲](docs/assets/img1.png)
 
-面向 `master` 的 Pull Request 和推送到 `master` 后，GitHub Actions 会运行前端类型检查和测试、同步服务的 Node/Workers 本地契约测试，以及 macOS、Windows 的 Clippy、Rust 测试和桌面编译。Clippy 将警告视为失败。`master` 要求通过 Pull Request 合并，且 `Frontend and sync server`、`Desktop (macos-latest)`、`Desktop (windows-latest)` 三项检查全部通过，分支与最新 `master` 保持同步；管理员同样受约束，无需额外审批。CI 不部署服务，也不发布安装包。
+## 为持续写公众号的人准备
 
-正文和素材记录保存在系统应用数据目录下的 `workspace/content.db`，图片文件保存在 `workspace/assets/`。从「资料库」可导入公众号链接，写作区可选择主题、复制公众号富文本或导出排版 HTML。没有图床时，复制正文后可按助手中的编号逐张复制或保存图片。
+写一篇文章，往往从收集资料就开始了。看到一篇好文章先收藏，找到一个开源项目再记下来，写稿时还要翻浏览器、找截图、整理提纲，最后换个工具处理公众号排版。
 
-Obsidian Web Clipper 中选择「复制到剪贴板」后，在工作区空白处或文章正文按 `Ctrl+V`（macOS 为 `Command+V`），会将带有 `title` 和 `source` 属性的剪藏收录到当前文件夹，并在新标签页打开。作者、原文发布日期、剪藏日期、摘要和标签会保存为文章属性，重复来源打开已有文章。远程图片遵循粘贴图片下载设置；Obsidian 本地附件只有文件名时保留引用并提示缺少文件。使用纯文本粘贴可保留完整原文，不触发导入。
+微信创作工作台把资料、选题、正文和排版连在一起。今天收集的内容，可以成为下一篇文章的素材；围绕选题整理过的画布，也可以留着继续研究。
 
-在「设置 → 同步」展开「查看冲突内容」，可对照文章或白板冲突项的本地与云端版本，并选择保留本地、采用云端或另存副本。白板按白板信息、卡片、连线分别处理冲突；另存副本会完整复制本地白板的卡片、布局和连线，保留已有文章及图片引用，再为原冲突项选择云端版本。同组冲突需全部处理后才能应用。云端已删除的白板项不能在原 ID 上恢复，可另存副本以保留本地内容；本地已删除的项没有可另存的副本。
+## 你可以用它做什么
 
-回收站右上角的垃圾桶按钮可清空全部已删除内容，操作前会确认。可在「设置 → 通用 → 回收站保留时间」选择 1、7、14、30、90 天或不自动清理，默认 7 天；应用启动时及运行期间每小时清理过期内容。清理会移除正文、历史版本及关联 AI 记录，其他文档共用的素材仍会保留。
+### 把看到的好内容留下来
 
-### macOS 通用安装包
+粘贴公开公众号文章、普通网页或 GitHub 仓库链接，导入正文并保留来源。已有 Markdown 文章也能导入，使用 Obsidian Web Clipper 时可以直接粘贴剪藏内容。
 
-```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-APPLE_SIGNING_IDENTITY=- pnpm build --target universal-apple-darwin --bundles app,dmg
-```
+用文件夹、标签和全文搜索管理资料，写到一半也能找回之前收集的内容。
 
-`src-tauri/target/universal-apple-darwin/release/bundle/` 下的 `.app` 和 `.dmg` 同时包含 Apple Silicon 和 Intel 架构。示例使用临时签名，供本机验证。对外分发时使用 Developer ID 签名并完成 Apple 公证。
+### 在选题画布上整理思路
 
-## S3 数据库备份
+把参考文章、网页、截图和文本卡片放到同一张画布上，自由排列、连线和批注。适合做开源项目选题、教程资料整理，或把零散灵感组织成文章脉络。
 
-在「设置」→「数据库备份」配置私有 S3 桶。点「备份当前工作区」会先保存打开的稿件，再上传一份 SQLite 快照。工作台从 S3 读取工作区和备份清单，每个工作区在成功上传后保留最近 5 份备份。
+文章卡片引用内容库中的原文，同一篇资料可以放进不同选题，集中维护。
 
-在备份列表点「准备恢复」下载并校验快照，校验通过后点「确认恢复」。应用会保存待提交稿件，停止服务并重启，然后用所选快照替换本地数据库。恢复结果以快照中的内容为准。备份只包含数据库，图片由本地素材文件或图床提供；换设备后可在设置中重新填写备份、图床及 AI 所需的凭据。
+![选题画布：用文章、网页、图片和连线组织资料](docs/assets/img4.png)
 
-## 本机 MCP
+### 从提纲写到正文
 
-打开「设置」→「MCP 服务」，启用服务并复制令牌。默认地址为 `http://127.0.0.1:17321/mcp`，默认权限为只读。需要新建、修改内容或导入文章时，在设置里选择读写并保存。
+用可视化编辑器写作，以 Markdown 保存正文。标题大纲、列表、表格、代码块、公式和 Mermaid 图表都能放进文章，多标签页方便对照资料与稿件。
 
-Windows PowerShell 中从剪贴板加载刚复制的令牌，然后为 [Codex CLI](https://github.com/openai/codex/blob/main/codex-rs/cli/src/mcp_cmd.rs) 添加服务。从包含该环境变量的终端启动客户端。
+自动保存、历史版本和回收站帮助你保留写作过程；需要专注时，可以收起辅助面板。
 
-```powershell
-$env:WECHAT_WORKBENCH_MCP_TOKEN = (Get-Clipboard).Trim()
-codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
-```
+### 接入你自己的 AI
 
-macOS 终端可用 `pbpaste` 读取刚复制的令牌。
+请 AI 总结资料、生成标题、改写选区，或围绕当前文章继续讨论。建议可以先检查，再决定是否写入正文。
 
-```sh
-export WECHAT_WORKBENCH_MCP_TOKEN="$(pbpaste)"
-codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
-```
+支持 Codex CLI、Claude Code、本地 Ollama / LM Studio，以及自定义模型接口。AI 按需启用，启用后会将本次请求所需的内容交给选定的模型或代理。
 
-[Claude Code](https://code.claude.com/docs/en/mcp) 可在项目的 `.mcp.json` 使用同一个环境变量。从设置改过端口时同步替换示例地址。
+![文章时间流、编辑器与 AI 助手](docs/assets/img2.png)
 
-```json
-{
-  "mcpServers": {
-    "wechat-workbench": {
-      "type": "http",
-      "url": "http://127.0.0.1:17321/mcp",
-      "headers": { "Authorization": "Bearer ${WECHAT_WORKBENCH_MCP_TOKEN}" }
-    }
-  }
-}
-```
+### 预览排版，复制到公众号
 
-## AI 助手
+选择公众号主题，查看手机尺寸下的排版效果，再复制公众号格式，到公众号后台粘贴、检查并发布。也可以导出 Markdown 或排版 HTML。
 
-在「设置」→「AI 代理」启用 AI，并选择默认目标：
+支持素材库和 S3 兼容图床。配置图床后可使用图片公开链接；未配置时，可以按正文顺序逐张处理图片。
 
-- **本地代理**：在本机安装并登录 Codex CLI 或 Claude Code。工作台会检测可执行文件，并使用 CLI 已有的登录凭据。工作台将本次文字交给代理生成候选，应用候选仍需在编辑器中确认。
-- **本地模型**：启动 Ollama 或 LM Studio 的本机服务，填写模型名。设置里可直接选用这两种服务的默认接口地址。
-- **API 模型**：可选用 OpenAI、Gemini、OpenRouter 预设，也可填写自定义的 Chat Completions 基础 URL 或完整接口地址。API 密钥留在系统凭据库中。
+![手机排版预览与复制公众号格式](docs/assets/img5.png)
 
-模型可在添加前测试连接，测试只发送示例文字。底部状态栏的「AI 助手」会调用默认目标生成摘要、建议标题或改写选区。关闭 AI 会停止接受新生成请求，保留已保存的目标配置。旧版单一模型配置会保留为默认目标。
+### 按自己的方式保存和同步
 
-项目采用 GPL-3.0，主要第三方依赖见 [NOTICE](NOTICE.md)。
+文稿和素材默认保存在本机，支持离线写作。多台电脑之间可以接入自托管同步服务，部署在 Cloudflare、VPS 或 NAS，遇到内容冲突时保留选择和处理入口。
+
+工作区迁移包用于转移数据库、素材和界面设置；S3 数据库快照用于备份和恢复数据库，图片由本地文件或图床提供。
+
+<details>
+<summary>查看素材库与工作区设置</summary>
+
+![素材库与工作区设置](docs/assets/img3.png)
+
+</details>
+
+## 一次完整的创作流程
+
+1. **收集资料**：导入文章、网页或 GitHub README，归入文件夹并打上标签。
+2. **组织选题**：把相关资料加入专题画布，放上截图和自己的想法。
+3. **写成文章**：对照资料写正文，需要时让 AI 帮忙梳理和润色。
+4. **完成排版**：选主题、看预览，复制到公众号后台检查并发布。
+
+工作台也提供本机 MCP 服务，可以让 Codex CLI、Claude Code 等客户端按你设置的权限查阅或编辑内容。[查看配置方法](docs/getting-started.md#本机-mcp)
+
+## 开始使用
+
+项目仍在开发中，目前尚未发布正式安装包，可先按照[安装与配置指南](docs/getting-started.md)从源码运行。后续正式安装包将在 [Releases](https://github.com/lifei6671/wechat-creator-workbench/releases) 提供。
+
+桌面客户端面向 Windows 和 macOS。自托管同步、图床、AI 和数据库备份均可按需配置；本地写作可以先独立使用。
+
+| 我想做什么 | 去哪里 |
+| --- | --- |
+| 在本机运行、构建或配置 AI / MCP | [安装与配置](docs/getting-started.md) |
+| 搭建多设备同步服务 | [同步服务部署](apps/sync-server/README.md) |
+| 了解更新签名和发行流程 | [发行指南](docs/release-guide.md) |
+| 查看技术方案、设计规范与研发文档 | [文档目录](docs/README.md) |
+| 报告问题或提出需求 | [GitHub Issues](https://github.com/lifei6671/wechat-creator-workbench/issues) |
+
+## 开源与致谢
+
+项目采用 [GPL-3.0](LICENSE) 许可证。感谢 Tauri、React、Milkdown、Radix UI、React Flow、assistant-ui 等开源项目，以及提供公众号排版基础的 [Plainly](https://github.com/lifei6671/plainly)。第三方许可和来源见 [NOTICE](NOTICE.md)。
