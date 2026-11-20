@@ -713,6 +713,20 @@ export function MarkdownEditor(props: Props) {
       })
       .use(richCommonmark).use(gfm).use(history).use(richSchema(() => latest.current, failedImages))
       .use($useKeymap("workbenchEditor", {
+        DeletePreviousCodeBlock: {
+          shortcuts: "Backspace",
+          priority: 100,
+          command: () => (state, dispatch, view) => {
+            if (!view || !isWritable(view) || view.composing) return false;
+            const cursor = state.selection instanceof TextSelection ? state.selection.$cursor : null;
+            if (!cursor || cursor.parentOffset || cursor.parent.type.name !== "paragraph") return false;
+            const boundary = cursor.before();
+            const previous = state.doc.resolve(boundary).nodeBefore;
+            if (previous?.type.name !== "code_block") return false;
+            dispatch?.(state.tr.delete(boundary - previous.nodeSize, boundary).scrollIntoView());
+            return true;
+          },
+        },
         KeepFocusOnTab: {
           shortcuts: "Tab",
           priority: 0,

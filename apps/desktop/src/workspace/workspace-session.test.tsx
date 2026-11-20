@@ -71,7 +71,7 @@ beforeEach(() => {
   vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);
   vi.spyOn(desktop, "syncStatus").mockResolvedValue(null);
   vi.spyOn(desktop, "syncWake").mockResolvedValue();
-  for (const event of ["onExit", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onTrashEmptied", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
+  for (const event of ["onExit", "onHistory", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onTrashEmptied", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
     vi.spyOn(desktop, event).mockResolvedValue(() => {});
   }
   container = document.createElement("div");

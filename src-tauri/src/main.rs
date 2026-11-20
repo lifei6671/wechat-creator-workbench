@@ -59,6 +59,41 @@ fn main() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(window_lifecycle::macos_instance());
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(|app| {
+            use tauri::menu::{Menu, MenuItem, MenuItemKind};
+
+            let menu = Menu::default(app)?;
+            for item in menu.items()? {
+                if let MenuItemKind::Submenu(edit) = item
+                    && edit.text()? == "Edit"
+                {
+                    // Native undo uses WebKit's history, which misses editor transactions such as paste.
+                    for (index, id, label, shortcut) in [
+                        (0, "workspace-undo", "撤销", "CmdOrCtrl+Z"),
+                        (1, "workspace-redo", "重做", "CmdOrCtrl+Shift+Z"),
+                    ] {
+                        edit.remove_at(index)?;
+                        edit.insert(
+                            &MenuItem::with_id(app, id, label, true, Some(shortcut))?,
+                            index,
+                        )?;
+                    }
+                }
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            let action = match event.id.as_ref() {
+                "workspace-undo" => "undo",
+                "workspace-redo" => "redo",
+                _ => return,
+            };
+            if let Err(error) = request_history(app, action) {
+                eprintln!("Could not request editor history action: {error}");
+            }
+        });
     let window_state_flags = StateFlags::all().difference(StateFlags::DECORATIONS);
     let window_state =
         tauri_plugin_window_state::Builder::default().with_state_flags(window_state_flags);
@@ -311,6 +346,41 @@ fn registered_commands_are_available_to_the_desktop_window() {
             "missing {permission}"
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+fn request_history(app: &tauri::AppHandle, action: &'static str) -> tauri::Result<()> {
+    use objc2::{MainThreadMarker, sel};
+    use objc2_app_kit::{NSApplication, NSView};
+    use objc2_web_kit::WKWebView;
+
+    let main = app.get_webview("main").expect("main webview exists");
+    let handle = app.clone();
+    main.with_webview(move |platform| {
+        // Tauri supplies the live WKWebView on the AppKit main thread.
+        let main = unsafe { &*platform.inner().cast::<WKWebView>() };
+        let application = NSApplication::sharedApplication(MainThreadMarker::from(main));
+        if let Some(window) = application.keyWindow()
+            && let Some(responder) = window.firstResponder()
+            && let Some(view) = responder.downcast_ref::<NSView>()
+            && view.isDescendantOf(main)
+        {
+            // Emit after with_webview releases the runtime's webview lock.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = handle.emit_to("main", "workspace-history-requested", action) {
+                    eprintln!("Could not send editor history action: {error}");
+                }
+            });
+        } else {
+            let selector = if action == "undo" {
+                sel!(undo:)
+            } else {
+                sel!(redo:)
+            };
+            // A nil target preserves AppKit's native responder-chain dispatch for other webviews.
+            unsafe { application.sendAction_to_from(selector, None, None) };
+        }
+    })
 }
 
 fn request_exit(app: &tauri::AppHandle) {

@@ -260,6 +260,7 @@ export const desktop = {
   saveImage: (url: string) => invoke<boolean>("asset_save_image", { url }),
   exportWechatHtml: (html: string, images: ExportImage[]) => invoke<boolean>("wechat_export_html", { html, images }),
   onExit: (callback: () => void) => listen("workspace-exit-requested", callback),
+  onHistory: (callback: (action: "undo" | "redo") => void) => listen<"undo" | "redo">("workspace-history-requested", event => callback(event.payload)),
   onHideRequested: (callback: () => void) => listen("app-hide-requested", callback),
   confirmHide: () => invoke<void>("app_hide_confirm"),
   cancelHide: () => invoke<void>("app_hide_cancel"),
