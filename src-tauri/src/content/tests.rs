@@ -1135,6 +1135,62 @@ fn folder_drop_reorders_only_siblings_and_existing_icons_survive_upgrade() {
 }
 
 #[test]
+fn moving_categories_uses_visible_neighbors_when_sort_orders_tie() {
+    for parent in [None, Some("parent")] {
+        let db = memory();
+        db.write(|tx| {
+            tx.execute_batch("DELETE FROM categories;
+                INSERT INTO categories (id,name,depth,sort_order) VALUES ('parent','父目录',1,50),('other','其他目录',1,60);
+                INSERT INTO categories (id,name,parent_id,depth,sort_order) VALUES ('untouched','不移动','other',2,9);")?;
+            for (id, name) in [("a", "甲"), ("b", "乙"), ("c", "丙")] {
+                tx.execute("INSERT INTO categories (id,name,parent_id,depth,sort_order) VALUES (?1,?2,?3,?4,0)",
+                    params![id, name, parent, if parent.is_some() { 2 } else { 1 }])?;
+            }
+            Ok(())
+        }).unwrap();
+        let order = || {
+            db.read(|conn| {
+            Ok(conn.prepare("SELECT id FROM categories WHERE parent_id IS ?1 AND id IN ('a','b','c') ORDER BY sort_order,id")?
+                .query_map([parent], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).unwrap()
+        };
+        db.move_category("b", true).unwrap();
+        assert_eq!(order(), ["b", "a", "c"]);
+        db.move_category("c", true).unwrap();
+        assert_eq!(order(), ["b", "c", "a"]);
+        db.move_category("b", true).unwrap();
+        assert_eq!(order(), ["b", "c", "a"]);
+        db.move_category("b", false).unwrap();
+        assert_eq!(order(), ["c", "b", "a"]);
+        let before = serde_json::to_value(db.library().unwrap().categories).unwrap();
+        db.move_category(if parent.is_some() { "a" } else { "other" }, false)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(db.library().unwrap().categories).unwrap(),
+            before
+        );
+        db.read(|conn| {
+            let (count, distinct): (i64, i64) = conn.query_row(
+                "SELECT COUNT(*),COUNT(DISTINCT sort_order) FROM categories WHERE parent_id IS ?1",
+                [parent],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(count, distinct);
+            assert_eq!(
+                conn.query_row(
+                    "SELECT sort_order FROM categories WHERE id='untouched'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )?,
+                9
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+#[test]
 fn new_workspaces_start_with_three_editable_root_folders() {
     use taxonomy::CategoryIcon;
 

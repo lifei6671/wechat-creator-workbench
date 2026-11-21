@@ -71,6 +71,7 @@ export interface SyncConflict {
   canKeepLocal: boolean;
   remoteRevision: number | null;
   localGeneration: number | null;
+  directoryDifference?: { localPath: string; remotePath: string; onlyDifference: boolean };
 }
 export type AiAgent = "codex" | "claude_code";
 export type AiModelKind = "local" | "custom";

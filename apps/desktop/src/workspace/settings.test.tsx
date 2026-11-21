@@ -308,6 +308,59 @@ it("offers reconnecting against the saved instance when its device credential wa
   }
 });
 
+it.each(["local", "cloud", "copy"] as const)("shows and resolves directory-only differences with %s", async choice => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let finish!: () => void;
+  const resolve = vi.fn(() => new Promise<void>(done => { finish = done; }));
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({ url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.mocked(desktop.syncConflicts).mockResolvedValueOnce([{
+    entityType: "entry", entityId: "draft", reason: "目录归属不同，请选择要保留的目录",
+    local: { title: "同一文稿", contentMd: "相同正文" }, remote: { title: "同一文稿", contentMd: "相同正文" },
+    remoteDeleted: false, resolvable: true, canKeepLocal: false, remoteRevision: 3, localGeneration: 8,
+    directoryDifference: { localPath: "本地目录（本机） / 子目录", remotePath: "云端目录 / 子目录", onlyDifference: true },
+  }]).mockResolvedValue([]);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={resolve} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.querySelector(".sync-conflict > summary")?.textContent).toBe("选择目录归属"));
+    expect([...container.querySelectorAll(".sync-conflict-directories dd")].map(item => item.textContent))
+      .toEqual(["本地目录（本机） / 子目录", "云端目录 / 子目录"]);
+    expect(container.querySelector(".sync-conflict-versions")).toBeNull();
+    const label = { local: "保留本地目录", cloud: "采用云端目录", copy: "另存本地稿" }[choice];
+    const button = [...container.querySelectorAll("button")].find(item => item.textContent === label)!;
+    flushSync(() => button.click());
+    expect(resolve).toHaveBeenCalledExactlyOnceWith("entry", "draft", choice, 3, 8);
+    expect(button.disabled).toBe(true);
+    flushSync(() => button.click());
+    expect(resolve).toHaveBeenCalledOnce();
+    finish();
+    await vi.waitFor(() => expect(container.querySelector(".sync-conflict")).toBeNull());
+    expect(container.querySelector(".sync-action-feedback [role=status]")).toBeNull();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it("shows both directory paths and body versions when both differ", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({ url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.mocked(desktop.syncConflicts).mockResolvedValue([{
+    entityType: "entry", entityId: "draft", reason: "首次合并发现两个版本，请选择要保留的内容",
+    local: { title: "文稿", contentMd: "本地正文" }, remote: { title: "文稿", contentMd: "云端正文" },
+    remoteDeleted: false, resolvable: true, canKeepLocal: false, remoteRevision: 4, localGeneration: 9,
+    directoryDifference: { localPath: "本地目录", remotePath: "未分类", onlyDifference: false },
+  }]);
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.querySelector(".sync-conflict > summary")?.textContent).toBe("查看冲突内容"));
+    expect([...container.querySelectorAll(".sync-conflict-directories dd")].map(item => item.textContent)).toEqual(["本地目录", "未分类"]);
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="本地稿"]')?.value).toBe("本地正文");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="云端稿"]')?.value).toBe("云端正文");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "保留本地稿")).toBe(true);
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
 it.each(["local", "cloud", "copy"] as const)("resolves a canvas edit with %s using the displayed versions", async choice => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);

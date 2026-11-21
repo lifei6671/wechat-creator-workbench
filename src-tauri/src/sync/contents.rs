@@ -1531,6 +1531,31 @@ pub struct Conflict {
     can_keep_local: bool,
     remote_revision: Option<i64>,
     local_generation: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    directory_difference: Option<DirectoryDifference>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryDifference {
+    local_path: String,
+    remote_path: String,
+    only_difference: bool,
+}
+
+fn category_path(conn: &Connection, category: Option<&str>) -> Result<String> {
+    let Some(category) = category else {
+        return Ok("未分类".into());
+    };
+    Ok(conn
+        .query_row(
+            "SELECT CASE WHEN p.id IS NULL THEN c.name ELSE p.name || ' / ' || c.name END
+         FROM categories c LEFT JOIN categories p ON p.id=c.parent_id WHERE c.id=?1",
+            [category],
+            |row| row.get(0),
+        )
+        .optional()?
+    .unwrap_or_else(|| "目录暂不可用".into()))
 }
 
 #[tauri::command]
@@ -1569,24 +1594,89 @@ pub async fn sync_apply(app: tauri::AppHandle, sync: State<'_, SyncConnection>) 
 
 #[tauri::command]
 pub fn sync_conflicts(db: State<'_, Workspace>) -> Result<Vec<Conflict>> {
-    db.read(|conn| {
-        let mut query = conn.prepare("SELECT entity_type,entity_id,reason,remote_json FROM sync_issues ORDER BY entity_type,entity_id")?;
-        query.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,
-            row.get::<_,Option<String>>(3)?)))?.map(|row| {
-            let (kind,id,reason,remote) = row?;
-            let entity_type = serde_json::from_value(Value::String(kind)).map_err(invalid_response)?;
-            let key = Key {entity_type,entity_id:id};
-            let local = local_snapshot(conn,&key)?;
-            let remote = remote.map(|remote| serde_json::from_str::<Entity>(&remote)).transpose().map_err(invalid_response)?;
-            let local_generation = generation(conn,&key)?;
+    db.read(conflicts)
+}
+
+fn conflicts(conn: &Connection) -> Result<Vec<Conflict>> {
+    let mut query = conn.prepare("SELECT entity_type,entity_id,reason,remote_json FROM sync_issues ORDER BY entity_type,entity_id")?;
+    query
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .map(|row| {
+            let (kind, id, reason, remote) = row?;
+            let entity_type =
+                serde_json::from_value(Value::String(kind)).map_err(invalid_response)?;
+            let key = Key {
+                entity_type,
+                entity_id: id,
+            };
+            let local = local_snapshot(conn, &key)?;
+            let remote = remote
+                .map(|remote| serde_json::from_str::<Entity>(&remote))
+                .transpose()
+                .map_err(invalid_response)?;
+            let local_generation = generation(conn, &key)?;
             let remote_revision = remote.as_ref().map(|entity| entity.remote_revision);
-            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas()) && local_generation.is_some() && remote.is_some();
-            let can_keep_local = entity_type.is_canvas() && local_generation.is_some()
-                && remote.as_ref().is_some_and(|entity| entity.deleted_at.is_none());
-            let remote_deleted = remote.as_ref().is_some_and(|entity| entity.deleted_at.is_some());
-            Ok(Conflict { key,reason,local,remote:remote.map(|entity| entity.payload),remote_deleted,resolvable,can_keep_local,remote_revision,local_generation })
-        }).collect()
-    })
+            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas())
+                && local_generation.is_some()
+                && remote.is_some();
+            let can_keep_local = entity_type.is_canvas()
+                && local_generation.is_some()
+                && remote
+                    .as_ref()
+                    .is_some_and(|entity| entity.deleted_at.is_none());
+            let remote_deleted = remote
+                .as_ref()
+                .is_some_and(|entity| entity.deleted_at.is_some());
+            let directory_difference = if entity_type == Kind::Entry && !remote_deleted {
+                if let (Some(local), Some(remote)) = (&local, &remote) {
+                    let local_category = local["categoryId"].as_str();
+                    let remote_category = remote.payload["categoryId"].as_str();
+                    if local_category != remote_category {
+                        let mut comparable = local.clone();
+                        comparable["categoryId"] = remote.payload["categoryId"].clone();
+                        Some(DirectoryDifference {
+                            local_path: category_path(conn, local_category)?,
+                            remote_path: category_path(conn, remote_category)?,
+                            only_difference: merge::same_content(comparable, &remote.payload),
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let reason = if directory_difference
+                .as_ref()
+                .is_some_and(|difference| difference.only_difference)
+            {
+                "目录归属不同，请选择要保留的目录".into()
+            } else {
+                reason
+            };
+            Ok(Conflict {
+                key,
+                reason,
+                local,
+                remote: remote.map(|entity| entity.payload),
+                remote_deleted,
+                resolvable,
+                can_keep_local,
+                remote_revision,
+                local_generation,
+                directory_difference,
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -1756,6 +1846,59 @@ mod tests {
     };
     use super::*;
     use crate::backup::Backups;
+
+    #[test]
+    fn directory_conflicts_keep_explicit_resolution_and_version_guards() {
+        for cloud_category in [Some("cloud-child"), None] {
+            for choice in [Resolution::Local, Resolution::Cloud, Resolution::Copy] {
+                let root = tempfile::tempdir().unwrap();
+                let db = Workspace::open(&root.path().join("workspace.sqlite")).unwrap();
+                let local_generation = db.write(|tx| {
+                    tx.execute_batch("INSERT INTO sync_binding (id,url,instance_id,epoch,device_id)
+                        VALUES (1,'http://localhost/','instance','epoch','device');
+                        INSERT INTO categories (id,name,depth,sort_order) VALUES ('local','本地目录',1,0),('cloud','云端目录',1,1);
+                        INSERT INTO categories (id,name,parent_id,depth,sort_order) VALUES ('cloud-child','子目录','cloud',2,0);
+                        INSERT INTO entries (id,kind,title,status,content_md,category_id,created_at,updated_at)
+                        VALUES ('draft','article','共同文稿','draft','相同正文','local',1,1);")?;
+                    let key = Key { entity_type: Kind::Entry, entity_id: "draft".into() };
+                    let mut payload = local_snapshot(tx, &key)?.unwrap();
+                    payload["categoryId"] = json!(cloud_category);
+                    let remote = Entity { key: key.clone(), payload, remote_revision: 3, deleted_at: None };
+                    queue_local_items(tx)?;
+                    let generation = generation(tx, &key)?.unwrap();
+                    issue(tx, &key, generation, "首次合并发现两个版本，请选择要保留的内容", Some(&remote))?;
+                    Ok(generation)
+                }).unwrap();
+                let before = db.read(conflicts).unwrap();
+                let issue = &before[0];
+                assert!(issue.resolvable);
+                assert_eq!(issue.reason, "目录归属不同，请选择要保留的目录");
+                let directory = issue.directory_difference.as_ref().unwrap();
+                assert_eq!(directory.local_path, "本地目录");
+                assert_eq!(
+                    directory.remote_path,
+                    if cloud_category.is_some() {
+                        "云端目录 / 子目录"
+                    } else {
+                        "未分类"
+                    }
+                );
+                assert!(directory.only_difference);
+                assert!(resolve(&db, "draft", Resolution::Cloud, 3, local_generation + 1).is_err());
+                let keep_local = matches!(choice, Resolution::Local);
+                let copy = matches!(choice, Resolution::Copy);
+                resolve(&db, "draft", choice, 3, local_generation).unwrap();
+                db.read(|conn| {
+                    assert!(conflicts(conn)?.is_empty());
+                    let entry = entries::snapshot(conn, "draft")?.unwrap();
+                    assert_eq!(entry["categoryId"], json!(if keep_local { Some("local") } else { cloud_category }));
+                    assert_eq!(entry["contentMd"], "相同正文");
+                    assert_eq!(conn.query_row("SELECT COUNT(*) FROM entries WHERE id<>'draft' AND category_id='local' AND content_md='相同正文'", [], |row| row.get::<_,i64>(0))?, i64::from(copy));
+                    Ok(())
+                }).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn unbound_activity_uses_the_same_business_empty_check_as_first_merge() {
@@ -2081,6 +2224,86 @@ mod tests {
         assert!(stage_outbox(&a).unwrap().is_none());
         first.key(&a).unwrap().delete_credential().unwrap();
         second.key(&b).unwrap().delete_credential().unwrap();
+    }
+
+    #[test]
+    fn deferred_new_directory_is_not_reported_as_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Workspace::open(&root.path().join("workspace.sqlite")).unwrap();
+        db.write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO sync_binding (id,url,instance_id,epoch,device_id)
+                VALUES (1,'https://sync.example.test','server','epoch','device');
+                INSERT INTO categories (id,name,depth,sort_order) VALUES ('local','本地目录',1,0);
+                INSERT INTO entries (id,kind,title,status,content_md,category_id,created_at,updated_at)
+                VALUES ('draft','article','共同文稿','draft','相同正文','local',1,1);
+                UPDATE sync_progress SET capture=1,initialized=1;
+                UPDATE entries SET version=2 WHERE id='draft';",
+            )?;
+            let mut payload = entries::snapshot(tx, "draft")?.unwrap();
+            payload["categoryId"] = json!("new-folder");
+            for (cursor, entity) in [
+                Entity {
+                    key: Key {
+                        entity_type: Kind::Category,
+                        entity_id: "new-folder".into(),
+                    },
+                    payload: json!({"name":"新目录","parentId":null,"sortOrder":1,"icon":"folder"}),
+                    remote_revision: 2,
+                    deleted_at: None,
+                },
+                Entity {
+                    key: Key {
+                        entity_type: Kind::Entry,
+                        entity_id: "draft".into(),
+                    },
+                    payload,
+                    remote_revision: 2,
+                    deleted_at: None,
+                },
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                tx.execute(
+                    "INSERT INTO sync_inbox VALUES (?1,'group',2,?2)",
+                    params![cursor as i64 + 1, encode(&entity)?],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(apply_received(&db).unwrap().changed_entries.is_empty());
+        db.read(|conn| {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM categories WHERE id='new-folder'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )?,
+                0
+            );
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM sync_inbox", [], |row| row
+                    .get::<_, i64>(0))?,
+                2
+            );
+            let issues = conflicts(conn)?;
+            let issue = issues
+                .iter()
+                .find(|issue| issue.key.entity_id == "draft")
+                .unwrap();
+            let directory = issue.directory_difference.as_ref().unwrap();
+            assert_eq!(directory.local_path, "本地目录");
+            assert_eq!(directory.remote_path, "目录暂不可用");
+            assert!(directory.only_difference);
+            assert_eq!(
+                entries::snapshot(conn, "draft")?.unwrap()["contentMd"],
+                "相同正文"
+            );
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
