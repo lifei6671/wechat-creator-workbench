@@ -3,6 +3,11 @@ import { commandKey } from "../labels";
 export type RecordedShortcut = Pick<KeyboardEvent, "code" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">;
 export type ViewShortcut = "none" | "shift-m" | "alt-v" | RecordedShortcut;
 
+export function defaultViewShortcut(): RecordedShortcut {
+  const mac = commandKey === "⌘";
+  return { code: "KeyW", ctrlKey: !mac, metaKey: mac, altKey: false, shiftKey: false };
+}
+
 const supportedCode = /^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4])|Arrow(Up|Down|Left|Right)|Space|Enter|Backspace|Delete|Home|End|PageUp|PageDown|BracketLeft|BracketRight|Backslash|Slash|Semicolon|Quote|Comma|Period|Minus|Equal|Backquote)$/;
 
 export function shortcutCode(event: Pick<KeyboardEvent, "code" | "key">): string {
@@ -36,6 +41,12 @@ export function matchesViewShortcut(value: ViewShortcut, event: KeyboardEvent): 
   const stroke = normalized(value);
   return stroke.code === shortcutCode(event) && stroke.ctrlKey === event.ctrlKey && stroke.metaKey === event.metaKey
     && stroke.altKey === event.altKey && stroke.shiftKey === event.shiftKey;
+}
+
+export function sameShortcut(first: ViewShortcut, second: ViewShortcut): boolean {
+  if (first === "none" || second === "none") return false;
+  const a = normalized(first), b = normalized(second);
+  return a.code === b.code && a.ctrlKey === b.ctrlKey && a.metaKey === b.metaKey && a.altKey === b.altKey && a.shiftKey === b.shiftKey;
 }
 
 export function shortcutConflict(stroke: RecordedShortcut): boolean {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useId, useImperativeHandle, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import { Button, ContextMenu, DropdownMenu, HoverCard, Select, Spinner } from "@radix-ui/themes";
 import {
   ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import type { CanvasCardColor, Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, TimelineSelection, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
-import { dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
+import { commandKey, dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 import { folderIcons } from "./folder-icons";
 import { colorValue } from "./ColorChoices";
@@ -671,10 +671,14 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
     if (timeline) actions.onRowAction(row, action, document.getElementById(rowId));
     else actions.onRowAction(row, action);
   };
+  function open(event: MouseEvent<HTMLButtonElement>) {
+    if (commandKey === "⌘" ? event.metaKey : event.ctrlKey) actions.onOpen(row.id, "new-tab");
+    else actions.onOpen(row.id);
+  }
   const trigger = <ContextMenu.Trigger>
     {timeline ? <div className="plain-button timeline-entry" data-menu-target={menuOpen || undefined} data-feedback-state={copyState}>
       <button type="button" id={rowId} className="timeline-entry-open" aria-label={title}
-        aria-current={row.id === actions.active ? "true" : undefined} aria-busy={copyState === "pending" || undefined} onClick={() => actions.onOpen(row.id)} />
+        aria-current={row.id === actions.active ? "true" : undefined} aria-busy={copyState === "pending" || undefined} onClick={open} />
       {timeline.content(copyKey && feedback ? <span className="entry-copy-result">{feedback.icon(copyKey, <Copy size={15} />, 15)}{copyLabel}</span> : null)}
     </div> : <button type="button" id={rowId}
       className={`plain-button entry-row ${detail ? "entry-detail" : "tree-entry"}`}
@@ -683,7 +687,7 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
       data-tree-draggable={draggable || undefined} data-tree-pinned={pinned || undefined} data-dragging={dragging || undefined}
       data-menu-target={menuOpen || undefined}
       data-feedback-state={copyState} aria-busy={copyState === "pending" || undefined}
-      aria-label={title} aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)}>
+      aria-label={title} aria-current={row.id === actions.active ? "true" : undefined} onClick={open}>
       {!search && (copyKey && feedback ? feedback.icon(copyKey, rowIcon, 15) : rowIcon)}<span className="entry-title">{copyLabel ?? title}</span>
       {detail && <span className="entry-meta"><span>{statusLabels[row.status]}</span><time dateTime={new Date(row.updatedAt).toISOString()}>{dateLabel(row.updatedAt)}</time></span>}
     </button>}

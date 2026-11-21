@@ -3,11 +3,11 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
-import { commandKey } from "../labels";
 import { Tool } from "../ui";
 import type { ViewMode } from "./Document";
 import type { DocumentOpenMode } from "./preferences";
 import { isViewShortcut, shortcutCode, shortcutConflict, shortcutLabel, type RecordedShortcut, type ViewShortcut } from "./view-shortcut";
+import { workspaceShortcut, workspaceShortcutConflict, workspaceShortcutItems, type WorkspaceShortcutId, type WorkspaceShortcuts } from "./workspace-shortcuts";
 
 export type Appearance = "system" | "light" | "dark";
 export type { ViewShortcut } from "./view-shortcut";
@@ -15,7 +15,7 @@ export type { ViewShortcut } from "./view-shortcut";
 const groups = [
   { label: "工作区", items: [
     { id: "appearance", label: "通用", icon: SlidersHorizontal, keywords: `外观 应用主题 深色 浅色 系统 编辑视图 排版预览 显示资源导航 默认展开文档大纲 下载粘贴和链接导入的外链图片 链接 脚注 目录 点击文档 当前标签 新标签 加载方式 一次性加载 滚动分页 每页笔记数 关闭窗口 退出应用 托盘 菜单栏${windowsTitleBar ? " GPU 硬件加速 渲染" : ""}` },
-    { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 查找与替换 全文搜索 保存版本 新建笔记" },
+    { id: "shortcuts", label: "快捷键", icon: Keyboard, keywords: "命令面板 切换编辑视图 预览排版 阅读模式 查找与替换 全文搜索 保存版本 新建笔记 复制 Markdown 原文 公众号" },
     { id: "migration", label: "工作区迁移", icon: FolderInput, keywords: "迁移包 新设备 数据转移 导入 导出 ZIP 素材 设置 恢复" },
   ] },
   { label: "服务", items: [
@@ -315,11 +315,12 @@ function NativeToggleSetting({ id, label, hint, warning, preference }: {
   </>;
 }
 
-export function WorkspaceSettings({ page, appearance, shortcut, preferredView, explorer, downloadPastedImages, convertLinks, defaultOutline, documentOpenMode, folderLoading, folderPageSize,
-  onAppearance, onShortcut, onView, onExplorer, onDownloadPastedImages, onConvertLinks, onDefaultOutline, onDocumentOpenMode, onFolderLoading, onFolderPageSize }: {
+export function WorkspaceSettings({ page, appearance, shortcut, workspaceShortcuts, preferredView, explorer, downloadPastedImages, convertLinks, defaultOutline, documentOpenMode, folderLoading, folderPageSize,
+  onAppearance, onShortcut, onWorkspaceShortcut, onView, onExplorer, onDownloadPastedImages, onConvertLinks, onDefaultOutline, onDocumentOpenMode, onFolderLoading, onFolderPageSize }: {
   page: "appearance" | "shortcuts";
   appearance: Appearance;
   shortcut: ViewShortcut;
+  workspaceShortcuts: WorkspaceShortcuts;
   preferredView: ViewMode;
   downloadPastedImages: boolean;
   convertLinks: boolean;
@@ -330,6 +331,7 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   explorer: boolean;
   onAppearance(value: Appearance): void;
   onShortcut(value: ViewShortcut): void;
+  onWorkspaceShortcut(id: WorkspaceShortcutId, value: ViewShortcut): void;
   onView(value: ViewMode): void;
   onDownloadPastedImages(value: boolean): void;
   onConvertLinks(value: boolean): void;
@@ -410,22 +412,24 @@ export function WorkspaceSettings({ page, appearance, shortcut, preferredView, e
   return <>
     <div className="settings-card">
       <SettingRow id="view-shortcuts" label="切换编辑视图" hint="设置在编辑与排版预览之间切换的快捷键。">
-        {hintId => <ViewShortcutSetting value={shortcut} hintId={hintId} onChange={onShortcut} />}
+        {hintId => <ViewShortcutSetting value={shortcut} hintId={hintId} onChange={onShortcut}
+          conflicts={stroke => workspaceShortcutConflict("view", stroke, workspaceShortcuts, shortcut)} />}
       </SettingRow>
     </div>
     <div className="settings-group-title">工作区操作</div>
-    <dl className="settings-card shortcut-list">
-        <div><dt>命令面板</dt><dd><kbd>{commandKey}K</kbd></dd></div>
-        <div><dt>新建笔记</dt><dd><kbd>{commandKey}N</kbd></dd></div>
-        <div><dt>保存版本</dt><dd><kbd>{commandKey}S</kbd></dd></div>
-        <div><dt>全文搜索</dt><dd><kbd>{commandKey}Shift+F</kbd></dd></div>
-        <div><dt>查找与替换</dt><dd><kbd>{commandKey}F</kbd></dd></div>
-    </dl>
+    <div className="settings-card workspace-shortcuts">
+      {workspaceShortcutItems.map(item => <SettingRow key={item.id} id={`shortcut-${item.id}`} label={item.label}>
+        {() => <ViewShortcutSetting id={`shortcut-${item.id}`} label={item.label} value={workspaceShortcut(workspaceShortcuts, item.id)}
+          hintId="" onChange={value => onWorkspaceShortcut(item.id, value)}
+          conflicts={stroke => workspaceShortcutConflict(item.id, stroke, workspaceShortcuts, shortcut)} />}
+      </SettingRow>)}
+    </div>
   </>;
 }
 
-export function ViewShortcutSetting({ value, hintId, onChange }: {
+export function ViewShortcutSetting({ value, hintId, onChange, id = "view-shortcuts", label = "切换编辑视图", conflicts = shortcutConflict }: {
   value: ViewShortcut; hintId: string; onChange(value: ViewShortcut): void;
+  id?: string; label?: string; conflicts?(stroke: RecordedShortcut): boolean;
 }) {
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState("");
@@ -440,9 +444,9 @@ export function ViewShortcutSetting({ value, hintId, onChange }: {
       if (recording && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finishRecording(); }
     }}>
       {recording ? <>
-        <TextField.Root id="view-shortcuts" className="shortcut-recorder" size="2" autoFocus readOnly value=""
-          placeholder="按下快捷键" aria-label="录入切换编辑视图快捷键"
-          aria-describedby={error ? `${hintId} view-shortcut-error` : hintId} aria-invalid={Boolean(error)}
+        <TextField.Root id={id} className="shortcut-recorder" size="2" autoFocus readOnly value=""
+          placeholder="按下快捷键" aria-label={`录入${label}快捷键`}
+          aria-describedby={error ? [hintId, `${id}-error`].filter(Boolean).join(" ") : hintId || undefined} aria-invalid={Boolean(error)}
           onKeyDown={event => {
             if (event.key === "Tab") return;
             event.preventDefault();
@@ -452,22 +456,22 @@ export function ViewShortcutSetting({ value, hintId, onChange }: {
             const stroke: RecordedShortcut = { code: shortcutCode(event), ctrlKey: event.ctrlKey, metaKey: event.metaKey,
               altKey: event.altKey, shiftKey: event.shiftKey };
             if (!isViewShortcut(stroke)) { setError("请使用修饰键组合或功能键"); return; }
-            if (event.getModifierState("AltGraph") || shortcutConflict(stroke)) { setError("该快捷键已被其他操作占用"); return; }
+            if (event.getModifierState("AltGraph") || conflicts(stroke)) { setError("该快捷键已被其他操作占用"); return; }
             onChange(stroke);
             finishRecording();
           }} />
         <button type="button" className="plain-button shortcut-cancel" aria-label="取消快捷键设置" onClick={finishRecording}>ESC 取消</button>
-      </> : <button ref={trigger} id="view-shortcuts" type="button" className="plain-button shortcut-trigger"
-        data-configured={value !== "none"} aria-describedby={hintId} aria-label="设置切换编辑视图快捷键"
+      </> : <button ref={trigger} id={id} type="button" className="plain-button shortcut-trigger"
+        data-configured={value !== "none"} aria-describedby={hintId || undefined} aria-label={`设置${label}快捷键`}
         onClick={() => { setRecording(true); setError(""); }}>
         {value === "none" ? <><span className="shortcut-empty-icon"><Keyboard size={16} aria-hidden="true" /></span>点击设置</>
           : <kbd>{shortcutLabel(value)}</kbd>}
       </button>}
-      <Tool label="删除快捷键" color="gray" className="shortcut-clear" disabled={value === "none"} onClick={() => {
+      <Tool label={`删除${label}快捷键`} color="gray" className="shortcut-clear" disabled={value === "none"} onClick={() => {
         onChange("none"); finishRecording();
       }}><Trash2 size={17} strokeWidth={1.75} /></Tool>
     </div>
-    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p id="view-shortcut-error" role="alert" className="inline-error">{error}</p> : null}</div>}
+    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p id={`${id}-error`} role="alert" className="inline-error">{error}</p> : null}</div>}
   </div>;
 }
 

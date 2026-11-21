@@ -116,6 +116,9 @@
 }
 .setting-actions { flex-wrap: wrap; justify-content: end; gap: 6px; }
 .setting-control:has(> .shortcut-setting) { flex: 0 1 310px; }
+.workspace-shortcuts .setting-row { min-height: 56px; padding-block: 3px; align-items: flex-start; }
+.workspace-shortcuts .setting-copy { min-height: 32px; align-content: center; }
+.workspace-shortcuts .shortcut-setting > .action-error-slot { block-size: 18px; }
 .shortcut-setting { width: 100%; min-width: 0; }
 .shortcut-binding { display: flex; align-items: center; gap: 12px; min-height: 32px; }
 .shortcut-trigger {
@@ -268,10 +271,6 @@
 .image-naming-header { display: flex; align-items: center; justify-content: space-between; font-weight: var(--setting-title-weight); }
 .image-naming-variables { display: flex; flex-wrap: wrap; gap: 6px; }
 .image-naming-preview { padding: 8px; background: var(--sand-3); border-radius: 4px; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
-.shortcut-list > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 44px; }
-.shortcut-list dt { color: var(--text-main); font-weight: var(--setting-title-weight); }
-.shortcut-list dd { margin: 0; }
-.shortcut-list kbd { display: inline-block; padding: 3px 6px; border: var(--hairline); border-radius: 4px; background: var(--gray-2); }
 .backup-feedback { display: flex; gap: 8px; align-items: start; justify-content: space-between; }
 .backup-list { list-style: none; margin: 0; padding: 0; }
 .backup-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-block: 10px; }

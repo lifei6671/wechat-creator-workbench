@@ -12,7 +12,7 @@ import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard, writeClipboard } from "../editor/clipboard";
 import { editHistory } from "../editor/history";
 import { parseWebClipping } from "../editor/web-clipping";
-import { commandKey, untitled } from "../labels";
+import { untitled } from "../labels";
 import { persist, SidebarToggleIcon, Tool, useStoredInitial } from "../ui";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
@@ -28,7 +28,8 @@ import { McpSettings, SettingsDialog, WorkspaceSettings, type Appearance, type S
 import { AboutPage } from "./About";
 import { SyncSettings } from "./SyncSettings";
 import { startSyncApplication } from "./sync-scheduler";
-import { matchesViewShortcut } from "./view-shortcut";
+import { defaultViewShortcut, matchesViewShortcut } from "./view-shortcut";
+import { readWorkspaceShortcuts, workspaceShortcutForEvent, workspaceShortcutLabel, type WorkspaceShortcutId } from "./workspace-shortcuts";
 import { flushSync } from "react-dom";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
@@ -160,6 +161,7 @@ export function DesktopShell() {
   const [mcpStatus, setMcpStatus] = useState<McpStatus>();
   const [mcpLoadError, setMcpLoadError] = useState("");
   const [tabSessions, setSessions] = useState<SaveQueue[] | null>(null);
+  const [tabReplacement, setTabReplacement] = useState<{ from: string; to: string }>();
   const [tabsRestored, setTabsRestored] = useState(false);
   const [tabSelection, setTabSelection] = useState<{ id: string; restored: boolean } | null>(null);
   const sessions = tabSessions ?? [];
@@ -172,7 +174,8 @@ export function DesktopShell() {
   const wakeAutomaticSync = useRef<(() => void) | undefined>(undefined);
   const [appearance, setAppearance] = useState(() => useStoredInitial<Appearance>("appearance", "system"));
   const [preferredView, setPreferredView] = useState<ViewMode>(() => useStoredInitial<string>("view", "") === "preview" ? "preview" : "edit");
-  const [shortcut, setShortcut] = useState(() => useStoredInitial<ViewShortcut>("view-shortcut", "none"));
+  const [shortcut, setShortcut] = useState(() => useStoredInitial<ViewShortcut>("view-shortcut", defaultViewShortcut()));
+  const [workspaceShortcuts, setWorkspaceShortcuts] = useState(readWorkspaceShortcuts);
   const [downloadPastedImages, setDownloadPastedImages] = useState(() => useStoredInitial("download-pasted-images", false));
   const [defaultConvertLinks, setDefaultConvertLinks] = useState(() => useStoredInitial("links-to-footnotes", false));
   const [defaultOutline, setDefaultOutline] = useState(() => useStoredInitial("default-document-outline", false));
@@ -691,6 +694,7 @@ export function DesktopShell() {
     const queue = new SaveQueue(entry, desktop.save, refresh);
     if (replacing) {
       const order = [...queues.current.values()].map(tab => tab === replacing ? queue : tab);
+      setTabReplacement({ from: replacing.entry.id, to: entry.id });
       forgetTab(replacing.entry.id);
       queues.current = new Map(order.map(tab => [tab.entry.id, tab]));
     } else queues.current.set(entry.id, queue);
@@ -1588,6 +1592,7 @@ export function DesktopShell() {
     }));
   }
   const actions: DocumentActions = {
+    shortcutLabels: { save: workspaceShortcutLabel(workspaceShortcuts, "save") ?? null, palette: workspaceShortcutLabel(workspaceShortcuts, "palette") ?? null },
     feedback: documentButtons, exportedPath, onRevealExport: () => run(() => documentButtons.run("revealExport", () => desktop.revealFile(exportedPath))),
     mode: viewMode, setMode: view, focusMode, onFocusMode: () => setFocusMode(value => !value),
     reading, onReading: toggleReading,
@@ -1635,7 +1640,7 @@ export function DesktopShell() {
   function cycleView() { view(viewMode === "edit" ? "preview" : "edit"); }
 
   const commands: PaletteCommand[] = [
-    { name: "新建笔记", keys: commandKey + "N", run: () => create() },
+    { name: "新建笔记", keys: workspaceShortcutLabel(workspaceShortcuts, "create"), run: () => create() },
     { name: "新建专题", run: createCollection },
     { name: "导入链接", run: () => showLinkImport() },
     { name: "导入 Markdown", run: () => importMarkdown() },
@@ -1644,7 +1649,7 @@ export function DesktopShell() {
     { name: "AI 代理设置", run: showModel },
     { name: "数据库备份", run: openBackups },
     ...(!reading && !collectionMode ? [{ name: "切换 AI 助手", run: toggleAi }] : []),
-    { name: "全文搜索", keys: commandKey + "Shift+F", run: openSearch },
+    { name: "全文搜索", keys: workspaceShortcutLabel(workspaceShortcuts, "searchAll"), run: openSearch },
     { name: "打开内容目录", run: () => navigate("folders") },
     { name: "打开专题", run: () => navigate("collections") },
     { name: "打开回收站", run: () => navigate("trash") },
@@ -1652,29 +1657,31 @@ export function DesktopShell() {
   if (selected && !collectionMode) commands.push(
     { name: reading ? "退出阅读模式" : "进入阅读模式", run: toggleReading },
     { name: "切换编辑视图", run: cycleView },
-    { name: "查找与替换", keys: commandKey + "F", run: actions.onSearch },
+    { name: "查找与替换", keys: workspaceShortcutLabel(workspaceShortcuts, "search"), run: actions.onSearch },
     { name: "导出 Markdown", run: actions.onExport },
     { name: "复制公众号格式", run: actions.onCopyWechat },
     { name: "导出排版 HTML", run: actions.onExportWechat },
   );
 
-  const shortcutEvent = useEffectEvent((event: KeyboardEvent) => {
-    if (event.isComposing || event.keyCode === 229 || exit.current || modal || event.defaultPrevented) return;
+  const workspaceShortcutEvent = useEffectEvent((event: KeyboardEvent) => {
+    if (event.isComposing || event.keyCode === 229 || event.getModifierState("AltGraph") || exit.current || modal || globalLock || event.defaultPrevented) return;
     if (selected && !collectionMode && matchesViewShortcut(shortcut, event)) {
-      event.preventDefault();
+      event.preventDefault(); event.stopPropagation();
       if (!event.repeat) cycleView();
       return;
     }
-    const mod = commandKey === "⌘" ? event.metaKey : event.ctrlKey;
-    if (!mod) return;
-    const key = event.key.toLowerCase();
-    if (event.altKey) return;
-    const command = key === "k" && !event.shiftKey ? actions.onPalette
-      : key === "n" && !event.shiftKey ? () => create()
-        : key === "s" && !event.shiftKey && !collectionMode ? actions.onSave
-          : key === "f" && event.shiftKey ? openSearch
-            : key === "f" && selected && !collectionMode ? actions.onSearch : undefined;
-    if (command) { event.preventDefault(); if (!event.repeat) command(); }
+    const id = workspaceShortcutForEvent(workspaceShortcuts, event);
+    if (!id) return;
+    if (["save", "search", "reading", "copyMarkdown", "copyWechat"].includes(id) && (!selected || collectionMode)) return;
+    if (["copyMarkdown", "copyWechat", "reading"].includes(id) && selected?.entry.deletedAt !== null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return;
+    const commands: Record<WorkspaceShortcutId, () => void> = {
+      palette: actions.onPalette, create: () => create(), save: actions.onSave, searchAll: openSearch,
+      search: actions.onSearch, reading: toggleReading, copyMarkdown: actions.onCopy, copyWechat: actions.onCopyWechat,
+    };
+    commands[id]();
   });
 
   async function finishWorkspace(ticket?: string, updating = false) {
@@ -1767,7 +1774,7 @@ export function DesktopShell() {
   });
 
   useEffect(() => {
-    function shortcut(event: KeyboardEvent) { shortcutEvent(event); }
+    function workspaceShortcut(event: KeyboardEvent) { workspaceShortcutEvent(event); }
     function blur() { if (active.current) void queues.current.get(active.current)?.flush(); }
     function preventFileNavigation(event: DragEvent) {
       if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
@@ -1808,7 +1815,7 @@ export function DesktopShell() {
       if (value) setNotice({ type: value.failed ? "error" : "info", text: value.message });
     }, showError);
     for (const subscription of [listener, historyRequested, hideRequested, workspaceChanged, trashEmptied, assetsChanged, backupChanged]) void subscription.catch(showError);
-    window.addEventListener("keydown", shortcut);
+    window.addEventListener("keydown", workspaceShortcut, true);
     window.addEventListener("blur", blur);
     window.addEventListener("dragover", preventFileNavigation);
     window.addEventListener("drop", preventFileNavigation);
@@ -1817,7 +1824,7 @@ export function DesktopShell() {
       mcpRequest++;
       targetRequest++;
       detachClipboard();
-      window.removeEventListener("keydown", shortcut);
+      window.removeEventListener("keydown", workspaceShortcut, true);
       window.removeEventListener("blur", blur);
       window.removeEventListener("dragover", preventFileNavigation);
       window.removeEventListener("drop", preventFileNavigation);
@@ -2203,7 +2210,7 @@ export function DesktopShell() {
             <header className="workbench-chrome chrome-band" ref={writingChrome}>
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
-              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} feedback={documentButtons} activeId={collectionMode ? null : activeId}
+              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} replacement={tabReplacement} feedback={documentButtons} activeId={collectionMode ? null : activeId}
                 collections={openCollections} activeCollectionId={collectionMode ? activeCollectionId : undefined}
                 onSwitchCollection={openCollection} onCloseCollection={closeCollectionTab} collectionOptions={collections ?? []}
                 onAddToCollection={addToCollection} readingIds={readingIds} lockedIds={locked}
@@ -2299,7 +2306,7 @@ export function DesktopShell() {
       <StatusBar queue={collectionMode ? undefined : queue} actions={actions} trashActive={showExplorer && section === "trash"} settingsOpen={modal?.type === "settings"}
         syncBinding={syncState?.binding} syncActivity={syncState?.activity} syncError={automaticSyncError} syncWaitingReason={syncWaitingReason}
         onSync={trigger => openSettings("sync", trigger)}
-        mcpRunning={mcpStatus?.running} onMcp={trigger => openSettings("mcp", trigger)} backupProgress={backupWorking}
+        mcpRunning={mcpStatus?.running} mcpError={mcpLoadError || mcpStatus?.error || undefined} onMcp={trigger => openSettings("mcp", trigger)} backupProgress={backupWorking}
         migrationProgress={migrationWorking} assetRevision={assetsRevision} imageStorageEnabled={Boolean(imageTarget)}
         imageUpload={imageUpload?.sessionId === queue?.sessionId ? imageUpload : null} onError={showError}
         onPalette={trigger => showModal({ type: "palette" }, trigger)}
@@ -2339,7 +2346,7 @@ export function DesktopShell() {
           if (page === "migration") return <MigrationPanel busy={backupWorking !== null || migrationWorking !== null}
             working={migrationWorking} feedback={migrationFeedback} prepared={preparedBackup?.migration === true}
             onTransfer={transferWorkspace} onConfirmRestore={() => setConfirmRestore(true)} onDiscardRestore={discardPreparedRestore} />;
-          return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} preferredView={preferredView} explorer={defaultExplorer}
+          return <WorkspaceSettings page={page} appearance={appearance} shortcut={shortcut} workspaceShortcuts={workspaceShortcuts} preferredView={preferredView} explorer={defaultExplorer}
             downloadPastedImages={downloadPastedImages} convertLinks={defaultConvertLinks} defaultOutline={defaultOutline} documentOpenMode={documentOpenMode}
             folderLoading={folderLoading} folderPageSize={folderPageSize}
             onAppearance={value => { setAppearance(value); persist("appearance", value); }}
@@ -2351,7 +2358,11 @@ export function DesktopShell() {
             onFolderLoading={value => { setFolderLoading(value); persist("folder-loading", value); }}
             onFolderPageSize={value => { setFolderPageSize(value); persist("folder-page-size", value); }}
             onExplorer={value => { setPreferredExplorer(value); setExplorerOverride(null); persist("explorer", value); }}
-            onShortcut={value => { setShortcut(value); persist("view-shortcut", value); }} />;
+            onShortcut={value => { setShortcut(value); persist("view-shortcut", value); }}
+            onWorkspaceShortcut={(id, value) => {
+              const next = { ...workspaceShortcuts, [id]: value };
+              setWorkspaceShortcuts(next); persist("workspace-shortcuts", next);
+            }} />;
         }} />
         {confirmRestore && preparedBackup && <Confirm title={preparedBackup.migration ? "恢复工作区" : "恢复数据库"}
           text={preparedBackup.migration ? "将使用迁移包里的数据库和素材恢复工作区并重启。当前数据库会被替换。"

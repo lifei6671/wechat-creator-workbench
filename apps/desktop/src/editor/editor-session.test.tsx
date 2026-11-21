@@ -799,7 +799,7 @@ it("streams chat across article switches and restores chat and selected-range pr
     await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
     expect(generate.mock.calls[0][1]).toMatchObject({ operation: "chat", text: "## 一\n\n这段正文",
       context: { scope: "section", headingPath: ["一"] } });
-    expect(activePanel().querySelector(".ai-user-message + .ai-user-actions > .ai-user-citation:last-child")?.textContent).toBe("当前章节");
+    expect(activePanel().querySelector(".ai-user-citation + .ai-user-message")?.previousElementSibling?.textContent).toBe("当前章节");
     emit({ type: "started" });
     emit({ type: "delta", text: "可以加" });
     await vi.waitFor(() => expect(activePanel().textContent).toContain("可以加"));
@@ -1055,7 +1055,7 @@ it("streams chat across article switches and restores chat and selected-range pr
       entryId: entry.id, operation: "chat", context: { scope: "document" },
       properties: { fields: ["tags", "summary"], tagSuggestions: ["原有标签", "Markdown", "其他段落"] },
     }));
-    expect([...activePanel().querySelectorAll(".ai-user-message + .ai-user-actions > .ai-user-citation:last-child")].at(-1)?.textContent).toBe("全文");
+    expect([...activePanel().querySelectorAll(".ai-user-citation + .ai-user-message")].at(-1)?.previousElementSibling?.textContent).toBe("全文");
     const properties = () => [...activePanel().querySelectorAll(".ai-property-proposal")].at(-1)!;
     const apply = () => properties()?.querySelector<HTMLButtonElement>(".ai-proposal-actions button");
     await vi.waitFor(() => expect(apply()?.disabled).toBe(false));
