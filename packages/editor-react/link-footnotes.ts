@@ -14,11 +14,13 @@ function linkMark(node: ProseNode) {
 
 export function hasLinkFootnoteContent(block: ProseNode): boolean {
   if (block.type.name === "footnote_definition") return true;
+  if (block.type.name === "github_disclosure" && /\bhref\s*=/i.test(block.attrs.header)) return true;
   if ((block.type.name === "html" || block.type.name === "html_block") && /\bhref\s*=/i.test(block.attrs.value)) return true;
   let found = false;
   block.descendants(node => {
     if (!found) found = node.type.name === "footnote_reference" || node.marks.some(mark => mark.type.name === "link")
       || ((node.type.name === "html" || node.type.name === "html_block") && /\bhref\s*=/i.test(node.attrs.value))
+      || (node.type.name === "github_disclosure" && /\bhref\s*=/i.test(node.attrs.header))
       || (node.isText && /https?:\/\/|mailto:/i.test(node.text!));
     return !found;
   });
@@ -51,13 +53,13 @@ function footnotedLinks(doc: ProseNode) {
     const address = paragraph.lastChild;
     if (!address?.text) return;
     const markedAddress = linkMark(address)?.attrs.href === address.text;
-    const plain = address.marks.some(mark => mark.type.name === "link") ? null
-      : /^(?:(.+)： )?((?:https?:\/\/|mailto:)\S+)$/i.exec(paragraph.textContent);
+    const plain = !markedAddress && address.marks.some(mark => mark.type.name === "link") ? null
+      : /^(?:(.+)： ?)?((?:https?:\/\/|mailto:)\S+)$/i.exec(paragraph.textContent);
     if (!markedAddress && !plain) return;
-    const href = markedAddress ? address.text : plain![2];
+    const href = plain ? plain[2] : address.text;
     const prefix = paragraph.textContent.slice(0, -href.length);
-    const name = markedAddress ? (/： ?$/.test(prefix) ? prefix.replace(/： ?$/, "") : prefix === "" ? href : null)
-      : plain![1] ?? href;
+    const name = plain ? plain[1] ?? href
+      : /： ?$/.test(prefix) ? prefix.replace(/： ?$/, "") : prefix === "" ? href : null;
     if (name) {
       const from = position + 2 + paragraph.content.size - href.length;
       names.set(node.attrs.label.toUpperCase(), { name, addressOnly: prefix === "",
@@ -98,7 +100,7 @@ export function linksToFootnotes(slice: Slice, doc: ProseNode, input: "marked" |
   const definitions: ProseNode[] = [];
   const edits: { from: number; to: number; content: Fragment }[] = [];
   const definitionEdits: { from: number; to: number; content: Fragment; extraText: string }[] = [];
-  const htmlEdits: { from: number; value: string; labels: string[] }[] = [];
+  const htmlEdits: { from: number; attr: "value" | "header"; value: string; labels: string[] }[] = [];
   const { ranges: existingNames, missing, definitionText } = input === "document" ? footnotedLinks(doc) : { ranges: [], missing: [], definitionText: [] };
   const alreadyFootnoted = (from: number, to: number) => existingNames.some(range => from < range.to && range.from < to);
   let allocate: ReturnType<typeof footnoteLabels> | undefined;
@@ -140,10 +142,11 @@ export function linksToFootnotes(slice: Slice, doc: ProseNode, input: "marked" |
     fragment.forEach((node, offset, index) => {
       if (index < skipUntil) return;
       const position = start + offset;
-      if (input === "document" && node.type.name === "html_block") {
+      if (input === "document" && (node.type.name === "html_block" || node.type.name === "github_disclosure")) {
         flush();
+        const attr = node.type.name === "github_disclosure" ? "header" : "value";
         const template = document.createElement("template");
-        template.innerHTML = node.attrs.value;
+        template.innerHTML = node.attrs[attr];
         const labels: string[] = [];
         let changed = false;
         for (const anchor of template.content.querySelectorAll("a[href]")) {
@@ -165,9 +168,11 @@ export function linksToFootnotes(slice: Slice, doc: ProseNode, input: "marked" |
           }
           changed = true;
         }
-        if (changed) htmlEdits.push({ from: position, value: template.innerHTML, labels });
-        children.push(node);
-        return;
+        if (changed) {
+          const value = attr === "header" ? template.innerHTML.replace(/<\/details>\s*$/i, "") : template.innerHTML;
+          htmlEdits.push({ from: position, attr, value, labels });
+        }
+        if (attr === "value") { children.push(node); return; }
       }
       if (input === "document" && node.type.name === "html" && /^<a(?=[\s>])/i.test(node.attrs.value)) {
         const template = document.createElement("template");

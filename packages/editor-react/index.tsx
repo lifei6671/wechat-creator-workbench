@@ -1075,7 +1075,7 @@ export function MarkdownEditor(props: Props) {
             ? view.state.doc : editor.action(ctx => ctx.get(parserCtx)(source));
           const { edits, definitionEdits, htmlEdits, definitions, missing, existingNames, definitionText } = documentLinkFootnotes(doc, latest.current.githubRepo);
           const tr = new Transform(doc);
-          for (const { from, value } of htmlEdits) tr.setNodeMarkup(from, undefined, { ...doc.nodeAt(from)!.attrs, value });
+          for (const { from, attr, value } of htmlEdits) tr.setNodeMarkup(from, undefined, { ...doc.nodeAt(from)!.attrs, [attr]: value });
           unlinkFootnoteNames(tr, [...existingNames, ...definitionText]);
           for (const { from, to, content } of [...edits, ...definitionEdits]) {
             tr.replaceWith(tr.mapping.map(from), tr.mapping.map(to), content);

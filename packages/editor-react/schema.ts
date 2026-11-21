@@ -136,8 +136,8 @@ const htmlBlock = $nodeSchema("html_block", () => ({
   },
 }));
 
-function disclosureDOM(header: string) {
-  const fragment = sanitizeRenderedMarkdown(header, { embedded: true });
+function disclosureDOM(header: string, githubRepo?: string) {
+  const fragment = sanitizeRenderedMarkdown(header, { githubRepo, embedded: true });
   const dom = fragment.querySelector("details") ?? document.createElement("details");
   const summary = dom.querySelector(":scope > summary") ?? document.createElement("summary");
   if (!summary.textContent?.trim()) summary.textContent = "详细信息";
@@ -166,6 +166,12 @@ const githubDisclosure = $nodeSchema("github_disclosure", () => ({
 
 type HtmlOptions = EditorImages & { githubRepo?: string; convertLinks?: boolean };
 
+function projectedHtml(view: EditorView, pos: number | undefined, { convertLinks, githubRepo }: HtmlOptions) {
+  const projected = convertLinks && pos !== undefined
+    ? documentLinkFootnotes(view.state.doc, githubRepo).htmlEdits.find(edit => edit.from === pos)?.value : undefined;
+  return projected?.replace(/<span data-workbench-footnote="(\d+)"><\/span>/g, "<sup>[^$1]</sup>");
+}
+
 function embeddedHtmlView(node: ProseNode, view: EditorView, getPos: () => number | undefined, getOptions: () => HtmlOptions): NodeView {
   const dom = document.createElement(node.isInline ? "span" : "div");
   dom.className = "rich-embedded-html";
@@ -177,10 +183,7 @@ function embeddedHtmlView(node: ProseNode, view: EditorView, getPos: () => numbe
     const current = ++generation;
     disposals.splice(0).forEach(dispose => dispose());
     const { githubRepo, resolveImage, convertLinks } = getOptions();
-    const pos = getPos();
-    const projected = convertLinks && !node.isInline && pos !== undefined
-      ? documentLinkFootnotes(view.state.doc, githubRepo).htmlEdits.find(edit => edit.from === pos)?.value : undefined;
-    const source = projected === undefined ? node.attrs.value : projected.replace(/<span data-workbench-footnote="(\d+)"><\/span>/g, "<sup>[^$1]</sup>");
+    const source = (!node.isInline ? projectedHtml(view, getPos(), { githubRepo, convertLinks }) : undefined) ?? node.attrs.value;
     dom.dataset.type = node.isInline ? "html" : "html-block";
     dom.dataset.value = node.attrs.value;
     const options = { githubRepo, embedded: true };
@@ -483,10 +486,20 @@ export function richSchema(getOptions: () => HtmlOptions, failedImages: Set<() =
     markdownTableCell, markdownTableHeader, tableLineBreak, blockquote, footnoteReference, footnoteDefinition,
     $view(htmlInline.node, () => (node, view, getPos) => embeddedHtmlView(node, view, getPos, getOptions)),
     $view(htmlBlock.node, () => (node, view, getPos) => embeddedHtmlView(node, view, getPos, getOptions)),
-    $view(githubDisclosure.node, () => node => {
-      const { dom, contentDOM } = disclosureDOM(node.attrs.header);
+    $view(githubDisclosure.node, () => (node, view, getPos) => {
+      function render() {
+        const options = getOptions();
+        return disclosureDOM(projectedHtml(view, getPos(), options) ?? node.attrs.header, options.githubRepo);
+      }
+      const { dom, contentDOM } = render();
       return {
         dom, contentDOM,
+        update(next) {
+          if (next.type !== node.type || next.attrs.header !== node.attrs.header) return false;
+          node = next;
+          dom.replaceChild(render().dom.firstChild!, dom.firstChild!);
+          return true;
+        },
         stopEvent: event => event.target instanceof Element && Boolean(event.target.closest("summary")) && !event.target.closest("a[href]"),
         ignoreMutation: mutation => mutation.type === "attributes" && mutation.target === dom && mutation.attributeName === "open",
       };
