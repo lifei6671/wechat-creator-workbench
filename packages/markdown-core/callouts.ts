@@ -5,6 +5,13 @@ export const calloutLabels = {
   question: "问题", warning: "警告", failure: "失败", danger: "危险", bug: "错误", example: "示例", quote: "引用",
 } as const;
 
+export function calloutTone(kind: keyof typeof calloutLabels) {
+  if (["warning", "question"].includes(kind)) return "warning";
+  if (["failure", "danger", "bug"].includes(kind)) return "danger";
+  if (["tip", "success"].includes(kind)) return "success";
+  return "info";
+}
+
 export function readCalloutMarker(line: string) {
   const marker = /^\[!([a-z]+)\](?=\s|$)/i.exec(line);
   if (!marker) return;
@@ -22,7 +29,7 @@ export function renderCallouts(parser: MarkdownIt) {
       const first = children?.[0];
       if (!callout || !children || first?.type !== "text" || !first.content.startsWith(callout.marker)) return;
 
-      quote.attrJoin("class", `workbench-callout workbench-callout-${callout.kind}`);
+      quote.attrJoin("class", `workbench-callout workbench-callout-${callout.kind} workbench-callout-tone-${calloutTone(callout.kind)}`);
       first.content = first.content.slice(callout.marker.length).trimStart();
       const breakAt = children.findIndex(token => token.type === "softbreak" || token.type === "hardbreak");
       const title = children.slice(0, breakAt < 0 ? children.length : breakAt);

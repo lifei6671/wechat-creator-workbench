@@ -70,7 +70,11 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
   open.removeAttribute("aria-hidden");
   const openTicks = document.createTextNode("");
   open.append(openTicks, input);
-  pre.append(label, passiveLabel, open, contentDOM, close);
+  const header = document.createElement("div");
+  header.className = "rich-code-header";
+  header.contentEditable = "false";
+  header.append(label, passiveLabel);
+  pre.append(header, open, contentDOM, close);
   const diagram = document.createElement("div");
   diagram.className = "rich-mermaid rich-graphic-preview";
   diagram.contentEditable = "false";
@@ -137,6 +141,7 @@ export function codeView(initial: ProseNode, view: EditorView, getPos: () => num
 
   function render() {
     const language = node.attrs.language;
+    dom.dataset.language = language;
     let length = 3;
     for (const ticks of node.textContent.matchAll(/`+/g)) length = Math.max(length, ticks[0].length + 1);
     const fence = "`".repeat(length);
