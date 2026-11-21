@@ -4,11 +4,12 @@ import {
   ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
   FolderOpen, FolderPlus, History, Link, PencilLine, Pin, PinOff, Plus, SquareArrowOutUpRight, Tag, Tags, Trash2,
 } from "lucide-react";
-import type { Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, TimelineSelection, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
+import type { CanvasCardColor, Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, TimelineSelection, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 import { folderIcons } from "./folder-icons";
+import { colorValue } from "./ColorChoices";
 import { MoveEntryMenu } from "./MoveEntryMenu";
 import { AddToCollectionMenu } from "./CollectionMenu";
 import { FolderInline } from "./FolderInline";
@@ -133,7 +134,7 @@ interface ExplorerProps {
   onImportLink(categoryId: string | null): void;
   onImportMarkdown(categoryId: string | null): void;
   onRevealFolder(id: string): void;
-  onSaveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon): Promise<void>;
+  onSaveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon, color: CanvasCardColor | null): Promise<void>;
   onFolderError(error: unknown): void;
   onReorderFolder(id: string, anchor: string, placement: CategoryPlacement): void;
   onReorderEntry(id: string, anchor: string, placement: CategoryPlacement): void;
@@ -238,6 +239,7 @@ export function Explorer(props: ExplorerProps) {
   const listLabel = isSearch ? "全文搜索" : section === "imports" ? "导入的外部文章" : "回收站";
   const drag = useExplorerDrag(categories, sort === "manual", props.onReorderFolder, props.onReorderEntry, props.onMoveEntry);
   const DragIcon = drag.ghost?.kind === "folder" ? FolderOpen : FileText;
+  const draggedFolder = drag.ghost?.kind === "folder" ? categories.find(folder => folder.id === drag.ghost!.id) : undefined;
 
   function collapseDirectory(collapsed: boolean) {
     setDirectoryCollapsed(collapsed);
@@ -287,7 +289,7 @@ export function Explorer(props: ExplorerProps) {
     for (let suffix = 2; siblingNames.has(name); suffix++) name = `未命名 ${suffix}`;
     return <FolderInline key={draft.target?.id ?? `new-${draft.parent ?? "root"}`} target={draft.target}
       defaultName={name} onError={props.onFolderError}
-      onSave={(name, icon) => props.onSaveFolder(draft.target?.id ?? null, draft.parent, name, icon)}
+      onSave={(name, icon, color) => props.onSaveFolder(draft.target?.id ?? null, draft.parent, name, icon, color)}
       onClose={restoreFocus => {
         setEditing(current => current === draft ? null : current);
         const origin = draft.target?.id ?? draft.parent;
@@ -337,9 +339,9 @@ export function Explorer(props: ExplorerProps) {
                   else props.onFolder(category.id);
                 }}>
                 {!isTimeline && <Chevron size={12} className="folder-chevron" />}
-                <span className="folder-icon" aria-hidden="true">{loadingFolders.includes(category.id)
+                <span className="folder-icon folder-icon-badge" aria-hidden="true" style={{ backgroundColor: colorValue(category.iconColor) }}>{loadingFolders.includes(category.id)
                   ? <Spinner size="1" />
-                  : open && category.icon === "folder" ? <FolderOpen size={15} /> : <Icon size={15} />}</span>
+                  : open && category.icon === "folder" ? <FolderOpen size={14} /> : <Icon size={14} />}</span>
                 <span>{category.name}</span>
                 {counts && <span className="timeline-count" aria-label={`${folderCounts[category.id] ?? 0} 篇文章`}>{folderCounts[category.id] ?? 0}</span>}
               </button>
@@ -445,7 +447,7 @@ export function Explorer(props: ExplorerProps) {
             <button type="button" id="timeline-root-folder" className="plain-button folder-select"
               aria-current={selection?.kind === "root" ? "true" : undefined}
               onClick={() => props.onTimelineSelect?.({ kind: "root" })}>
-              <span className="folder-icon" aria-hidden="true"><FolderOpen size={15} /></span>
+              <span className="folder-icon folder-icon-badge" aria-hidden="true"><FolderOpen size={14} /></span>
               <span>{rootFolderLabel}</span>
               {counts && <span className="timeline-count" aria-label={`${counts.root} 篇文章`}>{counts.root}</span>}
             </button>
@@ -492,7 +494,9 @@ export function Explorer(props: ExplorerProps) {
       </ul>}
     </div>
     {isTree && drag.ghost && <div className="tree-drag-ghost" aria-hidden="true" ref={drag.ghostElement}
-      style={{ translate: `${drag.ghost.x}px ${drag.ghost.y}px` }}><DragIcon size={16} /><span>{drag.ghost.title}</span></div>}
+      style={{ translate: `${drag.ghost.x}px ${drag.ghost.y}px` }}>{drag.ghost.kind === "folder"
+        ? <span className="folder-icon-badge" style={{ backgroundColor: colorValue(draggedFolder?.iconColor) }}><DragIcon size={14} /></span>
+        : <DragIcon size={16} />}<span>{drag.ghost.title}</span></div>}
   </aside>;
   return section === "folders" ? <BlankAreaMenu label="目录操作" actions={{
     disabled: props.treeLocked || !library,

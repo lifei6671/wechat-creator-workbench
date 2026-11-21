@@ -100,7 +100,7 @@ export type CategoryIcon =
   | "mic" | "podcast" | "headphones" | "pen" | "notebook" | "clipboard" | "briefcase" | "graduation"
   | "flask" | "cpu" | "rocket" | "sparkles" | "heart" | "calendar" | "list" | "tag";
 export type CategoryPlacement = "before" | "after";
-export interface Category { id: string; parentId: string | null; name: string; sortOrder: number; icon: CategoryIcon }
+export interface Category { id: string; parentId: string | null; name: string; sortOrder: number; icon: CategoryIcon; iconColor?: CanvasCardColor | null }
 export interface Tag { id: string; name: string }
 export interface Library {
   workspaceId: string;

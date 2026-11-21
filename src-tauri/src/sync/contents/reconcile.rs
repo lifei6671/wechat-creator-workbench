@@ -20,7 +20,7 @@ fn target_matches(mutation: &Mutation, remote: Option<&Entity>) -> bool {
         && mutation
             .payload
             .as_ref()
-            .is_some_and(|local| merge::same_content(local.clone(), &remote.payload))
+            .is_some_and(|local| merge::same_content(mutation.key.entity_type, local.clone(), &remote.payload))
 }
 
 fn staged(conn: &Connection, key: &Key) -> Result<Option<Entity>> {
@@ -431,7 +431,7 @@ pub(super) fn replay_deferred(conn: &Connection) -> Result<Applied> {
         let equal = if entity.deleted_at.is_some() {
             deleted && local.as_ref().is_none_or(|value| value["purgedAt"].is_i64() == entity.payload["purgedAt"].is_i64())
         } else {
-            !deleted && local.is_some_and(|local| merge::same_content(local, &entity.payload))
+            !deleted && local.is_some_and(|local| merge::same_content(key.entity_type, local, &entity.payload))
         };
         if equal {
             remember(
@@ -510,7 +510,7 @@ pub(super) fn baseline(conn: &Connection) -> Result<Applied> {
         let equivalent = if remote.deleted_at.is_some() {
             deleted && local.as_ref().is_none_or(|value| value["purgedAt"].is_i64() == remote.payload["purgedAt"].is_i64())
         } else {
-            !deleted && local.is_some_and(|local| merge::same_content(local, &remote.payload))
+            !deleted && local.is_some_and(|local| merge::same_content(key.entity_type, local, &remote.payload))
         };
         if equivalent {
             remember(

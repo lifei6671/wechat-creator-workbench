@@ -4,6 +4,40 @@ fn memory() -> Workspace {
     Workspace::open(std::path::Path::new(":memory:")).unwrap()
 }
 
+#[test]
+fn category_icon_color_survives_reopen_rename_and_explicit_reset() {
+    use super::taxonomy::{CategoryAppearance, CategoryIcon};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("content.db");
+    let db = Workspace::open(&path).unwrap();
+    let appearance = CategoryAppearance { icon_color: Some("blue".into()) };
+    let folder = db.save_category(None, None, "彩色目录", Some(CategoryIcon::Rocket), Some(&appearance)).unwrap();
+    assert_eq!(folder.icon_color.as_deref(), Some("blue"));
+    let renamed = db.save_category(Some(&folder.id), None, "改名", None, None).unwrap();
+    assert_eq!(renamed.icon_color.as_deref(), Some("blue"));
+    assert_eq!(renamed.icon, CategoryIcon::Rocket);
+    let custom = CategoryAppearance { icon_color: Some("#123aBC".into()) };
+    db.save_category(Some(&folder.id), None, "改名", Some(CategoryIcon::Book), Some(&custom)).unwrap();
+    drop(db);
+    let db = Workspace::open(&path).unwrap();
+    let library = db.library().unwrap();
+    let saved = library.categories.iter().find(|item| item.id == folder.id).unwrap();
+    assert_eq!(saved.icon_color.as_deref(), Some("#123aBC"));
+    assert_eq!(saved.icon, CategoryIcon::Book);
+    let reset = CategoryAppearance { icon_color: None };
+    assert!(db.save_category(Some(&folder.id), None, "改名", None, Some(&reset)).unwrap().icon_color.is_none());
+    for color in ["red", "orange", "amber", "green", "blue", "violet", "#000000", "#fFfFfF"] {
+        assert!(validate_color(Some(color)).is_ok());
+    }
+    for color in ["", "pink", "#fff", "#12345678", "#gg0000", "var(--blue-9)"] {
+        let invalid = CategoryAppearance { icon_color: Some(color.into()) };
+        assert!(db.save_category(Some(&folder.id), None, "不应改名", None, Some(&invalid)).is_err());
+    }
+    let library = db.library().unwrap();
+    let saved = library.categories.iter().find(|item| item.id == folder.id).unwrap();
+    assert_eq!(serde_json::to_value(saved).unwrap()["name"], "改名");
+}
+
 fn article(title: &str, text: &str) -> Fields {
     Fields {
         title: title.into(),
@@ -38,7 +72,7 @@ fn external_imports_are_listed_once_and_keep_typed_properties_in_sync() {
         imported_at: Some(1_795_132_800_000),
         original_published_at: Some(1_794_960_000_000),
     };
-    let folder = db.save_category(None, None, "外部资料", None).unwrap();
+    let folder = db.save_category(None, None, "外部资料", None, None).unwrap();
     let mut local = article("手写文章", "");
     local.source = Some(source("https://example.com/local"));
     db.create_entry(Kind::Article, Some(local), None).unwrap();
@@ -110,9 +144,9 @@ fn external_imports_are_listed_once_and_keep_typed_properties_in_sync() {
 #[test]
 fn timeline_counts_and_filters_live_articles_by_folder_and_tag() {
     let db = memory();
-    let parent = db.save_category(None, None, "写作", None).unwrap();
+    let parent = db.save_category(None, None, "写作", None, None).unwrap();
     let child = db
-        .save_category(None, Some(&parent.id), "草稿", None)
+        .save_category(None, Some(&parent.id), "草稿", None, None)
         .unwrap();
     let mut tagged = article("微信文章", "正文");
     tagged.category_id = Some(parent.id.clone());
@@ -200,9 +234,9 @@ fn timeline_counts_and_filters_live_articles_by_folder_and_tag() {
 #[test]
 fn timeline_projects_previews_and_pages_a_folder_by_updated_time() {
     let db = memory();
-    let parent = db.save_category(None, None, "文章目录", None).unwrap();
+    let parent = db.save_category(None, None, "文章目录", None, None).unwrap();
     let child = db
-        .save_category(None, Some(&parent.id), "子目录", None)
+        .save_category(None, Some(&parent.id), "子目录", None, None)
         .unwrap();
     let mut first = article("直属文章", "正文");
     first.category_id = Some(parent.id.clone());
@@ -272,9 +306,9 @@ fn timeline_projects_previews_and_pages_a_folder_by_updated_time() {
 #[test]
 fn workspace_search_matches_persisted_scopes_before_pagination() {
     let db = memory();
-    let root = db.save_category(None, None, "Notes", None).unwrap();
+    let root = db.save_category(None, None, "Notes", None, None).unwrap();
     let child = db
-        .save_category(None, Some(&root.id), "Field reports", None)
+        .save_category(None, Some(&root.id), "Field reports", None, None)
         .unwrap();
     let mut fields = article(
         "Release Notes",
@@ -543,7 +577,7 @@ fn folder_entry_order_survives_saves_and_restart_without_leaking_between_folders
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("content.db");
     let db = Workspace::open(&path).unwrap();
-    let folder = db.save_category(None, None, "目录", None).unwrap();
+    let folder = db.save_category(None, None, "目录", None, None).unwrap();
     let create = |title: &str, rank: i64, category_id: Option<String>| {
         let mut fields = article(title, "");
         fields.category_id = category_id;
@@ -666,7 +700,7 @@ fn pinned_entries_keep_an_independent_order_across_folders_and_restarts() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("pinned.db");
     let db = Workspace::open(&path).unwrap();
-    let folder = db.save_category(None, None, "目录", None).unwrap();
+    let folder = db.save_category(None, None, "目录", None, None).unwrap();
     let first = db
         .create_entry(Kind::Article, Some(article("甲", "")), None)
         .unwrap();
@@ -749,8 +783,8 @@ fn timeline_pins_persist_in_their_scope_and_respect_current_membership() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("timeline-pins.db");
     let db = Workspace::open(&path).unwrap();
-    let parent = db.save_category(None, None, "文章目录", None).unwrap();
-    let child = db.save_category(None, Some(&parent.id), "子目录", None).unwrap();
+    let parent = db.save_category(None, None, "文章目录", None, None).unwrap();
+    let child = db.save_category(None, Some(&parent.id), "子目录", None, None).unwrap();
     let mut fields = article("文章", "正文");
     fields.category_id = Some(child.id.clone());
     fields.tags.push("微信".into());
@@ -927,9 +961,9 @@ fn stale_versions_cannot_overwrite_and_only_key_saves_create_history() {
 #[test]
 fn literal_search_combines_category_and_normalized_tag_and_tracks_visibility() {
     let db = memory();
-    let root = db.save_category(None, None, "选题", None).unwrap().id;
+    let root = db.save_category(None, None, "选题", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&root), "访谈", None)
+        .save_category(None, Some(&root), "访谈", None, None)
         .unwrap()
         .id;
     let mut fields = article("开头", "访问 A\"B，字面 %_ 和来宾");
@@ -955,10 +989,10 @@ fn literal_search_combines_category_and_normalized_tag_and_tracks_visibility() {
     assert_eq!(db.entries(filtered).unwrap().items[0].id, entry.row.id);
 
     assert!(
-        db.save_category(None, Some(&child), "第三级", None)
+        db.save_category(None, Some(&child), "第三级", None, None)
             .is_err()
     );
-    assert!(db.save_category(None, Some(&root), "访谈", None).is_err());
+    assert!(db.save_category(None, Some(&root), "访谈", None, None).is_err());
     db.delete_category(&child, crate::content::taxonomy::CategoryDeleteMode::Promote).unwrap();
     let moved = db.get_entry(&entry.row.id).unwrap();
     assert_eq!(moved.fields.category_id, Some(root));
@@ -1033,7 +1067,7 @@ fn folder_icons_are_returned_and_omission_preserves_the_icon_on_rename() {
     use taxonomy::CategoryIcon;
 
     let db = memory();
-    let parent = db.save_category(None, None, "收集", None).unwrap();
+    let parent = db.save_category(None, None, "收集", None, None).unwrap();
     assert_eq!(parent.icon, CategoryIcon::Folder);
     let child = db
         .save_category(
@@ -1041,17 +1075,18 @@ fn folder_icons_are_returned_and_omission_preserves_the_icon_on_rename() {
             Some(&parent.id),
             "剪辑",
             Some(CategoryIcon::Newspaper),
+            None,
         )
         .unwrap();
     assert_eq!(serde_json::to_value(&child).unwrap()["icon"], "newspaper");
     let renamed = db
-        .save_category(Some(&child.id), None, "编辑", None)
+        .save_category(Some(&child.id), None, "编辑", None, None)
         .unwrap();
     assert_eq!(renamed.id, child.id);
     assert_eq!(renamed.parent_id.as_deref(), Some(parent.id.as_str()));
     assert_eq!(renamed.icon, CategoryIcon::Newspaper);
     let icon = serde_json::from_value(serde_json::json!("bookmark")).unwrap();
-    db.save_category(Some(&child.id), None, "编辑", Some(icon))
+    db.save_category(Some(&child.id), None, "编辑", Some(icon), None)
         .unwrap();
     let persisted = db
         .library()
@@ -1128,7 +1163,7 @@ fn folder_drop_reorders_only_siblings_and_existing_icons_survive_upgrade() {
         Some("nested")
     );
     let edited = db
-        .save_category(Some("nested"), None, "项目", Some(CategoryIcon::Rocket))
+        .save_category(Some("nested"), None, "项目", Some(CategoryIcon::Rocket), None)
         .unwrap();
     assert_eq!(edited.parent_id.as_deref(), Some("first"));
     assert_eq!(edited.icon, CategoryIcon::Rocket);
@@ -1210,7 +1245,7 @@ fn new_workspaces_start_with_three_editable_root_folders() {
         assert_eq!(library.categories[index].icon, icon);
         assert!(library.categories[index].parent_id.is_none());
     }
-    db.save_category(Some(&library.categories[0].id), None, "文章草稿", None)
+    db.save_category(Some(&library.categories[0].id), None, "文章草稿", None, None)
         .unwrap();
 }
 
@@ -1232,9 +1267,9 @@ fn property_tag_suggestions_include_previous_tags_after_unlinking() {
 #[test]
 fn exact_folder_filter_distinguishes_members_children_and_unassigned_entries() {
     let db = memory();
-    let root = db.save_category(None, None, "选题", None).unwrap().id;
+    let root = db.save_category(None, None, "选题", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&root), "子选题", None)
+        .save_category(None, Some(&root), "子选题", None, None)
         .unwrap()
         .id;
     let create = |folder: Option<&str>| {
@@ -1404,12 +1439,12 @@ fn another_reference_cannot_overwrite_existing_source_metadata() {
 #[test]
 fn deleting_a_folder_promotes_children_and_preserves_document_locations() {
     let db = memory();
-    let root = db.save_category(None, None, "parent", None).unwrap().id;
+    let root = db.save_category(None, None, "parent", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&root), "child", None)
+        .save_category(None, Some(&root), "child", None, None)
         .unwrap()
         .id;
-    let sibling = db.save_category(None, None, "child", None).unwrap().id;
+    let sibling = db.save_category(None, None, "child", None, None).unwrap().id;
     let mut fields = article("direct", "kept");
     fields.category_id = Some(root.clone());
     let direct = db.create_entry(Kind::Article, Some(fields), None).unwrap();
@@ -1442,16 +1477,16 @@ fn deleting_a_folder_promotes_children_and_preserves_document_locations() {
     let sibling = categories.iter().find(|item| item.id == sibling).unwrap();
     assert_eq!(serde_json::to_value(sibling).unwrap()["name"], "child");
     // Promoted folders really become roots and can accept a child of their own.
-    db.save_category(None, Some(&child), "new child", None)
+    db.save_category(None, Some(&child), "new child", None, None)
         .unwrap();
 }
 
 #[test]
 fn deleting_a_child_folder_moves_its_documents_to_its_parent() {
     let db = memory();
-    let parent = db.save_category(None, None, "parent", None).unwrap().id;
+    let parent = db.save_category(None, None, "parent", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&parent), "child", None)
+        .save_category(None, Some(&parent), "child", None, None)
         .unwrap()
         .id;
     let mut fields = article("direct", "preserved");
@@ -1468,9 +1503,9 @@ fn deleting_a_child_folder_moves_its_documents_to_its_parent() {
 #[test]
 fn deleting_folder_contents_trashes_all_documents_and_keeps_existing_deletion_age() {
     let db = memory();
-    let root = db.save_category(None, None, "parent", None).unwrap().id;
+    let root = db.save_category(None, None, "parent", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&root), "child", None)
+        .save_category(None, Some(&root), "child", None, None)
         .unwrap()
         .id;
     let outside = db
@@ -1522,9 +1557,9 @@ fn deleting_folder_contents_trashes_all_documents_and_keeps_existing_deletion_ag
 #[test]
 fn failed_folder_delete_rolls_back_promotions_and_documents() {
     let db = memory();
-    let root = db.save_category(None, None, "parent", None).unwrap().id;
+    let root = db.save_category(None, None, "parent", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&root), "child", None)
+        .save_category(None, Some(&root), "child", None, None)
         .unwrap()
         .id;
     let mut fields = article("direct", "kept");
@@ -1559,9 +1594,9 @@ fn failed_folder_delete_rolls_back_promotions_and_documents() {
 #[test]
 fn promoting_a_same_named_child_keeps_its_name() {
     let db = memory();
-    let parent = db.save_category(None, None, "same name", None).unwrap().id;
+    let parent = db.save_category(None, None, "same name", None, None).unwrap().id;
     let child = db
-        .save_category(None, Some(&parent), "same name", None)
+        .save_category(None, Some(&parent), "same name", None, None)
         .unwrap()
         .id;
     db.delete_category(&parent, taxonomy::CategoryDeleteMode::Promote)

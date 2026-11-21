@@ -4,7 +4,8 @@ use crate::{
     content::{
         Entry, Fields, Filter, Kind, Page, Revision, SaveMode, SaveResult, TimelineSelection,
         taxonomy::{
-            Category, CategoryChange, CategoryDeleteMode, CategoryIcon, CategoryPlacement, Library,
+            Category, CategoryAppearance, CategoryChange, CategoryDeleteMode, CategoryIcon,
+            CategoryPlacement, Library,
         },
     },
     db::{AppError, Result, Workspace},
@@ -162,8 +163,15 @@ pub async fn save_category(
     parent_id: Option<String>,
     name: String,
     icon: Option<CategoryIcon>,
+    appearance: Option<CategoryAppearance>,
 ) -> Result<Category> {
-    state.save_category(id.as_deref(), parent_id.as_deref(), &name, icon)
+    state.save_category(
+        id.as_deref(),
+        parent_id.as_deref(),
+        &name,
+        icon,
+        appearance.as_ref(),
+    )
 }
 
 #[tauri::command]

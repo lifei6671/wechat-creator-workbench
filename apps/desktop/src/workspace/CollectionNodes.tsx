@@ -7,7 +7,8 @@ import type { ClipboardIO, MarkdownEditorHandle } from "../../../../packages/edi
 import { renderMarkdown } from "../../../../packages/markdown-core";
 import { desktop } from "../desktop";
 import { untitled } from "../labels";
-import { Tool, Tooltip } from "../ui";
+import { Tool } from "../ui";
+import { ColorChoices, colorValue } from "./ColorChoices";
 import type { useButtonFeedback } from "../button-feedback";
 import { useAssetImage } from "./Assets";
 import type { SaveQueue } from "../editor/save-queue";
@@ -109,39 +110,21 @@ function WebCardPreview({ id, url, cache, slot }: {
   </div>;
 }
 
-const cardColors = [[null, "默认"], ["red", "红色"], ["orange", "橙色"], ["amber", "黄色"], ["green", "绿色"], ["blue", "蓝色"], ["violet", "紫色"]] as const;
-
 function cardColorStyle(color: CanvasCardColor | null): CSSProperties | undefined {
   if (!color) return;
-  return { "--card-color": color.startsWith("#") ? color : `var(--${color}-9)` } as CSSProperties;
+  return { "--card-color": colorValue(color) } as CSSProperties;
 }
 
 function CardTools({ id, data, hasCaption, canEdit, editing }: { id: string; data: CanvasNode; hasCaption: boolean; canEdit: boolean; editing: boolean }) {
   const actions = useContext(CollectionNodeContext)!;
   const zoom = useStore(state => state.transform[2]);
-  const customColor = data.color?.startsWith("#") ? data.color : undefined;
   return <NodeToolbar className="collection-card-tools nodrag nopan" offset={8 + (hasCaption ? 23 * zoom : 0)}
     role="group" aria-label="卡片工具" onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
     <Tool label="删除卡片" color="gray" disabled={id === actions.convertingId} onClick={() => actions.remove(id)}><Trash2 size={18} strokeWidth={1.75} /></Tool>
     <Popover.Root>
       <Popover.Trigger><Tool label="设置颜色" color="gray"><Palette size={18} strokeWidth={1.75} /></Tool></Popover.Trigger>
       <Popover.Content size="1" className="collection-color-palette" aria-label="卡片颜色" side="bottom" sideOffset={8}>
-        {cardColors.map(([color, label]) => <Tooltip key={label} content={label}>
-          <Popover.Close>
-            <button type="button" className="collection-color-swatch" style={cardColorStyle(color)}
-              aria-label={label} aria-pressed={data.color === color} onClick={() => actions.color(id, color)} />
-          </Popover.Close>
-        </Tooltip>)}
-        <Tooltip content="自定义颜色">
-          <input type="color" className="collection-color-swatch collection-custom-color"
-            aria-label="自定义颜色" data-active={customColor ? "" : undefined} style={cardColorStyle(customColor ?? null)}
-            defaultValue={customColor ?? "#808080"} ref={input => {
-              if (!input) return;
-              const commit = () => actions.color(id, input.value as CanvasCardColor);
-              input.addEventListener("change", commit);
-              return () => input.removeEventListener("change", commit);
-            }} />
-        </Tooltip>
+        <ColorChoices value={data.color} onChange={color => actions.color(id, color)} closeOnSelect />
       </Popover.Content>
     </Popover.Root>
     <Tool label="聚焦当前卡片（Shift + 2）" color="gray" onClick={() => actions.focus(id)}><Focus size={18} strokeWidth={1.75} /></Tool>

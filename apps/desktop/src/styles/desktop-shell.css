@@ -135,9 +135,15 @@
 .folder-select span, .entry-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-select svg, .entry-row > svg { color: var(--text-muted); stroke-width: 1.65; }
 .folder-select .folder-chevron { color: var(--gray-10); }
-.folder-select .folder-icon { display: grid; place-items: center; flex: 0 0 15px; width: 15px; height: 15px; overflow: visible; color: var(--text-muted); }
+.folder-icon-badge {
+  display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 6px;
+  background-color: var(--gray-9); color: var(--white-a12);
+}
+.folder-icon-badge > svg { color: inherit; stroke-width: 1.75; }
+.folder-select .folder-icon { flex: 0 0 22px; overflow: visible; }
+.folder-select .folder-icon svg { color: inherit; }
 .entry-row { width: 100%; padding-inline: 8px; }
-.tree-entry { display: flex; gap: 5px; padding-inline: calc(17px + var(--tree-indent)) 10px; }
+.tree-entry { display: flex; gap: 5px; padding-inline: calc(24px + var(--tree-indent)) 10px; }
 .tree-entry > .entry-title { flex: 1; }
 .entry-detail { display: grid; grid-template-columns: 15px minmax(0, 1fr); row-gap: 3px; line-height: 1.2; min-height: 41px; }
 .entry-meta { grid-column: 2; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; font-size: var(--small-font); color: var(--text-muted); }
@@ -238,18 +244,19 @@
   display: flex; align-items: center; gap: 8px; max-width: 220px; padding: 7px 10px;
   color: var(--text-main); background: var(--gray-2); border: var(--hairline); border-radius: 6px; box-shadow: var(--shadow-3);
 }
-.tree-drag-ghost svg { flex: none; color: var(--text-muted); }
+.tree-drag-ghost > svg { flex: none; color: var(--text-muted); }
 .tree-drag-ghost span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-inline {
-  display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 3px;
-  min-height: 30px; padding-inline: calc(10px + var(--tree-indent)) 8px;
+  display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 5px;
+  min-height: 30px; padding-inline: calc(20px + var(--tree-indent, 0px)) 8px;
   border-radius: 6px; background: var(--panel-hover); box-shadow: inset 0 0 0 0.5px var(--focus-color);
 }
-.folder-inline-icon { display: grid; place-items: center; width: 22px; min-height: 24px; padding: 0; color: var(--text-muted); }
+.folder-inline-icon { display: grid; place-items: center; width: 22px; height: 22px; min-height: 22px; padding: 0; border-radius: 6px; }
 .folder-inline-icon:is(:hover, [data-state="open"]) { background: var(--gray-4); }
 .folder-inline-name { min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
 .folder-inline-name:focus-visible { outline: none; }
-.folder-inline-error { padding: 4px 4px 4px calc(25px + var(--tree-indent)); font-size: var(--small-font); }
+.folder-inline-error { box-sizing: border-box; height: 24px; margin: 0; overflow: auto; padding: 4px 4px 4px calc(47px + var(--tree-indent, 0px)); font-size: var(--small-font); }
+.folder-icon-colors { margin-top: 8px; padding: 8px 4px 2px; border-top: var(--hairline); }
 .entry-inline {
   min-width: 0; min-height: 30px; align-items: center; border-radius: 6px; background: var(--panel-hover);
   box-shadow: inset 0 0 0 0.5px var(--focus-color);
@@ -383,6 +390,8 @@
   background: transparent;
 }
 .timeline-folders .folder-select { padding-inline-start: 0; }
+.timeline-folders .folder-inline { padding-inline-start: calc(24px + var(--tree-indent)); }
+.timeline-folders .folder-inline-error { padding-inline-start: calc(51px + var(--tree-indent)); }
 .timeline-folders > .tree-section + .tree-section { margin-block-start: 8px; }
 .timeline-tag-row { width: 100%; gap: 5px; padding-inline: 40px 8px; }
 .timeline-tag-row svg { flex: none; color: var(--text-muted); stroke-width: 1.65; }
@@ -723,7 +732,7 @@ button.outline-expand { cursor: pointer; }
 .document-editor[data-wechat-theme] .rich-editor .rich-link-notes > h2 {
   margin: var(--article-reference-margin); padding: var(--article-reference-padding); border: 0;
 }
-.document-editor[data-wechat-theme] .rich-editor :where(:not(li, td, th)) > p {
+.document-editor[data-wechat-theme] .rich-editor :where(:not(li, td, th, dd)) > p {
   margin-block: var(--article-p-margin-block); padding-block: var(--article-p-padding-block);
 }
 .document-editor .rich-editor blockquote {

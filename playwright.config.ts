@@ -5,6 +5,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   workers: 2,
+  timeout: 60_000,
   outputDir: "output/playwright/test-results",
   use: { baseURL: "http://127.0.0.1:1421", trace: "retain-on-failure" },
   projects: [

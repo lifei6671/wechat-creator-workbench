@@ -1536,7 +1536,7 @@ it("scopes the timeline blank-area menu and its actions to the selected folder",
     expect(document.activeElement).toBe(subfolderInput());
   });
   flushSync(() => subfolderInput()!.form!.requestSubmit());
-  await vi.waitFor(() => expect(saveFolder).toHaveBeenCalledExactlyOnceWith(null, "closed", "未命名", "folder"));
+  await vi.waitFor(() => expect(saveFolder).toHaveBeenCalledExactlyOnceWith(null, "closed", "未命名", "folder", null));
 
   flushSync(() => container.querySelector<HTMLButtonElement>("#add-root-folder")!.click());
   expect(subfolderInput()).not.toBeNull();

@@ -46,12 +46,14 @@
 
 | 实体类型 | 本地来源 | 传输内容 | 策略 |
 |---|---|---|---|
-| `category` | `categories` | ID、父级、名称、排序、图标 | 根级先于子级应用，删除前先应用文章迁移 |
+| `category` | `categories` | ID、父级、名称、排序、图标、图标颜色 | 根级先于子级应用，删除前先应用文章迁移 |
 | `entry` | `entries`、`entry_tags`、`sources`、`entry_links` | 灵感/资料/文章正文、元数据、标签名称、来源信息、文章引用关系、软删除时间 | 整篇正文为一个冲突单元；保留本地版本号语义 |
 | `asset` | `assets` | ID、SHA-256、MIME、文件名、尺寸、来源类型、保留标记 | 首个试用版本覆盖正文图片和封面。保留资产 ID，文件按需下载并按哈希去重 |
 | `collection` | `collections` | ID、名称、说明、时间 | 专题阶段接入；排除 `viewport_x/y/zoom` |
 | `collection_node` | `collection_nodes` | 卡片类型、所属专题、正文或引用、坐标尺寸、颜色、外链 | 专题阶段接入；每张卡片独立版本，拖拽结束后提交几何数据 |
 | `collection_edge` | `collection_edges` | 起止节点、标签、所属专题 | 专题阶段接入；先节点后连线 |
+
+目录 `iconColor` 使用画布的六种颜色键、`#RRGGBB` 或 `null`。首次合并、完整对账、延后收敛及冻结操作比较中，旧快照缺失该字段与默认色 `null` 等价，真实颜色差异仍参与冲突判断，本机副本保留原色。桌面 `save_category` 的可选 `appearance` 缺省时保留颜色，显式 `{ "iconColor": null }` 恢复默认色，名称、图标及颜色在同一事务保存。
 
 `entry` 内的标签按名称及 `normalized` 规则还原为本地 `tags`/`entry_tags`；来源通过 `source_url` 去重并重建 `sources`；`entry_links` 通过文章关联的 `source_entry_id` 集合还原。`entries.folder_sort_order`、`pinned_order` 等已有排序属性也需纳入快照，排序仍由本地表呈现。`entry_assets` 从 Markdown 资源引用重新派生，不同步该派生表。
 

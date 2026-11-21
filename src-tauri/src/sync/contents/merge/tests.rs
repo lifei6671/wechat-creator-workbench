@@ -7,6 +7,23 @@ use rusqlite::{Connection, params};
 use std::io::Cursor;
 
 #[test]
+fn first_join_copies_local_category_color_when_preserving_a_conflict() {
+    use super::super::{Applied, Entity, Key, Kind, encode};
+    let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+    db.write(|conn| {
+        conn.execute_batch("INSERT INTO categories (id,name,depth,sort_order,icon_color)
+            VALUES ('folder','目录',1,0,'blue');")?;
+        let remote = Entity { key: Key { entity_type: Kind::Category, entity_id: "folder".into() },
+            payload: serde_json::json!({"name":"目录","iconColor":"green"}), remote_revision: 1, deleted_at: None };
+        conn.execute("INSERT INTO sync_bootstrap VALUES ('category','folder',1,?1)", [encode(&remote)?])?;
+        super::preserve_distinct_categories(conn, &mut Applied::default())?;
+        let copied: String = conn.query_row("SELECT icon_color FROM categories WHERE id NOT IN ('folder','builtin-articles','builtin-ideas','builtin-references')", [], |row| row.get(0))?;
+        assert_eq!(copied, "blue");
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
 fn first_join_normalizes_optional_category_defaults_without_hiding_real_changes() {
     use super::super::{Entity, Key, Kind, encode};
     for (payload, copied) in [
@@ -17,6 +34,8 @@ fn first_join_normalizes_optional_category_defaults_without_hiding_real_changes(
         ),
         (serde_json::json!({"name":"目录","icon":"star"}), true),
         (serde_json::json!({"name":"目录","sortOrder":7}), true),
+        (serde_json::json!({"name":"目录","iconColor":"blue"}), true),
+        (serde_json::json!({"name":"目录","iconColor":null}), false),
     ] {
         let root = tempfile::tempdir().unwrap();
         let (db, backups) = Backups::open(root.path()).unwrap();
