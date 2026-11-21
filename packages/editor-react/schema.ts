@@ -365,6 +365,11 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
     preview.append(rendered, trigger);
     dom.append(field, preview);
   }
+  const error = document.createElement("span");
+  error.className = "inline-error rich-formula-error";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  dom.append(error);
   let imageUrl: string | undefined;
   let destroyed = false;
   void import("../wechat-renderer/graphics")
@@ -385,6 +390,8 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
     const fence = node.isInline ? delimiter : "$$\n";
     field.value = fence + node.attrs.value + (node.isInline ? delimiter : "\n$$");
     field.setCustomValidity("");
+    field.removeAttribute("aria-invalid");
+    error.hidden = true;
     rendered.hidden = node.isInline;
     trigger.hidden = node.isInline;
     trigger.tabIndex = -1;
@@ -401,12 +408,18 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
     const block = doc?.childCount === 1 ? doc.firstChild : null;
     const expression = node.isInline && block?.type.name === "paragraph" && block.childCount === 1 ? block.firstChild : block;
     const formula = expression?.type === node.type && validMath(expression.attrs.value, node.isInline) ? expression : null;
-    if (save && !formula && restoreFocus) {
-      field.setCustomValidity(node.isInline ? "请用 $ 包住行内公式" : "请在块公式前后各写一行 $$");
-      field.reportValidity();
+    if (save && !formula && view.editable) {
+      const message = node.isInline ? "请用 $ 包住行内公式" : "请在块公式前后各写一行 $$";
+      field.setCustomValidity(message);
+      field.setAttribute("aria-invalid", "true");
+      error.textContent = message;
+      error.hidden = false;
+      if (restoreFocus) field.reportValidity();
       return;
     }
     field.hidden = true;
+    error.hidden = true;
+    field.removeAttribute("aria-invalid");
     rendered.hidden = false;
     trigger.hidden = false;
     trigger.tabIndex = 0;
@@ -420,7 +433,7 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
   }
 
   trigger.onfocus = trigger.onclick = openSource;
-  field.oninput = () => field.setCustomValidity("");
+  field.oninput = () => { field.setCustomValidity(""); field.removeAttribute("aria-invalid"); error.hidden = true; };
   field.onblur = () => finishSource(true, false);
   field.onkeydown = event => {
     if (event.isComposing || event.keyCode === 229) return;

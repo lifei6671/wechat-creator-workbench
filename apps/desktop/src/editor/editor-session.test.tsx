@@ -2847,7 +2847,8 @@ it("zooms the selected image and commits valid Markdown when its line loses focu
     enter();
     expect(container.querySelector(".rich-image-source-editor [role=alert]")?.textContent).toContain("Markdown 图片");
     sourceField().blur();
-    expect(sourceField().parentElement?.hidden).toBe(true);
+    expect(sourceField().parentElement?.hidden).toBe(false);
+    expect(sourceField().value).toBe("这不是图片");
     expect(onChange).not.toHaveBeenCalled();
 
     sourceButton().click();

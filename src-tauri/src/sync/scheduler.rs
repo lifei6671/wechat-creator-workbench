@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager};
 const CHECK: Duration = Duration::from_secs(5);
 const UPLOAD_DELAY: Duration = Duration::from_secs(30);
 const PULL_INTERVAL: Duration = Duration::from_secs(300);
+const FOREGROUND_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Serialize)]
 pub(super) struct RuntimeError {
@@ -23,6 +24,8 @@ pub(super) struct RuntimeState {
     pub phase: String,
     pub error: Option<RuntimeError>,
     pub last_exchange_at: Option<i64>,
+    #[serde(skip)]
+    last_exchange: Option<Instant>,
 }
 
 impl Default for RuntimeState {
@@ -31,6 +34,7 @@ impl Default for RuntimeState {
             phase: "idle".into(),
             error: None,
             last_exchange_at: None,
+            last_exchange: None,
         }
     }
 }
@@ -68,6 +72,7 @@ pub(super) fn finish(sync: &SyncConnection, app: &AppHandle, result: &Result<()>
     match result {
         Ok(()) => {
             state.error = None;
+            state.last_exchange = Some(Instant::now());
             state.last_exchange_at = Some(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -131,8 +136,10 @@ impl Schedule {
         }
     }
 
-    fn requested(&mut self, now: Instant, sources: u8) -> bool {
-        if sources & WakeSource::Foreground as u8 != 0 {
+    fn requested(&mut self, now: Instant, sources: u8, last_exchange: Option<Instant>) -> bool {
+        if sources & WakeSource::Foreground as u8 != 0
+            && last_exchange.is_none_or(|last| now.duration_since(last) >= FOREGROUND_INTERVAL)
+        {
             self.next_pull = self.next_pull.min(now);
         }
         sources & WakeSource::Immediate as u8 != 0
@@ -183,7 +190,8 @@ pub(crate) fn spawn(app: AppHandle) {
             let sources = sync
                 .wake_sources
                 .swap(0, std::sync::atomic::Ordering::AcqRel);
-            let explicit_wake = schedule.requested(Instant::now(), sources);
+            let last_exchange = snapshot(&sync).last_exchange;
+            let explicit_wake = schedule.requested(Instant::now(), sources, last_exchange);
             let db = app.state::<Workspace>();
             // A cancelled exit replaces this token. The application task stays alive.
             if db.running_lifetime().is_cancelled() {
@@ -258,18 +266,84 @@ mod tests {
     }
 
     #[test]
-    fn foreground_advances_pull_but_keeps_failed_retry_deadline() {
+    fn foreground_skips_recent_success_without_scheduling_a_delayed_pull() {
         let now = Instant::now();
         let mut clock = Schedule::new(now);
         clock.completed(now, true, false);
+        for second in [1, 5, 29] {
+            let instant = now + Duration::from_secs(second);
+            assert!(!clock.requested(instant, WakeSource::Foreground as u8, Some(now)));
+            assert!(!clock.due(instant, false, false));
+        }
+        assert!(!clock.due(now + FOREGROUND_INTERVAL, false, false));
+        assert!(!clock.requested(
+            now + FOREGROUND_INTERVAL,
+            WakeSource::Foreground as u8,
+            Some(now)
+        ));
+        assert!(clock.due(now + FOREGROUND_INTERVAL, false, false));
+    }
+
+    #[test]
+    fn foreground_uses_latest_success_including_manual_sync() {
+        let now = Instant::now();
+        let mut clock = Schedule::new(now);
+        clock.completed(now, true, false);
+        let manual_success = now + Duration::from_secs(25);
+        let restored = now + Duration::from_secs(35);
+        assert!(!clock.requested(restored, WakeSource::Foreground as u8, Some(manual_success)));
+        assert!(!clock.due(restored, false, false));
+        let restored = manual_success + FOREGROUND_INTERVAL;
+        assert!(!clock.requested(restored, WakeSource::Foreground as u8, Some(manual_success)));
+        assert!(clock.due(restored, false, false));
+    }
+
+    #[test]
+    fn foreground_without_success_checks_immediately() {
+        let now = Instant::now();
+        let mut clock = Schedule::new(now);
+        clock.next_pull = now + PULL_INTERVAL;
+        assert!(!clock.requested(now, WakeSource::Foreground as u8, None));
+        assert!(clock.due(now, false, false));
+    }
+
+    #[test]
+    fn immediate_wake_bypasses_foreground_interval_and_failure_backoff() {
+        let now = Instant::now();
+        let mut clock = Schedule::new(now);
+        clock.completed(now, true, false);
+        clock.completed(now + CHECK, false, false);
+        for sources in [
+            WakeSource::Immediate as u8,
+            WakeSource::Immediate as u8 | WakeSource::Foreground as u8,
+        ] {
+            let immediate = clock.requested(now + CHECK, sources, Some(now));
+            assert!(immediate);
+            assert!(clock.due(now + CHECK, false, immediate));
+        }
+    }
+
+    #[test]
+    fn foreground_advances_pull_but_keeps_failed_retry_deadline() {
+        let now = Instant::now();
+        let mut clock = Schedule::new(now);
+        clock.completed(now - FOREGROUND_INTERVAL, true, false);
         assert!(!clock.due(now + CHECK, false, false));
-        assert!(!clock.requested(now + CHECK, WakeSource::Foreground as u8));
+        assert!(!clock.requested(
+            now + CHECK,
+            WakeSource::Foreground as u8,
+            Some(now - FOREGROUND_INTERVAL)
+        ));
         assert!(clock.due(now + CHECK, false, false));
 
         clock.completed(now + CHECK, false, false);
         for second in 6..20 {
             let instant = now + Duration::from_secs(second);
-            assert!(!clock.requested(instant, WakeSource::Foreground as u8));
+            assert!(!clock.requested(
+                instant,
+                WakeSource::Foreground as u8,
+                Some(now - FOREGROUND_INTERVAL)
+            ));
             assert!(!clock.due(instant, false, false));
         }
         assert!(clock.due(now + Duration::from_secs(20), false, false));
@@ -282,9 +356,13 @@ mod tests {
         let now = Instant::now();
         let mut clock = Schedule::new(now);
         clock.completed(now, true, false);
-        clock.requested(now + CHECK, WakeSource::Foreground as u8);
+        clock.requested(
+            now + FOREGROUND_INTERVAL,
+            WakeSource::Foreground as u8,
+            Some(now),
+        );
         // The completed baseline prevents an exchange until the next safe replay.
-        assert!(clock.due(now + CHECK * 2, false, false));
+        assert!(clock.due(now + FOREGROUND_INTERVAL + CHECK, false, false));
     }
 
     #[tokio::test]
@@ -305,7 +383,7 @@ mod tests {
             let now = Instant::now();
             let mut clock = Schedule::new(now);
             clock.completed(now, false, false);
-            let immediate = clock.requested(now, sources);
+            let immediate = clock.requested(now, sources, None);
             assert!(immediate);
             assert!(clock.due(now, false, immediate));
             assert_eq!(sync.wake_sources.load(Ordering::Acquire), 0);

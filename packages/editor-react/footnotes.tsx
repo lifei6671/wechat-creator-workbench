@@ -52,8 +52,9 @@ export function footnoteDraft(view: EditorView, pos: number, parse: (source: str
 type FootnoteDraft = NonNullable<ReturnType<typeof footnoteDraft>>;
 
 export function FootnotePopover({ draft, onClose }: { draft: FootnoteDraft; onClose(): void }) {
-  const [value, setValue] = useState(draft.source);
-  const [changed, setChanged] = useState(false);
+  const [editing, setEditing] = useState({ draft, value: draft.source, changed: false });
+  if (editing.draft !== draft) setEditing({ draft, value: draft.source, changed: false });
+  const { value, changed } = editing;
   const title = draft.existing ? "编辑脚注" : "插入脚注";
   function close() { onClose(); draft.focus(); }
   return <Popover.Root open onOpenChange={open => { if (!open) onClose(); }}>
@@ -66,10 +67,10 @@ export function FootnotePopover({ draft, onClose }: { draft: FootnoteDraft; onCl
         event.preventDefault();
         if (!value.trim()) return;
         if (draft.save(value)) close();
-        else setChanged(true);
+        else setEditing({ ...editing, changed: true });
       }}>
         <code>{`[^${draft.label}]:`}</code>
-        <TextArea aria-label="脚注内容" value={value} onChange={event => setValue(event.target.value)} rows={3} />
+        <TextArea aria-label="脚注内容" value={value} onChange={event => setEditing({ ...editing, value: event.target.value })} rows={3} />
         {changed && <span className="inline-error" role="alert">文稿已更新，请重新打开脚注。</span>}
         <div className="rich-footnote-actions">
           <Button type="button" size="1" color="gray" variant="soft" onClick={close}>取消</Button>

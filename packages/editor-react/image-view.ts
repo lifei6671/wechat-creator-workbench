@@ -158,8 +158,11 @@ export function imageView(
   source.onclick = () => {
     if (!view.editable) return;
     const schema = view.state.schema;
-    field.value = serialize(schema.topNodeType.create(null, schema.nodes.paragraph.create(null, node))).trim();
-    error.textContent = "";
+    if (sourcePanel.hidden) {
+      field.value = serialize(schema.topNodeType.create(null, schema.nodes.paragraph.create(null, node))).trim();
+      error.textContent = "";
+      field.removeAttribute("aria-invalid");
+    }
     sourcePanel.hidden = false;
     source.setAttribute("aria-expanded", "true");
     field.focus();
@@ -174,8 +177,8 @@ export function imageView(
     const image = paragraph?.firstChild;
     if (parsed.childCount !== 1 || paragraph?.type !== view.state.schema.nodes.paragraph
       || paragraph.childCount !== 1 || image?.type !== node.type || !imagePattern.test(image.attrs.src)) {
-      if (blur) closeSource();
-      else error.textContent = "请输入一条使用 HTTP、HTTPS 或 asset:// 地址的 Markdown 图片语法";
+      error.textContent = "请输入一条使用 HTTP、HTTPS 或 asset:// 地址的 Markdown 图片语法";
+      field.setAttribute("aria-invalid", "true");
       return;
     }
     closeSource();
@@ -187,7 +190,7 @@ export function imageView(
   }
 
   field.onblur = () => finishSource(true);
-  field.oninput = () => { error.textContent = ""; };
+  field.oninput = () => { error.textContent = ""; field.removeAttribute("aria-invalid"); };
   sourcePanel.onkeydown = event => {
     event.stopPropagation();
     if (event.isComposing || event.keyCode === 229) return;

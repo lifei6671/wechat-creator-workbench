@@ -46,7 +46,11 @@ const groups: { name: string; items: Item[] }[] = [
     markdown("HTML 块", "‹›", "```html\n<div></div>\n```", "html embed"),
     media("白板", "◇", "whiteboard drawing canvas sketch"),
   ] },
-  { name: "副标题", items: [command("标题 4", "H₄", "heading4", "h4 heading 四级标题", "Alt+4")] },
+  { name: "副标题", items: [
+    command("标题 4", "H₄", "heading4", "h4 heading 四级标题", "Alt+4"),
+    command("标题 5", "H₅", "heading5", "h5 heading 五级标题", "Alt+5"),
+    command("标题 6", "H₆", "heading6", "h6 heading 六级标题", "Alt+6"),
+  ] },
   { name: "其他", items: [
     { label: "表情符号", icon: "☺", aliases: "emoji", children: [
       ["微笑", "🙂"], ["笑脸", "😄"], ["庆祝", "🎉"], ["点赞", "👍"], ["爱心", "❤️"], ["星星", "⭐"],

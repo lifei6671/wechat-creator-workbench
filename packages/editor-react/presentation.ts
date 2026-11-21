@@ -1,6 +1,7 @@
 import { DOMSerializer, Fragment, Slice, type Mark, type Node as ProseNode } from "@milkdown/kit/prose/model";
 import { Plugin, PluginKey, Selection, TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
+import { ReplaceStep } from "@milkdown/kit/prose/transform";
 import { readCalloutMarker } from "../markdown-core/callouts";
 import { codeHighlight } from "./code-view";
 import { tableSelectionDecorations } from "./table-view";
@@ -10,7 +11,7 @@ import { inlineChangedBlocks } from "./inline-changes";
 type Section = { from: number; to: number };
 type TextContext = { caretHeight?: number };
 type PresentationState = { focused: boolean; folded: Map<number, Section>; context: TextContext | null };
-type PresentationUpdate = { focused: boolean } | { toggle: number } | { context: TextContext | null };
+type PresentationUpdate = { focused: boolean } | { toggle: number } | { context: TextContext | null } | { refreshCode: true };
 const presentation = new PluginKey<PresentationState>("workbenchPresentation");
 
 export function foldedSections(state: EditorState): ReadonlyMap<number, Section> | undefined {
@@ -113,7 +114,6 @@ function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumb
         }));
       }
     }
-    if (name === "code_block") decorations.push(...codeHighlight(node, pos + 1));
     if (lineNumbers && name === "code_block") {
       attrs.class = "rich-numbered-code";
       let start = pos + 1;
@@ -302,6 +302,15 @@ function linkFootnoteDecorations(doc: ProseNode) {
   return decorations;
 }
 
+function hasLinkFootnotesInRange(doc: ProseNode, from: number, to: number) {
+  let found = hasLinkFootnoteContent(doc.resolve(from).parent) || hasLinkFootnoteContent(doc.resolve(to).parent);
+  if (!found) doc.nodesBetween(from, to, node => {
+    found ||= hasLinkFootnoteContent(node);
+    return false;
+  });
+  return found;
+}
+
 export function editorPresentation(options: () => { readOnly: boolean; lineNumbers?: boolean; convertLinks?: boolean },
   replaceDelimiter: (state: EditorState, source: StrongDelimiter, value: string) => Transaction, isLive: () => boolean) {
   let mouseSyntax: { doc: ProseNode; decorations: Decoration[] } | null = null;
@@ -309,7 +318,10 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
   let refreshFrame = 0;
   let cached: { doc: ProseNode; folded: Map<number, Section>; lineNumbers: boolean; blocks: DecorationSet } | undefined;
   let linkNotes: { doc: ProseNode; decorations: DecorationSet } | undefined;
-  let combined: { blocks: DecorationSet; links: DecorationSet; set: DecorationSet } | undefined;
+  let code: { doc: ProseNode; decorations: DecorationSet } | undefined;
+  let pendingCodeRefresh = false;
+  let codeTimer = 0;
+  let combined: { blocks: DecorationSet; links: DecorationSet; code: DecorationSet; set: DecorationSet } | undefined;
   function makeDelimiter(view: EditorView, source: StrongDelimiter) {
     const { token, from, to, opening } = source;
     const marker = document.createElement("span");
@@ -405,7 +417,16 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
       doc.addEventListener("mouseup", finish, { capture: true, signal: listeners.signal });
       doc.addEventListener("dragend", finish, { capture: true, signal: listeners.signal });
       window.addEventListener("blur", finish, { signal: listeners.signal });
-      return { destroy() { listeners.abort(); window.cancelAnimationFrame(refreshFrame); } };
+      return {
+        update(view, previous) {
+          if (!pendingCodeRefresh || view.state.doc === previous.doc) return;
+          window.clearTimeout(codeTimer);
+          codeTimer = window.setTimeout(() => {
+            if (isLive() && pendingCodeRefresh) view.dispatch(view.state.tr.setMeta(presentation, { refreshCode: true } satisfies PresentationUpdate));
+          }, 150);
+        },
+        destroy() { listeners.abort(); window.cancelAnimationFrame(refreshFrame); window.clearTimeout(codeTimer); },
+      };
     },
     state: {
       init: () => ({ focused: false, folded: new Map(), context: null }),
@@ -414,6 +435,15 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         const focused = update && "focused" in update ? update.focused : current.focused;
         let folded = current.folded;
         const inline = tr.docChanged ? inlineChangedBlocks(tr) : null;
+        if (update && "refreshCode" in update) {
+          code = undefined;
+          pendingCodeRefresh = false;
+        }
+        if (inline && code?.doc === tr.before) {
+          code = { doc: tr.doc, decorations: code.decorations.map(tr.mapping, tr.doc) };
+          if (tr.steps.some((step, index) => step instanceof ReplaceStep
+            && tr.docs[index].resolve(step.from).parent.type.name === "code_block")) pendingCodeRefresh = true;
+        } else if (tr.docChanged) pendingCodeRefresh = false;
         if (update && "toggle" in update) {
           const pos = update.toggle;
           folded = new Map(folded);
@@ -447,8 +477,15 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
             cached = { ...cached, doc: tr.doc, folded, blocks };
           }
         }
-        if (inline && linkNotes?.doc === tr.before && inline.every(index =>
-          !hasLinkFootnoteContent(tr.before.child(index)) && !hasLinkFootnoteContent(tr.doc.child(index)))) {
+        if (linkNotes?.doc === tr.before && (inline ? inline.every(index =>
+          !hasLinkFootnoteContent(tr.before.child(index)) && !hasLinkFootnoteContent(tr.doc.child(index)))
+          : tr.steps.every((step, index) => {
+            if (!(step instanceof ReplaceStep)) return false;
+            const after = tr.docs[index + 1] ?? tr.doc;
+            const map = step.getMap();
+            return !hasLinkFootnotesInRange(tr.docs[index], step.from, step.to)
+              && !hasLinkFootnotesInRange(after, map.map(step.from, -1), map.map(step.to, 1));
+          }))) {
           linkNotes = { doc: tr.doc, decorations: linkNotes.decorations.map(tr.mapping, tr.doc) };
         }
         if (tr.selectionSet) {
@@ -471,15 +508,23 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         if (cached?.doc !== doc || cached.folded !== folded || cached.lineNumbers !== lineNumbers) {
           cached = { doc, folded, lineNumbers, blocks: blockDecorations(doc, folded, lineNumbers) };
         }
-        let persistent = cached.blocks;
+        if (code?.doc !== doc) {
+          const decorations: Decoration[] = [];
+          doc.descendants((node, pos) => {
+            if (node.type.name === "code_block") decorations.push(...codeHighlight(node, pos + 1));
+          });
+          code = { doc, decorations: DecorationSet.create(doc, decorations) };
+        }
+        let links = DecorationSet.empty;
         if (convertLinks) {
           if (linkNotes?.doc !== doc) linkNotes = { doc, decorations: DecorationSet.create(doc, linkFootnoteDecorations(doc)) };
-          const links = linkNotes.decorations;
-          if (combined?.blocks !== persistent || combined.links !== links) {
-            combined = { blocks: persistent, links, set: persistent.add(doc, links.find()) };
-          }
-          persistent = combined.set;
+          links = linkNotes.decorations;
         }
+        if (combined?.blocks !== cached.blocks || combined.links !== links || combined.code !== code.decorations) {
+          combined = { blocks: cached.blocks, links, code: code.decorations,
+            set: cached.blocks.add(doc, [...code.decorations.find(), ...links.find()]) };
+        }
+        const persistent = combined.set;
         const decorations = tableSelectionDecorations(state);
         if (!readOnly) {
           if (delimiterEdit?.doc === doc) decorations.push(...delimiterEdit.decorations);
