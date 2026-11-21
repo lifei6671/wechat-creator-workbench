@@ -172,8 +172,8 @@ export const desktop = {
   emptyTrash: () => invoke<string[]>("empty_trash"),
   trashRetention: (days?: number) => invoke<number>("trash_retention", { days }),
   onTrashEmptied: (callback: (ids: string[]) => void) => listen<string[]>("trash-emptied", event => callback(event.payload)),
-  saveCategory: (id: string | null, parentId: string | null, name: string, icon: CategoryIcon) =>
-    invoke<Category>("save_category", { id, parentId, name, icon }),
+  saveCategory: (id: string | null, parentId: string | null, name: string, icon: CategoryIcon, iconColor: CanvasCardColor | null) =>
+    invoke<Category>("save_category", { id, parentId, name, icon, appearance: { iconColor } }),
   deleteCategory: (id: string, mode: "promote" | "trash") => invoke<{ id: string; categoryId: string | null; version: number }[]>("delete_category", { id, mode }),
   moveCategory: (id: string, up: boolean) => invoke<void>("move_category", { id, up }),
   reorderCategory: (id: string, anchor: string, placement: CategoryPlacement) =>

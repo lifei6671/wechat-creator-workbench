@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useEffectEvent, useLayoutEffect
 import { Button, Theme } from "@radix-ui/themes";
 import { FilePenLine, Folder, Globe, Image, List, Search, Workflow } from "lucide-react";
 import { Group, Panel, Separator, useGroupRef, usePanelRef } from "react-resizable-panels";
-import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, TimelineSelection, WorkspaceSearchHit } from "../../../../packages/shared-types";
+import type { CanvasCardColor, Category, CategoryIcon, CategoryPlacement, Collection, Entry, EntryFields, EntryFilter, EntryPage, EntryRow, Library, SaveMode, SaveResult, TimelineSelection, WorkspaceSearchHit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncActivity, type SyncApplied, type SyncBinding, type UploadProgress } from "../desktop";
@@ -1394,8 +1394,8 @@ export function DesktopShell() {
     });
   }
 
-  async function saveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon) {
-    const folder = await trackAssetTask(desktop.saveCategory(id, parent, name, icon));
+  async function saveFolder(id: string | null, parent: string | null, name: string, icon: CategoryIcon, iconColor: CanvasCardColor | null) {
+    const folder = await trackAssetTask(desktop.saveCategory(id, parent, name, icon, iconColor));
     if (!id) revealFolder(folder.id, folder.parentId);
     refresh();
   }

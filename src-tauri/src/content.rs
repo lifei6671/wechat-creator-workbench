@@ -16,6 +16,21 @@ use std::{collections::HashSet, num::NonZeroU32};
 use url::Url;
 
 const PAGE_SIZE: i64 = 60;
+
+pub(crate) fn validate_color(color: Option<&str>) -> Result<()> {
+    match color {
+        None | Some("red" | "orange" | "amber" | "green" | "blue" | "violet") => Ok(()),
+        Some(value)
+            if value.len() == 7
+                && value
+                    .strip_prefix('#')
+                    .is_some_and(|hex| hex.bytes().all(|digit| digit.is_ascii_hexdigit())) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(AppError::invalid("不支持的颜色")),
+    }
+}
 const HEAD: &str = "e.id, e.kind, e.title, e.status, e.updated_at, e.deleted_at, e.created_at, e.category_id, e.purged_at";
 const DIRECTORY_PIN: &str = "e.pinned_order";
 const ENTRY_TAG_NAMES: &str = "SELECT t.name FROM tags t JOIN entry_tags r ON r.tag_id=t.id WHERE r.entry_id=?1 ORDER BY t.normalized";

@@ -106,6 +106,13 @@ pub struct Category {
     name: String,
     sort_order: i64,
     pub(super) icon: CategoryIcon,
+    pub(super) icon_color: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryAppearance {
+    pub icon_color: Option<String>,
 }
 
 fn category_row(row: &Row<'_>) -> rusqlite::Result<Category> {
@@ -115,6 +122,7 @@ fn category_row(row: &Row<'_>) -> rusqlite::Result<Category> {
         name: row.get("name")?,
         sort_order: row.get("sort_order")?,
         icon: row.get("icon")?,
+        icon_color: row.get("icon_color")?,
     })
 }
 
@@ -204,7 +212,7 @@ impl Workspace {
 
     pub fn library_with_article_counts(&self, include_counts: bool) -> Result<Library> {
         self.read(|conn| {
-            let categories = conn.prepare("SELECT id, parent_id, name, sort_order, icon FROM categories ORDER BY sort_order, id")?
+            let categories = conn.prepare("SELECT id, parent_id, name, sort_order, icon, icon_color FROM categories ORDER BY sort_order, id")?
                 .query_map([], category_row)?
                 .collect::<rusqlite::Result<_>>()?;
             let tags = conn.prepare("SELECT t.id, t.name FROM tags t WHERE EXISTS(SELECT 1 FROM entry_tags WHERE tag_id=t.id) ORDER BY t.normalized")?
@@ -222,7 +230,10 @@ impl Workspace {
         parent_id: Option<&str>,
         name: &str,
         icon: Option<CategoryIcon>,
+        appearance: Option<&CategoryAppearance>,
     ) -> Result<Category> {
+        let icon_color = appearance.and_then(|value| value.icon_color.as_deref());
+        super::validate_color(icon_color)?;
         let name = name.trim();
         if name.is_empty() {
             return Err(AppError::invalid("请输入文件夹名称"));
@@ -245,18 +256,19 @@ impl Workspace {
             if duplicate { return Err(AppError::invalid("同一级文件夹已存在此名称")); }
             let category = if let Some(category_id) = category_id {
                 tx.query_row(
-                    "UPDATE categories SET name=?1,icon=COALESCE(?3,icon) WHERE id=?2
-                     RETURNING id,parent_id,name,sort_order,icon",
-                    params![name, category_id, icon.map(CategoryIcon::key)],
+                    "UPDATE categories SET name=?1,icon=COALESCE(?3,icon),
+                     icon_color=CASE WHEN ?4 THEN ?5 ELSE icon_color END WHERE id=?2
+                     RETURNING id,parent_id,name,sort_order,icon,icon_color",
+                    params![name, category_id, icon.map(CategoryIcon::key), appearance.is_some(), icon_color],
                     category_row,
                 )?
             } else {
                 let depth = if parent_id.is_some() { 2 } else { 1 };
                 tx.query_row(
-                    "INSERT INTO categories (id,parent_id,name,depth,sort_order,icon)
-                     SELECT ?1,?2,?3,?4,COALESCE(MAX(sort_order)+1,0),?5 FROM categories WHERE parent_id IS ?2
-                     RETURNING id,parent_id,name,sort_order,icon",
-                    params![id(), parent_id, name, depth, icon.unwrap_or_default().key()],
+                    "INSERT INTO categories (id,parent_id,name,depth,sort_order,icon,icon_color)
+                     SELECT ?1,?2,?3,?4,COALESCE(MAX(sort_order)+1,0),?5,?6 FROM categories WHERE parent_id IS ?2
+                     RETURNING id,parent_id,name,sort_order,icon,icon_color",
+                    params![id(), parent_id, name, depth, icon.unwrap_or_default().key(), icon_color],
                     category_row,
                 )?
             };

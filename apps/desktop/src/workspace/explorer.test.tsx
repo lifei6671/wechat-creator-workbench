@@ -336,7 +336,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
   function mount(loading: "all" | "paged", pageSize: number, revision = 0, expanded = ["one"], openMode: "current" | "new-tab" = "current", active = "nested-entry") {
     flushSync(() => render.render(<Theme><Explorer section="folders" active={active} openMode={openMode} readOnlyIds={[]} treeLocked={false}
       library={{ workspaceId: "test", tags: [], tagSuggestions: [], categories: [
-        { id: "one", parentId: null, sortOrder: 0, name: "一", icon: "folder" },
+        { id: "one", parentId: null, sortOrder: 0, name: "一", icon: "folder", iconColor: "blue" },
         { id: "two", parentId: null, sortOrder: 1, name: "二", icon: "archive" },
         { id: "untitled", parentId: null, sortOrder: 2, name: "未命名", icon: "folder" },
         { id: "child", parentId: "one", sortOrder: 0, name: "子", icon: "book" },
@@ -352,6 +352,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     mount("paged", 60);
     await vi.waitFor(() => expect(position("entry")).not.toBeNull());
     expect(root.querySelector(".folder-row[data-selected=true], .row-menu")).toBeNull();
+    expect(root.querySelector<HTMLElement>("#folder-row-one .folder-icon-badge")!.style.backgroundColor).toBe("var(--blue-9)");
     const pinToggle = root.querySelector<HTMLButtonElement>('[aria-controls="tree-pinned-list"]')!;
     const directoryToggle = root.querySelector<HTMLButtonElement>('[aria-controls="tree-directory-list"]')!;
     expect(directoryToggle.textContent).toBe("目录");
@@ -490,7 +491,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     expect(icon.getAttribute("aria-pressed")).toBe("true");
     expect(onSaveFolder).not.toHaveBeenCalled();
     flushSync(() => root.querySelector<HTMLButtonElement>("#folder-row-one")!.focus());
-    expect(onSaveFolder).toHaveBeenCalledExactlyOnceWith(null, null, "项目资料", "rocket");
+    expect(onSaveFolder).toHaveBeenCalledExactlyOnceWith(null, null, "项目资料", "rocket", null);
     await vi.waitFor(() => expect(name.isConnected).toBe(false));
     await vi.waitFor(() => expect(document.querySelector(".folder-icon-picker")).toBeNull());
     // Radix restores focus on a timer when the picker is unmounted.
@@ -519,7 +520,7 @@ it("creates folders inline and sends the indicated folder reorder and entry move
     expect(editedName.value).toBe("二");
     expect(onSaveFolder).toHaveBeenCalledTimes(1);
     flushSync(() => root.querySelector<HTMLButtonElement>("#folder-row-one")!.focus());
-    expect(onSaveFolder).toHaveBeenLastCalledWith("two", null, "二", "star");
+    expect(onSaveFolder).toHaveBeenLastCalledWith("two", null, "二", "star", null);
     await vi.waitFor(() => expect(editedName.isConnected).toBe(false));
 
     mount("paged", 1);

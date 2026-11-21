@@ -408,10 +408,11 @@ fn local_snapshot(conn: &Connection, key: &Key) -> Result<Option<Value>> {
         Kind::CollectionEdge => canvas::snapshot_link(conn,id),
         Kind::Asset => images::snapshot(conn,id)?.map(serde_json::to_value).transpose().map_err(invalid_response),
         Kind::Category => Ok(conn.query_row(
-            "SELECT name,parent_id,sort_order,icon FROM categories WHERE id=?1",
+            "SELECT name,parent_id,sort_order,icon,icon_color FROM categories WHERE id=?1",
             [id], |row| Ok(json!({
                 "name": row.get::<_,String>(0)?, "parentId": row.get::<_,Option<String>>(1)?,
                 "sortOrder": row.get::<_,i64>(2)?, "icon": row.get::<_,String>(3)?,
+                "iconColor": row.get::<_,Option<String>>(4)?,
             })),
         ).optional()?),
     }
@@ -808,7 +809,7 @@ fn empty_local(conn: &Connection) -> Result<bool> {
         "SELECT NOT EXISTS (SELECT 1 FROM entries) AND NOT EXISTS (SELECT 1 FROM assets)
          AND NOT EXISTS (SELECT 1 FROM collections)
          AND (SELECT COUNT(*) FROM categories)=3
-         AND (SELECT COUNT(*) FROM categories WHERE parent_id IS NULL AND
+         AND (SELECT COUNT(*) FROM categories WHERE parent_id IS NULL AND icon_color IS NULL AND
             (id,name,sort_order,icon) IN (
               ('builtin-articles','文章',0,'file'),
               ('builtin-ideas','灵感',1,'lightbulb'),
@@ -1046,13 +1047,19 @@ fn apply_entity(conn: &Connection, entity: &Entity, changed: &mut Applied) -> Re
         Kind::Category => {
             let name = data["name"].as_str().ok_or_else(protocol_error)?;
             let parent = data["parentId"].as_str();
+            let color = match &data["iconColor"] {
+                Value::Null => None,
+                Value::String(value) => Some(value.as_str()),
+                _ => return Err(protocol_error()),
+            };
+            crate::content::validate_color(color)?;
             conn.execute(
-                "INSERT INTO categories (id,name,parent_id,depth,sort_order,icon)
-                 VALUES (?1,?2,?3,?4,?5,?6)
+                "INSERT INTO categories (id,name,parent_id,depth,sort_order,icon,icon_color)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id,depth=excluded.depth,
-                  sort_order=excluded.sort_order,icon=excluded.icon",
+                  sort_order=excluded.sort_order,icon=excluded.icon,icon_color=excluded.icon_color",
                 params![id,name,parent,if parent.is_some(){2}else{1},
-                    data["sortOrder"].as_i64().unwrap_or(0),data["icon"].as_str().unwrap_or("folder")],
+                    data["sortOrder"].as_i64().unwrap_or(0),data["icon"].as_str().unwrap_or("folder"),color],
             )?;
         }
     }
@@ -1644,7 +1651,7 @@ fn conflicts(conn: &Connection) -> Result<Vec<Conflict>> {
                         Some(DirectoryDifference {
                             local_path: category_path(conn, local_category)?,
                             remote_path: category_path(conn, remote_category)?,
-                            only_difference: merge::same_content(comparable, &remote.payload),
+                            only_difference: merge::same_content(Kind::Entry, comparable, &remote.payload),
                         })
                     } else {
                         None
@@ -1848,6 +1855,27 @@ mod tests {
     use crate::backup::Backups;
 
     #[test]
+    fn category_icon_color_sync_roundtrip_and_old_payload_defaults() {
+        let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        let key = Key { entity_type: Kind::Category, entity_id: "colored".into() };
+        db.write(|conn| {
+            for (index, color) in [json!("blue"), json!("#123abc"), Value::Null].into_iter().enumerate() {
+                let entity = Entity { key: key.clone(), payload: json!({"name":"目录","icon":"star","iconColor":color}),
+                    remote_revision: index as i64 + 1, deleted_at: None };
+                apply_entity(conn, &entity, &mut Applied::default())?;
+                assert_eq!(local_snapshot(conn, &key)?.unwrap()["iconColor"], color);
+            }
+            let old = Entity { key: key.clone(), payload: json!({"name":"旧目录"}), remote_revision: 4, deleted_at: None };
+            apply_entity(conn, &old, &mut Applied::default())?;
+            assert!(local_snapshot(conn, &key)?.unwrap()["iconColor"].is_null());
+            let invalid = Entity { payload: json!({"name":"无效","iconColor":"#bad"}), ..old };
+            assert!(apply_entity(conn, &invalid, &mut Applied::default()).is_err());
+            assert_eq!(local_snapshot(conn, &key)?.unwrap()["name"], "旧目录");
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
     fn directory_conflicts_keep_explicit_resolution_and_version_guards() {
         for cloud_category in [Some("cloud-child"), None] {
             for choice in [Resolution::Local, Resolution::Cloud, Resolution::Copy] {
@@ -1918,6 +1946,10 @@ mod tests {
             (
                 "INSERT INTO collections (id,title,description,created_at,updated_at) VALUES ('local','Local','',1,1)",
                 "DELETE FROM collections WHERE id='local'",
+            ),
+            (
+                "UPDATE categories SET icon_color='blue' WHERE id='builtin-articles'",
+                "UPDATE categories SET icon_color=NULL WHERE id='builtin-articles'",
             ),
             (
                 "UPDATE categories SET name='Customized' WHERE id='builtin-articles'",
@@ -2942,7 +2974,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(copy["contentMd"], "B 的离线正文");
-        a.delete_category("sync-folder", crate::content::taxonomy::CategoryDeleteMode::Promote).unwrap();
+        a.delete_category(
+            "sync-folder",
+            crate::content::taxonomy::CategoryDeleteMode::Promote,
+        )
+        .unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
         exchange(&b, &b_assets, &sync).await.unwrap();
         apply_received(&b).unwrap();

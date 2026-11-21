@@ -112,6 +112,7 @@ const MIGRATIONS: &[&str] = &[
     ENTRY_SOURCE_DETAILS,
     include_str!("../migrations/0026_sync_reconciliation.sql"),
     include_str!("../migrations/0027_trash_retention.sql"),
+    include_str!("../migrations/0028_category_icon_color.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -438,6 +439,19 @@ pub fn workspace_id(conn: &Connection) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn category_icon_color_migration_preserves_existing_folders() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::migrate(&mut conn, 0, 27).unwrap();
+        conn.execute_batch("UPDATE categories SET icon='rocket' WHERE id='builtin-articles';
+            UPDATE sync_progress SET cursor=17;").unwrap();
+        super::migrate(&mut conn, 27, super::SCHEMA_VERSION).unwrap();
+        let state: (String, Option<String>, i64) = conn.query_row(
+            "SELECT icon,icon_color,(SELECT cursor FROM sync_progress) FROM categories WHERE id='builtin-articles'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(state, ("rocket".into(), None, 17));
+    }
+
     #[test]
     fn reconciliation_migration_freezes_old_operation_origin_and_pause_reason() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();

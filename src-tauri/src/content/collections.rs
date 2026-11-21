@@ -283,20 +283,10 @@ impl Workspace {
     }
 
     pub fn update_collection_node_color(&self, node_id: &str, color: Option<&str>) -> Result<()> {
+        super::validate_color(color)?;
         let (preset, custom) = match color {
-            None => (None, None),
-            Some(value @ ("red" | "orange" | "amber" | "green" | "blue" | "violet")) => {
-                (Some(value), None)
-            }
-            Some(value)
-                if value.len() == 7
-                    && value
-                        .strip_prefix('#')
-                        .is_some_and(|hex| hex.bytes().all(|digit| digit.is_ascii_hexdigit())) =>
-            {
-                (None, Some(value))
-            }
-            Some(_) => return Err(AppError::invalid("不支持的画布卡片颜色")),
+            Some(value) if value.starts_with('#') => (None, Some(value)),
+            value => (value, None),
         };
         self.write(|tx| {
             changed(tx.execute(

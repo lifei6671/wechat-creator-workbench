@@ -56,7 +56,7 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
             }
             if (key.entity_type == Kind::Entry || key.entity_type.is_canvas())
                 && !entity.payload["purgedAt"].is_i64()
-                && !same_content(local, &entity.payload)
+                && !same_content(key.entity_type, local, &entity.payload)
             {
                 issue(
                     conn,
@@ -89,10 +89,13 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
     Ok(changed)
 }
 
-pub(super) fn same_content(mut local: Value, remote: &Value) -> bool {
+pub(super) fn same_content(kind: Kind, mut local: Value, remote: &Value) -> bool {
     let mut remote = remote.clone();
     for payload in [&mut local, &mut remote] {
         if let Some(object) = payload.as_object_mut() {
+            if kind == Kind::Category {
+                object.entry("iconColor").or_insert(Value::Null);
+            }
             object.remove("updatedAt");
             object.remove("createdAt");
             object.remove("contentBlobHash");
@@ -232,14 +235,16 @@ fn preserve_distinct_categories(conn: &Connection, changed: &mut Applied) -> Res
         };
         let mut remote: Entity = serde_json::from_str(&raw).map_err(invalid_response)?;
         remote.payload["parentId"] = serde_json::json!(remote.payload["parentId"].as_str());
-        remote.payload["sortOrder"] = serde_json::json!(remote.payload["sortOrder"].as_i64().unwrap_or(0));
-        remote.payload["icon"] = serde_json::json!(remote.payload["icon"].as_str().unwrap_or("folder"));
+        remote.payload["sortOrder"] =
+            serde_json::json!(remote.payload["sortOrder"].as_i64().unwrap_or(0));
+        remote.payload["icon"] =
+            serde_json::json!(remote.payload["icon"].as_str().unwrap_or("folder"));
         let key = super::Key {
             entity_type: Kind::Category,
             entity_id: folder.clone(),
         };
         let local = local_snapshot(conn, &key)?.ok_or_else(protocol_error)?;
-        if !same_content(local.clone(), &remote.payload)
+        if !same_content(Kind::Category, local.clone(), &remote.payload)
             || parent.as_ref().is_some_and(|id| renamed.contains_key(id))
         {
             let copy = id();
@@ -252,8 +257,8 @@ fn preserve_distinct_categories(conn: &Connection, changed: &mut Applied) -> Res
                 u64::from(!copied_parent),
             )?;
             conn.execute(
-                "INSERT INTO categories (id,parent_id,name,depth,sort_order,icon)
-                 SELECT ?1,?2,?3,depth,sort_order,icon FROM categories WHERE id=?4",
+                "INSERT INTO categories (id,parent_id,name,depth,sort_order,icon,icon_color)
+                 SELECT ?1,?2,?3,depth,sort_order,icon,icon_color FROM categories WHERE id=?4",
                 params![copy, target_parent, name, folder],
             )?;
             renamed.insert(folder.clone(), copy);

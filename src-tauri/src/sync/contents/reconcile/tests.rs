@@ -11,6 +11,42 @@ use reqwest::Method;
 use serde_json::json;
 
 #[test]
+fn legacy_category_default_color_converges_in_reconcile_replay_and_frozen_targets() {
+    for deferred in [false, true] {
+        for color in [None, Some("blue")] {
+            let (_root, db) = workspace();
+            let key = Key { entity_type: Kind::Category, entity_id: "builtin-articles".into() };
+            db.write(|tx| {
+                tx.execute("UPDATE categories SET icon_color=?1 WHERE id=?2", params![color, key.entity_id])?;
+                let mut remote = staged(tx, &key)?.unwrap();
+                remote.payload.as_object_mut().unwrap().remove("iconColor");
+                remote.remote_revision = 2;
+                let mutation = Mutation { key: key.clone(), base_revision: 1, operation: "upsert".into(),
+                    payload: local_snapshot(tx, &key)? };
+                assert_eq!(target_matches(&mutation, Some(&remote)), color.is_none());
+                tx.execute("UPDATE sync_bootstrap SET revision=2,payload_json=?1 WHERE entity_type='category' AND entity_id=?2",
+                    params![encode(&remote)?, key.entity_id])?;
+                if deferred {
+                    issue(tx, &key, generation(tx, &key)?.unwrap(), "等待收敛", Some(&remote))?;
+                }
+                Ok(())
+            }).unwrap();
+            if deferred { db.write(|tx| replay_deferred(tx)).unwrap(); }
+            else { apply_snapshot(&db).unwrap(); }
+            db.read(|conn| {
+                assert_eq!(generation(conn, &key)?.is_none(), color.is_none());
+                let issues: i64 = conn.query_row("SELECT COUNT(*) FROM sync_issues WHERE entity_type='category' AND entity_id=?1",
+                    [&key.entity_id], |row| row.get(0))?;
+                assert_eq!(issues, i64::from(color.is_some()));
+                assert_eq!(revision(conn, &key)?.0, if color.is_none() { 2 } else { 1 });
+                Ok(())
+            }).unwrap();
+        }
+    }
+    assert!(!merge::same_content(Kind::Entry, json!({"iconColor":null}), &json!({})));
+}
+
+#[test]
 fn a_recoverable_cloud_deletion_does_not_acknowledge_a_permanent_purge() {
     let key = Key { entity_type: Kind::Entry, entity_id: "purged".into() };
     let mutation = Mutation { key: key.clone(), base_revision: 1, operation: "delete".into(),
