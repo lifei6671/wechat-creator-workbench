@@ -238,6 +238,221 @@ it("keeps unhandled Tab in editable body text while leaving reverse navigation a
   }
 });
 
+it.each([
+  ["> 引用内容\n\n下一行", "> 引用内容下一行"],
+  ["> 第一段\n>\n> 引用末段\n\n下一行", "> 第一段\n>\n> 引用末段下一行"],
+  ["> > 嵌套引用\n\n下一行", "> > 嵌套引用下一行"],
+  ["> **GitHub：** <https://example.com>\n\n**镜头效果预览：** <https://example.com/demo>", "> **GitHub：** <https://example.com>**镜头效果预览：** <https://example.com/demo>"],
+])("joins text at a paragraph start into the preceding quote's last line (%s)", async (original, expected) => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="join-quote-boundary" value={original} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const before = handle!.captureMarkdown().markdown;
+    const paragraph = container.querySelector(".ProseMirror > p")!;
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    const text = walker.nextNode()!;
+    handle!.focus();
+    document.getSelection()!.setBaseAndExtent(text, 0, text, 0);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.captureContext("section")?.original).not.toMatch(/^>/));
+    const body = container.querySelector<HTMLElement>(".ProseMirror")!;
+    expect(body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Backspace", keyCode: 8, bubbles: true, cancelable: true,
+    }))).toBe(false);
+    expect(handle!.captureMarkdown().markdown).toBe(expected);
+    handle!.command("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(before);
+    handle!.command("redo");
+    expect(handle!.captureMarkdown().markdown).toBe(expected);
+    handle!.insert("插入点");
+    expect(container.querySelector("blockquote")!.textContent).toContain("插入点");
+    expect(container.querySelector(".ProseMirror > p")?.textContent ?? "").toBe("");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each([false, true])("joins the preceding quote when Backspace starts at the opening bold marker (footnotes=%s)", async convertLinks => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const original = "> **GitHub：** <https://example.com>\n\n**镜头效果预览：** <https://example.com/demo>";
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="quote-bold-boundary" value={original} convertLinks={convertLinks} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    const before = handle!.captureMarkdown().markdown;
+    handle!.focus();
+    const bold = container.querySelector(".ProseMirror > p strong")!;
+    document.getSelection()!.collapse(bold.firstChild!, 0);
+    document.dispatchEvent(new Event("selectionchange"));
+    const opener = await vi.waitFor(() => {
+      const field = container.querySelector<HTMLInputElement>('.ProseMirror > p input[aria-label="加粗起始标记"]');
+      expect(field?.value).toBe("**");
+      return field!;
+    });
+    opener.focus();
+    for (const [from, to] of [[1, 1], [0, 1]]) {
+      opener.setSelectionRange(from, to);
+      expect(opener.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Backspace", keyCode: 8, bubbles: true, cancelable: true,
+      }))).toBe(true);
+      expect(document.activeElement).toBe(opener);
+    }
+    opener.value = "*";
+    opener.setSelectionRange(0, 0);
+    expect(opener.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Backspace", keyCode: 8, bubbles: true, cancelable: true,
+    }))).toBe(true);
+    opener.value = "**";
+    opener.setSelectionRange(0, 0);
+    expect(opener.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Backspace", keyCode: 8, isComposing: true, bubbles: true, cancelable: true,
+    }))).toBe(true);
+    expect(handle!.captureMarkdown().markdown).toBe(before);
+    expect(opener.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Backspace", keyCode: 8, bubbles: true, cancelable: true,
+    }))).toBe(false);
+    expect(container.querySelector(".ProseMirror > p")?.textContent ?? "").toBe("");
+    expect(container.querySelectorAll("blockquote p")).toHaveLength(1);
+    expect(container.querySelectorAll("blockquote strong")).toHaveLength(2);
+    expect(document.activeElement).toBe(container.querySelector(".ProseMirror"));
+    const merged = handle!.captureMarkdown().markdown;
+    expect(merged).toBe("> **GitHub：** <https://example.com>**镜头效果预览：** <https://example.com/demo>");
+    handle!.command("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(before);
+    handle!.command("redo");
+    expect(handle!.captureMarkdown().markdown).toBe(merged);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each([false, true])("turns a quote prefix typed before a leading bold marker into a quote immediately (footnotes=%s)", async convertLinks => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const original = "**GitHub：** <https://example.com>\n\n在线演示";
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="quote-bold-prefix" value={original} convertLinks={convertLinks} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.focus();
+    document.getSelection()!.collapse(container.querySelector("strong")!.firstChild!, 0);
+    document.dispatchEvent(new Event("selectionchange"));
+    const opener = await vi.waitFor(() => {
+      const field = container.querySelector<HTMLInputElement>('input[aria-label="加粗起始标记"]');
+      expect(field?.value).toBe("**");
+      return field!;
+    });
+    opener.focus();
+    opener.value = ">**";
+    opener.setSelectionRange(1, 1);
+    opener.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: ">", bubbles: true }));
+    expect(container.querySelector("blockquote")).toBeNull();
+    opener.value = "> **";
+    opener.setSelectionRange(2, 2);
+    opener.dispatchEvent(new InputEvent("input", { inputType: "insertCompositionText", data: " ", isComposing: true, bubbles: true }));
+    expect(container.querySelector("blockquote")).toBeNull();
+    opener.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: " ", bubbles: true }));
+    expect(container.querySelector("blockquote strong")?.textContent).toBe("GitHub：");
+    expect(container.querySelector("blockquote a")?.getAttribute("href")).toBe("https://example.com");
+    expect(document.activeElement).toBe(container.querySelector(".ProseMirror"));
+    expect(handle!.captureMarkdown().markdown).toBe("> **GitHub：** <https://example.com>\n\n在线演示");
+    handle!.command("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(original);
+    handle!.command("redo");
+    expect(handle!.captureMarkdown().markdown).toBe("> **GitHub：** <https://example.com>\n\n在线演示");
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it.each(["正文 **GitHub：**", "| **GitHub：** | 其他单元格 |\n| ----------- | ----- |\n| 内容          | 保留    |"])("keeps quote-prefix input within its paragraph boundary (%s)", async original => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<RichEditor entryId="quote-prefix-boundary" value={original} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.focus();
+    document.getSelection()!.collapse(container.querySelector("strong")!.firstChild!, 0);
+    document.dispatchEvent(new Event("selectionchange"));
+    const opener = await vi.waitFor(() => {
+      const field = container.querySelector<HTMLInputElement>('input[aria-label="加粗起始标记"]');
+      expect(field?.value).toBe("**");
+      return field!;
+    });
+    const before = handle!.captureMarkdown().markdown;
+    opener.focus();
+    opener.value = "> **";
+    opener.setSelectionRange(2, 2);
+    opener.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: " ", bubbles: true }));
+    expect(container.querySelector("blockquote")).toBeNull();
+    expect(container.querySelector("strong")?.textContent).toContain("GitHub：");
+    if (container.querySelector("table")) {
+      expect(container.querySelector("th")?.textContent).toContain("> ");
+      expect(handle!.captureMarkdown().markdown).toContain("其他单元格");
+      handle!.command("undo");
+    } else {
+      expect(document.activeElement).toBe(opener);
+    }
+    expect(handle!.captureMarkdown().markdown).toBe(before);
+  } finally {
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
+it("keeps a backward selection anchored after a quoted autolink and its generated footnote", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const changed = vi.fn();
+  const original = "前面的正文\n\n> **GitHub：** <https://example.com>\n\n后面的正文";
+  let handle: MarkdownEditorHandle | null = null;
+  const focus = vi.spyOn(EditorView.prototype, "focus");
+  try {
+    flushSync(() => root.render(<RichEditor entryId="quote-link-selection" value={original} convertLinks readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={changed} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.focus();
+    const view = focus.mock.contexts.at(-1) as EditorView;
+    const paragraph = container.querySelector("blockquote p")!;
+    const linkText = paragraph.querySelector("a .rich-link-footnoted")!.firstChild!;
+    document.getSelection()!.collapse(linkText, linkText.textContent!.length);
+    document.dispatchEvent(new Event("selectionchange"));
+    const closing = await vi.waitFor(() => {
+      const marker = paragraph.querySelector('[data-markdown=">"]');
+      expect(marker).not.toBeNull();
+      return marker!;
+    });
+    const end = [...paragraph.childNodes].indexOf(closing) + 1;
+    const selection = document.getSelection()!;
+    selection.collapse(paragraph, end);
+    view.focus();
+    expect(selection.anchorNode).toBe(paragraph);
+    expect(selection.anchorOffset).toBe(end);
+    const firstText = container.querySelector(".ProseMirror > p")!.firstChild!;
+    selection.extend(firstText, 0);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.target().original).toBe("前面的正文\n\n> **GitHub：** <https://example.com>"));
+    expect(handle!.captureMarkdown().markdown).toBe(original);
+    expect(changed).not.toHaveBeenCalled();
+  } finally {
+    focus.mockRestore();
+    flushSync(() => root.unmount());
+    container.remove();
+  }
+});
+
 it.each(["", "const value = 1;"])("deletes the preceding code block at a paragraph start without absorbing its text (%s)", async code => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);

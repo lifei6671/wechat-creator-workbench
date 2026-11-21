@@ -198,7 +198,7 @@ function syntaxAtCaret(state: EditorState, delimiterWidget: DelimiterWidget) {
       if (task) marker.dataset.markdownTask = "";
       marker.setAttribute("aria-hidden", "true");
       return marker;
-    }, { key: `syntax-${side}-${text}${source ? `-${source.from}-${source.to}` : ""}`, side, ignoreSelection: true,
+    }, { key: `syntax-${side}-${text}${source ? `-${source.from}-${source.to}` : ""}`, side, ignoreSelection: true, relaxedSide: !source,
       stopEvent: event => Boolean(source && event.target instanceof HTMLInputElement) }));
   };
   let quoteDepth = 0;
@@ -279,7 +279,7 @@ function linkFootnoteDecorations(doc: ProseNode) {
       marker.className = "rich-link-citation";
       marker.textContent = `[^${label}]`;
       return marker;
-    }, { side: 1, key: `link-citation-${label}`, ignoreSelection: true }));
+    }, { side: 1, key: `link-citation-${label}`, ignoreSelection: true, relaxedSide: true }));
   }
   for (const { position, text } of missing) {
     decorations.push(Decoration.widget(position, () => {
@@ -357,10 +357,28 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         if (field.value !== token) finish(true, true);
       } else finish(true, false, event.relatedTarget);
     };
+    field.oninput = event => {
+      if (!opening || view.composing || (event as InputEvent).isComposing || options().readOnly
+        || delimiterEdit?.doc !== view.state.doc || !field.value.endsWith(token)) return;
+      const prefix = field.value.slice(0, -token.length);
+      const position = view.state.doc.resolve(from);
+      if (position.parentOffset || position.parent.type.name !== "paragraph" || !/^\s*>\s$/.test(prefix)) return;
+      finish(false, true);
+      const handled = view.someProp("handleTextInput", handler => handler(view, from, from, prefix,
+        () => view.state.tr.insertText(prefix, from, from)));
+      if (!handled) view.dispatch(view.state.tr.insertText(prefix, from, from));
+    };
     field.onkeydown = event => {
-      if (event.isComposing || event.keyCode === 229) return;
+      if (view.composing || event.isComposing || event.keyCode === 229) return;
       const collapsed = field.selectionStart === field.selectionEnd
         && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+      if (collapsed && opening && event.key === "Backspace" && field.selectionStart === 0
+        && field.value === token && !options().readOnly) {
+        event.preventDefault();
+        finish(false, true);
+        view.someProp("handleKeyDown", handler => handler(view, event));
+        return;
+      }
       const atStart = collapsed && event.key === "ArrowLeft" && field.selectionStart === 0;
       const atEnd = collapsed && event.key === "ArrowRight" && field.selectionEnd === field.value.length;
       if (!atStart && !atEnd && event.key !== "Enter" && event.key !== "Escape") return;
