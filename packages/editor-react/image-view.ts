@@ -8,6 +8,7 @@ export interface ImageContext {
   kind: "image";
   src: string;
   available: boolean;
+  feedbackTarget: HTMLElement;
   isCurrent(): boolean;
   isUploading(): boolean;
   setUploading(uploading: boolean): void;
@@ -95,7 +96,7 @@ export function imageView(
     if (pos !== undefined && view.state.doc.nodeAt(pos) === node) return pos;
   }
   imageContexts.set(dom, () => ({
-    kind: "image", src: node.attrs.src, available: media.firstElementChild instanceof HTMLImageElement,
+    kind: "image", src: node.attrs.src, available: media.firstElementChild instanceof HTMLImageElement, feedbackTarget: frame,
     isCurrent: () => currentPosition() !== undefined,
     isUploading: () => !uploadStatus.hidden,
     setUploading: uploading => { uploadStatus.hidden = !uploading; },

@@ -2,7 +2,7 @@ import juice from "juice";
 import dollarmath from "markdown-it-dollarmath";
 import footnote from "markdown-it-footnote";
 import type { PluginSimple } from "markdown-it";
-import { createMarkdownParser, sanitizeRenderedMarkdown } from "../markdown-core";
+import { createMarkdownParser, isWechatArticleLink, sanitizeRenderedMarkdown } from "../markdown-core";
 import { theme as defaultTheme } from "./themes/wechat-default";
 import { theme as elegant } from "./themes/wechat-elegant";
 import { theme as tech } from "./themes/wechat-tech";
@@ -40,6 +40,15 @@ export interface RenderedWechat {
   dispose(): void;
 }
 
+function checkWechatLinks(root: ParentNode) {
+  for (const anchor of root.querySelectorAll("a[href]")) {
+    const href = anchor.getAttribute("href")!;
+    if (!href.startsWith("#") && !isWechatArticleLink(href)) {
+      throw new Error("检测到未转为脚注的外部链接，请启用“链接转脚注”并检查后重试");
+    }
+  }
+}
+
 export function parseWechat(markdown: string, sources: SourceFragment[], githubRepo?: string) {
   const parser = createMarkdownParser();
   const fragments: Omit<SourceFragment, "line">[] = [];
@@ -49,6 +58,29 @@ export function parseWechat(markdown: string, sources: SourceFragment[], githubR
     return `<span data-wechat-fragment="${markerPrefix}${index}"></span>`;
   };
   parser.use(footnote as unknown as PluginSimple);
+  parser.core.ruler.before("inline", "workbench_html_footnotes", state => {
+    const tokens: typeof state.tokens = [];
+    for (const token of state.tokens) {
+      if (token.type !== "html_block" || !token.content.includes("data-workbench-footnote")) { tokens.push(token); continue; }
+      let offset = 0;
+      for (const match of token.content.matchAll(/<span data-workbench-footnote="(\d+)"><\/span>/g)) {
+        if (match.index > offset) {
+          const html = new state.Token("html_block", "", 0);
+          html.content = token.content.slice(offset, match.index);
+          tokens.push(html);
+        }
+        const reference = new state.Token("inline", "", 0);
+        reference.content = `[^${match[1]}]`;
+        reference.children = [];
+        tokens.push(reference);
+        offset = match.index + match[0].length;
+      }
+      const remaining = new state.Token("html_block", "", 0);
+      remaining.content = token.content.slice(offset);
+      tokens.push(remaining);
+    }
+    state.tokens = tokens;
+  });
   parser.renderer.rules.footnote_block_open = () => '<section class="footnotes">\n<h2 class="plainly-reference-title">参考资料</h2>\n<ol class="footnotes-list">\n';
   const openFootnote = parser.renderer.rules.footnote_open!;
   parser.renderer.rules.footnote_open = (tokens, index, options, env, self) => {
@@ -91,6 +123,7 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
   const article = document.createElement("section");
   article.className = "plainly-article";
   article.append(body);
+  if (input.output === "clipboard") checkWechatLinks(article);
   const images: RenderedWechat["images"] = [];
   const warnings: string[] = [];
   const blobUrls: string[] = [];
@@ -184,6 +217,18 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
     // Plainly's WeChat converter supplies an explicit width attribute for full-width tables.
     for (const table of template.content.querySelectorAll("table")) {
       if (table.style.width === "100%" && !table.hasAttribute("width")) table.setAttribute("width", "100%");
+    }
+    if (input.output === "clipboard") {
+      checkWechatLinks(template.content);
+      for (const anchor of template.content.querySelectorAll("a")) {
+        if (isWechatArticleLink(anchor.getAttribute("href") ?? "")) continue;
+        const span = document.createElement("span");
+        for (const attribute of Array.from(anchor.attributes)) {
+          if (attribute.name !== "href") span.setAttribute(attribute.name, attribute.value);
+        }
+        span.append(...anchor.childNodes);
+        anchor.replaceWith(span);
+      }
     }
     if (gzhDesign) wrapGzhLeaves(template.content);
     for (const node of template.content.querySelectorAll("*")) {

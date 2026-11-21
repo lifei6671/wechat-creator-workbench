@@ -111,6 +111,7 @@ it("routes editor context actions and limits the reading menu", async () => {
     expect(editor.current.tableAction).toHaveBeenCalledWith("sortAscending");
 
     const image = { kind: "image" as const, src: "asset://image", available: true, isCurrent: () => true,
+      feedbackTarget: container.querySelector<HTMLElement>(".ProseMirror")!,
       isUploading: () => hosting, setUploading: vi.fn(), replaceSource: vi.fn(), remove: vi.fn() };
     const copy = vi.spyOn(desktop, "copyImage").mockResolvedValue(undefined);
     const save = vi.spyOn(desktop, "saveImage").mockResolvedValue(true);

@@ -13,6 +13,15 @@ export function createMarkdownParser() {
   return parser;
 }
 const markdown = createMarkdownParser();
+
+export function isWechatArticleLink(href: string) {
+  try {
+    const destination = new URL(href);
+    return /^(?:https?:)$/.test(destination.protocol) && destination.host === "mp.weixin.qq.com"
+      && !destination.username && !destination.password;
+  } catch { return false; }
+}
+
 const DOMPurify = createDOMPurify(window);
 const tags = [
   "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",

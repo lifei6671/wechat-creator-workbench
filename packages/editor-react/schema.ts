@@ -3,6 +3,7 @@ import { createSlice } from "@milkdown/kit/ctx";
 import { blockContainerTypes, blockquoteSchema, commonmark, htmlSchema, imageSchema, remarkHtmlTransformer } from "@milkdown/kit/preset/commonmark";
 import { footnoteDefinitionSchema, footnoteReferenceSchema, tableCellSchema, tableHeaderSchema } from "@milkdown/kit/preset/gfm";
 import { markRule } from "@milkdown/kit/prose";
+import { InputRule } from "@milkdown/kit/prose/inputrules";
 import type { Node as ProseNode, TagParseRule } from "@milkdown/kit/prose/model";
 import { Selection } from "@milkdown/kit/prose/state";
 import type { EditorView, NodeView } from "@milkdown/kit/prose/view";
@@ -12,7 +13,7 @@ import remarkMath from "remark-math";
 import { renderMarkdown, sanitizeRenderedMarkdown } from "../markdown-core";
 import { readCalloutMarker } from "../markdown-core/callouts";
 import { editorIconButton, imageView, type EditorImages } from "./image-view";
-import { sentencePunctuation } from "./link-footnotes";
+import { documentLinkFootnotes, sentencePunctuation } from "./link-footnotes";
 
 export const hrefPattern = /^(?:https?:\/\/|mailto:|#)/i;
 export const richCommonmark = commonmark.filter(plugin => !remarkHtmlTransformer.includes(plugin));
@@ -163,37 +164,51 @@ const githubDisclosure = $nodeSchema("github_disclosure", () => ({
   },
 }));
 
-type HtmlOptions = EditorImages & { githubRepo?: string };
+type HtmlOptions = EditorImages & { githubRepo?: string; convertLinks?: boolean };
 
-function embeddedHtmlView(node: ProseNode, { githubRepo, resolveImage }: HtmlOptions): NodeView {
+function embeddedHtmlView(node: ProseNode, view: EditorView, getPos: () => number | undefined, getOptions: () => HtmlOptions): NodeView {
   const dom = document.createElement(node.isInline ? "span" : "div");
-  dom.dataset.type = node.isInline ? "html" : "html-block";
-  dom.dataset.value = node.attrs.value;
   dom.className = "rich-embedded-html";
   dom.contentEditable = "false";
-  const options = { githubRepo, embedded: true };
-  const fragment = node.isInline
-    ? sanitizeRenderedMarkdown(node.attrs.value, options)
-    : renderMarkdown(node.attrs.value, options);
-  if (fragment.firstChild) dom.append(fragment);
-  else if (!node.isInline) dom.textContent = "嵌入的 HTML";
-
   const disposals: (() => void)[] = [];
   let destroyed = false;
-  if (resolveImage) for (const placeholder of dom.querySelectorAll<HTMLElement>("[data-image-url]")) {
-    const { imageUrl, imageAlt } = placeholder.dataset;
-    void resolveImage(imageUrl!).then(image => {
-      if (destroyed) { image.dispose(); return; }
-      disposals.push(image.dispose);
-      const element = document.createElement("img");
-      element.alt = imageAlt ?? "";
-      element.draggable = false;
-      element.src = image.src;
-      placeholder.replaceWith(element);
-    }, () => { /* Keep the image alternative if the resource is unavailable. */ });
+  let generation = 0;
+  function render() {
+    const current = ++generation;
+    disposals.splice(0).forEach(dispose => dispose());
+    const { githubRepo, resolveImage, convertLinks } = getOptions();
+    const pos = getPos();
+    const projected = convertLinks && !node.isInline && pos !== undefined
+      ? documentLinkFootnotes(view.state.doc, githubRepo).htmlEdits.find(edit => edit.from === pos)?.value : undefined;
+    const source = projected === undefined ? node.attrs.value : projected.replace(/<span data-workbench-footnote="(\d+)"><\/span>/g, "<sup>[^$1]</sup>");
+    dom.dataset.type = node.isInline ? "html" : "html-block";
+    dom.dataset.value = node.attrs.value;
+    const options = { githubRepo, embedded: true };
+    const fragment = node.isInline ? sanitizeRenderedMarkdown(source, options) : renderMarkdown(source, options);
+    dom.replaceChildren(fragment);
+    if (!dom.firstChild && !node.isInline) dom.textContent = "嵌入的 HTML";
+    if (resolveImage) for (const placeholder of dom.querySelectorAll<HTMLElement>("[data-image-url]")) {
+      const { imageUrl, imageAlt } = placeholder.dataset;
+      void resolveImage(imageUrl!).then(image => {
+        if (destroyed || generation !== current) { image.dispose(); return; }
+        disposals.push(image.dispose);
+        const element = document.createElement("img");
+        element.alt = imageAlt ?? "";
+        element.draggable = false;
+        element.src = image.src;
+        placeholder.replaceWith(element);
+      }, () => { /* Keep the image alternative if the resource is unavailable. */ });
+    }
   }
+  render();
   return {
     dom,
+    update(next) {
+      if (next.type !== node.type) return false;
+      node = next;
+      render();
+      return true;
+    },
     stopEvent: event => event.target instanceof Element && Boolean(event.target.closest("summary")) && !event.target.closest("a[href]"),
     ignoreMutation: () => true,
     destroy() { destroyed = true; disposals.forEach(dispose => dispose()); },
@@ -268,6 +283,17 @@ function mathNode(name: string, inline: boolean) {
 const mathInline = mathNode("math_inline", true);
 const mathBlock = mathNode("math_block", false);
 const math = $remark("workbenchMath", () => remarkMath);
+const mathInlineInput = $inputRule(ctx => new InputRule(/(?<![\\$])\$([^$\r\n]+)\$$/, (state, match, start, end) => {
+  const marks = state.storedMarks ?? state.selection.$from.marks();
+  const code = state.schema.marks.inlineCode;
+  // Milkdown's custom input-rule runner does not check inline code marks.
+  if (marks.some(mark => mark.type === code) || state.doc.rangeHasMark(start, end, code)) return null;
+  const doc = ctx.get(parserCtx)(match[0]);
+  const block = doc.childCount === 1 ? doc.firstChild : null;
+  const formula = block?.type === state.schema.nodes.paragraph && block.childCount === 1 ? block.firstChild : null;
+  if (formula?.type !== state.schema.nodes.math_inline) return null;
+  return state.tr.replaceWith(start, end, formula.mark(marks));
+}));
 const blockquote = blockquoteSchema.extendSchema(base => ctx => {
   const original = base(ctx);
   return {
@@ -453,10 +479,10 @@ function formulaView(node: ProseNode, view: EditorView, getPos: () => number | u
 
 export function richSchema(getOptions: () => HtmlOptions, failedImages: Set<() => void>) {
   return [
-    math, highlightSyntax, highlight, highlightInput, richNodes, htmlInline, htmlBlock, githubDisclosure, safeImage, mathInline, mathBlock,
+    math, highlightSyntax, highlight, highlightInput, richNodes, htmlInline, htmlBlock, githubDisclosure, safeImage, mathInline, mathBlock, mathInlineInput,
     markdownTableCell, markdownTableHeader, tableLineBreak, blockquote, footnoteReference, footnoteDefinition,
-    $view(htmlInline.node, () => node => embeddedHtmlView(node, getOptions())),
-    $view(htmlBlock.node, () => node => embeddedHtmlView(node, getOptions())),
+    $view(htmlInline.node, () => (node, view, getPos) => embeddedHtmlView(node, view, getPos, getOptions)),
+    $view(htmlBlock.node, () => (node, view, getPos) => embeddedHtmlView(node, view, getPos, getOptions)),
     $view(githubDisclosure.node, () => node => {
       const { dom, contentDOM } = disclosureDOM(node.attrs.header);
       return {
