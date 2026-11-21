@@ -663,15 +663,62 @@ button.outline-expand { cursor: pointer; }
 .document-editor[data-wechat-theme="gzh-zen-whitespace"] .rich-editor .ProseMirror { line-height: 1.95; }
 .document-editor .rich-editor a { color: var(--article-link); }
 .document-editor .rich-editor blockquote:not([data-callout]) { background: var(--article-quote); border-inline-start-color: var(--article-rule); }
-.document-editor :is(.writing-title :is(h1, textarea), .rich-editor h1) {
+.document-editor .writing-title :is(h1, textarea) {
   border-bottom: 0.5px solid var(--article-rule);
   padding-block-end: 8px;
 }
-.document-editor .rich-editor h2 { border-inline-start: 0.5px solid var(--article-rule); padding-inline-start: 10px; }
 .document-editor[data-wechat-theme="plainly-elegant"] :is(.writing-title :is(h1, textarea), .rich-editor h1) { text-align: center; font-weight: 500; }
 .document-editor[data-wechat-theme="plainly-elegant"] .rich-editor .ProseMirror { line-height: 1.95; }
 .document-editor[data-wechat-theme="plainly-tech"] .rich-editor h2 { background: linear-gradient(to right, var(--teal-3), transparent); }
 .document-editor[data-wechat-theme="plainly-tech"] .rich-editor strong { background: var(--amber-a4); }
+.document-editor[data-wechat-theme] .rich-editor :is(h1, h2, h3, h4, h5, h6) {
+  margin-block: var(--heading-margin-block); padding-block: var(--heading-padding-block);
+  padding-inline: var(--heading-padding-inline);
+  border-width: var(--heading-border-width); border-style: var(--heading-border-style); border-color: var(--article-rule);
+  background-color: var(--heading-background);
+}
+.document-editor .rich-editor h1 {
+  --heading-margin-block: var(--article-h1-margin-block); --heading-padding-block: var(--article-h1-padding-block);
+  --heading-padding-inline: var(--article-h1-padding-inline); --heading-border-width: var(--article-h1-border-width);
+  --heading-border-style: var(--article-h1-border-style); --heading-background: var(--article-h1-background);
+}
+.document-editor .rich-editor h2 {
+  --heading-margin-block: var(--article-h2-margin-block); --heading-padding-block: var(--article-h2-padding-block);
+  --heading-padding-inline: var(--article-h2-padding-inline); --heading-border-width: var(--article-h2-border-width);
+  --heading-border-style: var(--article-h2-border-style); --heading-background: var(--article-h2-background);
+}
+.document-editor .rich-editor h3 {
+  --heading-margin-block: var(--article-h3-margin-block); --heading-padding-block: var(--article-h3-padding-block);
+  --heading-padding-inline: var(--article-h3-padding-inline); --heading-border-width: var(--article-h3-border-width);
+  --heading-border-style: var(--article-h3-border-style); --heading-background: var(--article-h3-background);
+}
+.document-editor .rich-editor h4 {
+  --heading-margin-block: var(--article-h4-margin-block); --heading-padding-block: var(--article-h4-padding-block);
+  --heading-padding-inline: var(--article-h4-padding-inline); --heading-border-width: var(--article-h4-border-width);
+  --heading-border-style: var(--article-h4-border-style); --heading-background: var(--article-h4-background);
+}
+.document-editor .rich-editor h5 {
+  --heading-margin-block: var(--article-h5-margin-block); --heading-padding-block: var(--article-h5-padding-block);
+  --heading-padding-inline: var(--article-h5-padding-inline); --heading-border-width: var(--article-h5-border-width);
+  --heading-border-style: var(--article-h5-border-style); --heading-background: var(--article-h5-background);
+}
+.document-editor .rich-editor h6 {
+  --heading-margin-block: var(--article-h6-margin-block); --heading-padding-block: var(--article-h6-padding-block);
+  --heading-padding-inline: var(--article-h6-padding-inline); --heading-border-width: var(--article-h6-border-width);
+  --heading-border-style: var(--article-h6-border-style); --heading-background: var(--article-h6-background);
+}
+.document-editor[data-wechat-theme] .rich-editor .rich-link-notes > h2 {
+  margin: var(--article-reference-margin); padding: var(--article-reference-padding); border: 0;
+}
+.document-editor[data-wechat-theme] .rich-editor :where(:not(li, td, th)) > p {
+  margin-block: var(--article-p-margin-block); padding-block: var(--article-p-padding-block);
+}
+.document-editor .rich-editor blockquote {
+  margin-block: var(--article-blockquote-margin-block); padding-block: var(--article-blockquote-padding-block);
+}
+.document-editor .rich-editor blockquote[data-callout] { padding-block: var(--article-callout-padding-block); }
+.document-editor[data-wechat-theme] .rich-editor blockquote > p { margin-block: var(--article-quote-paragraph-margin-block); }
+.document-editor .rich-editor blockquote > p:last-child { margin-block-end: var(--article-quote-paragraph-end); }
 .writing-title {
   flex: 0 0 auto; padding-block-start: 22px;
   padding-inline: var(--editor-start-inset) var(--editor-inset);

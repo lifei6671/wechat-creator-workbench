@@ -20,6 +20,64 @@ export function wechatThemeId(id?: string | null) {
   return (wechatThemes.find(theme => theme.id === id) ?? wechatThemes[0]).id;
 }
 
+function wechatThemeCss(theme: typeof wechatThemes[number]) {
+  const calloutPadding = theme.id === "plainly-tech" ? "4px 12px" : "8px 12px";
+  const styleRules = Object.entries(theme.styles).map(([selector, styles]) =>
+    `${selector.split(",").map(part => `[class="plainly-article"]${part.trim() === "container" ? "" : ` ${part.trim()}`}`).join(",")}{${styles}}`);
+  return styleRules.join("\n")
+    + ".plainly-article mark{background-color:#fff7c2;color:inherit;}"
+    + `.plainly-article blockquote.workbench-callout{padding:${calloutPadding};border-left-width:0.5px;font-style:normal;}`
+    + ".plainly-article blockquote.workbench-callout-info{background-color:#e6f4fe !important;border-left-color:#8ec8f6;}"
+    + ".plainly-article blockquote.workbench-callout-warning{background-color:#fff7c2 !important;border-left-color:#e9c162;}"
+    + ".plainly-article .workbench-callout-info .workbench-callout-title{color:#0d74ce;}.plainly-article .workbench-callout-warning .workbench-callout-title{color:#ab6400;}"
+    + ".plainly-article .plainly-inline-math{display:inline-block;margin:0 2px;vertical-align:middle;width:auto;max-width:100%;border-radius:0;}"
+    + ".plainly-article .plainly-reference-title{margin:28px 0 10px;padding:0;border:0;}"
+    + ".plainly-article .footnotes-list{list-style:none;margin:0;padding:0;}"
+    + ".plainly-article .footnote-item{list-style:none;margin:4px 0;overflow-wrap:anywhere;}"
+    + ".plainly-article .footnote-item>p:first-of-type{display:inline;margin:0 !important;}"
+    + ".plainly-article .plainly-reference-number{display:inline-block;min-width:2.5em;color:#60646c;}"
+    + ".plainly-article .footnotes-list a,.plainly-article .footnote-ref a{color:#60646c !important;border-bottom:0;text-decoration:none;}"
+    + ".plainly-article table{width:100%;border-collapse:collapse;}.plainly-article .hljs-keyword,.plainly-article .hljs-title{color:#7047b8;}"
+    + ".plainly-article .hljs-string{color:#367848;}.plainly-article .hljs-number{color:#a04e24;}.plainly-article .hljs-comment{color:#626a70;}";
+}
+
+const editorStyles = new Map<string, Readonly<Record<string, string>>>();
+export function wechatEditorStyles(id?: string | null) {
+  const theme = wechatThemes.find(theme => theme.id === id) ?? wechatThemes[0];
+  const cached = editorStyles.get(theme.id);
+  if (cached) return cached;
+  const template = document.createElement("template");
+  const headings = ["h1", "h2", "h3", "h4", "h5", "h6"];
+  const sample = `<section class="plainly-article"><p>正文</p>${headings.map(name => `<${name}>标题</${name}>`).join("")}<blockquote><p>引用</p></blockquote><blockquote class="workbench-callout"><p>提示</p></blockquote><h2 class="plainly-reference-title">参考资料</h2></section>`;
+  template.innerHTML = juice.inlineContent(sample, wechatThemeCss(theme), { preserveImportant: true });
+  const variables: Record<string, string> = {};
+  for (const name of [...headings, "p", "blockquote"]) {
+    const { style } = template.content.querySelector<HTMLElement>(name)!;
+    for (const property of ["margin", "padding"] as const) {
+      variables[`--article-${name}-${property}-block`] = `${style.getPropertyValue(`${property}-top`) || "0px"} ${style.getPropertyValue(`${property}-bottom`) || "0px"}`;
+    }
+    if (headings.includes(name)) {
+      variables[`--article-${name}-padding-inline`] = `${style.paddingLeft || "0px"} ${style.paddingRight || "0px"}`;
+      for (const property of ["width", "style"] as const) {
+        variables[`--article-${name}-border-${property}`] = ["top", "right", "bottom", "left"]
+          .map(side => style.getPropertyValue(`border-${side}-${property}`) || (property === "width" ? "0px" : "none")).join(" ");
+      }
+      variables[`--article-${name}-background`] = style.backgroundColor && style.backgroundColor !== "transparent"
+        ? "var(--article-quote)" : "transparent";
+    }
+  }
+  variables["--article-quote-paragraph-end"] = template.content.querySelector<HTMLElement>("blockquote > p:last-child")!.style.marginBottom || "0px";
+  const quoteParagraph = template.content.querySelector<HTMLElement>("blockquote > p")!.style;
+  variables["--article-quote-paragraph-margin-block"] = `${quoteParagraph.marginTop} ${quoteParagraph.marginBottom}`;
+  const callout = template.content.querySelector<HTMLElement>(".workbench-callout")!.style;
+  variables["--article-callout-padding-block"] = `${callout.paddingTop} ${callout.paddingBottom}`;
+  const reference = template.content.querySelector<HTMLElement>(".plainly-reference-title")!.style;
+  variables["--article-reference-margin"] = reference.margin;
+  variables["--article-reference-padding"] = reference.padding;
+  editorStyles.set(theme.id, variables);
+  return variables;
+}
+
 export type Output = "preview" | "clipboard" | "html";
 export interface RenderInput { markdown: string; revision: number; themeId?: string | null; githubRepo?: string; output: Output }
 export interface ImageResult { src: string | null; width: number; height: number }
@@ -195,25 +253,8 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
     }
     const gzhDesign = "layout" in theme && theme.layout === "gzh-design";
     if (gzhDesign) applyGzhDesign(article);
-    const styleRules = Object.entries(theme.styles).map(([selector, styles]) =>
-      `${selector.split(",").map(part => `[class="plainly-article"]${part.trim() === "container" ? "" : ` ${part.trim()}`}`).join(",")}{${styles}}`);
-    const css = styleRules.join("\n")
-      + ".plainly-article mark{background-color:#fff7c2;color:inherit;}"
-      + ".plainly-article blockquote.workbench-callout{padding:8px 12px;border-left-width:0.5px;font-style:normal;}"
-      + ".plainly-article blockquote.workbench-callout-info{background-color:#e6f4fe !important;border-left-color:#8ec8f6;}"
-      + ".plainly-article blockquote.workbench-callout-warning{background-color:#fff7c2 !important;border-left-color:#e9c162;}"
-      + ".plainly-article .workbench-callout-info .workbench-callout-title{color:#0d74ce;}.plainly-article .workbench-callout-warning .workbench-callout-title{color:#ab6400;}"
-      + ".plainly-article .plainly-inline-math{display:inline-block;margin:0 2px;vertical-align:middle;width:auto;max-width:100%;border-radius:0;}"
-      + ".plainly-article .plainly-reference-title{margin:28px 0 10px;padding:0;border:0;}"
-      + ".plainly-article .footnotes-list{list-style:none;margin:0;padding:0;}"
-      + ".plainly-article .footnote-item{list-style:none;margin:4px 0;overflow-wrap:anywhere;}"
-      + ".plainly-article .footnote-item>p:first-of-type{display:inline;margin:0 !important;}"
-      + ".plainly-article .plainly-reference-number{display:inline-block;min-width:2.5em;color:#60646c;}"
-      + ".plainly-article .footnotes-list a,.plainly-article .footnote-ref a{color:#60646c !important;border-bottom:0;text-decoration:none;}"
-      + ".plainly-article table{width:100%;border-collapse:collapse;}.plainly-article .hljs-keyword,.plainly-article .hljs-title{color:#7047b8;}"
-      + ".plainly-article .hljs-string{color:#367848;}.plainly-article .hljs-number{color:#a04e24;}.plainly-article .hljs-comment{color:#626a70;}";
     const template = document.createElement("template");
-    template.innerHTML = juice.inlineContent(article.outerHTML, css, { removeStyleTags: true, preserveImportant: true });
+    template.innerHTML = juice.inlineContent(article.outerHTML, wechatThemeCss(theme), { removeStyleTags: true, preserveImportant: true });
     // Plainly's WeChat converter supplies an explicit width attribute for full-width tables.
     for (const table of template.content.querySelectorAll("table")) {
       if (table.style.width === "100%" && !table.hasAttribute("width")) table.setAttribute("width", "100%");
