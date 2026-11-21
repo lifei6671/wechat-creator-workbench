@@ -9,7 +9,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { hrefPattern } from "./schema";
 
 export type EditorCommand =
-  | "bold" | "italic" | "strike" | "inlineCode" | "paragraph" | "heading1" | "heading2" | "heading3" | "heading4"
+  | "bold" | "italic" | "strike" | "inlineCode" | "paragraph" | "heading1" | "heading2" | "heading3" | "heading4" | "heading5" | "heading6"
   | "bulletList" | "orderedList" | "taskList" | "quote" | "table" | "footnote" | "horizontalRule"
   | "codeBlock" | "mathBlock" | "selectAll" | "selectCellText" | "undo" | "redo" | "link";
 
@@ -64,6 +64,8 @@ export function runCommand(editor: Editor, view: EditorView, name: EditorCommand
     heading2: setBlockType(nodes.heading, { level: 2 }),
     heading3: setBlockType(nodes.heading, { level: 3 }),
     heading4: setBlockType(nodes.heading, { level: 4 }),
+    heading5: setBlockType(nodes.heading, { level: 5 }),
+    heading6: setBlockType(nodes.heading, { level: 6 }),
     bulletList: wrapInList(nodes.bullet_list),
     orderedList: wrapInList(nodes.ordered_list),
     taskList: setTaskList,

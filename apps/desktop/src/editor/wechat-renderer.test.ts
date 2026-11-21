@@ -1,8 +1,84 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { parseWechat, renderWechat, type SourceFragment } from "../../../../packages/wechat-renderer";
+import { parseWechat, renderWechat, wechatThemeId, wechatThemes, type SourceFragment } from "../../../../packages/wechat-renderer";
 import { graphic } from "../../../../packages/wechat-renderer/graphics";
 import fixture from "../../../../fixtures/wechat-format.json?raw";
+
+const gzhThemes = wechatThemes.filter(theme => theme.id.startsWith("gzh-"));
+
+it.each(wechatThemes)("omits the article background for $label in every output while preserving content highlights", async theme => {
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const result = await renderWechat({ themeId: theme.id, output, revision: 0, markdown: "## 章节\n\n==高亮== 与 `代码`\n\n> 引用" },
+      { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    const article = template.content.firstElementChild as HTMLElement;
+    expect(article.style.backgroundColor).toBe("");
+    expect(article.style.backgroundImage).toBe("");
+    expect(article.querySelector("mark")?.style.backgroundColor).not.toBe("");
+    expect(article.querySelector("code")?.style.backgroundColor).not.toBe("");
+    result.dispose();
+  }
+});
+
+it.each(gzhThemes)("renders $label consistently for preview, clipboard and HTML", async theme => {
+  const markdown = "# 主标题\n\n引言含有 **关键观点** 与 ==高亮==。\n\n## 开始使用\n\n> 原始引用\n\n### 小节\n\n- 列表项\n\n## 2. 已编号\n\n## 写在最后\n\n![动图](asset://gif)\n\n| 名称 | 值 |\n| --- | --- |\n| 原文 | 保留 |\n\n脚注[^n]\n\n[^n]: 来源 https://example.test/source";
+  const rendered = [];
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const image = vi.fn(async () => ({ src: "https://images.test/picture.gif", width: 80, height: 60 }));
+    const result = await renderWechat({ markdown, themeId: theme.id, output, revision: 3 }, { image, sources: vi.fn(), derive: vi.fn() });
+    expect(wechatThemeId(theme.id)).toBe(theme.id);
+    expect(result.themeId).toBe(theme.id);
+    expect(result.images).toEqual([{ url: "asset://gif", alt: "动图" }]);
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    const headings = template.content.querySelectorAll("h2");
+    expect(Array.from(headings, heading => heading.textContent)).toEqual(["01开始使用", "2. 已编号", "∞写在最后", "参考资料"]);
+    expect(headings[0].hasAttribute("data-line")).toBe(output === "preview");
+    expect(template.content.querySelector("strong")?.parentElement?.style.borderBottomWidth).toBe("0.5px");
+    expect(template.content.querySelector("table")?.getAttribute("width")).toBe("100%");
+    expect(template.content.querySelector("img")?.getAttribute("src")).toBe("https://images.test/picture.gif");
+    expect(template.content.querySelector('a[href="#fn1"]')).not.toBeNull();
+    expect(template.content.querySelector('[id="fn1"]')).not.toBeNull();
+    expect(result.html).not.toMatch(/<style|<script|\bclass=|var\(--|undefined/);
+    expect(template.content.querySelectorAll("[leaf]").length).toBeGreaterThan(10);
+    for (const node of template.content.querySelectorAll("*")) {
+      for (const child of node.childNodes) if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) expect(node.hasAttribute("leaf")).toBe(true);
+    }
+    if (output !== "preview") expect(result.html).not.toContain("data-");
+    for (const heading of template.content.querySelectorAll("[data-line]")) heading.removeAttribute("data-line");
+    rendered.push(template.innerHTML);
+    result.dispose();
+  }
+  expect(new Set(rendered).size).toBe(1);
+});
+
+it("preserves highlighted code whitespace and safe disclosure content in GZH themes", async () => {
+  const source = 'const n = 1;\n\n\tconsole.log("a  b");\n  // 中文， punctuation: exact';
+  const result = await renderWechat({ themeId: "gzh-moyu-ticket", output: "clipboard", revision: 1,
+    markdown: '## 01 已有编号\n\n```js\n' + source + '\n```\n\n<details><summary>展开内容</summary>\n\n**安全正文** [链接](https://example.test)\n\n</details>\n\n<script>alert(1)</script><a href="javascript:alert(2)" onclick="alert(3)">外部内容</a>' },
+    { image: vi.fn(async () => ({ src: null, width: 0, height: 0 })), sources: vi.fn(), derive: vi.fn() });
+  const template = document.createElement("template");
+  template.innerHTML = result.html;
+  const code = template.content.querySelector("pre > code")!;
+  expect(code.textContent).toBe(source + "\n");
+  expect(code.querySelectorAll("span[style]").length).toBeGreaterThan(0);
+  expect(code.parentElement?.style.whiteSpace).toBe("pre");
+  expect(code.closest("section")?.querySelector("p")?.textContent).toBe("js");
+  expect(template.content.querySelector("h2")?.textContent).toBe("01 已有编号");
+  expect(template.content.querySelector("details, summary, div, script, [onerror]")).toBeNull();
+  expect(result.html).not.toContain("javascript:");
+  expect(template.content.textContent).toContain("展开内容");
+  expect(template.content.querySelector('a[href="https://example.test"]')?.textContent).toBe("链接");
+});
+
+it("keeps legacy themes free of GZH chapter numbers and leaf wrappers", async () => {
+  expect(gzhThemes).toHaveLength(6);
+  const result = await renderWechat({ themeId: "plainly-default", output: "clipboard", revision: 1, markdown: "## 章节\n\n**原文**" },
+    { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+  expect(result.html).not.toContain("leaf=");
+  expect(result.text).toBe("章节\n\n原文");
+});
 
 it("uses the same formula and diagram source fragments as Rust retention", () => {
   const samples: { markdown: string; fragments: SourceFragment[] }[] = JSON.parse(fixture);

@@ -8,7 +8,7 @@ import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncActivity, type SyncApplied, type SyncBinding, type UploadProgress } from "../desktop";
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
-import { attachClipboard } from "../editor/clipboard";
+import { attachClipboard, writeClipboard } from "../editor/clipboard";
 import { editHistory } from "../editor/history";
 import { parseWebClipping } from "../editor/web-clipping";
 import { commandKey, untitled } from "../labels";
@@ -640,9 +640,16 @@ export function DesktopShell() {
   }, []);
   const waitForCollectionWrites = useCallback(() => Promise.allSettled(collectionWrites.current), []);
 
-  const localizeImage = (url: string) => trackAssetTask(desktop.localizeImage(url));
+  const localizeImage = (url: string) => {
+    if (imageTarget?.autoUpload) {
+      return canHostImage(imageTarget, url)
+        ? trackAssetTask(desktop.hostImage(url, imageTarget))
+        : Promise.resolve(url);
+    }
+    return url.startsWith("asset://") ? Promise.resolve(url) : trackAssetTask(desktop.localizeImage(url));
+  };
   const editorClipboard: ClipboardIO = {
-    write: (text, html) => html ? desktop.copyHtml(html, text) : desktop.copyText(text),
+    write: writeClipboard,
     localizeImage: downloadPastedImages || imageTarget?.autoUpload ? localizeImage : undefined,
     importImage: async file => `asset://${await trackAssetTask(desktop.assetImport(file))}`,
     onError: showError,

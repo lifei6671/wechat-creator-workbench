@@ -649,6 +649,13 @@ button.outline-expand { cursor: pointer; }
   --article-rule: var(--bronze-8); --article-link: var(--bronze-11); --article-quote: var(--bronze-3);
 }
 .document-editor[data-wechat-theme="plainly-tech"] { --article-rule: var(--teal-8); --article-link: var(--teal-11); --article-quote: var(--teal-3); }
+.document-editor:is([data-wechat-theme="gzh-moyu-green"], [data-wechat-theme="gzh-moyu-ticket"]) { --article-rule: var(--green-8); --article-link: var(--green-11); --article-quote: var(--green-3); }
+.document-editor[data-wechat-theme="gzh-red-white"] { --article-rule: var(--red-8); --article-link: var(--red-11); --article-quote: var(--red-3); }
+.document-editor[data-wechat-theme="gzh-graphite-minimal"] { --article-rule: var(--gray-8); --article-link: var(--gray-11); --article-quote: var(--gray-3); }
+.document-editor[data-wechat-theme="gzh-zen-whitespace"] { --writing-font: "Songti SC", SimSun, Georgia, serif; --article-rule: var(--sage-8); --article-link: var(--sage-11); --article-quote: var(--sage-3); }
+.document-editor[data-wechat-theme="gzh-olive-journal"] { --article-rule: var(--olive-8); --article-link: var(--orange-11); --article-quote: var(--olive-3); }
+.document-editor[data-wechat-theme^="gzh-"] .rich-editor strong { text-decoration: underline; text-decoration-color: var(--article-rule); text-underline-offset: 3px; }
+.document-editor[data-wechat-theme="gzh-zen-whitespace"] .rich-editor .ProseMirror { line-height: 1.95; }
 .document-editor .rich-editor a { color: var(--article-link); }
 .document-editor .rich-editor blockquote:not([data-callout]) { background: var(--article-quote); border-inline-start-color: var(--article-rule); }
 .document-editor :is(.writing-title :is(h1, textarea), .rich-editor h1) {
@@ -682,12 +689,35 @@ button.outline-expand { cursor: pointer; }
   container-type: size; display: grid; place-items: center; padding: 14px;
   background: var(--gray-2);
 }
+.preview-device {
+  --phone-width: min(471px, 100cqw, calc((100cqh - 40px) * 77.98 / 163.43));
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  width: var(--phone-width); min-width: 0;
+}
+.preview-controls { display: flex; align-items: center; gap: 8px; width: max-content; max-width: 100cqw; min-width: 0; }
+.preview-theme-label {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding: 4px 10px;
+  border: 0.5px solid var(--gray-a5); border-radius: 999px;
+  background: var(--gray-a3); color: var(--text-muted); font-family: var(--workbench-sans);
+  font-size: var(--small-font); font-weight: 500; line-height: 18px;
+}
+.preview-theme-label svg { flex: none; color: var(--gray-10); }
+.preview-theme-label > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-appearance {
+  display: inline-flex; flex: none; gap: 2px; padding: 2px; border: 0.5px solid var(--gray-a5);
+  border-radius: 999px; background: var(--gray-a3);
+}
+.preview-appearance button {
+  border: 0; border-radius: 999px; padding: 2px 8px; background: transparent;
+  color: var(--text-muted); font: 500 var(--small-font)/18px var(--workbench-sans); cursor: pointer;
+}
+.preview-appearance button:hover { color: var(--text-main); }
+.preview-appearance button[aria-pressed="true"] { background: var(--gray-1); color: var(--text-main); }
 .preview-phone {
   /* iPhone 18 Pro Max enclosure and display inset, in millimeters. */
-  --phone-width: min(471px, 100cqw, calc(100cqh * 77.98 / 163.43));
   --phone-mm: calc(var(--phone-width) / 77.98);
   --phone-metal: #53545a;
-  position: relative; display: grid; grid-template-rows: minmax(0, 1fr);
+  position: relative; display: grid; grid-template-rows: minmax(0, 1fr); flex: none; min-height: 0;
   width: var(--phone-width); aspect-ratio: 77.98 / 163.43;
   padding: calc(2.56 * var(--phone-mm)); border-radius: calc(14 * var(--phone-mm));
   background: #101013;
@@ -709,7 +739,7 @@ button.outline-expand { cursor: pointer; }
   position: relative;
   display: grid; grid-template-rows: calc(10.8 * var(--phone-mm)) minmax(0, 1fr) calc(5.6 * var(--phone-mm));
   min-width: 0; min-height: 0; overflow: hidden;
-  border-radius: calc(11.7 * var(--phone-mm)); background: var(--panel-bg);
+  border-radius: calc(11.7 * var(--phone-mm)); background: var(--gray-1);
 }
 .preview-phone-screen::before, .preview-phone-screen::after {
   content: ""; place-self: center; border-radius: 999px;

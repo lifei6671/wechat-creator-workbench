@@ -5,7 +5,7 @@ import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
 import { gfm, tableSchema } from "@milkdown/kit/preset/gfm";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import { DOMParser, DOMSerializer, Fragment, Slice, type Node as ProseNode } from "@milkdown/kit/prose/model";
-import { AllSelection, NodeSelection, Plugin, PluginKey, Selection, TextSelection, type Transaction } from "@milkdown/kit/prose/state";
+import { AllSelection, NodeSelection, Plugin, PluginKey, Selection, TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { cellAround, CellSelection, isInTable } from "@milkdown/kit/prose/tables";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import { Transform } from "@milkdown/kit/prose/transform";
@@ -126,6 +126,8 @@ async function readPaste(io: ClipboardIO, plainText?: boolean): Promise<Clipboar
   template.innerHTML = payload.html;
   const imported = new Map<string, Promise<string>>();
   await Promise.all([...template.content.querySelectorAll("img[src]")].map(async image => {
+    const original = image.getAttribute("data-workbench-src");
+    if (original && imagePattern.test(original)) return;
     const source = image.getAttribute("src")!;
     const mime = embeddedImage.exec(source);
     if (!mime) return;
@@ -222,7 +224,7 @@ function htmlSlice(view: EditorView, html: string) {
     if (!hrefPattern.test(anchor.getAttribute("href")!)) anchor.removeAttribute("href");
   }
   for (const img of fragment.querySelectorAll("img")) {
-    const url = img.getAttribute("src");
+    const url = img.getAttribute("data-workbench-src") ?? img.getAttribute("src");
     if (!url || !imagePattern.test(url)) img.replaceWith(img.alt);
     else {
       const placeholder = document.createElement("span");
@@ -309,7 +311,7 @@ function cellRange(selection: CellSelection) {
 function pastedImages(doc: ProseNode, from: number, to: number): PastedImage[] {
   const images: PastedImage[] = [];
   doc.nodesBetween(from, to, (node, pos) => {
-    if (node.type.name === "image" && pos >= from && pos + node.nodeSize <= to && /^https?:\/\//i.test(node.attrs.src)) {
+    if (node.type.name === "image" && pos >= from && pos + node.nodeSize <= to && /^(?:https?|asset):\/\//i.test(node.attrs.src)) {
       images.push({ node, from: pos, to: pos + node.nodeSize, src: node.attrs.src });
     }
   });
@@ -320,16 +322,15 @@ function SearchButton({ label, ...props }: ComponentProps<"button"> & { label: s
   return <Tooltip content={label}><button type="button" aria-label={label} {...props} /></Tooltip>;
 }
 
-function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
+type SearchSettings = { query: string; replacement: string; showReplace: boolean; caseSensitive: boolean; wholeWord: boolean; regexp: boolean };
+
+function SearchBar({ view, readOnly, inputRef, subscribe, saved, onClose }: {
   view: EditorView; readOnly: boolean; inputRef: Ref<HTMLInputElement>;
-  subscribe(listener: () => void): () => void; onClose(): void;
+  subscribe(listener: () => void): () => void; saved: { current: SearchSettings }; onClose(): void;
 }) {
-  const [query, setQuery] = useState("");
-  const [replacement, setReplacement] = useState("");
-  const [showReplace, setShowReplace] = useState(false);
-  const [caseSensitive, setCase] = useState(false);
-  const [wholeWord, setWord] = useState(false);
-  const [regexp, setRegexp] = useState(false);
+  const [settings, setSettings] = useState(saved.current);
+  const { query, replacement, showReplace, caseSensitive, wholeWord, regexp } = settings;
+  useLayoutEffect(() => { saved.current = settings; }, [saved, settings]);
   const overlay = useRef<HTMLDivElement>(null);
   const state = useSyncExternalStore(subscribe, () => view.state);
   const searchQuery = useMemo(() => new SearchQuery({ search: query, caseSensitive, wholeWord, regexp }),
@@ -346,18 +347,34 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
     if (!view.isDestroyed) view.dispatch(view.state.tr.setMeta(searchHighlights, DecorationSet.empty));
   }, [view]);
 
-  const matches = useMemo(() => {
-    const results: SearchResult[] = [];
-    if (searchQuery.valid) {
-      for (let pos = 0; pos <= state.doc.content.size;) {
-        const match = searchQuery.findNext(state, pos);
-        if (!match) break;
-        if (match.from >= pos) results.push(match);
-        pos = Math.max(pos + 1, match.to, match.from + 1);
-      }
-    }
-    return results;
-  }, [searchQuery, state.doc]);
+  const findMatches = useMemo(() => {
+    const blocks = new WeakMap<ProseNode, SearchResult[]>();
+    let previous: { doc: ProseNode; matches: SearchResult[] } | undefined;
+    return (state: EditorState) => {
+      if (previous?.doc === state.doc) return previous.matches;
+      const results: SearchResult[] = [];
+      if (searchQuery.valid) state.doc.forEach((node, offset) => {
+        let matches = blocks.get(node);
+        if (!matches) {
+          matches = [];
+          const end = offset + node.nodeSize;
+          for (let pos = offset; pos < end;) {
+            const match = searchQuery.findNext(state, pos, end);
+            if (!match) break;
+            if (match.from >= pos) matches.push({ ...match,
+              from: match.from - offset, to: match.to - offset, matchStart: match.matchStart - offset });
+            pos = Math.max(pos + 1, match.to, match.from + 1);
+          }
+          blocks.set(node, matches);
+        }
+        for (const match of matches) results.push({ ...match,
+          from: match.from + offset, to: match.to + offset, matchStart: match.matchStart + offset });
+      });
+      previous = { doc: state.doc, matches: results };
+      return results;
+    };
+  }, [searchQuery]);
+  const matches = useMemo(() => findMatches(state), [findMatches, state.doc]);
   let low = 0, high = matches.length;
   while (low < high) {
     const middle = Math.floor((low + high) / 2);
@@ -385,8 +402,12 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
   }, [view, state.doc, state.selection, matches, windowStart, active, searchQuery]);
 
   function step(direction: -1 | 1) {
-    if (!matches.length) return;
     const { state } = view;
+    const matches = findMatches(state);
+    if (!matches.length) return;
+    const active = matches.findIndex(match => match.from === state.selection.from && match.to === state.selection.to);
+    const nextAnchor = matches.findIndex(match => match.from >= state.selection.from);
+    const anchor = nextAnchor < 0 ? matches.length : nextAnchor;
     let index = (active + direction + matches.length) % matches.length;
     if (active < 0) {
       if (direction === 1) {
@@ -403,8 +424,9 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
   }
 
   function replace(all: boolean) {
-    if (!matches.length) return;
     const { state } = view;
+    const matches = findMatches(state);
+    if (!matches.length) return;
     const current = all ? undefined : searchQuery.findNext(state, state.selection.from) ?? matches[0];
     if (current && (current.from !== state.selection.from || current.to !== state.selection.to)) {
       view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, current.from, current.to)).scrollIntoView());
@@ -471,16 +493,16 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
   }}>
     <div className="rich-search-row">
       {!readOnly && <SearchButton label={showReplace ? "收起替换" : "展开替换"}
-        aria-expanded={showReplace} onClick={() => setShowReplace(!showReplace)}>
+        aria-expanded={showReplace} onClick={() => setSettings({ ...settings, showReplace: !showReplace })}>
         {showReplace ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
       </SearchButton>}
       <div className="rich-search-field">
         <input ref={inputRef} autoFocus aria-label="查找" aria-invalid={Boolean(query) && !searchQuery.valid}
-          placeholder="查找" value={query} onChange={event => setQuery(event.target.value)} />
+          placeholder="查找" value={query} onChange={event => setSettings({ ...settings, query: event.target.value })} />
         <div className="rich-search-options">
-          <SearchButton label="区分大小写" aria-pressed={caseSensitive} onClick={() => setCase(!caseSensitive)}><CaseSensitive size={15} /></SearchButton>
-          <SearchButton label="全词匹配" aria-pressed={wholeWord} onClick={() => setWord(!wholeWord)}><WholeWord size={15} /></SearchButton>
-          <SearchButton label="正则表达式" aria-pressed={regexp} onClick={() => setRegexp(!regexp)}><Regex size={15} /></SearchButton>
+          <SearchButton label="区分大小写" aria-pressed={caseSensitive} onClick={() => setSettings({ ...settings, caseSensitive: !caseSensitive })}><CaseSensitive size={15} /></SearchButton>
+          <SearchButton label="全词匹配" aria-pressed={wholeWord} onClick={() => setSettings({ ...settings, wholeWord: !wholeWord })}><WholeWord size={15} /></SearchButton>
+          <SearchButton label="正则表达式" aria-pressed={regexp} onClick={() => setSettings({ ...settings, regexp: !regexp })}><Regex size={15} /></SearchButton>
         </div>
       </div>
       <div className="rich-search-actions">
@@ -492,7 +514,7 @@ function SearchBar({ view, readOnly, inputRef, subscribe, onClose }: {
     </div>
     {!readOnly && showReplace && <div className="rich-search-row rich-replace-row">
       <div className="rich-search-field">
-        <input name="replacement" aria-label="替换" placeholder="替换" value={replacement} onChange={event => setReplacement(event.target.value)} />
+        <input name="replacement" aria-label="替换" placeholder="替换" value={replacement} onChange={event => setSettings({ ...settings, replacement: event.target.value })} />
       </div>
       <div className="rich-search-actions">
         <SearchButton label="替换当前匹配" disabled={!matches.length} onClick={() => replace(false)}><Replace size={15} /></SearchButton>
@@ -506,6 +528,7 @@ export function MarkdownEditor(props: Props) {
   const host = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const savedSearch = useRef<SearchSettings>({ query: "", replacement: "", showReplace: false, caseSensitive: false, wholeWord: false, regexp: false });
   const viewRef = useRef<EditorView>(null);
   const searchListeners = useRef(new Set<() => void>());
   const subscribeToSearch = useCallback((listener: () => void) => {
@@ -528,6 +551,12 @@ export function MarkdownEditor(props: Props) {
     const session = Symbol(entryId);
     const pending = new Map<symbol, Range>();
     const edits = new Set<Promise<void>>();
+    const compositionWaiters = new Set<() => void>();
+    let compositionTimer: ReturnType<typeof setTimeout> | undefined;
+    function resumeCompositionEdits() {
+      for (const resume of compositionWaiters) resume();
+      compositionWaiters.clear();
+    }
     const pastes = new Map<symbol, { offset: number; key: string }>();
     let pasteSequence = 0;
     const failedImages = new Set<() => void>();
@@ -587,9 +616,18 @@ export function MarkdownEditor(props: Props) {
         pastes.set(id, { offset: pasteOffset, key: `paste-${++pasteSequence}` });
         view.dispatch(view.state.tr.setMeta(pasteProgress, true));
       }
-      const edit = operation().then(value => {
+      const edit = operation().then(async value => {
+        let deferred = false;
+        while (!duringComposition && view.composing && isWritable(view) && pending.has(id)) {
+          deferred = true;
+          await new Promise<void>(resolve => compositionWaiters.add(resolve));
+        }
         const mapped = pending.get(id);
-        if (mapped && isWritable(view) && (!view.composing || duringComposition)) consume(mapped, value);
+        if (mapped && isWritable(view)) {
+          if (deferred) view.dispatch(closeHistory(view.state.tr));
+          consume(mapped, value);
+          if (deferred) view.dispatch(closeHistory(view.state.tr));
+        }
       }).catch(error => { if (!disposed) onError?.(error); }).finally(() => {
         edits.delete(edit);
         pending.delete(id);
@@ -627,6 +665,17 @@ export function MarkdownEditor(props: Props) {
       }
     }
 
+    function insertImageMarkdown(view: EditorView, { from, to }: Range, source: string, scroll = false) {
+      const { localizeImageLink, onError } = latest.current;
+      const tr = view.state.tr.replaceRange(from, to, markdownSlice(editor, source));
+      const images: PastedImage[] = [];
+      if (localizeImageLink) tr.mapping.maps[0]?.forEach((_oldFrom, _oldTo, start, end) => {
+        if (start < end) images.push(...pastedImages(tr.doc, start, end));
+      });
+      view.dispatch(scroll ? tr.scrollIntoView() : tr);
+      if (localizeImageLink) localizeImages(view, images, localizeImageLink, onError, tr.doc);
+    }
+
     const editor = Editor.make()
       .config(ctx => {
         ctx.inject(clipboardMarkdownCtx);
@@ -639,6 +688,12 @@ export function MarkdownEditor(props: Props) {
             "aria-label": "正文", role: "textbox", "aria-multiline": "true", "aria-readonly": String(latest.current.readOnly),
           }),
           handleDOMEvents: {
+            compositionend: () => {
+              // Let ProseMirror flush the final composition mutations before using mapped ranges.
+              clearTimeout(compositionTimer);
+              compositionTimer = setTimeout(resumeCompositionEdits, 0);
+              return false;
+            },
             blur: () => { latest.current.onBlur(); return false; },
             mousedown: (view, event) => {
               if (event.button !== 2 || !preservesTableSelection(view, event.target)) return false;
@@ -704,7 +759,7 @@ export function MarkdownEditor(props: Props) {
               event.preventDefault();
               const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? view.state.selection.from;
               track(view, { from: pos, to: pos }, () => insert(files), ({ from, to }, text) => {
-                if (text) view.dispatch(view.state.tr.replaceRange(from, to, markdownSlice(editor, text)));
+                if (text) insertImageMarkdown(view, { from, to }, text);
               }, latest.current.onError);
               return true;
             },
@@ -737,7 +792,7 @@ export function MarkdownEditor(props: Props) {
       .use($prose(() => editorBlockTools({
         canEdit: view => isWritable(view) && latest.current.active !== false,
         command: (view, name, value) => runCommand(editor, view, name, value),
-        insertMarkdown: (view, source) => view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, source)).scrollIntoView()),
+        insertMarkdown: (view, source) => insertImageMarkdown(view, view.state.selection, source, true),
         insertImage: (view, src) => {
           const { schema, tr } = view.state;
           const { localizeImageLink, onError } = latest.current;
@@ -755,7 +810,7 @@ export function MarkdownEditor(props: Props) {
           if (!insert) return;
           const { from, to } = view.state.selection;
           track(view, { from, to }, () => insert(files), ({ from, to }, source) => {
-            if (source) view.dispatch(view.state.tr.replaceRange(from, to, markdownSlice(editor, source)).scrollIntoView());
+            if (source) insertImageMarkdown(view, { from, to }, source, true);
           }, latest.current.onError);
         },
       })))
@@ -854,6 +909,7 @@ export function MarkdownEditor(props: Props) {
         filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(documentLayout)),
         view: () => ({
           update(view, previous) {
+            if (!view.composing || !view.editable) resumeCompositionEdits();
             if (view.state.doc !== previous.doc || !view.state.selection.eq(previous.selection)) {
               for (const listener of searchListeners.current) listener();
             }
@@ -966,7 +1022,7 @@ export function MarkdownEditor(props: Props) {
           return handle.hasSelection(false) ? doc.textBetween(selection.from, selection.to, " ") : "";
         },
         insert: text => {
-          if (isWritable(view)) view.dispatch(view.state.tr.replaceSelection(markdownSlice(editor, text)));
+          if (isWritable(view)) insertImageMarkdown(view, view.state.selection, text);
         },
         linkFootnoteMarkdown(source) {
           if (disposed) return source;
@@ -1218,6 +1274,8 @@ export function MarkdownEditor(props: Props) {
 
     return () => {
       disposed = true;
+      clearTimeout(compositionTimer);
+      resumeCompositionEdits();
       pending.clear();
       pastes.clear();
       detachRef?.();
@@ -1226,7 +1284,7 @@ export function MarkdownEditor(props: Props) {
   }, []);
 
   return <div className="editor-host">
-    {searchView && <SearchBar view={searchView} readOnly={props.readOnly} inputRef={searchInput} subscribe={subscribeToSearch} onClose={() => setSearchView(null)} />}
+    {searchView && <SearchBar view={searchView} readOnly={props.readOnly} inputRef={searchInput} subscribe={subscribeToSearch} saved={savedSearch} onClose={() => setSearchView(null)} />}
     {footnote && props.active !== false && !props.readOnly && <FootnotePopover draft={footnote} onClose={() => setFootnote(null)} />}
     <div className="editor-scroll" ref={scroll}>{props.title}<div className="rich-editor" ref={host} /></div>
     <DomTooltips root={host} />

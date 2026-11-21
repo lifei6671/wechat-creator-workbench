@@ -170,6 +170,9 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
               <ContextMenu.Item onSelect={() => command("heading1")}><Heading size={15} />一级标题</ContextMenu.Item>
               <ContextMenu.Item onSelect={() => command("heading2")}><Heading size={15} />二级标题</ContextMenu.Item>
               <ContextMenu.Item onSelect={() => command("heading3")}><Heading size={15} />三级标题</ContextMenu.Item>
+              <ContextMenu.Item onSelect={() => command("heading4")}><Heading size={15} />四级标题</ContextMenu.Item>
+              <ContextMenu.Item onSelect={() => command("heading5")}><Heading size={15} />五级标题</ContextMenu.Item>
+              <ContextMenu.Item onSelect={() => command("heading6")}><Heading size={15} />六级标题</ContextMenu.Item>
               <ContextMenu.Separator />
               <ContextMenu.Item onSelect={() => command("bulletList")}><List size={15} />无序列表</ContextMenu.Item>
               <ContextMenu.Item onSelect={() => command("orderedList")}><List size={15} />有序列表</ContextMenu.Item>

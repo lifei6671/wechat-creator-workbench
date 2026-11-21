@@ -3,7 +3,7 @@ import license from "rollup-plugin-license";
 import type { Plugin } from "vite";
 
 export function desktopLicenses(): Plugin[] {
-  const notices = ["NOTICE.md", "third-party-ai.txt", "packages/wechat-renderer/SOURCES.md", "packages/wechat-renderer/themes/LICENSE-RICO"]
+  const notices = ["NOTICE.md", "third-party-ai.txt", "packages/wechat-renderer/SOURCES.md", "packages/wechat-renderer/themes/LICENSE-RICO", "packages/wechat-renderer/themes/LICENSE-GZH-DESIGN"]
     .map(path => readFileSync(new URL(`../${path}`, import.meta.url), "utf8")).join("\n\n");
   let manifest = "";
   return [license({ thirdParty: { multipleVersions: true, includePrivate: true,
