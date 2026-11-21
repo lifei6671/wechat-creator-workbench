@@ -222,7 +222,7 @@ it("opens an already collected clipping without overwriting it and reports delet
   await vi.waitFor(() => expect(editorClipboards.has("original")).toBe(true));
   await editorClipboards.get("original")!.read();
   await vi.waitFor(() => expect(openTabs()).toContain("existing"));
-  expect(container.textContent).toContain("原文已收录，已打开已有文章");
+  expect(container.querySelector(".workspace-toast")).toBeNull();
   imported.mockResolvedValue({ entryId: "deleted", existing: true, deleted: true, unavailableImages: 0 });
   await editorClipboards.get("existing")!.read();
   await vi.waitFor(() => expect(container.textContent).toContain("请先从回收站恢复"));
@@ -907,7 +907,7 @@ it("marks joined topics and updates the menu after adding an article without ope
   });
   flushSync(() => destination.click());
   await vi.waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith(topic.id, { kind: "entry", entryId: "manual" }, { x: 24, y: 24 }));
-  await vi.waitFor(() => expect(container.textContent).toContain("已加入「待研究」"));
+  expect(container.querySelector(".workspace-toast")).toBeNull();
   expect(container.querySelector("#collection-tab-reading-list")).toBeNull();
   memberships.mockResolvedValue([joined, topic]);
   openSubmenu();

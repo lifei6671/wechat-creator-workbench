@@ -551,8 +551,10 @@ button.outline-expand { cursor: pointer; }
 .ai-user-actions { justify-self: end; }
 .ai-message-time, .ai-user-citation { flex: none; color: var(--sand-11); font-size: 12px; white-space: nowrap; }
 .ai-message-copy { margin: 0; }
+.ai-user-actions, .ai-proposal-actions, .ai-turn > .button-strip { flex-wrap: wrap; }
+.ai-copy-feedback { flex-basis: 100%; width: 100%; }
 @media (hover: hover) {
-  :is(.ai-turn, .ai-suggestion):not(:hover) > .button-strip:not(:has(> .ai-message-copy:is(:focus-visible, [data-copied])))
+  :is(.ai-turn, .ai-suggestion):not(:hover) > .button-strip:not(:has(> .ai-message-copy:is(:focus-visible, [data-feedback-state])))
     > :is(.ai-message-time, .ai-message-copy) {
     opacity: 0; pointer-events: none;
   }
@@ -682,6 +684,7 @@ button.outline-expand { cursor: pointer; }
 .writing-title textarea::placeholder { color: var(--text-muted); }
 .writing-title textarea:focus-visible { outline: 0.5px solid var(--focus-color); outline-offset: 4px; border-radius: 4px; }
 .editor-area { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.editor-action-feedback { flex: none; padding-inline: 12px; }
 .image-upload-menu-spinner { display: inline-flex; }
 .editor-host { flex: 1; min-height: 0; min-width: 0; }
 .editor-area .editor-host { position: static; }
@@ -774,6 +777,8 @@ button.outline-expand { cursor: pointer; }
 .status-button { gap: 4px; padding-inline: 6px; }
 .status-button[aria-disabled="true"] { background: transparent; opacity: .6; }
 .status-copy-icon { display: inline-grid; place-items: center; flex: none; inline-size: 15px; block-size: 15px; }
+.status-action-feedback { flex: 1; min-width: 0; height: 28px; }
+.status-action-feedback > .inline-error { font-size: var(--small-font); }
 .status-mcp[data-running="true"] { color: var(--green-11); }
 .status-mcp[data-running="false"] { color: var(--red-11); }
 .status-sync { min-width: 0; }

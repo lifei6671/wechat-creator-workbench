@@ -7,11 +7,12 @@ import { commandKey } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
 import { SyncStatus } from "./SyncStatus";
+import { ActionError } from "../button-feedback";
 
 export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, backupProgress, migrationProgress,
   imageStorageEnabled, assetRevision, imageUpload, syncBinding, syncActivity, syncError, syncWaitingReason, onSync, onError, onMcp, onPalette, onTrash, onSettings }: {
   queue?: SaveQueue;
-  actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat">;
+  actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat" | "feedback">;
   trashActive: boolean;
   settingsOpen: boolean;
   mcpRunning?: boolean;
@@ -62,6 +63,7 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
       <span className="background-status-label">{backup}</span>
     </span></Tooltip>}
 
+    <ActionError className="status-action-feedback" error={actions.feedback?.error()} />
     <div className="status-bar-right">
       {queue && <DocumentStatus key={queue.sessionId} queue={queue} reading={actions.reading} imageStorageEnabled={imageStorageEnabled}
         assetRevision={assetRevision} imageUpload={imageUpload} onError={onError} />}
@@ -76,12 +78,14 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
             onClick={() => actions.setMode(previewing ? "edit" : "preview")}>
             {previewing ? <><PencilLine size={15} />继续编辑</> : <><Eye size={15} />预览排版</>}
           </button>}
-          {canCopy && <button className="plain-button status-button" type="button" aria-disabled={actions.publishing}
+          {canCopy && <button className="plain-button status-button" type="button" disabled={actions.publishing}
+            {...actions.feedback?.props("copyWechat", actions.publishing)}
             onClick={actions.onCopyWechat}>
             <span className="status-copy-icon" aria-hidden="true">
-              {actions.publishing ? <Spinner size="1" /> : <Copy size={15} />}
+              {actions.feedback ? actions.feedback.icon("copyWechat", <Copy size={15} />, 15)
+                : actions.publishing ? <Spinner size="1" /> : <Copy size={15} />}
             </span>
-            复制公众号格式
+            {actions.feedback ? actions.feedback.label("copyWechat", "复制公众号格式", "已复制", "复制失败") : "复制公众号格式"}
           </button>}
         </div>}
         <div className="button-strip">

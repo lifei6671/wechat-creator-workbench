@@ -181,6 +181,7 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 .rich-editor .rich-link-citation { margin-inline-start: 2px; color: var(--accent-11); font-size: .8em; }
 .rich-image-retry { color: var(--accent-11); padding: 1px 5px; border-radius: 4px; font-size: var(--small-font); }
 .rich-image-retry:hover { background: var(--accent-a4); }
+.rich-image-status > :is([role="status"], [role="alert"]) { block-size: 36px; overflow: auto; align-content: center; font-size: var(--small-font); }
 .rich-image-controls {
   position: absolute; inset: 6px 6px auto auto; display: flex; padding: 2px;
   color: var(--text-main); background: var(--gray-1);
@@ -246,6 +247,7 @@ textarea.rich-formula-source:focus { outline: none; border-color: var(--gray-a8)
 .rich-footnote-popover form { display: grid; gap: 8px; }
 .rich-footnote-popover code { color: var(--accent-11); font-size: var(--small-font); }
 .rich-footnote-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.rich-footnote-error { display: block; block-size: 36px; overflow: auto; font-size: var(--small-font); line-height: 18px; }
 
 .rich-block-actions {
   position: absolute; z-index: 3; display: flex; gap: 6px; padding-block: 1px; user-select: none;

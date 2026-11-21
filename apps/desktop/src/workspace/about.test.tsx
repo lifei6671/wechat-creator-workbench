@@ -85,7 +85,9 @@ it("keeps download failures retryable and only offers installation after verifie
   await act(async () => button("下载更新").click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("签名校验失败");
   expect(button("退出并安装")).toBeUndefined();
-  await act(async () => button("下载失败").click());
+  expect(button("下载失败").disabled).toBe(true);
+  await vi.waitFor(() => expect(button("下载更新")?.disabled).toBe(false), { timeout: 1600 });
+  await act(async () => button("下载更新").click());
   expect(download).toHaveBeenCalledTimes(2);
   expect(container.textContent).toContain("0.2.0 已准备就绪");
   expect(container.textContent).toContain("版本 0.1.0");

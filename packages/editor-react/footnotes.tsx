@@ -71,7 +71,9 @@ export function FootnotePopover({ draft, onClose }: { draft: FootnoteDraft; onCl
       }}>
         <code>{`[^${draft.label}]:`}</code>
         <TextArea aria-label="脚注内容" value={value} onChange={event => setEditing({ ...editing, value: event.target.value })} rows={3} />
-        {changed && <span className="inline-error" role="alert">文稿已更新，请重新打开脚注。</span>}
+        <span className="rich-footnote-error" tabIndex={changed ? 0 : -1}>
+          {changed && <span className="inline-error" role="alert">文稿已更新，请重新打开脚注。</span>}
+        </span>
         <div className="rich-footnote-actions">
           <Button type="button" size="1" color="gray" variant="soft" onClick={close}>取消</Button>
           <Button type="submit" size="1" disabled={!value.trim() || changed}>{draft.existing ? "保存" : "插入"}</Button>

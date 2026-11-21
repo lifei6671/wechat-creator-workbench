@@ -9,6 +9,7 @@ import type { SaveQueue } from "../editor/save-queue";
 import { AssetThumb } from "./Assets";
 import { FolderSelect } from "./FolderSelect";
 import { addTag, TagInput } from "./TagInput";
+import { ActionError, useButtonFeedback } from "../button-feedback";
 
 interface PropertiesDialogProps {
   id: string;
@@ -125,6 +126,7 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
   const [edited, setEdited] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const saveButton = useButtonFeedback();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionError, setCollectionError] = useState("");
   const showCollections = Boolean(onOpenCollection);
@@ -186,12 +188,14 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
       } : null,
       customProperties,
     };
+    if (!saveButton.start("save")) return;
     setSaving(true);
     setError("");
     try {
       await onSave(entry, change);
       onClose();
     } catch (error) {
+      saveButton.finish("save", false);
       setError(errorMessage(error));
     } finally {
       setSaving(false);
@@ -340,12 +344,12 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
         {collections.map(collection => <Button key={collection.id} variant="soft" size="1" type="button"
           onClick={() => { onClose(); onOpenCollection(collection.id); }}>{collection.title}</Button>)}
       </div>}
-      {collectionError && <p role="alert" className="inline-error">无法读取所属专题。{collectionError}</p>}
-      {error && <p role="alert" className="inline-error">{error}</p>}
+      {<div className="action-error-slot" tabIndex={(collectionError) ? 0 : -1}>{collectionError ? <p role="alert" className="inline-error">无法读取所属专题。{collectionError}</p> : null}</div>}
+      {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="inline-error">{error}</p> : null}</div>}
     </div>
     {!readOnly && edited && <footer className="properties-footer">
       <Dialog.Close><Button type="button" variant="soft" color="gray">取消</Button></Dialog.Close>
-      <Button type="submit" loading={saving}>保存</Button>
+      <Button type="submit" loading={saving} {...saveButton.props("save")}>{saveButton.label("save", "保存", "已保存", "保存失败")}</Button>
     </footer>}
   </form>;
 }
@@ -358,19 +362,19 @@ export function RevisionsDialog({ id, onClose, onCopy }: {
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [current, setCurrent] = useState(0);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+  const buttons = useButtonFeedback();
   useEffect(() => {
     void desktop.revisions(id).then(setRevisions, error => setError(errorMessage(error)));
   }, [id]);
   const revision = revisions?.[current];
   return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}><Dialog.Content maxWidth="580px" aria-describedby={undefined}>
     <Dialog.Title>历史版本</Dialog.Title>
-    {error && <p className="inline-error" role="alert">{error}</p>}
+    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="inline-error" role="alert">{error}</p> : null}</div>}
     {revisions === null && !error && <p>正在载入…</p>}
     {revisions?.length === 0 && <p>尚无手动保存的版本</p>}
     {revision && <>
       <div className="button-strip revision-list">
-        {revisions!.map((item, index) => <Button size="1" key={item.version} variant={current === index ? "solid" : "soft"} onClick={() => { setCurrent(index); setCopied(false); }}>
+        {revisions!.map((item, index) => <Button size="1" key={item.version} variant={current === index ? "solid" : "soft"} onClick={() => setCurrent(index)}>
           版本 {item.version}
         </Button>)}
       </div>
@@ -378,11 +382,12 @@ export function RevisionsDialog({ id, onClose, onCopy }: {
       <TextArea aria-label="该版本正文" readOnly rows={12} value={revision.contentMd} />
     </>}
     <div className="dialog-actions">
-      {revision && <Button size="2" variant="soft" onClick={() => {
-        void onCopy(revision.contentMd).then(() => setCopied(true), error => setError(errorMessage(error)));
-      }}>{copied ? "已复制" : "复制正文"}</Button>}
+      {revision && <Button size="2" variant="soft" {...buttons.props(`copy:${revision.version}`)} loading={buttons.status(`copy:${revision.version}`) === "pending"}
+        onClick={() => void buttons.run(`copy:${revision.version}`, () => onCopy(revision.contentMd))}>
+        {buttons.label(`copy:${revision.version}`, "复制正文", "已复制")}</Button>}
       <Dialog.Close><Button variant="soft" color="gray">关闭</Button></Dialog.Close>
     </div>
+    <ActionError error={revision && buttons.error(`copy:${revision.version}`)} />
   </Dialog.Content></Dialog.Root>;
 }
 
@@ -412,17 +417,20 @@ export function Confirm({ title, text, action, children, onClose, onConfirm }: {
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const buttons = useButtonFeedback();
   return <Dialog.Root open onOpenChange={open => { if (!open && !saving) onClose(); }}>
     <Dialog.Content maxWidth="410px">
       <Dialog.Title>{title}</Dialog.Title>
       <Dialog.Description>{text}</Dialog.Description>
       {children?.(saving)}
-      {error && <p role="alert" className="inline-error">{error}</p>}
+      {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="inline-error">{error}</p> : null}</div>}
       <div className="dialog-actions">
         <Dialog.Close><Button variant="soft" color="gray" disabled={saving}>取消</Button></Dialog.Close>
-        <Button color="red" loading={saving} onClick={() => {
+        <Button color="red" loading={saving} {...buttons.props("confirm")} onClick={() => {
+          if (!buttons.start("confirm")) return;
+          setError("");
           setSaving(true);
-          void onConfirm().then(onClose, error => setError(errorMessage(error))).finally(() => setSaving(false));
+          void onConfirm().then(onClose, error => { buttons.finish("confirm", false); setError(errorMessage(error)); }).finally(() => setSaving(false));
         }}>{action}</Button>
       </div>
     </Dialog.Content>

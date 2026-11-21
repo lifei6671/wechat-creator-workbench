@@ -209,10 +209,18 @@ export function imageView(
   let dispose: (() => void) | undefined;
   let destroyed = false;
   let retry: (() => void) | undefined;
+  let feedbackTimer: number | undefined;
   if (resolveImage && imagePattern.test(node.attrs.src)) {
     const load = (manual = false) => {
+      if (manual && retryButton.hasAttribute("aria-disabled")) return;
+      window.clearTimeout(feedbackTimer);
       failedImages.delete(load);
       retryButton.setAttribute("aria-disabled", "true");
+      retryButton.setAttribute("aria-busy", "true");
+      retryButton.dataset.feedbackState = "pending";
+      retryButton.textContent = "加载中";
+      message.classList.remove("inline-error");
+      message.setAttribute("role", "status");
       message.textContent = "正在加载图片…";
       status.classList.add("rich-progress");
       const request = manual ? resolveImage(node.attrs.src, true) : resolveImage(node.attrs.src);
@@ -238,8 +246,24 @@ export function imageView(
         status.classList.remove("rich-progress");
         if (node.attrs.src.startsWith("asset://")) failedImages.add(load);
         message.textContent = [alt, getOptions().imageErrorMessage?.(failure) ?? "图片无法显示"].filter(Boolean).join(" — ");
+        message.classList.add("inline-error");
+        message.setAttribute("role", "alert");
+        message.tabIndex = 0;
         retryButton.hidden = false;
-        retryButton.removeAttribute("aria-disabled");
+        retryButton.removeAttribute("aria-busy");
+        if (manual) {
+          retryButton.dataset.feedbackState = "error";
+          retryButton.textContent = "重试失败";
+          feedbackTimer = window.setTimeout(() => {
+            retryButton.removeAttribute("aria-disabled");
+            delete retryButton.dataset.feedbackState;
+            retryButton.textContent = "重试";
+          }, 1000);
+        } else {
+          retryButton.removeAttribute("aria-disabled");
+          delete retryButton.dataset.feedbackState;
+          retryButton.textContent = "重试";
+        }
       });
     };
     retry = load;
@@ -255,6 +279,7 @@ export function imageView(
     ignoreMutation: () => true,
     destroy() {
       destroyed = true;
+      window.clearTimeout(feedbackTimer);
       imageContexts.delete(dom);
       if (retry) failedImages.delete(retry);
       dispose?.();

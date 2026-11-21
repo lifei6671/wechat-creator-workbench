@@ -1,3 +1,4 @@
+import { ActionError } from "../button-feedback";
 import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import { Button, Checkbox, Select, TextField } from "@radix-ui/themes";
@@ -68,7 +69,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   const selectedId = selected?.item.id;
   const [selectedError, setSelectedError] = useState("");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const assetButtons = useSettingsButtonFeedback();
   const [loading, setLoading] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [page, setPage] = useState(0);
@@ -137,7 +138,6 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   const layout = arrangeAssets(library?.items ?? [], gridWidth || minimum, minimum);
 
   function turnPage(next: number) {
-    setNotice("");
     setPaging(true);
     if (next === page) setRefresh(value => value + 1);
     else setPage(next);
@@ -145,9 +145,11 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
 
   async function importImages(files: File[]) {
     if (!files.length) return;
-    setLoading(true);
-    try { await onImport(files); }
-    finally { setLoading(false); setRefresh(value => value + 1); }
+    await assetButtons.run("import", async () => {
+      setLoading(true);
+      try { await onImport(files); }
+      finally { setLoading(false); setRefresh(value => value + 1); }
+    });
   }
 
   return <aside className="explorer" aria-label="素材库">
@@ -160,7 +162,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         </Tool>
       </div>
       <div className="button-strip">
-        <Tool label="导入图片" disabled={loading} onClick={() => input.current?.click()}><Plus size={16} /></Tool>
+        <Tool label="导入图片" {...assetButtons.props("import", loading)} onClick={() => input.current?.click()}>{assetButtons.icon("import", <Plus size={16} />)}</Tool>
         <Tool label="S3 图床设置" onClick={onConfigure}><Settings2 size={16} /></Tool>
       </div>
       <input ref={input} type="file" accept={acceptedImages} multiple hidden onChange={event => {
@@ -175,11 +177,14 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         event.preventDefault();
         if (!loading) void importImages(Array.from(event.dataTransfer.files));
       }}>
-        {loading && <p className="muted-text" role="status">正在导入图片…</p>}
-        {error && <p className="inline-error" role="alert">{error}</p>}
-        {notice && <p className="muted-text" role="status">{notice}</p>}
+        <div className="action-error-slot">
+          {loading && <p className="muted-text" role="status">正在导入图片…</p>}
+        </div>
+        <ActionError error={error || assetButtons.error("import")} />
+
         {library?.items.length === 0 && !loading && <div className="explorer-empty">
-          <Button size="1" variant="soft" onClick={() => input.current?.click()}>导入图片</Button>
+          <Button size="1" variant="soft" {...assetButtons.props("import", loading)} onClick={() => input.current?.click()}>
+            {assetButtons.label("import", "导入图片", "已导入", "导入失败")}</Button>
         </div>}
         <div ref={grid} className="asset-masonry" data-large={largeTiles || undefined} role="group" aria-label="图片"
           aria-hidden={!layout.tiles.length} style={{
@@ -191,8 +196,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
             return <AssetTile key={key} item={item} position={position} imageHeight={imageHeight}
               selected={selected?.item.id === item.id} onSelect={thumbnail => {
               setSelected(selected => selected?.item.id === item.id ? selected : { item, key, thumbnail });
-              setNotice("");
-            }} />;
+                      }} />;
           })}
         </div>
       </div>
@@ -204,7 +208,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         onClick={() => turnPage(library.page + 1)}><ChevronRight size={16} /></Tool>
     </div>}
     {current && <section className="asset-details asset-library-details" aria-label="所选图片">
-      {selectedError && <p className="inline-error" role="alert">{selectedError}</p>}
+
       <AssetThumb key={currentKey} id={current.id} name={current.name}
         thumbnail={selected?.key === currentKey ? selected?.thumbnail : undefined} />
       <div className="asset-dimensions">
@@ -212,17 +216,22 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         {current.bytes != null && <span>{new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(current.bytes / 1024)} KB</span>}
         <span>{current.publicUrl ? "图床" : current.uploadStatus ? states[current.uploadStatus] : "本地"}</span>
       </div>
-      {current.uploadError && <p className="inline-error" role="alert">{current.uploadError}</p>}
-      {current.cleanupError && <p className="inline-error" role="status">上次退出清理未完成：{current.cleanupError}</p>}
+
+      <ActionError error={selectedError || current.uploadError || current.cleanupError || ["copy:", "upload:", "cover:", "insert:"].map(action => assetButtons.error(action + current.id)).find(Boolean)} />
       <div className="button-strip asset-controls">
-        {canInsert && <Button variant="soft" size="1" onClick={() => onInsert(current.id, current.name)}>插入正文</Button>}
-        {canCover && <Button variant="soft" color="gray" size="1" onClick={() => onCover(current.id)}>设为封面</Button>}
-        {current.publicUrl && <Button variant="soft" size="1" onClick={() => {
-          void desktop.copyText(current.publicUrl!).then(() => setNotice("已复制图床链接"), error => setError(errorMessage(error)));
-        }}>复制图床链接</Button>}
-        {!current.publicUrl && current.bytes && library?.target && <Button variant="soft" size="1" disabled={["queued", "running", "retrying"].includes(current.uploadStatus ?? "")}
-          onClick={() => { void desktop.assetUpload(current.id).catch(error => setError(errorMessage(error))); }}>
-          <CloudUpload size={14} />{current.uploadStatus === "failed" ? "重试上传" : "上传"}
+        {canInsert && <Button variant="soft" size="1" {...assetButtons.props(`insert:${current.id}`)}
+          onClick={() => void assetButtons.run(`insert:${current.id}`, () => onInsert(current.id, current.name))}>
+          {assetButtons.label(`insert:${current.id}`, "插入正文", "已插入")}</Button>}
+        {canCover && <Button variant="soft" color="gray" size="1" {...assetButtons.props(`cover:${current.id}`)}
+          onClick={() => void assetButtons.run(`cover:${current.id}`, () => onCover(current.id))}>
+          {assetButtons.label(`cover:${current.id}`, "设为封面", "已设置")}</Button>}
+        {current.publicUrl && <Button variant="soft" size="1" {...assetButtons.props("copy:" + current.id)} loading={assetButtons.status("copy:" + current.id) === "pending"}
+          onClick={() => void assetButtons.run("copy:" + current.id, () => desktop.copyText(current.publicUrl!))}>
+          {assetButtons.label("copy:" + current.id, "复制图床链接", "已复制")}</Button>}
+        {!current.publicUrl && current.bytes && library?.target && <Button variant="soft" size="1"
+          {...assetButtons.props("upload:" + current.id, ["queued", "running", "retrying"].includes(current.uploadStatus ?? ""))}
+          onClick={() => void assetButtons.run("upload:" + current.id, () => desktop.assetUpload(current.id))}>
+          {assetButtons.icon("upload:" + current.id, <CloudUpload size={14} />, 14)}{assetButtons.label("upload:" + current.id, current.uploadStatus === "failed" ? "重试上传" : "上传", "已加入上传")}
         </Button>}
       </div>
     </section>}
@@ -330,7 +339,7 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
     const { target: base, publicBase, secret } = readS3Settings(new FormData(event.currentTarget));
     const target = { ...base, publicBase };
     const key = test ? "test" : "save";
-    buttons.start(key);
+    if (!buttons.start(key)) return;
     setBusy(key);
     setFeedback(null);
     try {
@@ -387,10 +396,10 @@ export function ImageStorageSettings({ track }: { track<T>(job: Promise<T>): Pro
     </>}
     <div className="settings-footer image-storage-footer">
       <span className="image-storage-feedback" role={feedback?.error ? "alert" : "status"} data-error={feedback?.error}
-        title={feedback?.text}>{feedback?.text ?? (!initial ? "正在读取设置…" : "")}</span>
+        tabIndex={feedback?.error ? 0 : -1}>{feedback?.text ?? (!initial ? "正在读取设置…" : "")}</span>
       {initial && <>
-        <Button type="submit" value="test" variant="soft" loading={busy === "test"} disabled={Boolean(busy)}>{buttons.label("test", "测试连接", "测试通过", "测试失败")}</Button>
-        <Button type="submit" value="save" loading={busy === "save"} disabled={Boolean(busy)} formNoValidate={!enabled}>{buttons.label("save", "保存", "已保存", "保存失败")}</Button>
+        <Button type="submit" value="test" variant="soft" loading={busy === "test"}  {...buttons.props("test", Boolean(busy))}>{buttons.label("test", "测试连接", "测试通过", "测试失败")}</Button>
+        <Button type="submit" value="save" loading={busy === "save"}  formNoValidate={!enabled} {...buttons.props("save", Boolean(busy))}>{buttons.label("save", "保存", "已保存", "保存失败")}</Button>
       </>}
     </div>
   </form>;

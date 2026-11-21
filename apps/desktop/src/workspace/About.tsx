@@ -51,7 +51,8 @@ export function AboutPage({ onInstall }: { onInstall(): Promise<void> }) {
   }, []);
 
   async function perform(action: string, operation: () => Promise<unknown>) {
-    setWorking(action); setError(""); buttons.start(action);
+    if (!buttons.start(action)) return;
+    setWorking(action); setError("");
     try { await operation(); buttons.finish(action, true); }
     catch (failure) { setError(errorMessage(failure)); buttons.finish(action, false); }
     finally { setWorking(""); }
@@ -66,7 +67,8 @@ export function AboutPage({ onInstall }: { onInstall(): Promise<void> }) {
   const entries = coreComponents.flatMap(([name, label]) =>
     licenses?.components.filter(item => item.name === name).map(item => ({ ...item, label })) ?? []);
   const link = (label: string, url: string) => <button type="button" className="plain-button about-link"
-    onClick={() => void perform(label, () => desktop.openLink(url))}>{label}<ExternalLink size={14} aria-hidden="true" /></button>;
+    {...buttons.props(`open:${url}`)} onClick={() => void perform(`open:${url}`, () => desktop.openLink(url))}>
+    {label}{buttons.icon(`open:${url}`, <ExternalLink size={14} />, 14)}</button>;
 
   return <div className="about-page">
     <header className="about-identity">
@@ -80,17 +82,17 @@ export function AboutPage({ onInstall }: { onInstall(): Promise<void> }) {
       <div className="about-update-row">
         <span role="status" aria-live="polite">{stateText || (info?.updatesEnabled === false ? "当前构建未配置更新签名" : "应用更新")}</span>
         {update.phase === "available" || update.phase === "downloading" ? <Button size="2" variant="soft" color="gray" loading={busy}
-          disabled={busy} onClick={() => void perform("download", async () => setUpdate(await desktop.appUpdateDownload()))}>
+           onClick={() => void perform("download", async () => setUpdate(await desktop.appUpdateDownload()))} {...buttons.props("download", busy)}>
           {buttons.label("download", "下载更新", "下载完成", "下载失败")}</Button>
-          : update.phase === "ready" || update.phase === "installing" ? <Button size="2" loading={busy} disabled={busy}
-            onClick={() => void perform("install", onInstall)}>{info?.platform === "macos" ? "安装并重启" : "退出并安装"}</Button>
-            : <Button size="2" variant="soft" color="gray" loading={busy} disabled={busy || !info?.updatesEnabled}
-              onClick={() => void perform("check", async () => setUpdate(await desktop.appUpdateCheck()))}>
+          : update.phase === "ready" || update.phase === "installing" ? <Button size="2" loading={busy} {...buttons.props("install", busy)}
+            onClick={() => void perform("install", onInstall)}>{buttons.label("install", info?.platform === "macos" ? "安装并重启" : "退出并安装", "安装已启动")}</Button>
+            : <Button size="2" variant="soft" color="gray" loading={busy}
+              onClick={() => void perform("check", async () => setUpdate(await desktop.appUpdateCheck()))} {...buttons.props("check", busy || !info?.updatesEnabled)}>
               {buttons.label("check", "检查更新", "检查完成", "检查失败")}</Button>}
       </div>
       {update.phase === "downloading" && <progress aria-label="更新下载进度" max={update.total ?? undefined}
         value={update.total ? update.downloaded : undefined} />}
-      {(error || update.error) && <p className="inline-error" role="alert">{error || update.error}</p>}
+      {<div className="action-error-slot" tabIndex={((error || update.error)) ? 0 : -1}>{(error || update.error) ? <p className="inline-error" role="alert">{error || update.error}</p> : null}</div>}
       {update.version && link("新版本发布说明", `${repository}/releases/tag/v${update.version}`)}
     </section>
     <div className="about-links">

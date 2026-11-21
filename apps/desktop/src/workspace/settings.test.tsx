@@ -135,7 +135,7 @@ it("copies saved connection information without rotating its key and keeps secre
     expect(button.querySelector(".rt-Spinner")).not.toBeNull();
     finishCopy();
     await vi.waitFor(() => expect(button.textContent).toBe("复制成功"));
-    expect(actions.querySelector('[role="status"]')).toBeNull();
+    expect(actions.querySelector(':scope > [role="status"]')).toBeNull();
     expect(container.textContent).not.toContain("连接信息已复制");
     expect(actions.querySelector('[role="alert"]')?.getAttribute("data-error")).toBe("true");
     expect([...container.querySelectorAll(".sync-feedback")].every(item => actions.contains(item))).toBe(true);
@@ -146,7 +146,7 @@ it("copies saved connection information without rotating its key and keeps secre
     copy.mockRejectedValueOnce(new Error("剪贴板写入失败"));
     flushSync(() => button.click());
     await vi.waitFor(() => expect(actions.querySelector('[role="alert"]')?.textContent).toBe("剪贴板写入失败"));
-    expect(actions.querySelector('[role="status"]')).toBeNull();
+    expect(actions.querySelector(':scope > [role="status"]')).toBeNull();
     flushSync(() => container.querySelector<HTMLDetailsElement>(".sync-advanced")!.open = true);
     const recovery = container.querySelector<HTMLButtonElement>("#sync-recovery-key")!;
     flushSync(() => recovery.click());
@@ -188,7 +188,7 @@ it("holds each sync button result for one second without extending the operation
     await act(async () => finishCopy());
     expect(copy.textContent).toBe("复制成功");
     expect(copy.querySelector('[data-result="success"]')).not.toBeNull();
-    expect(copy.disabled).toBe(false);
+    expect(copy.disabled).toBe(true);
     expect(busyChanged).toHaveBeenLastCalledWith(false);
     await act(async () => { vi.advanceTimersByTime(999); });
     expect(copy.textContent).toBe("复制成功");
@@ -213,9 +213,11 @@ it("holds each sync button result for one second without extending the operation
 
     await act(async () => copy.click());
     await act(async () => { vi.advanceTimersByTime(600); });
+    const callsBeforeRepeatedClick = copyText.mock.calls.length;
     await act(async () => copy.click());
+    expect(copyText).toHaveBeenCalledTimes(callsBeforeRepeatedClick);
     await act(async () => { vi.advanceTimersByTime(400); });
-    expect(copy.textContent).toBe("复制成功");
+    expect(copy.textContent).toBe("复制连接信息");
     await act(async () => { vi.advanceTimersByTime(600); });
     expect(copy.textContent).toBe("复制连接信息");
 
@@ -268,6 +270,7 @@ it("retries unified connection and applies a first merge once without using its 
     expect(form.querySelector<HTMLInputElement>("#sync-code")?.value).toBe(setupSecret);
     expect(form.querySelector<HTMLInputElement>("#sync-url")?.value).toBe(url);
 
+    await vi.waitFor(() => expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false), { timeout: 1600 });
     fill("sync-code", accessCode);
     submit();
     await vi.waitFor(() => expect(container.querySelector(".sync-connect-footer")).toBeNull());
@@ -825,7 +828,7 @@ it("reports MCP results only on the buttons and keeps failure reasons visible af
     await act(async () => button.click());
     expect(copy).toHaveBeenCalledWith("http://127.0.0.1:8787/mcp");
     expect(button.textContent).toBe("复制成功");
-    expect(button.disabled).toBe(false);
+    expect(button.disabled).toBe(true);
     expect(container.querySelector(".mcp-feedback")?.textContent).toBe("");
     await act(async () => { vi.advanceTimersByTime(1000); });
     expect(button.textContent).toBe("复制地址");
@@ -867,6 +870,7 @@ it("puts AI connection outcomes on the model button and only shows a separate fa
     await vi.waitFor(() => expect(button.textContent).toBe("连接成功"));
     expect(test).toHaveBeenCalledWith({ kind: "model", id: "api" });
     expect(container.querySelector(".settings-feedback")).toBeNull();
+    await vi.waitFor(() => expect(button.disabled).toBe(false), { timeout: 1600 });
     flushSync(() => button.click());
     await vi.waitFor(() => expect(button.textContent).toBe("连接失败"));
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("接口返回 401");
@@ -889,6 +893,7 @@ it("shows migration completion on its button and leaves canceled file selection 
     await vi.waitFor(() => expect(transfer).toHaveBeenCalledOnce());
     expect(exportButton.textContent).toBe("导出迁移包");
     expect(exportButton.querySelector('[data-result]')).toBeNull();
+    await vi.waitFor(() => expect(exportButton.disabled).toBe(false));
     flushSync(() => exportButton.click());
     await vi.waitFor(() => expect(exportButton.textContent).toBe("导出成功"));
     flushSync(() => render({ error: false, text: "旧成功提示" }));
@@ -928,9 +933,42 @@ it("shows backup results on their own buttons and preserves failure details", as
     flushSync(() => prepare.click());
     await vi.waitFor(() => expect(prepare.textContent).toBe("校验完成"));
     expect(restore).toHaveBeenCalledWith("local", snapshot, "当前工作区");
+    await vi.waitFor(() => expect(createButton.disabled).toBe(false), { timeout: 1600 });
     flushSync(() => createButton.click());
     await vi.waitFor(() => expect(createButton.textContent).toBe("备份失败"));
     flushSync(() => render({ error: true, text: "备份上传失败" }));
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("备份上传失败");
   } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+
+it("accepts another AI preference change immediately after a completed request", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  vi.spyOn(desktop, "aiAgentVersions").mockResolvedValue([]);
+  const initial: AiSettings = { preferences: { enabled: true, defaultTarget: null }, agents: [],
+    models: [{ id: "api", kind: "custom", name: "API", endpoint: "https://ai.example.test/v1", model: "model", timeoutSeconds: 60 }] };
+  const save = vi.spyOn(desktop, "saveAiPreferences").mockImplementation(async preferences => ({ ...initial, preferences }));
+  function Harness() {
+    const [settings, setSettings] = useState(initial);
+    return <Theme><ModelSettings settings={settings} loadError="" onSave={async operation => setSettings(await operation())} /></Theme>;
+  }
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Harness />));
+    const toggle = container.querySelector<HTMLButtonElement>("#ai-enabled")!;
+    await act(async () => toggle.click());
+    await act(async () => toggle.click());
+    expect(save.mock.calls.slice(0, 2).map(([preferences]) => preferences.enabled)).toEqual([false, true]);
+    const select = container.querySelector<HTMLButtonElement>("#ai-default")!;
+    for (const text of ["API 模型：API", "未选择"]) {
+      await act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent === text)!;
+      await act(async () => option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    }
+    expect(save).toHaveBeenCalledTimes(4);
+    expect(save.mock.calls[2][0].defaultTarget).toEqual({ kind: "model", id: "api" });
+    expect(save.mock.calls[3][0].defaultTarget).toBeNull();
+  } finally { await act(async () => root.unmount()); container.remove(); }
 });

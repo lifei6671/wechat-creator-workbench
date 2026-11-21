@@ -4,6 +4,7 @@ import { FileText, Plus, Search } from "lucide-react";
 import type { EntryPage } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { untitled } from "../labels";
+import { useButtonFeedback } from "../button-feedback";
 
 export function EdgeLabelDialog({ label, onSave, onClose }: {
   label: string;
@@ -25,16 +26,18 @@ function CollectionForm({ title, submitLabel, ready = true, onClose, onSubmit, c
   children: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
+  const buttons = useButtonFeedback();
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || !ready) return;
+    if (busy || !ready || !buttons.start("submit")) return;
     setBusy(true);
     setError("");
     try {
       await onSubmit();
       onClose();
     } catch (failure) {
+      buttons.finish("submit", false);
       setError(errorMessage(failure));
       setBusy(false);
     }
@@ -46,10 +49,10 @@ function CollectionForm({ title, submitLabel, ready = true, onClose, onSubmit, c
       <Dialog.Title>{title}</Dialog.Title>
       <form className="dialog-form" onSubmit={submit}>
         {children}
-        {error && <p role="alert" className="inline-error">{error}</p>}
+        {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="inline-error">{error}</p> : null}</div>}
         <div className="dialog-actions">
           <Dialog.Close><Button type="button" color="gray" variant="soft" disabled={busy}>取消</Button></Dialog.Close>
-          <Button type="submit" loading={busy} disabled={!ready}>{submitLabel}</Button>
+          <Button type="submit" loading={busy} {...buttons.props("submit", !ready)}>{buttons.label("submit", submitLabel, "已保存")}</Button>
         </div>
       </form>
     </Dialog.Content>
@@ -62,6 +65,7 @@ export function CollectionPicker({ onChoose, onClose }: { onChoose(id: string): 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [offset, setOffset] = useState(0);
+  const buttons = useButtonFeedback();
   useEffect(() => {
     let live = true;
     const timer = window.setTimeout(() => {
@@ -74,11 +78,11 @@ export function CollectionPicker({ onChoose, onClose }: { onChoose(id: string): 
     return () => { live = false; window.clearTimeout(timer); };
   }, [offset, query]);
   async function choose(id: string) {
-    if (busy) return;
+    if (busy || !buttons.start("choose")) return;
     setBusy(true);
     setError("");
     try { await onChoose(id); onClose(); }
-    catch (failure) { setError(errorMessage(failure)); setBusy(false); }
+    catch (failure) { buttons.finish("choose", false); setError(errorMessage(failure)); setBusy(false); }
   }
   return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
     <Dialog.Content maxWidth="480px" aria-describedby={undefined}>
@@ -89,10 +93,10 @@ export function CollectionPicker({ onChoose, onClose }: { onChoose(id: string): 
         setPage(null);
         setError("");
       }}><TextField.Slot><Search size={15} /></TextField.Slot></TextField.Root>
-      {error && <p className="inline-error" role="alert">{error}</p>}
+      {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="inline-error" role="alert">{error}</p> : null}</div>}
       <ul className="collection-picker-list">
         {page?.items.map(item => <li key={item.id}>
-          <button className="plain-button collection-list-row" type="button" disabled={busy} onClick={() => void choose(item.id)}>
+          <button className="plain-button collection-list-row" type="button" {...buttons.props("choose", busy)} onClick={() => void choose(item.id)}>
             <FileText size={16} /><span>{item.title || untitled}</span><Plus size={14} />
           </button>
         </li>)}

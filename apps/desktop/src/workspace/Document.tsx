@@ -14,6 +14,7 @@ import { desktop, errorMessage } from "../desktop";
 import { isConflict, SaveQueue } from "../editor/save-queue";
 import { commandKey, untitled } from "../labels";
 import { Tool, Tooltip } from "../ui";
+import type { useButtonFeedback } from "../button-feedback";
 import { loadLocalImage } from "./Publishing";
 import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./EditorContextMenu";
 import { InlineEntryTitle } from "./InlineEntryTitle";
@@ -524,6 +525,9 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
 }
 
 export interface DocumentActions {
+  feedback?: ReturnType<typeof useButtonFeedback>;
+  exportedPath?: string;
+  onRevealExport?(): void;
   mode: ViewMode;
   setMode(mode: ViewMode): void;
   focusMode: boolean;
@@ -592,6 +596,9 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
   const deleted = queue.entry.deletedAt !== null;
   const folder = categories.find(category => category.id === fields.categoryId);
   const parent = categories.find(category => category.id === folder?.parentId);
+  const feedback = actions.feedback;
+  const shareKey = ["copyWechat", "exportWechat", "export", "exportAssets"].find(key => feedback?.status(key));
+  const editKey = ["copyMarkdown", "save", "hostImages"].find(key => feedback?.status(key));
   return <div className="section-bar document-tools">
     <nav className="document-path" aria-label="内容路径">
       {deleted ? <span>回收站</span> : <>
@@ -609,30 +616,34 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
       {deleted && <Button size="1" variant="ghost" color="gray" onClick={actions.onDelete}><ArchiveRestore size={15} />恢复</Button>}
       <DropdownMenu.Root>
         <Tooltip content="分享"><DropdownMenu.Trigger><button className="plain-button chrome-icon" type="button" aria-label="分享">
-          {actions.publishing ? <Spinner size="1" /> : <Share2 size={16} strokeWidth={1.65} />}
+          {shareKey && feedback ? feedback.icon(shareKey, <Share2 size={16} strokeWidth={1.65} />)
+            : actions.publishing ? <Spinner size="1" /> : <Share2 size={16} strokeWidth={1.65} />}
         </button></DropdownMenu.Trigger></Tooltip>
         <DropdownMenu.Content align="end" size="1">
           {!deleted && <>
-            <DropdownMenu.Item disabled={actions.publishing} onSelect={actions.onCopyWechat}><Copy size={14} />复制公众号格式</DropdownMenu.Item>
-            <DropdownMenu.Item disabled={actions.publishing} onSelect={actions.onExportWechat}><FileDown size={14} />导出排版 HTML</DropdownMenu.Item>
+            <DropdownMenu.Item disabled={actions.publishing || feedback?.isLocked("copyWechat")} onSelect={actions.onCopyWechat}><Copy size={14} />复制公众号格式</DropdownMenu.Item>
+            <DropdownMenu.Item disabled={actions.publishing || feedback?.isLocked("exportWechat")} onSelect={actions.onExportWechat}><FileDown size={14} />导出排版 HTML</DropdownMenu.Item>
             <DropdownMenu.Separator />
           </>}
-          <DropdownMenu.Item onSelect={actions.onExport}><FileDown size={14} />导出 Markdown</DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={actions.onExportAssets}><FileDown size={14} />导出 Markdown 和图片</DropdownMenu.Item>
+          <DropdownMenu.Item disabled={feedback?.isLocked("export")} onSelect={actions.onExport}><FileDown size={14} />导出 Markdown</DropdownMenu.Item>
+          <DropdownMenu.Item disabled={feedback?.isLocked("exportAssets")} onSelect={actions.onExportAssets}><FileDown size={14} />导出 Markdown 和图片</DropdownMenu.Item>
+          {actions.exportedPath && <DropdownMenu.Item disabled={feedback?.isLocked("revealExport")} onSelect={actions.onRevealExport}><FileDown size={14} />在文件夹中显示</DropdownMenu.Item>}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
       {!deleted && <Tool className="chrome-icon reading-toggle" label={actions.reading ? "退出阅读模式" : "阅读模式"}
         aria-pressed={actions.reading} onClick={actions.onReading}><BookOpen size={16} strokeWidth={1.65} /></Tool>}
       <DropdownMenu.Root>
-        <Tooltip content="更多编辑操作"><DropdownMenu.Trigger><button type="button" id="document-action-trigger" className="plain-button chrome-icon" aria-label="更多编辑操作"><EllipsisVertical size={17} /></button></DropdownMenu.Trigger></Tooltip>
+        <Tooltip content="更多编辑操作"><DropdownMenu.Trigger><button type="button" id="document-action-trigger" className="plain-button chrome-icon" aria-label="更多编辑操作"
+          data-feedback-state={editKey && feedback?.status(editKey)}>
+          {editKey && feedback ? feedback.icon(editKey, <EllipsisVertical size={17} />, 17) : <EllipsisVertical size={17} />}</button></DropdownMenu.Trigger></Tooltip>
         <DropdownMenu.Content align="end" size="1">
           <DropdownMenu.Item onSelect={actions.onProperties}><FilePenLine size={14} />内容属性</DropdownMenu.Item>
           <DropdownMenu.Item onSelect={actions.onSearch}><Search size={14} />{deleted || actions.reading ? "查找" : "查找与替换"}</DropdownMenu.Item>
           {actions.mode === "edit" && <DropdownMenu.CheckboxItem checked={actions.outlineOpen}
             onCheckedChange={actions.onOutline}><ListTree size={14} />显示文档大纲</DropdownMenu.CheckboxItem>}
-          {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
-          {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
-          {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages}
+          {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("copyMarkdown")} onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
+          {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("save")} onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
+          {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages || feedback?.isLocked("hostImages")}
             onSelect={actions.onHostImages}>
             {actions.hostingImages ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={14} />}
             {actions.hostingImages ? "正在上传图片…" : "批量上传到图床"}
@@ -674,7 +685,7 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
 
 export function DocumentSaveError({ queue, actions }: {
   queue: SaveQueue;
-  actions: Pick<DocumentActions, "onCopy" | "onDraft" | "onReload" | "onRetry">;
+  actions: Pick<DocumentActions, "onCopy" | "onDraft" | "onReload" | "onRetry" | "feedback">;
 }) {
   const error = useSyncExternalStore(queue.subscribe, () => queue.snapshot().error);
   const [expanded, setExpanded] = useState(false);
@@ -685,12 +696,13 @@ export function DocumentSaveError({ queue, actions }: {
     <span title={reason} className={expanded ? "" : "error-ellipsis"}>{reason}</span>
     <div className="button-strip">
       {conflict ? <>
-        <Button size="1" variant="soft" onClick={actions.onCopy}>复制当前稿</Button>
-        <Button size="1" variant="soft" onClick={actions.onDraft}>另存为副本</Button>
+        <Button size="1" variant="soft" {...actions.feedback?.props("copyMarkdown")} onClick={actions.onCopy}>
+          {actions.feedback?.label("copyMarkdown", "复制当前稿", "已复制") ?? "复制当前稿"}</Button>
+        <Button size="1" variant="soft" {...actions.feedback?.props("draft")} onClick={actions.onDraft}>另存为副本</Button>
         <Button size="1" variant="soft" onClick={actions.onReload}>重新加载</Button>
       </> : <>
         <Button size="1" variant="ghost" onClick={() => setExpanded(value => !value)}>{expanded ? "收起详情" : "详情"}</Button>
-        <Button size="1" variant="soft" onClick={actions.onRetry}>重试保存</Button>
+        <Button size="1" variant="soft" {...actions.feedback?.props("retrySave")} onClick={actions.onRetry}>重试保存</Button>
       </>}
     </div>
   </div>;

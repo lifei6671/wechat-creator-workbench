@@ -17,6 +17,7 @@ import { propertyProposalOf, proposalOf, useWritingRuntime, type WritingThreads 
 import type { AiPropertyProposal, AiProposal } from "../ai/proposals";
 import { messageTimeLabel, untitled } from "../labels";
 import { Tool } from "../ui";
+import { ActionError, useButtonFeedback } from "../button-feedback";
 import { addTag } from "./TagInput";
 import { WindowDragRegion } from "./WindowTitle";
 
@@ -227,6 +228,7 @@ function ConversationView({
   const [attachedSelection, setAttachedSelection] = useState<ChatSelection | null>(null);
   const [ready, setReady] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const switchingRef = useRef(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const lastSelectionRequest = useRef<ChatSelection | undefined>(undefined);
@@ -322,7 +324,8 @@ function ConversationView({
     void trackWork(loadHistory()).catch(report).finally(() => setHistoryLoading(false));
   }
   async function switchThread(id?: string) {
-    if (!ready || running || switching) return;
+    if (!ready || running || switchingRef.current) return;
+    switchingRef.current = true;
     clear();
     setSwitching(true);
     try {
@@ -343,7 +346,7 @@ function ConversationView({
       if (!id && threadId) await runtime.threads.switchToThread(threadId).catch(report);
       report(failure);
     }
-    finally { setSwitching(false); }
+    finally { switchingRef.current = false; setSwitching(false); }
   }
   const chooseRewrite = () => { setAttachedSelection(null); setRewrite(true); input.current?.focus({ preventScroll: true }); };
 
@@ -403,7 +406,7 @@ function ConversationView({
             </ThreadPrimitive.Messages>
           </div>
         </>}
-      {error && <p className="inline-error" role="alert">{error}</p>}
+      <ActionError error={error} />
     </ThreadPrimitive.Viewport>
     <ComposerPrimitive.Root className="ai-composer" autoComplete="off" onSubmit={event => {
       event.preventDefault();
@@ -478,21 +481,17 @@ function AiMessageTime({ date }: { date: Date }) {
   </time>;
 }
 
-function AiCopyButton({ text, onError }: { text: string; onError(failure: unknown): void }) {
-  const [copied, setCopied] = useState(0);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(0), 1000);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
+function AiCopyButton({ text }: { text: string; onError(failure: unknown): void }) {
+  const buttons = useButtonFeedback();
+  const status = buttons.status("copy");
   return <>
-    <Tool label={copied ? "已复制" : "复制"} color="gray" className="ai-message-copy"
-      data-copied={copied > 0 || undefined}
-      onClick={() => void desktop.copyText(text).then(() => setCopied(count => count + 1), onError)}>
-      {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+    <Tool label={status === "success" ? "已复制" : status === "error" ? "复制失败" : status === "pending" ? "正在复制" : "复制"}
+      color="gray" className="ai-message-copy" {...buttons.props("copy")}
+      onClick={() => void buttons.run("copy", () => desktop.copyText(text))}>
+      {buttons.icon("copy", <Copy size={14} />, 14)}
     </Tool>
-    <VisuallyHidden role="status">{copied ? "已复制" : ""}</VisuallyHidden>
+    <VisuallyHidden role="status">{status === "success" ? "已复制" : status === "pending" ? "正在复制" : ""}</VisuallyHidden>
+    <ActionError className="ai-copy-feedback" error={buttons.error("copy")} />
   </>;
 }
 
@@ -658,14 +657,15 @@ function formatThreadTime(date: Date) {
   return relativeTime.format(-Math.floor(minutes / 1440), "day");
 }
 
-function ConversationList({ runtime, disabled, select, report }: {
+function ConversationList({ runtime, disabled, select }: {
   runtime: AssistantRuntime; disabled: boolean; select(id: string): void; report(failure: unknown): void;
 }) {
   const ids = useAuiState(state => state.threads.archivedThreadIds);
   const [editing, setEditing] = useState("");
   const [deleting, setDeleting] = useState("");
+  const buttons = useButtonFeedback();
   if (!ids.length) return <p className="muted-text">暂无对话</p>;
-  return <ul className="ai-thread-list" aria-label="对话记录"><ThreadListPrimitive.Items archived>{({ threadListItem }) => {
+  return <><ActionError error={buttons.error()} /><ul className="ai-thread-list" aria-label="对话记录"><ThreadListPrimitive.Items archived>{({ threadListItem }) => {
     const { id, title, lastMessageAt } = threadListItem;
     const name = title || "新对话";
     const inactive = disabled || Boolean(deleting);
@@ -673,11 +673,11 @@ function ConversationList({ runtime, disabled, select, report }: {
       {editing === id ? <form className="ai-thread-row" onSubmit={event => {
         event.preventDefault();
         const name = String(new FormData(event.currentTarget).get("title")).trim();
-        if (name) void runtime.threads.getItemById(id).rename(name).then(() => setEditing(""), report);
+        if (name) void buttons.run(`rename:${id}`, async () => { await runtime.threads.getItemById(id).rename(name); setEditing(""); });
       }}>
         <TextField.Root size="1" name="title" aria-label="对话名称" defaultValue={title} maxLength={100} autoFocus required />
-        <Button size="1" type="submit">保存</Button>
-        <Button size="1" color="gray" variant="ghost" type="button" onClick={() => setEditing("")}>取消</Button>
+        <Button size="1" type="submit" {...buttons.props(`rename:${id}`)} loading={buttons.status(`rename:${id}`) === "pending"}>{buttons.label(`rename:${id}`, "保存", "已保存")}</Button>
+        <Button size="1" color="gray" variant="ghost" type="button" disabled={buttons.status(`rename:${id}`) === "pending"} onClick={() => setEditing("")}>取消</Button>
       </form> : <ContextMenu.Root>
         <ContextMenu.Trigger disabled={inactive}>
           <div className="ai-thread-row ai-thread-item">
@@ -687,11 +687,14 @@ function ConversationList({ runtime, disabled, select, report }: {
               {lastMessageAt && <time className="ai-thread-time" dateTime={lastMessageAt.toISOString()}
                 title={lastMessageAt.toLocaleString("zh-CN")}>{formatThreadTime(lastMessageAt)}</time>}
             </button>
-            <Tool label={"删除对话：" + name} className="ai-thread-delete" color="gray" disabled={inactive}
-              onClick={() => {
-                setDeleting(id);
-                void runtime.threads.getItemById(id).delete().catch(report).finally(() => setDeleting(""));
-              }}><Trash2 size={14} /></Tool>
+            <Tool label={"删除对话：" + name} className="ai-thread-delete" color="gray"
+              {...buttons.props(`delete:${id}`, inactive)} onClick={() => {
+                void buttons.run(`delete:${id}`, async () => {
+                  setDeleting(id);
+                  try { await runtime.threads.getItemById(id).delete(); }
+                  finally { setDeleting(""); }
+                });
+              }}>{buttons.icon(`delete:${id}`, <Trash2 size={14} />, 14)}</Tool>
           </div>
         </ContextMenu.Trigger>
         <ContextMenu.Content size="1">
@@ -699,7 +702,7 @@ function ConversationList({ runtime, disabled, select, report }: {
         </ContextMenu.Content>
       </ContextMenu.Root>}
     </li>;
-  }}</ThreadListPrimitive.Items></ul>;
+  }}</ThreadListPrimitive.Items></ul></>;
 }
 
 function AiReply({ text, streaming, onError }: { text: string; streaming: boolean; onError(error: unknown): void }) {

@@ -59,14 +59,14 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
   }, []);
 
   const run: Run = async (group, action, operation) => {
-    buttons.start(action);
+    if (!buttons.start(action)) return;
     setWorking(action);
     setFeedback(undefined);
     try {
       await operation();
-      buttons.finish(action, true);
+      buttons.finish(action, group === "preferences" ? undefined : true);
     } catch (error) {
-      buttons.finish(action, false);
+      buttons.finish(action, group === "preferences" ? undefined : false);
       setFeedback({ group, error: true, text: errorMessage(error) });
     } finally {
       setWorking("");
@@ -74,8 +74,8 @@ export function ModelSettings({ settings, loadError, saving = false, onSave }: {
   };
 
   function message(group: Group) {
-    return feedback?.error && feedback.group === group && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
-      role={feedback.error ? "alert" : "status"}>{feedback.text}</p>;
+    return <div className="action-error-slot" tabIndex={(feedback?.error && feedback.group === group) ? 0 : -1}>{feedback?.error && feedback.group === group ? <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
+      role={feedback.error ? "alert" : "status"}>{feedback.text}</p> : null}</div>;
   }
 
   if (!settings) return <div className="settings-card"><p className={`settings-feedback ${loadError ? "inline-error" : "muted-text"}`}
@@ -213,21 +213,21 @@ function ModelPane({ kind, models, buttons, working, disabled, onSave, run, feed
             <span title={model.endpoint}>{model.endpoint}</span>
           </div>
           <div className="button-strip setting-actions">
-            <Button type="button" size="1" variant="soft" color="gray" disabled={disabled || draft.id === model.id}
+            <Button type="button" size="1" variant="soft" color="gray"
               aria-label={`编辑 ${labelModel(model)}`} onClick={() => void run(kind, `edit-${model.id}`, async () => {
                 const hasKey = await desktop.aiModelHasKey(model.id);
                 setKeyEndpoint(hasKey ? model.endpoint : undefined);
                 setDraft({ ...model, preset: "", key: "", keyMode: hasKey ? "system" : "none" });
                 requestAnimationFrame(() => form.current?.querySelector<HTMLInputElement>('[name="model-name"]')?.focus());
-              })}>{buttons.label(`edit-${model.id}`, "编辑", "已打开")}</Button>
-            <Button type="button" size="1" variant="soft" color="gray" disabled={disabled} loading={working === targetValue(target)}
+              })} {...buttons.props(`edit-${model.id}`, disabled || draft.id === model.id)}>{buttons.label(`edit-${model.id}`, "编辑", "已打开")}</Button>
+            <Button type="button" size="1" variant="soft" color="gray"  loading={working === targetValue(target)}
               aria-label={`测试 ${labelModel(model)}`} onClick={() => void run(kind, targetValue(target),
-                () => desktop.testAiTarget(target))}>{buttons.label(targetValue(target), "测试连接", "连接成功", "连接失败")}</Button>
-            <Button type="button" size="1" variant="soft" color="red" disabled={disabled} loading={working === `remove-${model.id}`}
+                () => desktop.testAiTarget(target))} {...buttons.props(targetValue(target), disabled)}>{buttons.label(targetValue(target), "测试连接", "连接成功", "连接失败")}</Button>
+            <Button type="button" size="1" variant="soft" color="red"  loading={working === `remove-${model.id}`}
               aria-label={`移除 ${labelModel(model)}`} onClick={() => void run(kind, `remove-${model.id}`, async () => {
                 await onSave(() => desktop.deleteAiModel(model.id));
                 if (draft.id === model.id) reset();
-              })}>{buttons.label(`remove-${model.id}`, "移除", "已移除")}</Button>
+              })} {...buttons.props(`remove-${model.id}`, disabled)}>{buttons.label(`remove-${model.id}`, "移除", "已移除")}</Button>
           </div>
         </div>;
       })}
@@ -291,13 +291,13 @@ function ModelPane({ kind, models, buttons, working, disabled, onSave, run, feed
         </div>
       </div>
       <div className="settings-footer ai-model-actions">
-        <Button type="submit" disabled={disabled || !draft.model.trim() || !draft.endpoint.trim()}
-          loading={working === `save-${kind}`}>{buttons.label(`save-${kind}`, draft.id ? "保存模型" : addLabel, "已保存", "保存失败")}</Button>
+        <Button type="submit"
+          loading={working === `save-${kind}`} {...buttons.props(`save-${kind}`, disabled || !draft.model.trim() || !draft.endpoint.trim())}>{buttons.label(`save-${kind}`, draft.id ? "保存模型" : addLabel, "已保存", "保存失败")}</Button>
         <Button type="button" variant="soft" color="gray" loading={working === `test-${kind}`}
-          disabled={disabled || !draft.model.trim() || !draft.endpoint.trim()} onClick={() => {
+           onClick={() => {
             if (form.current?.reportValidity()) void run(kind, `test-${kind}`,
               () => desktop.testAiModel(kind, draft.id, config, key));
-          }}>{buttons.label(`test-${kind}`, "测试模型", "连接成功", "连接失败")}</Button>
+          }} {...buttons.props(`test-${kind}`, disabled || !draft.model.trim() || !draft.endpoint.trim())}>{buttons.label(`test-${kind}`, "测试模型", "连接成功", "连接失败")}</Button>
         {draft.id && <Button type="button" variant="soft" color="gray" disabled={disabled} onClick={reset}>取消编辑</Button>}
       </div>
     </form>
