@@ -213,7 +213,24 @@ function htmlSlice(view: EditorView, html: string) {
     RETURN_DOM_FRAGMENT: true,
   });
   for (const embedded of fragment.querySelectorAll('[data-type="html"], [data-type="html-block"]')) {
-    embedded.replaceWith(embedded.textContent);
+    const value = embedded.getAttribute("data-value");
+    if (value === null) embedded.replaceWith(embedded.textContent);
+    else {
+      const inline = embedded.getAttribute("data-type") === "html";
+      const closing = inline && /^<\/([a-z][\w-]*)\s*>$/i.exec(value.trim());
+      let clean = DOMPurify.sanitize(closing ? `<${closing[1]}>` : value, {
+        USE_PROFILES: { html: true }, FORBID_TAGS: ["style"], FORBID_ATTR: ["style"],
+        ALLOWED_URI_REGEXP: /^(?:https?:\/\/|mailto:|#|asset:\/\/)/i,
+      });
+      const opening = inline && /^<([a-z][\w-]*)\b/i.exec(value.trim());
+      if (closing) clean = clean ? `</${closing[1].toLowerCase()}>` : "";
+      else if (opening) {
+        // Markdown stores inline opening/closing tags as separate tokens.
+        const end = `</${opening[1].toLowerCase()}>`;
+        if (clean.endsWith(end) && !value.trimEnd().toLowerCase().endsWith(end)) clean = clean.slice(0, -end.length);
+      }
+      embedded.setAttribute("data-value", clean);
+    }
   }
   for (const pre of fragment.querySelectorAll<HTMLPreElement>("pre:not([data-language])")) {
     const classes = `${pre.className} ${pre.querySelector("code")?.className ?? ""}`;
@@ -665,12 +682,16 @@ export function MarkdownEditor(props: Props) {
       }
     }
 
-    function insertImageMarkdown(view: EditorView, { from, to }: Range, source: string, scroll = false) {
+    function insertImageMarkdown(view: EditorView, target: Selection | Range, source: string, scroll = false) {
       const { localizeImageLink, onError } = latest.current;
-      const tr = view.state.tr.replaceRange(from, to, markdownSlice(editor, source));
+      const tr = view.state.tr;
+      const slice = markdownSlice(editor, source);
+      if (target instanceof Selection) tr.replaceSelection(slice);
+      else tr.replaceRange(target.from, target.to, slice);
       const images: PastedImage[] = [];
       if (localizeImageLink) tr.mapping.maps[0]?.forEach((_oldFrom, _oldTo, start, end) => {
-        if (start < end) images.push(...pastedImages(tr.doc, start, end));
+        const remaining = tr.mapping.slice(1);
+        if (start < end) images.push(...pastedImages(tr.doc, remaining.map(start, 1), remaining.map(end, -1)));
       });
       view.dispatch(scroll ? tr.scrollIntoView() : tr);
       if (localizeImageLink) localizeImages(view, images, localizeImageLink, onError, tr.doc);

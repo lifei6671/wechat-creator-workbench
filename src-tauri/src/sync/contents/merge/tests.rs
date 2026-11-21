@@ -6,6 +6,68 @@ use crate::{assets::Assets, backup::Backups, db::Workspace};
 use rusqlite::{Connection, params};
 use std::io::Cursor;
 
+#[test]
+fn first_join_preserves_divergent_folder_trees_and_local_article_order() {
+    use super::super::{Entity, Key, Kind, encode, local_snapshot};
+    let root = tempfile::tempdir().unwrap();
+    let (db, backups) = Backups::open(root.path()).unwrap();
+    let original_count = db.write(|tx| {
+        tx.execute_batch("INSERT INTO sync_binding (id,url,instance_id,epoch,device_id)
+            VALUES (1,'http://localhost/','instance','epoch','device');
+            INSERT INTO categories (id,name,depth,sort_order,icon) VALUES ('shared-root','本地名称',1,7,'folder');
+            INSERT INTO categories (id,parent_id,name,depth,sort_order,icon) VALUES
+                ('shared-child','shared-root','共同子目录',2,3,'folder'),
+                ('local-child','shared-root','共同子目录（本机）',2,4,'folder');
+            INSERT INTO entries (id,kind,title,status,content_md,category_id,folder_sort_order,created_at,updated_at)
+            VALUES ('local-doc','article','本地文稿','draft','正文','shared-child',17,1,1),
+                   ('shared-doc','article','共同文稿','draft','共同正文','shared-child',18,1,1);
+            UPDATE sync_progress SET bootstrap_cursor=20;")?;
+        let mut query = tx.prepare("SELECT id FROM categories WHERE id<>'local-child' ORDER BY depth,id")?;
+        for folder in query.query_map([], |row| row.get::<_, String>(0))? {
+            let key = Key { entity_type: Kind::Category, entity_id: folder? };
+            let mut payload = local_snapshot(tx, &key)?.unwrap();
+            if key.entity_id == "shared-root" { payload["name"] = serde_json::json!("云端名称"); }
+            let entity = Entity { key, payload, remote_revision: 1, deleted_at: None };
+            tx.execute("INSERT INTO sync_bootstrap VALUES ('category',?1,1,?2)",
+                params![entity.key.entity_id, encode(&entity)?])?;
+        }
+        let key = Key { entity_type: Kind::Entry, entity_id: "shared-doc".into() };
+        let payload = local_snapshot(tx, &key)?.unwrap();
+        let entity = Entity { key, payload, remote_revision: 1, deleted_at: None };
+        tx.execute("INSERT INTO sync_bootstrap VALUES ('entry','shared-doc',1,?1)", [encode(&entity)?])?;
+        Ok(tx.query_row("SELECT COUNT(*) FROM categories", [], |r| r.get::<_,i64>(0))?)
+    }).unwrap();
+    let applied = apply_received_with_backup(&db, Some(&backups)).unwrap();
+    assert!(applied.merge_archive.is_some());
+    db.read(|conn| {
+        let local_root: String = conn.query_row("SELECT id FROM categories WHERE name='本地名称（本机）'", [], |r| r.get(0))?;
+        assert_ne!(local_root, "shared-root");
+        let path: (String, String, Option<i64>) = conn.query_row(
+            "SELECT p.id,c.name,e.folder_sort_order FROM entries e JOIN categories c ON c.id=e.category_id
+             JOIN categories p ON p.id=c.parent_id WHERE e.id='local-doc'", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        assert_eq!(path, (local_root.clone(), "共同子目录".into(), Some(17)));
+        let child_parent: String = conn.query_row("SELECT parent_id FROM categories WHERE id='local-child'", [], |r| r.get(0))?;
+        assert_eq!(child_parent, local_root);
+        let child_name: String = conn.query_row("SELECT name FROM categories WHERE id='local-child'", [], |r| r.get(0))?;
+        assert_eq!(child_name, "共同子目录（本机）");
+        let cloud_name: String = conn.query_row("SELECT name FROM categories WHERE id='shared-root'", [], |r| r.get(0))?;
+        assert_eq!(cloud_name, "云端名称");
+        let dirty_copy: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_dirty WHERE entity_type='category' AND entity_id=?1)", [&local_root], |r| r.get(0))?;
+        assert!(dirty_copy);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM categories", [], |r| r.get::<_,i64>(0))?, original_count + 2);
+        let conflict: (String,String,String) = conn.query_row(
+            "SELECT e.category_id,e.content_md,i.remote_json->>'$.payload.categoryId' FROM entries e
+             JOIN sync_issues i ON i.entity_type='entry' AND i.entity_id=e.id WHERE e.id='shared-doc'", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        assert_ne!(conflict.0, "shared-child");
+        assert_eq!(conflict.1, "共同正文");
+        assert_eq!(conflict.2, "shared-child");
+        assert!(conn.prepare("PRAGMA foreign_key_check")?.query([])?.next()?.is_none());
+        Ok(())
+    }).unwrap();
+}
+
 fn populate(db: &Workspace, assets: &Assets, side: &str, color: [u8; 3]) -> (String, Vec<u8>) {
     let mut png = Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb(color)))

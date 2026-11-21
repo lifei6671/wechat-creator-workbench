@@ -91,6 +91,75 @@ fn edit(db: &Workspace, id: &str, content: &str) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn regression_frozen_oversized_outbox_is_rejected_without_blocking_later_edits() {
+    for later_edit in [false, true] {
+        let (_root, db) = workspace();
+        db.write(|tx| {
+            tx.execute(
+                "UPDATE entries SET summary=?1 WHERE id='draft'",
+                ["x".repeat(super::super::MAX_ENTITY_BYTES + 1)],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let (frozen, generations) = stage_outbox(&db).unwrap().unwrap();
+        if later_edit {
+            db.write(|tx| {
+                tx.execute(
+                    "UPDATE entries SET summary='',content_md='newer edit' WHERE id='draft'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        let sync = SyncConnection::new().unwrap();
+        let remote = Remote {
+            sync: &sync,
+            base: "http://127.0.0.1:1/".parse().unwrap(),
+            token: String::new(),
+            binding: super::super::Binding::read(&db).unwrap().unwrap(),
+        };
+        assert!(!lookup_outbox(&db, &remote).await.unwrap());
+        db.read(|conn| {
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT generation FROM sync_issues WHERE entity_id='draft'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                generations[0]
+            );
+            Ok(())
+        })
+        .unwrap();
+        if later_edit {
+            let (next, _) = stage_outbox(&db).unwrap().unwrap();
+            assert_ne!(next.operation_id, frozen.operation_id);
+            assert_eq!(
+                next.mutations[0].payload.as_ref().unwrap()["contentMd"],
+                "newer edit"
+            );
+            wire_operation(&next).unwrap();
+        } else {
+            assert!(stage_outbox(&db).unwrap().is_none());
+            edit(&db, "other", "independent edit");
+            assert_eq!(
+                stage_outbox(&db).unwrap().unwrap().0.mutations[0]
+                    .key
+                    .entity_id,
+                "other"
+            );
+        }
+    }
+}
+
 #[test]
 fn complete_reconciliation_preserves_local_edits_and_applies_cloud_updates() {
     let (_root, db) = workspace();

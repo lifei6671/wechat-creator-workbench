@@ -752,7 +752,14 @@ async fn lookup_outbox(db: &Workspace, remote: &Remote<'_>) -> Result<bool> {
     if origin.is_empty() {
         return Err(protocol_error());
     }
-    let (wire, _) = wire_operation(&operation)?;
+    let (wire, _) = match wire_operation(&operation) {
+        Ok(wire) => wire,
+        Err(error) if error.code() == "SYNC_SIZE" => {
+            reject_outbox(db, &operation, &generations, &error.to_string())?;
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
     let result: Outcome = response(
         remote
             .request(Method::POST, "v1/sync/receipts/lookup")?

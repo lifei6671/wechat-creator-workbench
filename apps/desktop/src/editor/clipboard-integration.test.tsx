@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { EditorView } from "@milkdown/kit/prose/view";
 import { TextSelection } from "@milkdown/kit/prose/state";
+import { CellSelection } from "@milkdown/kit/prose/tables";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { MarkdownEditor, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { desktop } from "../desktop";
@@ -21,12 +22,12 @@ afterAll(() => {
   Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
 });
 
-async function mount(value: string, onImages?: (files: File[]) => Promise<string>) {
+async function mount(value: string, onImages?: (files: File[]) => Promise<string>, localizeImageLink?: (url: string) => Promise<string>) {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   let handle: MarkdownEditorHandle | null = null;
   const changed = vi.fn();
-  flushSync(() => root.render(<MarkdownEditor entryId="clipboard-integration" value={value} readOnly={false} onImages={onImages}
+  flushSync(() => root.render(<MarkdownEditor entryId="clipboard-integration" value={value} readOnly={false} onImages={onImages} localizeImageLink={localizeImageLink}
     ref={editor => { handle = editor; }} onDocumentChanged={changed} onBlur={() => {}} />));
   await vi.waitFor(() => expect(handle).not.toBeNull());
   const focus = vi.spyOn(EditorView.prototype, "focus");
@@ -62,6 +63,39 @@ it.each([false, true])("waits for final IME text before applying an async paste 
     m.handle.command("redo");
     expect(m.handle.captureMarkdown().markdown).toBe("中文粘贴原稿");
     expect(io.onError).not.toHaveBeenCalled();
+  } finally { m.dispose(); }
+});
+
+it.each([false, true])("preserves multi-cell selection semantics for library image insertion and hosting (reverse=%s)", async reverse => {
+  const original = "| 左 | 右 |\n| --- | --- |\n| 选中甲 | 选中乙 |\n| 保留甲 | 保留乙 |";
+  let finish!: (url: string) => void;
+  const localize = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+  const m = await mount(original, undefined, localize);
+  try {
+    const before = m.view.state.doc;
+    const cells: number[] = [];
+    m.view.state.doc.descendants((node, pos) => { if (node.type.name === "table_cell") cells.push(pos); });
+    const [left, right] = cells;
+    m.view.dispatch(m.view.state.tr.setSelection(CellSelection.create(m.view.state.doc, reverse ? right : left, reverse ? left : right)));
+    m.handle.insert("\n![素材](asset://library)\n");
+    const table = m.container.querySelector("table")!;
+    const replaced = m.view.state.doc.firstChild!.child(1);
+    expect([replaced.child(0).textContent, replaced.child(1).textContent]).toEqual(["", ""]);
+    expect(table.rows[1].querySelectorAll(".rich-image")).toHaveLength(1);
+    expect([...table.rows[2].cells].map(cell => cell.textContent)).toEqual(["保留甲", "保留乙"]);
+    expect(table.rows).toHaveLength(3);
+    expect(localize).toHaveBeenCalledExactlyOnceWith("asset://library");
+    const inserted = JSON.stringify(m.view.state.doc.toJSON());
+    expect(m.handle.captureMarkdown().markdown).toContain("![素材](asset://library)");
+    finish("https://cdn.example.com/library.png");
+    await m.handle.pendingEdits();
+    const hosted = m.handle.captureMarkdown().markdown;
+    expect(JSON.stringify(m.view.state.doc.toJSON())).toBe(inserted.replace("asset://library", "https://cdn.example.com/library.png"));
+    expect(hosted).toContain("![素材](https://cdn.example.com/library.png)");
+    m.handle.command("undo");
+    expect(m.view.state.doc.eq(before)).toBe(true);
+    m.handle.command("redo");
+    expect(m.handle.captureMarkdown().markdown).toBe(hosted);
   } finally { m.dispose(); }
 });
 
