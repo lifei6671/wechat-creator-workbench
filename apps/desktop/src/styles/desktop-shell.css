@@ -199,7 +199,7 @@
   border-radius: 6px; --panel-hover: transparent;
 }
 .search-note-header:has(> .entry-row[aria-current="true"]) { background: var(--chrome-selected); }
-.search-note-header > .entry-row[aria-current="true"] { background: transparent; }
+.search-note-header > .entry-row[aria-current="true"]:not([data-feedback-state]) { background: transparent; }
 .search-results .search-note-header > .tree-entry { padding-inline-start: 2px; }
 .search-note-toggle { justify-content: center; padding: 0; color: var(--text-muted); }
 .search-note-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
@@ -416,6 +416,9 @@
 .timeline-entry:is(:has(> .timeline-entry-open[aria-current="true"]), [data-menu-target]) {
   background: var(--sand-a5); color: var(--text-main); box-shadow: inset 0 0 0 0.5px var(--sand-8);
 }
+.radix-themes .timeline-entry[data-feedback-state="success"] { background: var(--green-4); color: var(--green-11); }
+.radix-themes .timeline-entry[data-feedback-state="error"] { background: var(--red-4); color: var(--red-11); }
+.entry-copy-result { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; vertical-align: middle; }
 .timeline-item .timeline-pin {
   position: absolute; z-index: 2; inset: 4px 4px auto auto; margin: 0;
   opacity: 0; pointer-events: none; color: var(--sand-11); background: var(--sand-3);

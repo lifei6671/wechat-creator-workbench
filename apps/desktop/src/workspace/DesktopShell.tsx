@@ -1285,6 +1285,8 @@ export function DesktopShell() {
   }
 
   function entryAction(row: EntryRow, action: EntryRowAction, trigger = document.getElementById(`entry-row-${row.id}`)) {
+    if ((action === "copyTitle" || action === "copyPath")
+      && ["copyTitle", "copyPath"].some(copy => documentButtons.isLocked(`${copy}:${row.id}`))) return;
     run(() => documentButtons.run(`${action}:${row.id}`, async () => {
       switch (action) {
         case "delete": case "restore": return changeDeleted(row.id, action === "delete");
@@ -2004,6 +2006,7 @@ export function DesktopShell() {
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
   const workspaceNotice = modal?.type !== "settings" && toast;
   const rowActions: RowActions = {
+    feedback: documentButtons,
     active: activeId, categories: library?.categories ?? [], readOnlyIds: [...readingIds, ...locked],
     treeLocked: globalLock, openMode: documentOpenMode, onOpen: (id, mode) => run(() => open(id, mode)),
     onRowAction: entryAction, onRenameEntry: renameEntry, onFolderError: showError, onMoveEntry: moveTreeEntry,
@@ -2200,7 +2203,7 @@ export function DesktopShell() {
             <header className="workbench-chrome chrome-band" ref={writingChrome}>
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
-              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} activeId={collectionMode ? null : activeId}
+              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} feedback={documentButtons} activeId={collectionMode ? null : activeId}
                 collections={openCollections} activeCollectionId={collectionMode ? activeCollectionId : undefined}
                 onSwitchCollection={openCollection} onCloseCollection={closeCollectionTab} collectionOptions={collections ?? []}
                 onAddToCollection={addToCollection} readingIds={readingIds} lockedIds={locked}

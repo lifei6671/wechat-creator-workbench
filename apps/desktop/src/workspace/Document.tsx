@@ -27,9 +27,10 @@ export type ViewMode = "edit" | "preview";
 export type TabAction = "closeOthers" | "reading" | "properties" | "search"
   | "copyPath" | "history" | "export" | "delete" | "restore";
 
-export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
+export function DocumentTabs({ sessions, feedback, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
   collectionOptions = [], onAddToCollection, onSwitchCollection, onCloseCollection, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
   sessions: SaveQueue[];
+  feedback?: ReturnType<typeof useButtonFeedback>;
   activeId: string | null;
   collections?: Collection[];
   activeCollectionId?: string;
@@ -190,7 +191,7 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
   }
 
   const tabs: ReactNode[] = [
-    ...sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} active={activeId === queue.entry.id}
+    ...sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} feedback={feedback} active={activeId === queue.entry.id}
         tabbable={activeId === queue.entry.id || (!activeId && !activeCollectionId && queue === sessions[0])}
         reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1 || collections.length > 0}
         dragging={drag.ghost?.id === queue.entry.id} placement={drag.hint?.id === queue.entry.id ? drag.hint.placement : undefined}
@@ -248,9 +249,10 @@ function CollectionTab({ item, active, tabbable, onSwitch, onClose }: {
   </ContextMenu.Root>;
 }
 
-function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, dragging, placement, categories, collectionOptions,
+function DocumentTab({ queue, feedback, active, tabbable, reading, locked, hasOtherTabs, dragging, placement, categories, collectionOptions,
   onAddToCollection, onMove, onSwitch, onClose, onAction, onRename, onError }: {
   queue: SaveQueue;
+  feedback?: ReturnType<typeof useButtonFeedback>;
   active: boolean;
   tabbable: boolean;
   collectionOptions: Collection[];
@@ -274,6 +276,9 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
   const dirty = useSyncExternalStore(queue.subscribe, queue.isDirty);
   const { id, deletedAt } = queue.entry;
   const title = fields.title || untitled;
+  const copyKey = `copyPath:${id}`;
+  const copyState = feedback?.status(copyKey);
+  const copyLocked = feedback?.isLocked(copyKey) || feedback?.isLocked(`copyTitle:${id}`);
   const frozen = reading || locked;
   const act = (action: TabAction) => onAction(id, action);
   if (renaming) return <div className="tab entry-inline" data-active={active}>
@@ -291,9 +296,11 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
       }}>
         <Tooltip content={title}>
           <button id={`tab-${id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
-            aria-controls="document-body" tabIndex={tabbable ? 0 : -1} onClick={() => onSwitch(id)}>
+            aria-controls="document-body" tabIndex={tabbable ? 0 : -1} onClick={() => onSwitch(id)}
+            data-feedback-state={copyState} aria-label={title} aria-busy={copyState === "pending" || undefined}>
             {dirty && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
-            <span>{title}</span>
+            {copyState && feedback && feedback.icon(copyKey, <Copy size={15} />, 15)}
+            <span>{copyState && feedback ? feedback.label(copyKey, "正在复制…", "路径已复制", "复制失败") : title}</span>
           </button>
         </Tooltip>
         <Tool className="chrome-icon tab-close" label={`关闭 ${title}`} onClick={() => onClose(id)}><X size={14} /></Tool>
@@ -319,7 +326,7 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
         <ContextMenu.Item disabled={frozen} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={15} />重命名</ContextMenu.Item>
         <MoveEntryMenu categories={categories} current={fields.categoryId} disabled={frozen} onMove={folder => onMove(id, folder)} />
       </>}
-      <ContextMenu.Item onSelect={() => act("copyPath")}><Copy size={15} />复制工作区路径</ContextMenu.Item>
+      <ContextMenu.Item disabled={copyLocked} onSelect={() => act("copyPath")}><Copy size={15} />复制工作区路径</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("export")}><FileDown size={15} />导出 Markdown</ContextMenu.Item>
       <ContextMenu.Separator />
       <ContextMenu.Item color={deletedAt === null ? "red" : undefined} disabled={frozen} onSelect={() => act(deletedAt === null ? "delete" : "restore")}>
