@@ -7,6 +7,57 @@ use rusqlite::{Connection, params};
 use std::io::Cursor;
 
 #[test]
+fn first_join_normalizes_optional_category_defaults_without_hiding_real_changes() {
+    use super::super::{Entity, Key, Kind, encode};
+    for (payload, copied) in [
+        (serde_json::json!({"name":"目录"}), false),
+        (
+            serde_json::json!({"name":"目录","parentId":null,"sortOrder":null,"icon":null}),
+            false,
+        ),
+        (serde_json::json!({"name":"目录","icon":"star"}), true),
+        (serde_json::json!({"name":"目录","sortOrder":7}), true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (db, backups) = Backups::open(root.path()).unwrap();
+        let before = db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding (id,url,instance_id,epoch,device_id)
+                VALUES (1,'http://localhost/','instance','epoch','device');
+                INSERT INTO categories (id,name,depth,sort_order,icon) VALUES ('folder','目录',1,0,'folder');
+                INSERT INTO entries (id,kind,title,status,content_md,category_id,created_at,updated_at)
+                VALUES ('draft','article','本地稿','draft','保留正文','folder',1,1);
+                UPDATE sync_progress SET bootstrap_cursor=20;")?;
+            let entity = Entity { key: Key { entity_type: Kind::Category, entity_id: "folder".into() },
+                payload, remote_revision: 1, deleted_at: None };
+            tx.execute("INSERT INTO sync_bootstrap VALUES ('category','folder',1,?1)", [encode(&entity)?])?;
+            Ok(tx.query_row("SELECT COUNT(*) FROM categories", [], |row| row.get::<_,i64>(0))?)
+        }).unwrap();
+        apply_received_with_backup(&db, Some(&backups)).unwrap();
+        db.read(|conn| {
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM categories", [], |row| row
+                    .get::<_, i64>(0))?,
+                before + i64::from(copied)
+            );
+            let folder: String = conn.query_row(
+                "SELECT category_id FROM entries WHERE id='draft'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(folder != "folder", copied);
+            assert!(
+                conn.prepare("PRAGMA foreign_key_check")?
+                    .query([])?
+                    .next()?
+                    .is_none()
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+#[test]
 fn first_join_preserves_divergent_folder_trees_and_local_article_order() {
     use super::super::{Entity, Key, Kind, encode, local_snapshot};
     let root = tempfile::tempdir().unwrap();
@@ -63,9 +114,25 @@ fn first_join_preserves_divergent_folder_trees_and_local_article_order() {
         assert_ne!(conflict.0, "shared-child");
         assert_eq!(conflict.1, "共同正文");
         assert_eq!(conflict.2, "shared-child");
+        let issues = super::super::conflicts(conn)?;
+        let shared = issues.iter().find(|issue| issue.key.entity_id == "shared-doc").unwrap();
+        assert_eq!(shared.reason, "目录归属不同，请选择要保留的目录");
+        let directories = shared.directory_difference.as_ref().unwrap();
+        assert_eq!(directories.local_path, "本地名称（本机） / 共同子目录");
+        assert_eq!(directories.remote_path, "云端名称 / 共同子目录");
+        assert!(directories.only_difference);
+        assert_eq!(serde_json::to_value(shared).unwrap()["directoryDifference"]["onlyDifference"], true);
         assert!(conn.prepare("PRAGMA foreign_key_check")?.query([])?.next()?.is_none());
         Ok(())
     }).unwrap();
+    db.write(|tx| {
+        tx.execute("UPDATE entries SET content_md='同时修改正文' WHERE id='shared-doc'", [])?;
+        Ok(())
+    }).unwrap();
+    let issues = db.read(super::super::conflicts).unwrap();
+    let shared = issues.iter().find(|issue| issue.key.entity_id == "shared-doc").unwrap();
+    assert!(!shared.directory_difference.as_ref().unwrap().only_difference);
+    assert!(shared.reason.contains("两个版本"));
 }
 
 fn populate(db: &Workspace, assets: &Assets, side: &str, color: [u8; 3]) -> (String, Vec<u8>) {

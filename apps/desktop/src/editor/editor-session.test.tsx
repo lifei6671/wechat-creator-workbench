@@ -8,7 +8,7 @@ import { webcrypto } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { MarkdownEditor as RichEditor, type EditorCommand, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
-import { parseWechat } from "../../../../packages/wechat-renderer";
+import { parseWechat, renderWechat } from "../../../../packages/wechat-renderer";
 import { desktop, type AiHistoryItem, type AiStreamEvent, type AiThread } from "../desktop";
 import { attachClipboard } from "./clipboard";
 import { editHistory } from "./history";
@@ -1980,16 +1980,17 @@ it("converts a clicked link permanently and presents current and pasted links re
     action.convert();
     const saved = () => onChange.mock.lastCall![2] as string;
     expect(saved()).toContain("[另一篇](https://example.com/other) **重点**内容[^2] [文内](#heading)");
-    expect(saved()).toMatch(/\[\^2\]: .*https:\/\/example\.com\/source/);
-    expect(editor.lastElementChild?.querySelector("a")?.getAttribute("href")).toBe("https://example.com/source");
+    expect(saved()).toContain(String.raw`[^2]: 重点内容： https\://example.com/source`);
+    expect(editor.lastElementChild?.querySelector("a")).toBeNull();
+    expect(editor.lastElementChild?.textContent).toContain("重点内容： https://example.com/source");
     handle!.command("undo");
     expect(saved()).toBe(original);
 
     const preview = handle!.linkFootnoteMarkdown(original);
     expect(preview).toContain("另一篇[^2] **重点**内容[^3] [文内](#heading)");
     expect(preview).toContain("[^1]: 原脚注");
-    expect(preview).toContain("[^2]: 另一篇：<https://example.com/other>");
-    expect(preview).toContain("[^3]: 重点内容：<https://example.com/source>");
+    expect(preview).toContain(String.raw`[^2]: 另一篇： https\://example.com/other`);
+    expect(preview).toContain(String.raw`[^3]: 重点内容： https\://example.com/source`);
     expect(handle!.linkFootnoteMarkdown(preview)).toBe(preview);
     expect(saved()).toBe(original);
 
@@ -2009,37 +2010,41 @@ it("converts a clicked link permanently and presents current and pasted links re
 
     handle!.command("link", "https://example.com/inserted");
     expect(saved()).toContain("<https://example.com/inserted>");
-    expect(projected()).toMatch(/\[\^\d+\]: <https:\/\/example\.com\/inserted>/);
+    expect(projected()).toMatch(/\[\^\d+\]: https\\:\/\/example\.com\/inserted/);
     clipboard.read.mockResolvedValueOnce({ html: '<a href="https://example.com/rich">富文本链接</a>' });
     handle!.clipboard("paste", clipboard);
     await vi.waitFor(() => expect(projected()).toMatch(/富文本链接\[\^\d+\]/));
     clipboard.read.mockResolvedValueOnce("https://example.com/bare");
     handle!.clipboard("paste", clipboard);
-    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/bare"]')).not.toBeNull());
+    const expectPlainNote = (url: string) => {
+      expect(editor.querySelector(".rich-link-notes a")).toBeNull();
+      expect([...editor.querySelectorAll(".rich-link-notes dd")].some(note => note.textContent?.endsWith(url))).toBe(true);
+    };
+    await vi.waitFor(() => expectPlainNote("https://example.com/bare"));
     expect(editor.querySelector(':scope > p a[href$="/bare"]')?.textContent).toContain("https://example.com/bare");
     clipboard.read.mockResolvedValueOnce("https://example.com/plain");
     handle!.clipboard("paste", clipboard, undefined, true);
-    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/plain"]')).not.toBeNull());
+    await vi.waitFor(() => expectPlainNote("https://example.com/plain"));
     clipboard.read.mockResolvedValueOnce({ html: "<p><strong>来源 https://example.com/中文，下一句富文本。</strong> <code>https://example.com/code</code></p>" });
     handle!.clipboard("paste", clipboard);
-    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/中文"]')).not.toBeNull());
+    await vi.waitFor(() => expectPlainNote("https://example.com/中文"));
     expect(Array.from(editor.querySelectorAll(":scope > p")).some(node => /\[\^\d+\]，下一句富文本。/.test(node.textContent))).toBe(true);
     expect(editor.querySelector('code')?.textContent).toBe("https://example.com/code");
     clipboard.read.mockResolvedValueOnce("参考 https://example.com/plain-paragraph，下一句普通文本。");
     handle!.clipboard("paste", clipboard);
-    await vi.waitFor(() => expect(editor.querySelector('.rich-link-notes a[href$="/plain-paragraph"]')).not.toBeNull());
+    await vi.waitFor(() => expectPlainNote("https://example.com/plain-paragraph"));
     expect(projected()).toMatch(/\[\^\d+\]，下一句普通文本。/);
     const standalone = "https://example.com/资料，甲。";
     clipboard.read.mockResolvedValueOnce(standalone);
     handle!.clipboard("paste", clipboard);
-    await vi.waitFor(() => expect(editor.querySelector(`.rich-link-notes a[href="${standalone}"]`)).not.toBeNull());
+    await vi.waitFor(() => expectPlainNote(standalone));
     const listUrl = "https://example.com/列表，甲。";
     const quoteUrl = "https://example.com/引文，甲。";
     clipboard.read.mockResolvedValueOnce(`- ${listUrl}\n\n> ${quoteUrl}`);
     handle!.clipboard("paste", clipboard);
     await vi.waitFor(() => {
-      expect(editor.querySelector(`.rich-link-notes a[href="${listUrl}"]`)).not.toBeNull();
-      expect(editor.querySelector(`.rich-link-notes a[href="${quoteUrl}"]`)).not.toBeNull();
+      expectPlainNote(listUrl);
+      expectPlainNote(quoteUrl);
     });
     render(false);
     expect(editor.querySelector(".rich-link-notes")).toBeNull();
@@ -2049,6 +2054,87 @@ it("converts a clicked link permanently and presents current and pasted links re
     flushSync(() => root.unmount());
     container.remove();
   }
+});
+
+it.each([
+  { source: "[来源](https://example.test/资料?a=1&b=2#part)", url: "https://example.test/资料?a=1&b=2#part" },
+  { source: "<https://example.test/bare>", url: "https://example.test/bare" },
+  { source: "[https://mirror.test/name](https://redirect.test/destination)", url: "https://redirect.test/destination" },
+  { source: "[联系](mailto:writer@example.test)", url: "mailto:writer@example.test" },
+  { source: "[括号结尾](<https://example.test/a)>)", url: "https://example.test/a)" },
+  { source: "[冒号结尾](<https://example.test/a:>)", url: "https://example.test/a:" },
+].flatMap(sample => ["\n", "\r\n"].map(newline => ({ ...sample, newline }))))(
+  "keeps converted footnote addresses plain after saving, reopening and rendering: $url newline=$newline",
+  async ({ source, url, newline }) => {
+    const container = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(container);
+    let handle: MarkdownEditorHandle | null = null;
+    const markdown = [source, "手动脚注[^manual]", "[^manual]: [查看原文](https://manual.test/source)"].join(newline + newline);
+    async function mount(key: string, value: string) {
+      handle = null;
+      flushSync(() => root.render(<RichEditor key={key} entryId={key} value={value} readOnly={false}
+        ref={editor => { handle = editor; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+      await vi.waitFor(() => expect(handle).not.toBeNull());
+    }
+    function checkNotes() {
+      const note = container.querySelector('dl[data-label="1"] dd')!;
+      expect(note.textContent?.endsWith(url)).toBe(true);
+      expect(note.querySelector("a")).toBeNull();
+      expect(container.querySelector('dl[data-label="manual"] a')).toBeNull();
+      expect(container.querySelector('dl[data-label="manual"] dd')?.textContent).toContain("查看原文： https://manual.test/source");
+    }
+    try {
+      await mount("source", markdown);
+      const converted = handle!.linkFootnoteMarkdown(markdown);
+      await mount("converted", converted);
+      checkNotes();
+      expect(handle!.linkFootnoteMarkdown(converted)).toBe(converted);
+      handle!.insert("甲");
+      const saved = handle!.captureMarkdown().markdown;
+      await mount("saved", saved);
+      checkNotes();
+      expect(handle!.linkFootnoteMarkdown(saved)).toBe(saved);
+      for (const output of ["preview", "clipboard", "html"] as const) {
+        const result = await renderWechat({ markdown: saved, revision: 1, output, themeId: "gzh-moyu-ticket" },
+          { image: vi.fn(), derive: vi.fn(), sources: vi.fn() });
+        try {
+          const template = document.createElement("template");
+          template.innerHTML = result.html;
+          const note = template.content.querySelector('li[id="fn1"]')!;
+          expect(note.textContent).toContain(url);
+          expect(note.querySelector('a[href^="http"], a[href^="mailto:"]')).toBeNull();
+          if (output === "clipboard") {
+            expect(template.content.querySelector("a")).toBeNull();
+            expect(template.content.textContent).toContain("查看原文");
+          } else {
+            expect(template.content.querySelector('a[href="https://manual.test/source"]')).toBeNull();
+            expect(template.content.textContent).toContain("查看原文： https://manual.test/source");
+            expect(template.content.querySelector('a[href="#fn1"]')).not.toBeNull();
+          }
+        } finally { result.dispose(); }
+      }
+    } finally { flushSync(() => root.unmount()); container.remove(); }
+  },
+);
+
+it("projects plain addresses from a legacy footnote without changing the untouched source", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const changed = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  const source = "来源[^1]\n\n[^1]: 来源：<https://example.test/source>";
+  try {
+    flushSync(() => root.render(<RichEditor entryId="legacy-footnote" value={source} readOnly={false}
+      ref={editor => { handle = editor; }} onDocumentChanged={changed} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    expect(container.querySelector("dl a")).toBeNull();
+    const projected = handle!.linkFootnoteMarkdown(source);
+    expect(parseWechat(projected, []).body.querySelector('.footnotes a[href="https://example.test/source"]')).toBeNull();
+    expect(projected).toContain(String.raw`https\://example.test/source`);
+    expect(handle!.captureMarkdown().markdown).toBe(source);
+    expect(handle!.captureMarkdown().localRevision).toBe(0);
+    expect(changed).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
 });
 
 it("keeps exact destinations and URL-shaped link names across article conversion and reopening", async () => {
@@ -2071,7 +2157,7 @@ it("keeps exact destinations and URL-shaped link names across article conversion
     expect(handle!.target().original).toBe("显式链接");
     expect(editor.querySelector(":scope > p a")?.textContent).toContain("https://example.com/a，b");
     expect(converted).toContain("行内代码 `https://example.com/ignored`。");
-    expect(converted).toContain("[^1]: <https://example.com/a，b>");
+    expect(converted).toContain(String.raw`[^1]: https\://example.com/a，b`);
     expect(editor.querySelector(":scope > p:nth-child(2)")?.textContent).toContain("https://mirror.example/form[^2]");
     expect(editor.querySelector(":scope > p:nth-child(4)")?.textContent).toContain("https://example.com/legacy[^7]");
     const addressText = document.createTreeWalker(editor.querySelector(":scope > p a")!, NodeFilter.SHOW_TEXT).nextNode()!;
@@ -2084,7 +2170,8 @@ it("keeps exact destinations and URL-shaped link names across article conversion
     expect(reopened.querySelector(":scope > p")?.textContent).toBe("显式链接 https://example.com/a，b[^1]。");
     expect(reopened.querySelector(":scope > p:nth-child(2)")?.textContent).toContain("https://mirror.example/form[^2]");
     expect(reopened.querySelector(":scope > p:nth-child(2) a")).toBeNull();
-    expect(reopened.querySelector('dl a[href="https://redirect.example/form"]')).not.toBeNull();
+    expect(reopened.querySelector('dl a[href="https://redirect.example/form"]')).toBeNull();
+    expect(reopened.querySelector('dl[data-label="2"]')?.textContent).toContain("https://mirror.example/form： https://redirect.example/form");
     expect(handle!.linkFootnoteMarkdown(converted)).toBe(converted);
     const titled = await mount("titled-link-target", '[https://example.com](https://example.com "原有标题")[^cite]\n\n[^cite]: https://example.com：<https://example.com/source>');
     expect(titled.querySelector(":scope > p a")?.getAttribute("title")).toBe("原有标题");
@@ -2347,11 +2434,13 @@ it("preserves dragged table selections and keeps newlines in table cells after r
     clipboard.read.mockResolvedValueOnce("[出处](https://example.com/table)");
     handle!.clipboard("paste", clipboard);
     await vi.waitFor(() => expect(sources.querySelectorAll('sup.rich-link-citation')).toHaveLength(2));
-    expect(container.querySelector('.rich-link-notes dl a')?.getAttribute("href")).toBe("https://example.com/table");
+    expect(container.querySelector('.rich-link-notes dl dd')?.textContent).toBe("出处： https://example.com/table");
+    expect(container.querySelector('.rich-link-notes dl a')).toBeNull();
     expect(onChange.mock.lastCall![2]).not.toContain("[^1]:");
     handle!.command("undo");
     expect(sources.querySelectorAll("sup.rich-link-citation")).toHaveLength(1);
-    expect(container.querySelector(".rich-link-notes dl a")?.getAttribute("href")).toBe("https://example.com/original");
+    expect(container.querySelector(".rich-link-notes dl dd")?.textContent).toBe("甲： https://example.com/original");
+    expect(container.querySelector(".rich-link-notes dl a")).toBeNull();
   } finally {
     if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
     else Reflect.deleteProperty(document, "elementFromPoint");

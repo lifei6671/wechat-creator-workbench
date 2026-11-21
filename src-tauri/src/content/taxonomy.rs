@@ -1,6 +1,6 @@
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use rusqlite::{
-    Connection, OptionalExtension, Row, params,
+    Connection, Row, params,
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
 };
 use serde::{Deserialize, Serialize};
@@ -321,19 +321,31 @@ impl Workspace {
 
     pub fn move_category(&self, id: &str, up: bool) -> Result<()> {
         self.write(|tx| {
-            let (parent, rank): (Option<String>, i64) = tx.query_row(
-                "SELECT parent_id,sort_order FROM categories WHERE id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?)),
-            )?;
-            let sql = if up {
-                "SELECT id, sort_order FROM categories WHERE parent_id IS ?1 AND sort_order<?2 ORDER BY sort_order DESC LIMIT 1"
+            let parent: Option<String> =
+                tx.query_row("SELECT parent_id FROM categories WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })?;
+            let mut siblings: Vec<String> = tx
+                .prepare("SELECT id FROM categories WHERE parent_id IS ?1 ORDER BY sort_order,id")?
+                .query_map([parent], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let index = siblings
+                .iter()
+                .position(|other| other == id)
+                .expect("folder is among its siblings");
+            let adjacent = if up {
+                index.checked_sub(1)
             } else {
-                "SELECT id, sort_order FROM categories WHERE parent_id IS ?1 AND sort_order>?2 ORDER BY sort_order ASC LIMIT 1"
+                Some(index + 1).filter(|next| *next < siblings.len())
             };
-            if let Some((other, other_rank)) = tx.query_row(sql, params![parent, rank], |r| {
-                Ok((r.get::<_, String>(0)?,r.get::<_, i64>(1)?))
-            }).optional()? {
-                tx.execute("UPDATE categories SET sort_order=?1 WHERE id=?2", params![rank, other])?;
-                tx.execute("UPDATE categories SET sort_order=?1 WHERE id=?2", params![other_rank, id])?;
+            if let Some(adjacent) = adjacent {
+                siblings.swap(index, adjacent);
+                let mut update = tx.prepare(
+                    "UPDATE categories SET sort_order=?1 WHERE id=?2 AND sort_order<>?1",
+                )?;
+                for (rank, folder) in (0i64..).zip(siblings) {
+                    update.execute(params![rank, folder])?;
+                }
             }
             Ok(())
         })

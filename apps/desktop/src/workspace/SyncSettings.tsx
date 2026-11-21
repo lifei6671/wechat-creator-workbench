@@ -222,8 +222,12 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     {conflicts.map(issue => <SettingRow key={issue.entityType + "/" + issue.entityId}
       label={issue.local?.title || issue.local?.name || issue.local?.label || issue.remote?.title || issue.remote?.name || issue.remote?.label || conflictLabels[issue.entityType]} hint={issue.reason}>
       {() => issue.resolvable ? <details className="sync-conflict">
-        <summary>查看冲突内容</summary>
-        <div className="sync-conflict-versions">
+        <summary>{issue.directoryDifference?.onlyDifference ? "选择目录归属" : "查看冲突内容"}</summary>
+        {issue.directoryDifference && <dl className="sync-conflict-directories">
+          <div><dt>本地目录</dt><dd>{issue.directoryDifference.localPath}</dd></div>
+          <div><dt>云端目录</dt><dd>{issue.directoryDifference.remotePath}</dd></div>
+        </dl>}
+        {!issue.directoryDifference?.onlyDifference && <div className="sync-conflict-versions">
           <label><span>{issue.entityType === "entry" ? "本地稿" : "本地版本"}</span>
             <TextArea aria-label={issue.entityType === "entry" ? "本地稿" : "本地版本"} readOnly rows={7}
               value={issue.entityType === "entry" ? issue.local?.contentMd ?? "" : canvasVersion(issue.entityType, issue.local, !issue.local)} />
@@ -232,7 +236,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
             <TextArea aria-label={issue.entityType === "entry" ? "云端稿" : "云端版本"} readOnly rows={7}
               value={issue.entityType === "entry" ? issue.remote?.contentMd ?? "" : canvasVersion(issue.entityType, issue.remote, issue.remoteDeleted)} />
           </label>
-        </div>
+        </div>}
         {issue.entityType !== "entry" && <p className="setting-hint">
           仅处理当前冲突项。另存副本会完整复制本地白板的卡片、布局和连线，保留文章及图片引用，再让原冲突项采用云端版本。
           {issue.remoteDeleted && "云端已删除此项，需另存副本以保留本地内容。"}
@@ -240,8 +244,8 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
         </p>}
         <Flex wrap="wrap" gap="2" mt="2">
           {([["copy", issue.entityType === "entry" ? "另存本地稿" : "另存副本"],
-            ["local", issue.entityType === "entry" ? "保留本地稿" : "保留本地版本"],
-            ["cloud", issue.entityType === "entry" ? "采用云端稿" : "采用云端版本"]] as const).map(([choice, label]) =>
+            ["local", issue.directoryDifference?.onlyDifference ? "保留本地目录" : issue.entityType === "entry" ? "保留本地稿" : "保留本地版本"],
+            ["cloud", issue.directoryDifference?.onlyDifference ? "采用云端目录" : issue.entityType === "entry" ? "采用云端稿" : "采用云端版本"]] as const).map(([choice, label]) =>
             <Button key={choice} type="button" size="1" variant="soft"
               onClick={() => void perform("resolve", () => resolve(issue, choice), `resolve:${issue.entityType}:${issue.entityId}:${choice}`)} {...buttonProps(`resolve:${issue.entityType}:${issue.entityId}:${choice}`, blocked || binding?.paused ||
               (issue.entityType !== "entry" && (choice === "local" && !issue.canKeepLocal || choice === "copy" && !issue.local)))}>

@@ -230,7 +230,10 @@ fn preserve_distinct_categories(conn: &Connection, changed: &mut Applied) -> Res
         let Some(raw) = raw else {
             continue;
         };
-        let remote: Entity = serde_json::from_str(&raw).map_err(invalid_response)?;
+        let mut remote: Entity = serde_json::from_str(&raw).map_err(invalid_response)?;
+        remote.payload["parentId"] = serde_json::json!(remote.payload["parentId"].as_str());
+        remote.payload["sortOrder"] = serde_json::json!(remote.payload["sortOrder"].as_i64().unwrap_or(0));
+        remote.payload["icon"] = serde_json::json!(remote.payload["icon"].as_str().unwrap_or("folder"));
         let key = super::Key {
             entity_type: Kind::Category,
             entity_id: folder.clone(),

@@ -153,8 +153,12 @@
 .sync-conflict-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .sync-conflict-versions > label { display: grid; gap: 6px; min-width: 0; }
 .sync-conflict-versions textarea { overflow-wrap: anywhere; }
+.sync-conflict-directories { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.sync-conflict-directories > div { display: grid; gap: 6px; min-width: 0; }
+.sync-conflict-directories dt { color: var(--gray-11); }
+.sync-conflict-directories dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
 @media (max-width: 1100px) {
-  .sync-conflict-versions { grid-template-columns: minmax(0, 1fr); }
+  .sync-conflict-versions, .sync-conflict-directories { grid-template-columns: minmax(0, 1fr); }
 }
 .sync-connect-footer > .rt-Button, .sync-actions-footer > .rt-Button { flex: none; }
 .sync-action-feedback { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }

@@ -37,6 +37,58 @@ async function mount(value: string, onImages?: (files: File[]) => Promise<string
   return { container, view, handle: handle!, changed, dispose() { flushSync(() => root.unmount()); container.remove(); } };
 }
 
+it.each(["<!-- 注释 -->", "<!DOCTYPE html>", "<?php echo 1; ?>", "<![CDATA[原文]]>"].flatMap(fragment =>
+  ["\n", "\r\n"].map(newline => ({ fragment, newline })),
+))("preserves $fragment in a partial rich selection with newline $newline", async ({ fragment, newline }) => {
+  const source = ["前文", fragment, "后文"].join(newline + newline);
+  const from = await mount(source);
+  const to = await mount("");
+  const io = { read: vi.fn(), write: vi.fn().mockResolvedValue(undefined), onError: vi.fn() };
+  try {
+    from.view.dispatch(from.view.state.tr.setSelection(TextSelection.create(from.view.state.doc, 1, from.view.state.doc.content.size - 1)));
+    from.handle.clipboard("copy", io);
+    const [text, html] = io.write.mock.lastCall!;
+    expect(html).toContain("data-value");
+    io.read.mockResolvedValue({ text, html });
+    to.handle.clipboard("paste", io);
+    await to.handle.pendingEdits();
+    expect(to.handle.captureMarkdown().markdown).toContain(fragment);
+    expect(to.handle.captureMarkdown().markdown).not.toContain("嵌入的 HTML");
+    expect(to.container.querySelector("script, [onerror]")).toBeNull();
+    expect(io.onError).not.toHaveBeenCalled();
+    to.handle.command("undo");
+    expect(to.handle.captureMarkdown().markdown).toBe("");
+    to.handle.command("redo");
+    expect(to.handle.captureMarkdown().markdown).toContain(fragment);
+  } finally { from.dispose(); to.dispose(); }
+});
+
+it.each([
+  '<!--安全--><script>alert(1)</script><!--结尾-->',
+  '<!--安全--!><script>alert(1)</script><!--结尾-->',
+  '<!--><script>alert(1)</script><!--结尾-->',
+  '<!---><script>alert(1)</script><!--结尾-->',
+  '<!DOCTYPE html><img src="https://example.test/x" onerror="alert(1)">',
+  '<?php ><script>alert(1)</script><?php ?>',
+  '<![CDATA[><script>alert(1)</script>]]>',
+])("sanitizes active markup adjacent to non-rendering HTML tokens: %s", async value => {
+  const m = await mount("");
+  const payload = document.createElement("div");
+  payload.dataset.type = "html-block";
+  payload.dataset.value = value;
+  payload.textContent = "嵌入的 HTML";
+  const io = { read: vi.fn().mockResolvedValue({ html: payload.outerHTML }), write: vi.fn(), onError: vi.fn() };
+  try {
+    m.handle.clipboard("paste", io);
+    await m.handle.pendingEdits();
+    const pasted = m.handle.captureMarkdown().markdown;
+    expect(pasted).not.toContain("<script>");
+    expect(pasted).not.toContain("onerror");
+    expect(m.container.querySelector("script, [onerror]")).toBeNull();
+    expect(io.onError).not.toHaveBeenCalled();
+  } finally { m.dispose(); }
+});
+
 it.each([false, true])("waits for final IME text before applying an async paste at its mapped position (plain=%s)", async plain => {
   const m = await mount("原稿");
   let resolve!: (text: string) => void;

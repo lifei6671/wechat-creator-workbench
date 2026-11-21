@@ -1,11 +1,11 @@
-import { DOMSerializer, Fragment, Slice, type Mark, type Node as ProseNode } from "@milkdown/kit/prose/model";
+import { DOMSerializer, Fragment, type Mark, type Node as ProseNode } from "@milkdown/kit/prose/model";
 import { Plugin, PluginKey, Selection, TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import { ReplaceStep } from "@milkdown/kit/prose/transform";
 import { readCalloutMarker } from "../markdown-core/callouts";
 import { codeHighlight } from "./code-view";
 import { tableSelectionDecorations } from "./table-view";
-import { hasLinkFootnoteContent, linksToFootnotes } from "./link-footnotes";
+import { documentLinkFootnotes, hasLinkFootnoteContent } from "./link-footnotes";
 import { inlineChangedBlocks } from "./inline-changes";
 
 type Section = { from: number; to: number };
@@ -265,9 +265,19 @@ function syntaxAtCaret(state: EditorState, delimiterWidget: DelimiterWidget) {
   return decorations;
 }
 
-function linkFootnoteDecorations(doc: ProseNode) {
-  const { edits, definitions, missing, existingNames } = linksToFootnotes(new Slice(doc.content, 0, 0), doc, "document");
+function linkFootnoteDecorations(doc: ProseNode, githubRepo?: string) {
+  const { edits, definitionEdits, htmlEdits, definitions, missing, existingNames } = documentLinkFootnotes(doc, githubRepo);
   const decorations: Decoration[] = [];
+  for (const { from, labels } of htmlEdits) decorations.push(Decoration.node(from, from + doc.nodeAt(from)!.nodeSize,
+    { "data-footnote-labels": labels.join(",") || "plain" }));
+  for (const { from, to, extraText } of definitionEdits) {
+    decorations.push(Decoration.inline(from, to, { class: "rich-link-footnoted" }));
+    if (extraText) decorations.push(Decoration.widget(to, () => {
+      const address = document.createElement("span");
+      address.textContent = extraText;
+      return address;
+    }, { side: 1, key: `definition-address-${from}`, ignoreSelection: true }));
+  }
   for (const { from, to, addressOnly } of existingNames) {
     if (addressOnly) decorations.push(Decoration.inline(from, to, { class: "rich-link-footnoted" }));
   }
@@ -311,13 +321,13 @@ function hasLinkFootnotesInRange(doc: ProseNode, from: number, to: number) {
   return found;
 }
 
-export function editorPresentation(options: () => { readOnly: boolean; lineNumbers?: boolean; convertLinks?: boolean },
+export function editorPresentation(options: () => { readOnly: boolean; lineNumbers?: boolean; convertLinks?: boolean; githubRepo?: string },
   replaceDelimiter: (state: EditorState, source: StrongDelimiter, value: string) => Transaction, isLive: () => boolean) {
   let mouseSyntax: { doc: ProseNode; decorations: Decoration[] } | null = null;
   let delimiterEdit: { field: HTMLInputElement; doc: ProseNode; decorations: Decoration[] } | null = null;
   let refreshFrame = 0;
   let cached: { doc: ProseNode; folded: Map<number, Section>; lineNumbers: boolean; blocks: DecorationSet } | undefined;
-  let linkNotes: { doc: ProseNode; decorations: DecorationSet } | undefined;
+  let linkNotes: { doc: ProseNode; githubRepo?: string; decorations: DecorationSet } | undefined;
   let code: { doc: ProseNode; decorations: DecorationSet } | undefined;
   let pendingCodeRefresh = false;
   let codeTimer = 0;
@@ -504,7 +514,7 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
       decorations(state) {
         const { doc } = state;
         const { focused, folded, context } = presentation.getState(state)!;
-        const { readOnly, lineNumbers = false, convertLinks } = options();
+        const { readOnly, lineNumbers = false, convertLinks, githubRepo } = options();
         if (cached?.doc !== doc || cached.folded !== folded || cached.lineNumbers !== lineNumbers) {
           cached = { doc, folded, lineNumbers, blocks: blockDecorations(doc, folded, lineNumbers) };
         }
@@ -517,7 +527,7 @@ export function editorPresentation(options: () => { readOnly: boolean; lineNumbe
         }
         let links = DecorationSet.empty;
         if (convertLinks) {
-          if (linkNotes?.doc !== doc) linkNotes = { doc, decorations: DecorationSet.create(doc, linkFootnoteDecorations(doc)) };
+          if (linkNotes?.doc !== doc || linkNotes.githubRepo !== githubRepo) linkNotes = { doc, githubRepo, decorations: DecorationSet.create(doc, linkFootnoteDecorations(doc, githubRepo)) };
           links = linkNotes.decorations;
         }
         if (combined?.blocks !== cached.blocks || combined.links !== links || combined.code !== code.decorations) {

@@ -1,4 +1,5 @@
-import { useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { autoUpdate, flip, FloatingPortal, hide, offset, shift, useFloating } from "@floating-ui/react";
 import { Button, ContextMenu, Dialog, TextField } from "@radix-ui/themes";
 import {
   Bold, CaseSensitive, Clipboard, ClipboardType, CloudUpload, Code2, Copy, FileCode2, FileDown, Heading, ImageMinus, Italic, Link2, List, ListOrdered,
@@ -24,6 +25,32 @@ export const editorDisplayItems = [
   ["convertLinks", "链接转脚注", FileCode2],
 ] as const;
 
+type ImageAction = { key: string; image: ImageContext; action: "copy" | "save" };
+
+function ImageActionFeedback({ actions, buttons, portalRoot }: {
+  actions: ImageAction[];
+  buttons: ReturnType<typeof useButtonFeedback>;
+  portalRoot: HTMLElement;
+}) {
+  const image = actions[0].image;
+  const { refs, floatingStyles, isPositioned, middlewareData } = useFloating({
+    elements: { reference: image.feedbackTarget }, placement: "bottom-start", strategy: "fixed",
+    middleware: [offset(4), flip(), shift({ padding: 8 }), hide()], whileElementsMounted: autoUpdate,
+  });
+  const alt = image.feedbackTarget.querySelector("img")?.alt || "图片";
+  return <FloatingPortal root={portalRoot}>
+    <div ref={refs.setFloating} className="editor-image-action-feedback" data-image-source={image.src}
+      role="group" aria-label={`${alt}的图片操作`}
+      style={{ ...floatingStyles, visibility: isPositioned && !middlewareData.hide?.referenceHidden ? undefined : "hidden" }}>
+      {actions.map(({ key, action }) => <Button key={key} size="1" variant="soft" {...buttons.props(key)}>
+        {buttons.icon(key, action === "copy" ? <Copy size={15} /> : <FileDown size={15} />, 15)}
+        {buttons.label(key, action === "copy" ? "正在复制…" : "正在保存…", action === "copy" ? "已复制" : "已保存",
+          action === "copy" ? "复制失败" : "保存失败")}
+      </Button>)}
+    </div>
+  </FloatingPortal>;
+}
+
 export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onLeave, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
@@ -41,6 +68,27 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
 }) {
   const [selected, setSelected] = useState(false);
   const buttons = useButtonFeedback();
+  const area = useRef<HTMLDivElement>(null);
+  const [imageActions, setImageActions] = useState<ImageAction[]>([]);
+  useEffect(() => {
+    setImageActions(current => {
+      const active = current.filter(({ key }) => buttons.status(key));
+      return active.length === current.length ? current : active;
+    });
+  }, [buttons]);
+  const imageFeedback = new Map<HTMLElement, ImageAction[]>();
+  for (const action of imageActions) {
+    if (!buttons.status(action.key) || !action.image.feedbackTarget.isConnected) continue;
+    const group = imageFeedback.get(action.image.feedbackTarget) ?? [];
+    group.push(action);
+    imageFeedback.set(action.image.feedbackTarget, group);
+  }
+  function performImageAction(image: ImageContext, action: "copy" | "save") {
+    const key = `${action}:${image.src}`;
+    if (buttons.isLocked(key)) return;
+    setImageActions(current => [...current.filter(item => item.key !== key), { key, image, action }]);
+    void buttons.run(key, () => action === "copy" ? desktop.copyImage(image.src) : desktop.saveImage(image.src));
+  }
   const [ready, setReady] = useState(false);
   const [menu, setMenu] = useState<"display" | "body" | "code" | "cellText" | "object" | TableContext | ImageContext>("body");
   const [linkContext, setLinkContext] = useState<LinkContext | null>(null);
@@ -117,11 +165,11 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         setReady(Boolean(handle));
         setSelected(handle?.hasSelection() ?? false);
       }}>
-        <div className="editor-area">{children}<ActionError className="editor-action-feedback" error={buttons.error()} /></div>
+        <div ref={area} className="editor-area">{children}<ActionError className="editor-action-feedback" error={buttons.error()} /></div>
       </ContextMenu.Trigger>
       {typeof menu === "object" ? ("kind" in menu ? <ContextMenu.Content size="1" aria-label="图片操作" {...menuFocus}>
-        <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`copy:${menu.src}`)} onSelect={() => { void buttons.run(`copy:${menu.src}`, () => desktop.copyImage(menu.src)); }}><Copy size={15} />复制图片</ContextMenu.Item>
-        <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`save:${menu.src}`)} onSelect={() => { void buttons.run(`save:${menu.src}`, () => desktop.saveImage(menu.src)); }}><FileDown size={15} />另存为</ContextMenu.Item>
+        <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`copy:${menu.src}`)} onSelect={() => performImageAction(menu, "copy")}><Copy size={15} />复制图片</ContextMenu.Item>
+        <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`save:${menu.src}`)} onSelect={() => performImageAction(menu, "save")}><FileDown size={15} />另存为</ContextMenu.Item>
         {!readOnly && (uploadingImage || (menu.isCurrent() && canHost?.(menu.src))) && <ContextMenu.Item disabled={uploadingImage || hostBusy}
           onSelect={() => onHostImage?.(menu)}>
           {uploadingImage ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={15} />}
@@ -216,6 +264,8 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         </>}
       </ContextMenu.Content>}
     </ContextMenu.Root>
+    {[...imageFeedback.values()].map(actions => <ImageActionFeedback key={actions[0].key} actions={actions} buttons={buttons}
+      portalRoot={area.current?.closest<HTMLElement>(".radix-themes") ?? document.body} />)}
     {addLink && <Dialog.Root open onOpenChange={setAddLink}>
       <Dialog.Content maxWidth="400px" aria-describedby={undefined} onCloseAutoFocus={event => {
         event.preventDefault();

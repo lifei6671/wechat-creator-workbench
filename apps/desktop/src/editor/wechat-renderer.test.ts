@@ -6,6 +6,48 @@ import fixture from "../../../../fixtures/wechat-format.json?raw";
 
 const gzhThemes = wechatThemes.filter(theme => theme.id.startsWith("gzh-"));
 
+it.each(["preview", "clipboard", "html"] as const)("limits copied article links without changing visible content in %s", async output => {
+  const rendering = renderWechat({ output, revision: 1, themeId: "plainly-tech", markdown: [
+    "正文 [验证页面](https://math.mit.edu/~drew/grh/)。",
+    "**相关资料：**\n\n原始声明：<https://alpo.ge/remark.pdf>\n\n验证进度：<https://math.mit.edu/~drew/grh/>\n\n报道：<https://www.theverge.com/ai-artificial-intelligence/example>",
+    '[站内文章](https://mp.weixin.qq.com/s/example) [普通网站](https://example.test/page) [邮件](mailto:writer@example.test)',
+    '[![链接中的图片](asset://linked)](https://example.test/image-page)',
+    '脚注[^n]\n\n[^n]: [脚注来源](https://example.test/reference)',
+  ].join("\n\n") }, { image: vi.fn(async () => ({ src: "https://images.test/picture.png", width: 80, height: 60 })), sources: vi.fn(), derive: vi.fn() });
+  if (output === "clipboard") { await expect(rendering).rejects.toThrow("未转为脚注"); return; }
+  const result = await rendering;
+  try {
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    const links = [...template.content.querySelectorAll("a[href]")].map(node => node.getAttribute("href"));
+    expect(links).toContain("https://math.mit.edu/~drew/grh/");
+    expect(links).toContain("mailto:writer@example.test");
+    expect(links).toContain("#fn1");
+    expect(template.content.textContent).toContain("验证页面");
+    expect(template.content.textContent).toContain("https://alpo.ge/remark.pdf");
+    expect(template.content.textContent).toContain("脚注来源");
+    expect(template.content.querySelector('img[alt="链接中的图片"]')?.getAttribute("src")).toBe("https://images.test/picture.png");
+    expect(template.content.querySelector("strong")?.textContent).toBe("相关资料：");
+    expect(template.content.querySelector("section")?.getAttribute("style")).toBeTruthy();
+  } finally { result.dispose(); }
+});
+
+it("keeps only exact, standard WeChat article destinations in clipboard anchors", async () => {
+  const allowed = ["https://mp.weixin.qq.com/s/ok", "http://mp.weixin.qq.com/s/legacy", "https://MP.WEIXIN.QQ.COM/s/case"];
+  const rejected = ["https://mp.weixin.qq.com.evil.test/s/x", "https://sub.mp.weixin.qq.com/s/x", "https://mp.weixin.qq.com@evil.test/s/x",
+    "https://user@mp.weixin.qq.com/s/x", "https://mp.weixin.qq.com:8443/s/x", "mailto:writer@example.test"];
+  const markdown = [...allowed, "#heading"].map((url, index) => `[目标 ${index}](${url})`).join(" ");
+  const result = await renderWechat({ markdown, output: "clipboard", revision: 1 }, { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+  try {
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    expect([...template.content.querySelectorAll("a")].map(node => node.getAttribute("href"))).toEqual(allowed);
+    for (let index = 0; index <= allowed.length; index++) expect(template.content.textContent).toContain(`目标 ${index}`);
+  } finally { result.dispose(); }
+  for (const href of rejected) await expect(renderWechat({ markdown: `[来源](${href})`, output: "clipboard", revision: 1 },
+    { image: vi.fn(), sources: vi.fn(), derive: vi.fn() })).rejects.toThrow("未转为脚注");
+});
+
 it.each(wechatThemes)("omits the article background for $label in every output while preserving content highlights", async theme => {
   for (const output of ["preview", "clipboard", "html"] as const) {
     const result = await renderWechat({ themeId: theme.id, output, revision: 0, markdown: "## 章节\n\n==高亮== 与 `代码`\n\n> 引用" },
@@ -38,7 +80,7 @@ it.each(gzhThemes)("renders $label consistently for preview, clipboard and HTML"
     expect(template.content.querySelector("strong")?.parentElement?.style.borderBottomWidth).toBe("0.5px");
     expect(template.content.querySelector("table")?.getAttribute("width")).toBe("100%");
     expect(template.content.querySelector("img")?.getAttribute("src")).toBe("https://images.test/picture.gif");
-    expect(template.content.querySelector('a[href="#fn1"]')).not.toBeNull();
+    expect(template.content.querySelector('a[href="#fn1"]') === null).toBe(output === "clipboard");
     expect(template.content.querySelector('[id="fn1"]')).not.toBeNull();
     expect(result.html).not.toMatch(/<style|<script|\bclass=|var\(--|undefined/);
     expect(template.content.querySelectorAll("[leaf]").length).toBeGreaterThan(10);
@@ -47,16 +89,17 @@ it.each(gzhThemes)("renders $label consistently for preview, clipboard and HTML"
     }
     if (output !== "preview") expect(result.html).not.toContain("data-");
     for (const heading of template.content.querySelectorAll("[data-line]")) heading.removeAttribute("data-line");
-    rendered.push(template.innerHTML);
+    rendered.push({ html: template.innerHTML, text: template.content.textContent });
     result.dispose();
   }
-  expect(new Set(rendered).size).toBe(1);
+  expect(rendered[0].html).toBe(rendered[2].html);
+  expect(new Set(rendered.map(result => result.text)).size).toBe(1);
 });
 
 it("preserves highlighted code whitespace and safe disclosure content in GZH themes", async () => {
   const source = 'const n = 1;\n\n\tconsole.log("a  b");\n  // 中文， punctuation: exact';
   const result = await renderWechat({ themeId: "gzh-moyu-ticket", output: "clipboard", revision: 1,
-    markdown: '## 01 已有编号\n\n```js\n' + source + '\n```\n\n<details><summary>展开内容</summary>\n\n**安全正文** [链接](https://example.test)\n\n</details>\n\n<script>alert(1)</script><a href="javascript:alert(2)" onclick="alert(3)">外部内容</a>' },
+    markdown: '## 01 已有编号\n\n```js\n' + source + '\n```\n\n<details><summary>展开内容</summary>\n\n**安全正文** [链接](https://mp.weixin.qq.com/s/example)\n\n</details>\n\n<script>alert(1)</script><a href="javascript:alert(2)" onclick="alert(3)">外部内容</a>' },
     { image: vi.fn(async () => ({ src: null, width: 0, height: 0 })), sources: vi.fn(), derive: vi.fn() });
   const template = document.createElement("template");
   template.innerHTML = result.html;
@@ -69,7 +112,9 @@ it("preserves highlighted code whitespace and safe disclosure content in GZH the
   expect(template.content.querySelector("details, summary, div, script, [onerror]")).toBeNull();
   expect(result.html).not.toContain("javascript:");
   expect(template.content.textContent).toContain("展开内容");
-  expect(template.content.querySelector('a[href="https://example.test"]')?.textContent).toBe("链接");
+  expect(template.content.querySelectorAll("a")).toHaveLength(1);
+  expect(template.content.querySelector("a")?.getAttribute("href")).toBe("https://mp.weixin.qq.com/s/example");
+  expect(template.content.textContent).toContain("链接");
 });
 
 it("keeps legacy themes free of GZH chapter numbers and leaf wrappers", async () => {
@@ -130,13 +175,16 @@ it("inlines the theme, retains table width and replaces asset links in document 
   expect(result.text).toContain("普通文字");
 });
 
-it("preserves footnote text and its two links in the clipboard HTML", async () => {
-  const result = await renderWechat({ output: "clipboard", revision: 1,
-    markdown: "正文[^n]。\n\n[^n]: 来源说明：<https://example.test/source>\n\n后续正文[^other]\n\n[^other]: 第二条" },
+it.each(["preview", "clipboard", "html"] as const)("preserves footnote text with output-appropriate links in %s", async mode => {
+  const result = await renderWechat({ output: mode, revision: 1,
+    markdown: `正文[^n]。\n\n[^n]: 来源说明：${mode === "clipboard" ? String.raw`https\://example.test/source` : "<https://example.test/source>"}\n\n后续正文[^other]\n\n[^other]: 第二条` },
     { image: vi.fn(), derive: vi.fn(), sources: vi.fn() });
-  expect(result.html).toContain('href="#fn1"');
   expect(result.html).toContain('id="fn1"');
-  expect(result.html).toContain('href="#fnref1"');
+  if (mode === "clipboard") expect(result.html).not.toContain("href=");
+  else {
+    expect(result.html).toContain('href="#fn1"');
+    expect(result.html).toContain('href="#fnref1"');
+  }
   expect(result.html.indexOf("后续正文")).toBeLessThan(result.html.indexOf('id="fn1"'));
   expect(result.text).toContain("来源说明：https://example.test/source");
   const output = document.createElement("template");
@@ -144,7 +192,9 @@ it("preserves footnote text and its two links in the clipboard HTML", async () =
   const references = output.content.querySelector(".plainly-article, section")?.lastElementChild;
   expect(references?.querySelector("h2")?.textContent).toBe("参考资料");
   expect(Array.from(references?.querySelectorAll("li > span") ?? [], item => item.textContent)).toEqual(["[1]", "[2]"]);
-  expect(references?.querySelector('a[href="https://example.test/source"]')?.textContent).toBe("https://example.test/source");
+  if (mode === "clipboard") expect(references?.querySelector("a")).toBeNull();
+  else expect(references?.querySelector('a[href="https://example.test/source"]')?.textContent).toBe("https://example.test/source");
+  result.dispose();
 });
 
 it("renders info and warning callout titles and body with inline styles in the clipboard", async () => {

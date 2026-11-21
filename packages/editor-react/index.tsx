@@ -23,7 +23,7 @@ import { cellParagraph, isTableSlice, prepareTableContext, preservesTableSelecti
 import { codeView } from "./code-view";
 import { editorBlockTools } from "./slash-menu";
 import { footnoteDraft, FootnotePopover } from "./footnotes";
-import { footnotedLinkNames, linkRangeAt, linksToFootnotes } from "./link-footnotes";
+import { documentLinkFootnotes, footnotedLinkTextRanges, linkRangeAt, linksToFootnotes } from "./link-footnotes";
 import "@milkdown/kit/prose/view/style/prosemirror.css";
 import "@milkdown/kit/prose/tables/style/tables.css";
 import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
@@ -191,12 +191,30 @@ function plainSlice(view: EditorView, text: string) {
   )));
 }
 
+function nonRenderingHtmlToken(value: string) {
+  return /^(?:<!--(?!>|->)(?:[^-]|-(?!-))*-->|<\?[^>]*\?>|<![a-z][^>]*>|<!\[CDATA\[[^>]*\]\]>)$/i.test(value.trim());
+}
+
 function htmlSlice(view: EditorView, html: string) {
   const richMetadata = [
     "data-type", "data-value", "data-label", "data-math", "data-display", "data-language",
     "data-item-type", "data-list-type", "data-spread", "data-checked", "data-workbench-src", "data-workbench-alt", "data-literal-callout",
   ];
-  const fragment = DOMPurify.sanitize(html, {
+  // XML safety normally removes comment terminators even inside data attributes.
+  // Preserve only complete inert tokens in the editor's source metadata.
+  const inertValues = new WeakMap<Node, string>();
+  DOMPurify.addHook("beforeSanitizeAttributes", node => {
+    if (node instanceof Element && ["html", "html-block"].includes(node.getAttribute("data-type") ?? "")) {
+      const value = node.getAttribute("data-value");
+      if (value !== null && nonRenderingHtmlToken(value)) inertValues.set(node, value);
+    }
+  });
+  DOMPurify.addHook("afterSanitizeAttributes", node => {
+    const value = inertValues.get(node);
+    if (value !== undefined && node instanceof Element) node.setAttribute("data-value", value);
+  });
+  let fragment: DocumentFragment;
+  try { fragment = DOMPurify.sanitize(html, {
     ALLOWED_TAGS: [
       "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "strong", "b", "em", "i", "s", "del", "strike", "mark",
       "code", "pre", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td", "a", "div", "span", "sup", "img",
@@ -211,14 +229,19 @@ function htmlSlice(view: EditorView, html: string) {
     ALLOW_DATA_ATTR: false,
     ALLOW_ARIA_ATTR: false,
     RETURN_DOM_FRAGMENT: true,
-  });
+  }); } finally {
+    DOMPurify.removeHook("beforeSanitizeAttributes");
+    DOMPurify.removeHook("afterSanitizeAttributes");
+  }
   for (const embedded of fragment.querySelectorAll('[data-type="html"], [data-type="html-block"]')) {
     const value = embedded.getAttribute("data-value");
     if (value === null) embedded.replaceWith(embedded.textContent);
     else {
       const inline = embedded.getAttribute("data-type") === "html";
       const closing = inline && /^<\/([a-z][\w-]*)\s*>$/i.exec(value.trim());
-      let clean = DOMPurify.sanitize(closing ? `<${closing[1]}>` : value, {
+      // Non-rendering HTML tokens carry source text that DOMPurify otherwise discards.
+      const inert = nonRenderingHtmlToken(value);
+      let clean = inert ? value : DOMPurify.sanitize(closing ? `<${closing[1]}>` : value, {
         USE_PROFILES: { html: true }, FORBID_TAGS: ["style"], FORBID_ATTR: ["style"],
         ALLOWED_URI_REGEXP: /^(?:https?:\/\/|mailto:|#|asset:\/\/)/i,
       });
@@ -563,7 +586,7 @@ export function MarkdownEditor(props: Props) {
     const { entryId, value, ref } = latest.current;
     const outlineListeners = new Set<() => void>();
     let outline: ReturnType<typeof editorOutline> | undefined;
-    let lastSnapshot: { doc: ProseNode; markdown: string };
+    let lastSnapshot: { doc: ProseNode; markdown: string; footnoteLinksNormalized?: boolean };
     const element = host.current!;
     const session = Symbol(entryId);
     const pending = new Map<symbol, Range>();
@@ -951,12 +974,12 @@ export function MarkdownEditor(props: Props) {
       if (disposed) { void editor.destroy(); return; }
       const view = editor.action(ctx => ctx.get(editorViewCtx));
       const unlink = view.state.tr;
-      unlinkFootnoteNames(unlink, footnotedLinkNames(view.state.doc));
+      unlinkFootnoteNames(unlink, footnotedLinkTextRanges(view.state.doc));
       if (unlink.docChanged) view.dispatch(unlink.setMeta(documentLayout, true).setMeta("addToHistory", false));
       const normalized = normalizeDocument(view.state, true);
       if (normalized) view.dispatch(normalized);
       viewRef.current = view;
-      lastSnapshot = { doc: view.state.doc, markdown: value };
+      lastSnapshot = { doc: view.state.doc, markdown: value, footnoteLinksNormalized: unlink.docChanged };
       outline = editorOutline(view, scroll.current!, listener => {
         outlineListeners.add(listener);
         return () => { outlineListeners.delete(listener); };
@@ -1047,17 +1070,19 @@ export function MarkdownEditor(props: Props) {
         },
         linkFootnoteMarkdown(source) {
           if (disposed) return source;
-          const doc = lastSnapshot.doc === view.state.doc && source === lastSnapshot.markdown
+          const cached = lastSnapshot.doc === view.state.doc && source === lastSnapshot.markdown;
+          const doc = cached
             ? view.state.doc : editor.action(ctx => ctx.get(parserCtx)(source));
-          const { edits, definitions, missing, existingNames, definitionNames } = linksToFootnotes(new Slice(doc.content, 0, 0), doc, "document");
+          const { edits, definitionEdits, htmlEdits, definitions, missing, existingNames, definitionText } = documentLinkFootnotes(doc, latest.current.githubRepo);
           const tr = new Transform(doc);
-          unlinkFootnoteNames(tr, [...existingNames, ...definitionNames]);
-          for (const { from, to, content } of edits) {
+          for (const { from, value } of htmlEdits) tr.setNodeMarkup(from, undefined, { ...doc.nodeAt(from)!.attrs, value });
+          unlinkFootnoteNames(tr, [...existingNames, ...definitionText]);
+          for (const { from, to, content } of [...edits, ...definitionEdits]) {
             tr.replaceWith(tr.mapping.map(from), tr.mapping.map(to), content);
           }
           for (const { position, text } of missing) tr.insert(tr.mapping.map(position), doc.type.schema.text(text));
           if (definitions.length) tr.insert(tr.doc.content.size, definitions);
-          return tr.docChanged ? publish(tr.doc) : source;
+          return tr.docChanged || cached && lastSnapshot.footnoteLinksNormalized ? publish(tr.doc) : source;
         },
         async hostImages(upload, eligible, onTotal) {
           if (!isWritable(view)) return 0;
