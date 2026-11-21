@@ -8,6 +8,7 @@ import type { ClipboardAction, ClipboardIO, MarkdownEditorHandle } from "../../.
 import { desktop, errorMessage } from "../desktop";
 import { commandKey, untitled } from "../labels";
 import { Tool } from "../ui";
+import { ActionError, useButtonFeedback } from "../button-feedback";
 import { SaveQueue } from "../editor/save-queue";
 import { pastedWebUrl, useCanvasWebPreview } from "./CanvasWebPreview";
 import { CanvasPreviewCache } from "./CanvasPreviewCache";
@@ -91,6 +92,7 @@ type ArticleEdit = { nodeId: string; queue: SaveQueue };
 function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, previewBlocked, clipboard, canvasRef, track, onOpenEntry,
   onLoadArticle, onSaveArticle, onArticleImages, downloadLinkImages, onEntryCreated, onError, onDelete }: Props & { initial: Canvas }) {
   const collectionId = collection.id;
+  const buttons = useButtonFeedback();
   const flow = useReactFlow<FlowNode, Edge>();
   const area = useRef<HTMLDivElement>(null);
   const [nodes, setNodes] = useState(() => initial.nodes.map(toFlowNode));
@@ -729,8 +731,8 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
     const text = textEditor.current;
     const markdown = text?.nodeId === id && text.revision ? text.handle.captureMarkdown().markdown
       : nodesRef.current.find(node => node.id === id)!.data.contentMd;
-    void desktop.copyText(markdown).catch(onError);
-  }, [onError]);
+    void buttons.run(`copy:${id}`, () => desktop.copyText(markdown));
+  }, [buttons]);
 
   const convertText = useCallback((id: string) => {
     if (converting.current || deleting.current) return;
@@ -750,12 +752,13 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   }, [changeNodes, enqueue, flushLatestText, onEntryCreated, onError, onOpenEntry, track]);
 
   const nodeActions = useMemo(() => ({
+    feedback: buttons,
     editingId, convertingId, edit, remove, focus, color, fitImage, registerTextEditor, markTextDirty, saveText, finishText, resize, loadArticle,
     activeWebNodeId, webPreviews, setWebSlot, copyText, convertText,
     articleQueue: articleEdit?.queue, articleLocked, clipboard,
     registerArticleEditor, finishArticle, discardArticle, onArticleImages, onError,
   }), [editingId, convertingId, edit, remove, focus, color, fitImage, registerTextEditor, markTextDirty, saveText, finishText, resize, loadArticle, activeWebNodeId,
-    webPreviews, copyText, convertText, articleEdit, articleLocked, clipboard, registerArticleEditor, finishArticle, discardArticle, onArticleImages, onError]);
+    webPreviews, copyText, convertText, articleEdit, articleLocked, clipboard, registerArticleEditor, finishArticle, discardArticle, onArticleImages, onError, buttons]);
 
   function closeDialog() {
     setDialog(null);
@@ -768,6 +771,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
   }
 
   return <div id="collection-canvas-panel" role="tabpanel" aria-labelledby={`collection-tab-${collectionId}`} className="document-body collection-workspace" inert={articleLocked}>
+    <ActionError className="collection-action-feedback" error={buttons.error()} />
     <ContextMenu.Root>
     <ContextMenu.Trigger>
     <div className="collection-flow" tabIndex={0} ref={area} aria-label="专题画布"
@@ -922,7 +926,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
         </>}
         {menuNode.data.kind === "text" && <>
           <ContextMenu.Item disabled={convertingId === menuNode.id} onSelect={() => { actionAfterMenu.current = () => edit(menuNode.id); }}><SquarePen size={15} />编辑文本</ContextMenu.Item>
-          <ContextMenu.Item onSelect={() => copyText(menuNode.id)}><Copy size={15} />复制 Markdown</ContextMenu.Item>
+          <ContextMenu.Item disabled={buttons.isLocked(`copy:${menuNode.id}`)} onSelect={() => copyText(menuNode.id)}><Copy size={15} />复制 Markdown</ContextMenu.Item>
           <ContextMenu.Item disabled={convertingId !== null} onSelect={() => convertText(menuNode.id)}><FilePlus2 size={15} />创建原创文章</ContextMenu.Item>
         </>}
         {menuNode.data.externalUrl && <>
@@ -940,8 +944,8 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
                 });
               };
             }}><Globe2 size={15} />选中并打开网页</ContextMenu.Item>}
-          <ContextMenu.Item onSelect={() => void desktop.openLink(menuNode.data.externalUrl!).catch(onError)}><ExternalLink size={15} />在系统浏览器打开</ContextMenu.Item>
-          <ContextMenu.Item onSelect={() => void desktop.copyText(menuNode.data.externalUrl!).catch(onError)}><Copy size={15} />复制链接</ContextMenu.Item>
+          <ContextMenu.Item disabled={buttons.isLocked(`open:${menuNode.id}`)} onSelect={() => void buttons.run(`open:${menuNode.id}`, () => desktop.openLink(menuNode.data.externalUrl!))}><ExternalLink size={15} />在系统浏览器打开</ContextMenu.Item>
+          <ContextMenu.Item disabled={buttons.isLocked(`copyLink:${menuNode.id}`)} onSelect={() => void buttons.run(`copyLink:${menuNode.id}`, () => desktop.copyText(menuNode.data.externalUrl!))}><Copy size={15} />复制链接</ContextMenu.Item>
         </>}
         {menuNodes.length === 1 && <ContextMenu.Item onSelect={() => focus(menuNode.id)}><Focus size={15} />聚焦当前卡片</ContextMenu.Item>}
         {menuNodes.length === 2 && <ContextMenu.Item onSelect={() => connect(menuNodes[0].id, menuNodes[1].id)}><Link2 size={15} />连接卡片</ContextMenu.Item>}

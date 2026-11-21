@@ -27,11 +27,11 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
   const buttons = useSettingsButtonFeedback();
   const [working, setWorking] = useState<string>();
   async function perform(key: string, operation: () => Promise<boolean | undefined>) {
-    buttons.start(key);
+    if (!buttons.start(key)) return;
     setWorking(key);
     try {
       const result = await operation();
-      if (result !== undefined) buttons.finish(key, result);
+      buttons.finish(key, result);
     } finally { setWorking(undefined); }
   }
   const [settings, setSettings] = useState<BackupSettings>();
@@ -86,24 +86,23 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
 
   return <>
     <div className="settings-card">
-      {!settings && !error && <p className="settings-feedback muted-text" role="status">正在读取设置…</p>}
+      {<div className="action-error-slot">{!settings && !error ? <p className="settings-feedback muted-text" role="status">正在读取设置…</p> : null}</div>}
       {settings && <SettingRow label="备份桶" hint={configured ? `数据库快照存放在 ${settings.target?.bucket}。`
         : settings.target ? "重新填写访问密钥后即可读写数据库快照。" : "配置用于保存和读取数据库快照的存储桶。"}>
-        {hintId => <Button id="configure-backup" aria-describedby={hintId} size="2" color="gray" variant="soft" disabled={busy} onClick={() => {
+        {hintId => <Button id="configure-backup" aria-describedby={hintId} size="2" color="gray" variant="soft"  onClick={() => {
           setConfiguring(true);
           requestAnimationFrame(() => document.getElementById("backup-endpoint")?.focus());
-        }}>{buttons.label("configure", configured ? "修改配置" : "配置备份桶", "已保存", "保存失败")}</Button>}
+        }} {...buttons.props("configure", busy)}>{buttons.label("configure", configured ? "修改配置" : "配置备份桶", "已保存", "保存失败")}</Button>}
       </SettingRow>}
       {configured && <SettingRow label="备份当前工作区" hint="上传当前数据库快照，每个工作区保留最近 5 份。">
-        {hintId => <Button size="2" aria-describedby={hintId} disabled={busy} loading={working === "create"} onClick={() => { void perform("create", onCreate); }}>{buttons.label("create", "立即备份", "备份完成", "备份失败")}</Button>}
+        {hintId => <Button size="2" aria-describedby={hintId}  loading={working === "create"} onClick={() => { void perform("create", onCreate); }} {...buttons.props("create", busy)}>{buttons.label("create", "立即备份", "备份完成", "备份失败")}</Button>}
       </SettingRow>}
-      {progress && <p className="settings-feedback muted-text" role="status">{progress}</p>}
-      {feedback?.error && !progress && <p className={`settings-feedback ${feedback.error ? "inline-error" : "muted-text"}`}
-        role={feedback.error ? "alert" : "status"}>{feedback.text}</p>}
-      {error && <div className="settings-feedback backup-feedback">
-        <p className="inline-error" role="alert">{error}</p>
-        <Button size="1" variant="ghost" onClick={() => setRefresh(value => value + 1)}>重试读取</Button>
-      </div>}
+      <div className="action-error-slot backup-feedback" tabIndex={feedback?.error || error ? 0 : -1}>
+        {progress ? <p className="muted-text" role="status">{progress}</p>
+          : (feedback?.error || error) && <p className="inline-error" role="alert">
+            {[feedback?.error ? feedback.text : "", error].filter(Boolean).join("；")}</p>}
+        {error && <Button size="1" variant="ghost" onClick={() => setRefresh(value => value + 1)}>重试读取</Button>}
+      </div>
       {prepared && <SettingRow label="已校验的备份"
         hint={`${prepared.workspaceLabel} ${backupDate(prepared.snapshot.createdAt)}`}
         warning="恢复将用此备份替换当前工作区的数据库。">
@@ -125,16 +124,18 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
             </Select.Content>
           </Select.Root>}
         </SettingRow>
-        {!listError && !items && <p className="settings-feedback muted-text" role="status">正在读取备份…</p>}
-        {items?.length === 0 && <p className="settings-feedback muted-text">此工作区暂无备份</p>}
+        <div className="action-error-slot">
+          {!listError && !items ? <p className="muted-text" role="status">正在读取备份…</p>
+            : items?.length === 0 && <p className="muted-text">此工作区暂无备份</p>}
+        </div>
         {!!items?.length && <ul className="backup-list" aria-label="备份列表">{items.map(item => <li key={item.name}>
           <div className="backup-item-detail">
             <time dateTime={new Date(item.createdAt).toISOString()}>{backupDate(item.createdAt)}</time>
             <span className="muted-text">{sizeFormat.format(item.bytes / 1024)} KB</span>
           </div>
-          <Button size="1" variant="soft" color="gray" aria-label={`准备恢复 ${backupDate(item.createdAt)} 的备份`} disabled={busy}
+          <Button size="1" variant="soft" color="gray" aria-label={`准备恢复 ${backupDate(item.createdAt)} 的备份`}
             loading={working === item.name}
-            onClick={() => { void perform(item.name, () => onRestore(workspace, item, workspace === current ? "当前工作区" : workspace)); }}>{buttons.label(item.name, "准备恢复", "校验完成", "校验失败")}</Button>
+            onClick={() => { void perform(item.name, () => onRestore(workspace, item, workspace === current ? "当前工作区" : workspace)); }} {...buttons.props(item.name, busy)}>{buttons.label(item.name, "准备恢复", "校验完成", "校验失败")}</Button>
         </li>)}</ul>}
         </div>
       </>}
@@ -150,8 +151,8 @@ function BackupStorageSettings({ initial, onCancel, onSaved }: {
   const buttons = useSettingsButtonFeedback();
   const [error, setError] = useState("");
   async function reuse() {
+    if (!buttons.start("reuse")) return;
     setBusy("reuse");
-    buttons.start("reuse");
     setError("");
     try { await desktop.backupUseImageStorage(); onSaved(); }
     catch (failure) { buttons.finish("reuse", false); setError(errorMessage(failure)); }
@@ -160,8 +161,8 @@ function BackupStorageSettings({ initial, onCancel, onSaved }: {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const { target, secret } = readS3Settings(new FormData(event.currentTarget));
+    if (!buttons.start("save")) return;
     setBusy("save");
-    buttons.start("save");
     setError("");
     try {
       await desktop.configureBackup(target, secret);
@@ -171,11 +172,11 @@ function BackupStorageSettings({ initial, onCancel, onSaved }: {
   }
   return <form className="settings-card" autoComplete="off" onSubmit={event => void submit(event)}>
     <S3Fields scope="backup" initial={initial.target} hasKey={initial.hasKey} />
-    {error && <p role="alert" className="settings-feedback inline-error">{error}</p>}
+    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="settings-feedback inline-error">{error}</p> : null}</div>}
     <div className="settings-footer">
-      <Button type="button" variant="soft" disabled={Boolean(busy)} loading={busy === "reuse"} onClick={() => void reuse()}>{buttons.label("reuse", "复用 S3 图床配置", "已应用")}</Button>
+      <Button type="button" variant="soft"  loading={busy === "reuse"} onClick={() => void reuse()} {...buttons.props("reuse", Boolean(busy))}>{buttons.label("reuse", "复用 S3 图床配置", "已应用")}</Button>
       <Button type="button" variant="soft" color="gray" disabled={Boolean(busy)} onClick={onCancel}>取消</Button>
-      <Button type="submit" loading={busy === "save"} disabled={Boolean(busy)}>{buttons.label("save", "保存", "已保存", "保存失败")}</Button>
+      <Button type="submit" loading={busy === "save"}  {...buttons.props("save", Boolean(busy))}>{buttons.label("save", "保存", "已保存", "保存失败")}</Button>
     </div>
   </form>;
 }

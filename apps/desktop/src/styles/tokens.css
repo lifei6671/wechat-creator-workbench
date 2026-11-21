@@ -58,11 +58,24 @@ input:focus-visible, [data-separator]:focus-visible {
   min-height: 30px; padding: 4px 8px; min-width: 0;
 }
 .plain-button:hover { background: var(--panel-hover); }
+.plain-button:active:not(:disabled) { background: var(--gray-5); }
 .plain-button:disabled { opacity: .6; }
 .plain-button svg { flex: none; }
 .button-strip { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .muted-text { color: var(--text-muted); }
 .inline-error { margin: 0; color: var(--error-text); overflow-wrap: anywhere; }
+.action-error-slot { block-size: 36px; min-inline-size: 0; overflow: auto; align-content: center; }
+.action-error-slot > .inline-error, .action-error-slot > .settings-feedback { margin: 0; padding: 0; font-size: var(--small-font); line-height: 18px; }
+.button-feedback-icon { display: inline-grid; place-items: center; flex: none; }
+.button-feedback-icon[data-state="pending"] { animation: button-feedback-spin 800ms linear infinite; }
+.button-feedback-icon:is([data-state="success"], [data-state="error"]) { animation: button-feedback-result 250ms ease-out; }
+.radix-themes button[data-feedback-state="success"] { background: var(--green-4); color: var(--green-11); opacity: 1; }
+.radix-themes button[data-feedback-state="error"] { background: var(--red-4); color: var(--red-11); opacity: 1; }
+@keyframes button-feedback-spin { to { transform: rotate(360deg); } }
+@keyframes button-feedback-result { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .button-feedback-icon[data-state] { animation: none; }
+}
 kbd { color: var(--text-muted); font: inherit; font-size: var(--small-font); white-space: nowrap; }
 
 @media (forced-colors: none) {

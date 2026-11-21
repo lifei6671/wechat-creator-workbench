@@ -6,6 +6,7 @@ import type { Category, CategoryIcon, CategoryPlacement, Collection, Entry, Entr
 import type { ClipboardAction, ClipboardIO, ImageContext, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncActivity, type SyncApplied, type SyncBinding, type UploadProgress } from "../desktop";
+import { useButtonFeedback } from "../button-feedback";
 import { installInputContextMenu } from "../input-context-menu";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard, writeClipboard } from "../editor/clipboard";
@@ -189,6 +190,8 @@ export function DesktopShell() {
   const [globalLock, setGlobalLock] = useState(false);
   const [exitMessage, setExitMessage] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const documentButtons = useButtonFeedback();
+  const [exportedPath, setExportedPath] = useState("");
   const [cleaning, setCleaning] = useState(false);
   const [backupListRevision, setBackupListRevision] = useState(0);
   const [preparedBackup, setPreparedBackup] = useState<PreparedBackup | { ticket: string; migration: true } | null>(null);
@@ -622,8 +625,11 @@ export function DesktopShell() {
         try { images.push(imageMarkdown(await desktop.assetImport(file, origin), file.name)); }
         catch (error) { errors.push(`${file.name || "图片"}：${errorMessage(error)}`); }
       }
-      if (errors.length) showError(errors.join("；"));
-      else if (images.length) setNotice({ type: "info", text: `已导入 ${images.length} 张图片` });
+      if (errors.length) {
+        if (origin === "library") throw new Error(errors.join("；"));
+        showError(errors.join("；"));
+      }
+
       return images.length ? "\n" + images.join("\n") + "\n" : "";
     })();
     return trackAssetTask(job);
@@ -1158,7 +1164,7 @@ export function DesktopShell() {
     const pending = waitForCollectionWrites();
     const isCurrentCanvas = collectionMode && activeCollectionId === collection.id;
     const live = isCurrentCanvas ? collectionCanvas.current : null;
-    run(() => trackCollectionWrite((async () => {
+    run(() => documentButtons.run(`addToCollection:${entryId}:${collection.id}`, () => trackCollectionWrite((async () => {
       await pending;
       if (live && collectionCanvas.current === live) await live.addEntry(entryId);
       else {
@@ -1173,27 +1179,27 @@ export function DesktopShell() {
         await desktop.createCollectionNode(collection.id, { kind: "entry", entryId }, position);
         if (isCurrentCanvas) reloadCanvases([collection.id]);
       }
-      setNotice({ type: "info", text: `已加入「${collection.title}」` });
-    })()));
+
+    })())));
   }
 
   function create(parent: string | null = currentFolder) {
-    run(async () => {
+    run(() => documentButtons.run(`create:${parent ?? "root"}`, async () => {
       const fields = parent ? {
         title: "", contentMd: "", status: "draft" as const, categoryId: parent, tags: [],
         summary: "", source: null, publishedAt: null, publishedUrl: "",
       } : undefined;
       activateCreated(await desktop.create("article", fields));
-    });
+    }));
   }
 
   function importMarkdown(parent: string | null = currentFolder) {
-    run(async () => {
+    run(() => documentButtons.run(`importMarkdown:${parent ?? "root"}`, async () => {
       const result = await trackAssetTask(desktop.importMarkdown(parent));
-      if (!result || exit.current) return;
+      if (!result || exit.current) return false;
       activateCreated(result.entry);
       if (result.unavailableImages) showError(`已导入文档，${result.unavailableImages} 张图片未能加入上传队列。`);
-    });
+    }));
   }
 
   function pasteWebClipping(text: string) {
@@ -1210,8 +1216,7 @@ export function DesktopShell() {
       const details: string[] = [];
       if (!result.existing && result.unavailableImages) details.push(`${result.unavailableImages} 张图片未能下载，已保留原链接`);
       if (!result.existing && unavailableAttachments.length) details.push(`${unavailableAttachments.length} 个本地附件缺少文件，已保留引用`);
-      setNotice({ type: "info", text: (result.existing ? "原文已收录，已打开已有文章" : "已导入剪藏文章")
-        + (details.length ? `，${details.join("；")}` : "") });
+      if (details.length) setNotice({ type: "info", text: `已导入剪藏文章，${details.join("；")}` });
     });
     return true;
   }
@@ -1228,7 +1233,7 @@ export function DesktopShell() {
     try {
       const ids = await desktop.emptyTrash();
       removePurgedEntries(ids);
-      setNotice({ type: "info", text: ids.length ? `已清空回收站，共 ${ids.length} 项` : "回收站为空" });
+
     } finally { setGlobalLock(false); }
   }
 
@@ -1242,7 +1247,7 @@ export function DesktopShell() {
         });
         remove(id);
         activateCreated(draft);
-        setNotice({ type: "info", text: "当前笔记已另存为副本" });
+
       });
     }
   }
@@ -1257,7 +1262,7 @@ export function DesktopShell() {
         install(entry);
         select(id);
       }
-      setNotice({ type: "info", text: deleted ? "已移入回收站" : "已恢复内容" });
+
       refresh();
     });
   }
@@ -1272,12 +1277,17 @@ export function DesktopShell() {
   async function exportMarkdown(id: string) {
     const queue = queues.current.get(id);
     if (queue && !await queue.flush()) { select(id); return; }
-    const path = await desktop.exportMarkdown(id);
-    if (path) setNotice({ type: "info", text: "Markdown 已导出", path });
+    return documentButtons.run("export", async () => {
+      const path = await desktop.exportMarkdown(id);
+      if (path) setExportedPath(path);
+      return path || false;
+    });
   }
 
   function entryAction(row: EntryRow, action: EntryRowAction, trigger = document.getElementById(`entry-row-${row.id}`)) {
-    run(async () => {
+    if ((action === "copyTitle" || action === "copyPath")
+      && ["copyTitle", "copyPath"].some(copy => documentButtons.isLocked(`${copy}:${row.id}`))) return;
+    run(() => documentButtons.run(`${action}:${row.id}`, async () => {
       switch (action) {
         case "delete": case "restore": return changeDeleted(row.id, action === "delete");
         case "pin": case "unpin": await desktop.setEntryPinned(row.id, action === "pin"); refresh(); return;
@@ -1301,10 +1311,10 @@ export function DesktopShell() {
             const parent = library?.categories.find(category => category.id === folder?.parentId);
             await desktop.copyText(["目录", parent?.name, folder?.name, title].filter(Boolean).join(" / "));
           }
-          setNotice({ type: "info", text: action === "copyTitle" ? "已复制标题" : "已复制工作区路径" });
+
         }
       }
-    });
+    }));
   }
 
   function tabAction(id: string, action: TabAction) {
@@ -1526,29 +1536,26 @@ export function DesktopShell() {
 
   function publication(output: "clipboard" | "html") {
     if (!selected || publishing || exit.current) return;
-    if (projectLinks === null) { setNotice({ type: "info", text: "编辑器正在加载，请稍后重试" }); return; }
-    setPublishing(true);
-    run(async () => {
+    const key = output === "clipboard" ? "copyWechat" : "exportWechat";
+    run(() => documentButtons.run(key, async () => {
+      if (projectLinks === null) throw new Error("编辑器正在加载，请稍后重试");
+      setPublishing(true);
       try {
         const { fields, revision } = selected.capture();
         const input = { output, revision, markdown: projectLinks?.(fields.contentMd) ?? fields.contentMd,
           themeId: fields.themeId, githubRepo: fields.source?.url };
         const { result, hosting, exportImages } = await renderForPublication(input);
         try {
-          if (exit.current) return;
+          if (exit.current) return false;
           if (output === "html") {
             const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>公众号文章</title><body>${result.html}</body></html>`;
-            if (await desktop.exportWechatHtml(html, exportImages)) {
-              setNotice({ type: "info", text: "排版 HTML 已导出" });
-            }
-          } else {
-            await desktop.copyHtml(result.html, result.text);
-            if (!hosting && result.images.length) showModal({ type: "publishImages", images: result.images });
-            else setNotice({ type: "info", text: "公众号格式已复制到剪贴板" });
+            return await desktop.exportWechatHtml(html, exportImages);
           }
+          await desktop.copyHtml(result.html, result.text);
+          if (!hosting && result.images.length) showModal({ type: "publishImages", images: result.images });
         } finally { result.dispose(); }
       } finally { setPublishing(false); }
-    });
+    }));
   }
 
   function hostDocumentImages(origin: SaveQueue, image?: ImageContext) {
@@ -1566,8 +1573,8 @@ export function DesktopShell() {
       setImageUpload(previous => previous?.sessionId === sessionId ? { ...previous, src: undefined, completed: previous.completed + 1 } : previous);
       return url;
     };
-    setImageUpload({ sessionId, total: image ? 1 : 0, completed: 0 });
-    run(async () => {
+    run(() => documentButtons.run("hostImages", async () => {
+      setImageUpload({ sessionId, total: image ? 1 : 0, completed: 0 });
       try {
         const count = await trackAssetTask((async () => {
           if (!image) return editor.hostImages!(upload, src => canHostImage(target, src), total => update({ total }));
@@ -1575,12 +1582,13 @@ export function DesktopShell() {
           try { return image.replaceSource(await upload(image.src)) ? 1 : 0; }
           finally { image.setUploading(false); }
         })());
-        if (count && !await origin.flush()) return;
-        setNotice({ type: "info", text: count ? `已替换 ${count} 张图片为图床链接` : "没有需要替换的图片" });
+        if (count && !await origin.flush()) throw origin.snapshot().error ?? new Error("图片链接未能保存，请重试保存");
+        return count > 0;
       } finally { setImageUpload(null); }
-    });
+    }));
   }
   const actions: DocumentActions = {
+    feedback: documentButtons, exportedPath, onRevealExport: () => run(() => documentButtons.run("revealExport", () => desktop.revealFile(exportedPath))),
     mode: viewMode, setMode: view, focusMode, onFocusMode: () => setFocusMode(value => !value),
     reading, onReading: toggleReading,
     outlineOpen, onOutline: checked => { if (activeId) updateDocumentOptions(activeId, { outline: checked }); },
@@ -1589,7 +1597,7 @@ export function DesktopShell() {
     onSave: () => {
       if (!reading && selected?.entry.deletedAt === null) {
         commitBreadcrumb();
-        run(() => selected.flush({ manual: true, retry: true }));
+        run(() => documentButtons.run("save", () => selected.flush({ manual: true, retry: true })));
       }
     },
     onSearch: () => {
@@ -1603,27 +1611,26 @@ export function DesktopShell() {
     onSavedVersions: () => { if (selected) showModal({ type: "revisions", id: selected.entry.id }, document.getElementById("document-action-trigger")); },
     onExport: () => { if (selected) run(() => exportMarkdown(selected.entry.id)); },
     onExportAssets: () => {
-      if (selected) run(async () => {
-        if (await selected.flush() && await desktop.assetExport(selected.entry.id)) {
-          setNotice({ type: "info", text: "已导出 Markdown 压缩包" });
-        }
-      });
+      if (selected) run(() => documentButtons.run("exportAssets", async () => {
+        if (!await selected.flush()) return false;
+        return desktop.assetExport(selected.entry.id);
+      }));
     },
     onExportWechat: () => publication("html"),
     onCopyWechat: () => publication("clipboard"),
     onCopyMarkdown: () => {
-      if (selected) run(async () => { await copy(selected.capture().fields.contentMd); setNotice({ type: "info", text: "Markdown 已复制" }); });
+      if (selected) run(() => documentButtons.run("copyMarkdown", () => copy(selected.capture().fields.contentMd)));
     },
     onHostImages: selected && imageTarget ? () => hostDocumentImages(selected) : undefined,
-    hostingImages: Boolean(imageUpload),
+    hostingImages: Boolean(imageUpload) || documentButtons.isLocked("hostImages"),
     publishing,
     onDelete: () => { if (selected) run(() => changeDeleted(selected.entry.id, selected.entry.deletedAt === null)); },
-    onDraft: () => { if (selected) run(() => saveConflictCopy(selected.entry.id)); },
+    onDraft: () => { if (selected) run(() => documentButtons.run("draft", () => saveConflictCopy(selected.entry.id))); },
     onCopy: () => {
-      if (selected) run(async () => { await copy(selected.capture().fields.contentMd); setNotice({ type: "info", text: "已复制当前正文" }); });
+      if (selected) run(() => documentButtons.run("copyMarkdown", () => copy(selected.capture().fields.contentMd)));
     },
     onReload: () => showModal({ type: "reload" }),
-    onRetry: () => { if (selected) run(() => selected.flush({ retry: true })); },
+    onRetry: () => { if (selected) run(() => documentButtons.run("retrySave", () => selected.flush({ retry: true }))); },
   };
   function cycleView() { view(viewMode === "edit" ? "preview" : "edit"); }
 
@@ -1999,6 +2006,7 @@ export function DesktopShell() {
     onDismiss={target => setNotice(current => current === target ? null : current)} />;
   const workspaceNotice = modal?.type !== "settings" && toast;
   const rowActions: RowActions = {
+    feedback: documentButtons,
     active: activeId, categories: library?.categories ?? [], readOnlyIds: [...readingIds, ...locked],
     treeLocked: globalLock, openMode: documentOpenMode, onOpen: (id, mode) => run(() => open(id, mode)),
     onRowAction: entryAction, onRenameEntry: renameEntry, onFolderError: showError, onMoveEntry: moveTreeEntry,
@@ -2046,9 +2054,7 @@ export function DesktopShell() {
       onCover={id => {
         if (queue) {
           queue.edit({ coverAssetId: id });
-          void queue.flush().then(saved => {
-            if (saved) setNotice({ type: "info", text: "已设置封面" });
-          });
+          return queue.flush();
         }
       }} />
       : <Explorer {...rowActions} ref={explorerTree} section={section} library={library} page={page}
@@ -2197,7 +2203,7 @@ export function DesktopShell() {
             <header className="workbench-chrome chrome-band" ref={writingChrome}>
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
                 onClick={focusMode ? actions.onFocusMode : toggleExplorer}><SidebarToggleIcon /></Tool>}
-              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} activeId={collectionMode ? null : activeId}
+              {(sessions.length > 0 || openCollections.length > 0) && <DocumentTabs sessions={sessions} feedback={documentButtons} activeId={collectionMode ? null : activeId}
                 collections={openCollections} activeCollectionId={collectionMode ? activeCollectionId : undefined}
                 onSwitchCollection={openCollection} onCloseCollection={closeCollectionTab} collectionOptions={collections ?? []}
                 onAddToCollection={addToCollection} readingIds={readingIds} lockedIds={locked}

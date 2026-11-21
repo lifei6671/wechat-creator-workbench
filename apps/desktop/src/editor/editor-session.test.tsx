@@ -32,6 +32,41 @@ function MarkdownEditor({ onChange, ref, ...props }: Omit<ComponentProps<typeof 
 }
 
 const nativeHitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+it("preserves safe embedded HTML through a partial rich clipboard copy and paste", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const io = { read: vi.fn(), write: vi.fn().mockResolvedValue(undefined), onError: vi.fn() };
+  const source = '前文 <kbd>Ctrl</kbd>\n\n<div><strong>保留内容</strong><img src="asset://retained" alt="原图"></div>\n\n后文';
+  try {
+    flushSync(() => root.render(<RichEditor key="html-source" entryId="html-source" value={source} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    handle!.focus();
+    const paragraphs = container.querySelectorAll(".ProseMirror > p");
+    const first = paragraphs[0].firstChild!, last = paragraphs[paragraphs.length - 1].firstChild!;
+    document.getSelection()!.setBaseAndExtent(first, 0, last, last.textContent!.length);
+    document.dispatchEvent(new Event("selectionchange"));
+    await vi.waitFor(() => expect(handle!.target().to).toBeGreaterThan(5));
+    handle!.clipboard("copy", io);
+    const html = io.write.mock.lastCall![1];
+    expect(html).toContain("data-value");
+    handle = null;
+    flushSync(() => root.render(<RichEditor key="html-target" entryId="html-target" value="" readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(handle).not.toBeNull());
+    io.read.mockResolvedValue({ html });
+    handle!.clipboard("paste", io);
+    await handle!.pendingEdits();
+    const pasted = handle!.captureMarkdown().markdown;
+    expect(pasted).toContain("<kbd>Ctrl</kbd>");
+    expect(pasted).toContain("<strong>保留内容</strong>");
+    expect(pasted).toContain('src="asset://retained"');
+    expect(pasted).not.toContain("嵌入的 HTML");
+    expect(io.onError).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   // The installed Milkdown block provider uses browser hit testing on pointer movement.

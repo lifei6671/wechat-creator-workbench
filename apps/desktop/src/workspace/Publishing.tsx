@@ -3,6 +3,7 @@ import { Button, Dialog, TextField } from "@radix-ui/themes";
 import { X } from "lucide-react";
 import { desktop, errorMessage, type ExportImage, type LinkImportResult, type WechatImportJob } from "../desktop";
 import { Tooltip } from "../ui";
+import { ActionError, useButtonFeedback } from "../button-feedback";
 import { renderWechat, type ImageResult, type RenderInput, type RenderedWechat } from "../../../../packages/wechat-renderer";
 
 export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose(): void }) {
@@ -77,9 +78,10 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
   const [job, setJob] = useState<WechatImportJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const buttons = useButtonFeedback();
 
   async function perform(load: () => Promise<LinkImportResult>) {
-    if (busy) return;
+    if (busy || !buttons.start("import")) return;
     setBusy(true);
     setError("");
     setJob(null);
@@ -93,9 +95,13 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
         const job = result.job;
         if (job.entryId) onImported?.(0);
         if (job.status === "completed" && job.entryId) await onOpen(job.entryId);
-        else setJob(job);
+        else {
+          setJob(job);
+          if (job.error) throw new Error(job.error);
+        }
       }
-    } catch (error) { setError(errorMessage(error)); }
+      buttons.finish("import", true);
+    } catch (error) { setError(errorMessage(error)); buttons.finish("import", false); }
     finally { setBusy(false); }
   }
   function submit(event: FormEvent) {
@@ -103,10 +109,11 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
     void perform(() => desktop.importLink(url.trim(), categoryId, downloadImages));
   }
   async function openImported(id: string) {
+    if (busy || !buttons.start("open")) return;
     setBusy(true);
     setError("");
-    try { await onOpen(id); }
-    catch (failure) { setError(errorMessage(failure)); }
+    try { await onOpen(id); buttons.finish("open", true); }
+    catch (failure) { setError(errorMessage(failure)); buttons.finish("open", false); }
     finally { setBusy(false); }
   }
   return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
@@ -115,22 +122,23 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
       <form className="dialog-form" onSubmit={submit}>
         <label>网页链接<TextField.Root type="url" required value={url} onChange={event => setUrl(event.target.value)}
           placeholder="https://" autoFocus /></label>
-        {error && <p role="alert" className="inline-error">{error}</p>}
+        {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="inline-error">{error}</p> : null}</div>}
         <div className="dialog-actions">
           <Dialog.Close><Button type="button" color="gray" variant="soft" disabled={busy}>关闭</Button></Dialog.Close>
-          <Button type="submit" loading={busy}>{adding ? "导入并添加" : "导入"}</Button>
+          <Button type="submit" loading={buttons.status("import") === "pending"} {...buttons.props("import", busy)}>
+            {buttons.label("import", adding ? "导入并添加" : "导入", "已导入", "导入失败")}</Button>
         </div>
       </form>
       {job && <section className="wechat-job" aria-label="本次导入结果">
           <div className="wechat-job-status"><strong>{importStatus[job.status]}</strong>
             <span title={job.url}>{job.url}</span></div>
-          {job.error && <p className="inline-error">{job.error}</p>}
+          {<div className="action-error-slot" tabIndex={(job.error) ? 0 : -1}>{job.error ? <p className="inline-error">{job.error}</p> : null}</div>}
           <div className="button-strip">
-            {job.entryId && <Button size="1" variant="soft" disabled={busy} onClick={() => void openImported(job.entryId!)}>{adding ? "添加到画布" : "打开笔记"}</Button>}
-            {job.entryId && job.pendingImages > 0 && <Button size="1" variant="soft" disabled={busy}
+            {job.entryId && <Button size="1" variant="soft" {...buttons.props("open", busy)} onClick={() => void openImported(job.entryId!)}>{adding ? "添加到画布" : "打开笔记"}</Button>}
+            {job.entryId && job.pendingImages > 0 && <Button size="1" variant="soft" {...buttons.props("import", busy)}
               onClick={() => { void perform(async () => ({ kind: "wechat", job: await desktop.retryWechatImages(job.entryId!) })); }}>补图（{job.pendingImages}）</Button>}
             {!job.entryId && (job.status === "failed" || job.status === "needs_attention") && <Button size="1" variant="soft"
-              disabled={busy} onClick={() => { void perform(() => desktop.importLink(job.url, categoryId, downloadImages)); }}>重试导入</Button>}
+              {...buttons.props("import", busy)} onClick={() => { void perform(() => desktop.importLink(job.url, categoryId, downloadImages)); }}>重试导入</Button>}
           </div>
       </section>}
     </Dialog.Content>
@@ -138,18 +146,15 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
 }
 
 export function PublishImagesDialog({ images, onClose }: { images: RenderedWechat["images"]; onClose(): void }) {
-  const [feedback, setFeedback] = useState<{ index: number; text: string; error?: boolean }>();
+  const buttons = useButtonFeedback();
   const [busy, setBusy] = useState(false);
   async function useImage(index: number, action: "copy" | "save") {
+    const key = `${index}:${action}`;
+    if (busy) return;
     setBusy(true);
     try {
-      if (action === "copy") {
-        await desktop.copyImage(images[index].url);
-        setFeedback({ index, text: "已复制图片" });
-      } else if (await desktop.saveImage(images[index].url)) {
-        setFeedback({ index, text: "已保存图片" });
-      }
-    } catch (error) { setFeedback({ index, text: errorMessage(error), error: true }); }
+      await buttons.run(key, () => action === "copy" ? desktop.copyImage(images[index].url) : desktop.saveImage(images[index].url));
+    }
     finally { setBusy(false); }
   }
   return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
@@ -160,10 +165,12 @@ export function PublishImagesDialog({ images, onClose }: { images: RenderedWecha
         {images.map((image, index) => <div key={index} className="wechat-job">
           <div className="wechat-job-status"><strong>图片 {index + 1}</strong><span>{image.alt}</span></div>
           <div className="button-strip">
-            <Button size="1" variant="soft" disabled={busy} onClick={() => void useImage(index, "copy")}>复制图片</Button>
-            <Button size="1" variant="soft" color="gray" disabled={busy} onClick={() => void useImage(index, "save")}>保存图片</Button>
-            {feedback?.index === index && <span role={feedback.error ? "alert" : "status"} className={feedback.error ? "inline-error" : "muted-text"}>{feedback.text}</span>}
+            <Button size="1" variant="soft" {...buttons.props(`${index}:copy`, busy)} loading={buttons.status(`${index}:copy`) === "pending"}
+              onClick={() => void useImage(index, "copy")}>{buttons.label(`${index}:copy`, "复制图片", "已复制")}</Button>
+            <Button size="1" variant="soft" color="gray" {...buttons.props(`${index}:save`, busy)} loading={buttons.status(`${index}:save`) === "pending"}
+              onClick={() => void useImage(index, "save")}>{buttons.label(`${index}:save`, "保存图片", "已保存")}</Button>
           </div>
+          <ActionError error={buttons.error(`${index}:copy`) || buttons.error(`${index}:save`)} />
         </div>)}
       </div>
       <div className="dialog-actions"><Dialog.Close><Button variant="soft" color="gray" disabled={busy}>关闭</Button></Dialog.Close></div>

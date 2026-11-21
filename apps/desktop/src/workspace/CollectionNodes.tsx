@@ -8,6 +8,7 @@ import { renderMarkdown } from "../../../../packages/markdown-core";
 import { desktop } from "../desktop";
 import { untitled } from "../labels";
 import { Tool, Tooltip } from "../ui";
+import type { useButtonFeedback } from "../button-feedback";
 import { useAssetImage } from "./Assets";
 import type { SaveQueue } from "../editor/save-queue";
 import { CollectionArticleEditor, CollectionArticlePreview } from "./CollectionArticle";
@@ -16,6 +17,7 @@ import { useCanvasPreviewImages, type CanvasPreviewCache } from "./CanvasPreview
 
 export type FlowNode = Node<CanvasNode & { pageTitle?: string }, "card"> & { width: number; height: number };
 export const CollectionNodeContext = createContext<{
+  feedback?: ReturnType<typeof useButtonFeedback>;
   editingId: string | null;
   activeWebNodeId: string | null;
   webPreviews: CanvasPreviewCache;
@@ -143,10 +145,15 @@ function CardTools({ id, data, hasCaption, canEdit, editing }: { id: string; dat
       </Popover.Content>
     </Popover.Root>
     <Tool label="聚焦当前卡片（Shift + 2）" color="gray" onClick={() => actions.focus(id)}><Focus size={18} strokeWidth={1.75} /></Tool>
-    {data.externalUrl && <Tool label="在系统浏览器打开" color="gray" onClick={() => void desktop.openLink(data.externalUrl!).catch(actions.onError)}><ExternalLink size={18} strokeWidth={1.75} /></Tool>}
+    {data.externalUrl && <Tool label="在系统浏览器打开" color="gray" {...actions.feedback?.props(`open:${id}`)}
+      onClick={() => { if (actions.feedback) void actions.feedback.run(`open:${id}`, () => desktop.openLink(data.externalUrl!));
+        else void desktop.openLink(data.externalUrl!).catch(actions.onError); }}>
+      {actions.feedback ? actions.feedback.icon(`open:${id}`, <ExternalLink size={18} strokeWidth={1.75} />, 18) : <ExternalLink size={18} strokeWidth={1.75} />}</Tool>}
     {(data.kind === "text" || data.kind === "entry") && <Tool label="编辑" color="gray" disabled={!canEdit} onClick={() => actions.edit(id)}><SquarePen size={18} strokeWidth={1.75} /></Tool>}
     {data.kind === "text" && editing && <>
-      <Tool label="复制 Markdown" color="gray" onClick={() => actions.copyText(id)}><Copy size={18} strokeWidth={1.75} /></Tool>
+      <Tool label={actions.feedback?.status(`copy:${id}`) === "success" ? "已复制" : "复制 Markdown"} color="gray"
+        {...actions.feedback?.props(`copy:${id}`)} onClick={() => actions.copyText(id)}>
+        {actions.feedback ? actions.feedback.icon(`copy:${id}`, <Copy size={18} strokeWidth={1.75} />, 18) : <Copy size={18} strokeWidth={1.75} />}</Tool>
       <Tool label="创建原创文章" color="gray" disabled={actions.convertingId !== null} onClick={() => actions.convertText(id)}><FilePlus2 size={18} strokeWidth={1.75} /></Tool>
     </>}
   </NodeToolbar>;

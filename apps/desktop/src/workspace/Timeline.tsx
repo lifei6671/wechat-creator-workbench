@@ -237,9 +237,9 @@ function TimelineGroup({ label, items, actions, articleTags, recent, pinned, sco
         {items.map(item => {
           const time = new Date(item.updatedAt);
           return <ContentRow key={item.id} row={item} actions={actions} pinned={pinned}
-            timeline={{ id: `timeline-row-${item.id}`, content: <>
+            timeline={{ id: `timeline-row-${item.id}`, content: feedback => <>
               <span className="timeline-entry-copy">
-                <strong>{item.title || untitled}</strong>
+                <strong>{feedback ?? (item.title || untitled)}</strong>
                 {item.preview?.summary && <span className="timeline-summary">{item.preview.summary}</span>}
                 {!!item.preview?.tags?.length && <span className="timeline-entry-tags">
                   {item.preview.tags.map(tag => {

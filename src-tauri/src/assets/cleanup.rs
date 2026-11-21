@@ -94,6 +94,52 @@ impl Assets {
         }
         if !self.cleanup_stopped.is_cancelled() {
             self.remove_unrecorded(db)?;
+            self.remove_orphaned_thumbnails(db)?;
+        }
+        Ok(())
+    }
+
+    fn remove_orphaned_thumbnails(&self, db: &Workspace) -> Result<()> {
+        let Some(directory) = &self.thumbnail_cache else {
+            return Ok(());
+        };
+        let files = match std::fs::read_dir(directory) {
+            Ok(files) => files,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(local_error(error)),
+        };
+        let live = db.maintenance(|conn| {
+            let mut query =
+                conn.prepare("SELECT DISTINCT sha256 FROM assets WHERE sha256 IS NOT NULL")?;
+            Ok(query
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?)
+        })?;
+        let prefix = format!("v1-{}-", super::THUMBNAIL_SIZE);
+        for file in files {
+            if self.cleanup_stopped.is_cancelled() {
+                break;
+            }
+            let file = file.map_err(local_error)?;
+            if !file.file_type().map_err(local_error)?.is_file() {
+                continue;
+            }
+            let name = file.file_name();
+            let Some(hash) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(&prefix))
+                .and_then(|name| name.strip_suffix(".png"))
+            else {
+                continue;
+            };
+            if hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                && !live.contains(hash)
+            {
+                remove_file(&file.path())?;
+            }
         }
         Ok(())
     }
@@ -356,6 +402,38 @@ fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn regression_cleanup_removes_orphaned_thumbnails_and_keeps_live_shared_hashes() {
+        let (dir, db, assets) = super::super::tests::setup();
+        let cache = dir.path().join("缩略图 cache");
+        let assets = assets.with_thumbnail_cache(cache.clone());
+        let bytes = super::super::tests::png();
+        let kept = assets.import_to_library(&db, "保留.png", &bytes).unwrap();
+        assets.thumbnail(&db, &kept).await.unwrap();
+        let hash = db
+            .read(|conn| super::super::by_id(conn, &kept))
+            .unwrap()
+            .hash
+            .unwrap();
+        let live = cache.join(format!("v1-160-{hash}.png"));
+        let orphan = cache.join(format!("v1-160-{}.png", "a".repeat(64)));
+        let unrelated = cache.join("用户文件.png");
+        std::fs::write(&orphan, b"stale").unwrap();
+        std::fs::write(&unrelated, b"leave alone").unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(!orphan.exists());
+        assert!(live.exists());
+        assert!(unrelated.exists());
+        db.write(|tx| {
+            tx.execute("UPDATE assets SET retain_on_exit=0 WHERE id=?1", [&kept])?;
+            Ok(())
+        })
+        .unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(!live.exists());
+        assert!(unrelated.exists());
+    }
 
     #[tokio::test]
     async fn update_cleanup_keeps_uploads_resumable_after_installer_failure() {

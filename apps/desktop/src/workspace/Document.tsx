@@ -14,6 +14,7 @@ import { desktop, errorMessage } from "../desktop";
 import { isConflict, SaveQueue } from "../editor/save-queue";
 import { commandKey, untitled } from "../labels";
 import { Tool, Tooltip } from "../ui";
+import type { useButtonFeedback } from "../button-feedback";
 import { loadLocalImage } from "./Publishing";
 import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./EditorContextMenu";
 import { InlineEntryTitle } from "./InlineEntryTitle";
@@ -26,9 +27,10 @@ export type ViewMode = "edit" | "preview";
 export type TabAction = "closeOthers" | "reading" | "properties" | "search"
   | "copyPath" | "history" | "export" | "delete" | "restore";
 
-export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
+export function DocumentTabs({ sessions, feedback, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
   collectionOptions = [], onAddToCollection, onSwitchCollection, onCloseCollection, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
   sessions: SaveQueue[];
+  feedback?: ReturnType<typeof useButtonFeedback>;
   activeId: string | null;
   collections?: Collection[];
   activeCollectionId?: string;
@@ -189,7 +191,7 @@ export function DocumentTabs({ sessions, activeId, readingIds, lockedIds, catego
   }
 
   const tabs: ReactNode[] = [
-    ...sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} active={activeId === queue.entry.id}
+    ...sessions.map(queue => <DocumentTab key={queue.entry.id} queue={queue} feedback={feedback} active={activeId === queue.entry.id}
         tabbable={activeId === queue.entry.id || (!activeId && !activeCollectionId && queue === sessions[0])}
         reading={readingIds.includes(queue.entry.id)} locked={lockedIds.includes(queue.entry.id)} hasOtherTabs={sessions.length > 1 || collections.length > 0}
         dragging={drag.ghost?.id === queue.entry.id} placement={drag.hint?.id === queue.entry.id ? drag.hint.placement : undefined}
@@ -247,9 +249,10 @@ function CollectionTab({ item, active, tabbable, onSwitch, onClose }: {
   </ContextMenu.Root>;
 }
 
-function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, dragging, placement, categories, collectionOptions,
+function DocumentTab({ queue, feedback, active, tabbable, reading, locked, hasOtherTabs, dragging, placement, categories, collectionOptions,
   onAddToCollection, onMove, onSwitch, onClose, onAction, onRename, onError }: {
   queue: SaveQueue;
+  feedback?: ReturnType<typeof useButtonFeedback>;
   active: boolean;
   tabbable: boolean;
   collectionOptions: Collection[];
@@ -273,6 +276,9 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
   const dirty = useSyncExternalStore(queue.subscribe, queue.isDirty);
   const { id, deletedAt } = queue.entry;
   const title = fields.title || untitled;
+  const copyKey = `copyPath:${id}`;
+  const copyState = feedback?.status(copyKey);
+  const copyLocked = feedback?.isLocked(copyKey) || feedback?.isLocked(`copyTitle:${id}`);
   const frozen = reading || locked;
   const act = (action: TabAction) => onAction(id, action);
   if (renaming) return <div className="tab entry-inline" data-active={active}>
@@ -290,9 +296,11 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
       }}>
         <Tooltip content={title}>
           <button id={`tab-${id}`} className="plain-button tab-title" type="button" role="tab" aria-selected={active}
-            aria-controls="document-body" tabIndex={tabbable ? 0 : -1} onClick={() => onSwitch(id)}>
+            aria-controls="document-body" tabIndex={tabbable ? 0 : -1} onClick={() => onSwitch(id)}
+            data-feedback-state={copyState} aria-label={title} aria-busy={copyState === "pending" || undefined}>
             {dirty && <span className="unsaved-dot" role="img" aria-label="有未保存的修改" />}
-            <span>{title}</span>
+            {copyState && feedback && feedback.icon(copyKey, <Copy size={15} />, 15)}
+            <span>{copyState && feedback ? feedback.label(copyKey, "正在复制…", "路径已复制", "复制失败") : title}</span>
           </button>
         </Tooltip>
         <Tool className="chrome-icon tab-close" label={`关闭 ${title}`} onClick={() => onClose(id)}><X size={14} /></Tool>
@@ -318,7 +326,7 @@ function DocumentTab({ queue, active, tabbable, reading, locked, hasOtherTabs, d
         <ContextMenu.Item disabled={frozen} onSelect={() => { renameAfterMenu.current = true; }}><PencilLine size={15} />重命名</ContextMenu.Item>
         <MoveEntryMenu categories={categories} current={fields.categoryId} disabled={frozen} onMove={folder => onMove(id, folder)} />
       </>}
-      <ContextMenu.Item onSelect={() => act("copyPath")}><Copy size={15} />复制工作区路径</ContextMenu.Item>
+      <ContextMenu.Item disabled={copyLocked} onSelect={() => act("copyPath")}><Copy size={15} />复制工作区路径</ContextMenu.Item>
       <ContextMenu.Item onSelect={() => act("export")}><FileDown size={15} />导出 Markdown</ContextMenu.Item>
       <ContextMenu.Separator />
       <ContextMenu.Item color={deletedAt === null ? "red" : undefined} disabled={frozen} onSelect={() => act(deletedAt === null ? "delete" : "restore")}>
@@ -524,6 +532,9 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
 }
 
 export interface DocumentActions {
+  feedback?: ReturnType<typeof useButtonFeedback>;
+  exportedPath?: string;
+  onRevealExport?(): void;
   mode: ViewMode;
   setMode(mode: ViewMode): void;
   focusMode: boolean;
@@ -592,6 +603,9 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
   const deleted = queue.entry.deletedAt !== null;
   const folder = categories.find(category => category.id === fields.categoryId);
   const parent = categories.find(category => category.id === folder?.parentId);
+  const feedback = actions.feedback;
+  const shareKey = ["copyWechat", "exportWechat", "export", "exportAssets"].find(key => feedback?.status(key));
+  const editKey = ["copyMarkdown", "save", "hostImages"].find(key => feedback?.status(key));
   return <div className="section-bar document-tools">
     <nav className="document-path" aria-label="内容路径">
       {deleted ? <span>回收站</span> : <>
@@ -609,30 +623,34 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
       {deleted && <Button size="1" variant="ghost" color="gray" onClick={actions.onDelete}><ArchiveRestore size={15} />恢复</Button>}
       <DropdownMenu.Root>
         <Tooltip content="分享"><DropdownMenu.Trigger><button className="plain-button chrome-icon" type="button" aria-label="分享">
-          {actions.publishing ? <Spinner size="1" /> : <Share2 size={16} strokeWidth={1.65} />}
+          {shareKey && feedback ? feedback.icon(shareKey, <Share2 size={16} strokeWidth={1.65} />)
+            : actions.publishing ? <Spinner size="1" /> : <Share2 size={16} strokeWidth={1.65} />}
         </button></DropdownMenu.Trigger></Tooltip>
         <DropdownMenu.Content align="end" size="1">
           {!deleted && <>
-            <DropdownMenu.Item disabled={actions.publishing} onSelect={actions.onCopyWechat}><Copy size={14} />复制公众号格式</DropdownMenu.Item>
-            <DropdownMenu.Item disabled={actions.publishing} onSelect={actions.onExportWechat}><FileDown size={14} />导出排版 HTML</DropdownMenu.Item>
+            <DropdownMenu.Item disabled={actions.publishing || feedback?.isLocked("copyWechat")} onSelect={actions.onCopyWechat}><Copy size={14} />复制公众号格式</DropdownMenu.Item>
+            <DropdownMenu.Item disabled={actions.publishing || feedback?.isLocked("exportWechat")} onSelect={actions.onExportWechat}><FileDown size={14} />导出排版 HTML</DropdownMenu.Item>
             <DropdownMenu.Separator />
           </>}
-          <DropdownMenu.Item onSelect={actions.onExport}><FileDown size={14} />导出 Markdown</DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={actions.onExportAssets}><FileDown size={14} />导出 Markdown 和图片</DropdownMenu.Item>
+          <DropdownMenu.Item disabled={feedback?.isLocked("export")} onSelect={actions.onExport}><FileDown size={14} />导出 Markdown</DropdownMenu.Item>
+          <DropdownMenu.Item disabled={feedback?.isLocked("exportAssets")} onSelect={actions.onExportAssets}><FileDown size={14} />导出 Markdown 和图片</DropdownMenu.Item>
+          {actions.exportedPath && <DropdownMenu.Item disabled={feedback?.isLocked("revealExport")} onSelect={actions.onRevealExport}><FileDown size={14} />在文件夹中显示</DropdownMenu.Item>}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
       {!deleted && <Tool className="chrome-icon reading-toggle" label={actions.reading ? "退出阅读模式" : "阅读模式"}
         aria-pressed={actions.reading} onClick={actions.onReading}><BookOpen size={16} strokeWidth={1.65} /></Tool>}
       <DropdownMenu.Root>
-        <Tooltip content="更多编辑操作"><DropdownMenu.Trigger><button type="button" id="document-action-trigger" className="plain-button chrome-icon" aria-label="更多编辑操作"><EllipsisVertical size={17} /></button></DropdownMenu.Trigger></Tooltip>
+        <Tooltip content="更多编辑操作"><DropdownMenu.Trigger><button type="button" id="document-action-trigger" className="plain-button chrome-icon" aria-label="更多编辑操作"
+          data-feedback-state={editKey && feedback?.status(editKey)}>
+          {editKey && feedback ? feedback.icon(editKey, <EllipsisVertical size={17} />, 17) : <EllipsisVertical size={17} />}</button></DropdownMenu.Trigger></Tooltip>
         <DropdownMenu.Content align="end" size="1">
           <DropdownMenu.Item onSelect={actions.onProperties}><FilePenLine size={14} />内容属性</DropdownMenu.Item>
           <DropdownMenu.Item onSelect={actions.onSearch}><Search size={14} />{deleted || actions.reading ? "查找" : "查找与替换"}</DropdownMenu.Item>
           {actions.mode === "edit" && <DropdownMenu.CheckboxItem checked={actions.outlineOpen}
             onCheckedChange={actions.onOutline}><ListTree size={14} />显示文档大纲</DropdownMenu.CheckboxItem>}
-          {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
-          {!deleted && !actions.reading && <DropdownMenu.Item onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
-          {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages}
+          {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("copyMarkdown")} onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
+          {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("save")} onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
+          {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages || feedback?.isLocked("hostImages")}
             onSelect={actions.onHostImages}>
             {actions.hostingImages ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={14} />}
             {actions.hostingImages ? "正在上传图片…" : "批量上传到图床"}
@@ -674,7 +692,7 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
 
 export function DocumentSaveError({ queue, actions }: {
   queue: SaveQueue;
-  actions: Pick<DocumentActions, "onCopy" | "onDraft" | "onReload" | "onRetry">;
+  actions: Pick<DocumentActions, "onCopy" | "onDraft" | "onReload" | "onRetry" | "feedback">;
 }) {
   const error = useSyncExternalStore(queue.subscribe, () => queue.snapshot().error);
   const [expanded, setExpanded] = useState(false);
@@ -685,12 +703,13 @@ export function DocumentSaveError({ queue, actions }: {
     <span title={reason} className={expanded ? "" : "error-ellipsis"}>{reason}</span>
     <div className="button-strip">
       {conflict ? <>
-        <Button size="1" variant="soft" onClick={actions.onCopy}>复制当前稿</Button>
-        <Button size="1" variant="soft" onClick={actions.onDraft}>另存为副本</Button>
+        <Button size="1" variant="soft" {...actions.feedback?.props("copyMarkdown")} onClick={actions.onCopy}>
+          {actions.feedback?.label("copyMarkdown", "复制当前稿", "已复制") ?? "复制当前稿"}</Button>
+        <Button size="1" variant="soft" {...actions.feedback?.props("draft")} onClick={actions.onDraft}>另存为副本</Button>
         <Button size="1" variant="soft" onClick={actions.onReload}>重新加载</Button>
       </> : <>
         <Button size="1" variant="ghost" onClick={() => setExpanded(value => !value)}>{expanded ? "收起详情" : "详情"}</Button>
-        <Button size="1" variant="soft" onClick={actions.onRetry}>重试保存</Button>
+        <Button size="1" variant="soft" {...actions.feedback?.props("retrySave")} onClick={actions.onRetry}>重试保存</Button>
       </>}
     </div>
   </div>;

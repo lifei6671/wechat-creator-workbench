@@ -8,7 +8,7 @@ use crate::{
     content::sync as entries,
     db::{Result, id, workspace_id},
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -22,6 +22,7 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
         ..Applied::default()
     };
     preserve_distinct_images(conn, &mut changed)?;
+    preserve_distinct_categories(conn, &mut changed)?;
     queue_local_items(conn)?;
     prepare_categories(conn)?;
     release_asset_aliases(conn)?;
@@ -209,6 +210,82 @@ fn preserve_distinct_images(conn: &Connection, changed: &mut Applied) -> Result<
             params![id, body],
         )?;
         changed.changed_collections.insert(topic);
+    }
+    Ok(())
+}
+
+fn preserve_distinct_categories(conn: &Connection, changed: &mut Applied) -> Result<()> {
+    let mut query = conn.prepare("SELECT id,parent_id FROM categories ORDER BY depth,id")?;
+    let folders = query
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut renamed = BTreeMap::new();
+    for (folder, parent) in &folders {
+        let raw: Option<String> = conn.query_row(
+            "SELECT payload_json FROM sync_bootstrap WHERE entity_type='category' AND entity_id=?1
+             AND payload_json->>'$.deletedAt' IS NULL", [folder], |row| row.get(0),
+        ).optional()?;
+        let Some(raw) = raw else {
+            continue;
+        };
+        let remote: Entity = serde_json::from_str(&raw).map_err(invalid_response)?;
+        let key = super::Key {
+            entity_type: Kind::Category,
+            entity_id: folder.clone(),
+        };
+        let local = local_snapshot(conn, &key)?.ok_or_else(protocol_error)?;
+        if !same_content(local.clone(), &remote.payload)
+            || parent.as_ref().is_some_and(|id| renamed.contains_key(id))
+        {
+            let copy = id();
+            let target_parent = parent.as_ref().map(|id| renamed.get(id).unwrap_or(id));
+            let copied_parent = parent.as_ref().is_some_and(|id| renamed.contains_key(id));
+            let name = available_name(
+                conn,
+                target_parent.map(String::as_str),
+                local["name"].as_str().ok_or_else(protocol_error)?,
+                u64::from(!copied_parent),
+            )?;
+            conn.execute(
+                "INSERT INTO categories (id,parent_id,name,depth,sort_order,icon)
+                 SELECT ?1,?2,?3,depth,sort_order,icon FROM categories WHERE id=?4",
+                params![copy, target_parent, name, folder],
+            )?;
+            renamed.insert(folder.clone(), copy);
+        }
+    }
+    // Move local-only children and article references before the original IDs receive cloud metadata.
+    for (folder, parent) in &folders {
+        if !renamed.contains_key(folder)
+            && let Some(parent) = parent.as_ref().and_then(|id| renamed.get(id))
+        {
+            conn.execute(
+                "UPDATE categories SET parent_id=?2 WHERE id=?1",
+                params![folder, parent],
+            )?;
+        }
+    }
+    for (old, new) in renamed {
+        let mut query =
+            conn.prepare("SELECT id,folder_sort_order FROM entries WHERE category_id=?1")?;
+        let articles = query
+            .query_map([&old], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (article, order) in articles {
+            conn.execute(
+                "UPDATE entries SET category_id=?2,version=version+1 WHERE id=?1",
+                params![article, new],
+            )?;
+            conn.execute(
+                "UPDATE entries SET folder_sort_order=?2 WHERE id=?1",
+                params![article, order],
+            )?;
+            changed.changed_entries.push(article);
+        }
     }
     Ok(())
 }

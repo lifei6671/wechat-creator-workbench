@@ -8,6 +8,7 @@ import type { ClipboardIO, EditorCommand, ImageContext, LinkContext, MarkdownEdi
 import type { ChatSelection } from "../ai/context";
 import { desktop } from "../desktop";
 import { TableContextMenu } from "./TableContextMenu";
+import { ActionError, useButtonFeedback } from "../button-feedback";
 
 export interface EditorDisplay {
   limitWidth: boolean;
@@ -23,7 +24,7 @@ export const editorDisplayItems = [
   ["convertLinks", "链接转脚注", FileCode2],
 ] as const;
 
-export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onError, onLeave, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
+export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onLeave, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
   readOnly: boolean;
@@ -39,6 +40,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   children: ReactNode;
 }) {
   const [selected, setSelected] = useState(false);
+  const buttons = useButtonFeedback();
   const [ready, setReady] = useState(false);
   const [menu, setMenu] = useState<"display" | "body" | "code" | "cellText" | "object" | TableContext | ImageContext>("body");
   const [linkContext, setLinkContext] = useState<LinkContext | null>(null);
@@ -115,11 +117,11 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         setReady(Boolean(handle));
         setSelected(handle?.hasSelection() ?? false);
       }}>
-        <div className="editor-area">{children}</div>
+        <div className="editor-area">{children}<ActionError className="editor-action-feedback" error={buttons.error()} /></div>
       </ContextMenu.Trigger>
       {typeof menu === "object" ? ("kind" in menu ? <ContextMenu.Content size="1" aria-label="图片操作" {...menuFocus}>
-        <ContextMenu.Item disabled={!menu.available} onSelect={() => { void desktop.copyImage(menu.src).catch(onError); }}><Copy size={15} />复制图片</ContextMenu.Item>
-        <ContextMenu.Item disabled={!menu.available} onSelect={() => { void desktop.saveImage(menu.src).catch(onError); }}><FileDown size={15} />另存为</ContextMenu.Item>
+        <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`copy:${menu.src}`)} onSelect={() => { void buttons.run(`copy:${menu.src}`, () => desktop.copyImage(menu.src)); }}><Copy size={15} />复制图片</ContextMenu.Item>
+        <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`save:${menu.src}`)} onSelect={() => { void buttons.run(`save:${menu.src}`, () => desktop.saveImage(menu.src)); }}><FileDown size={15} />另存为</ContextMenu.Item>
         {!readOnly && (uploadingImage || (menu.isCurrent() && canHost?.(menu.src))) && <ContextMenu.Item disabled={uploadingImage || hostBusy}
           onSelect={() => onHostImage?.(menu)}>
           {uploadingImage ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={15} />}
@@ -222,7 +224,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         <Dialog.Title>插入链接</Dialog.Title>
         <form className="dialog-form" onSubmit={link}>
           <label>链接地址<TextField.Root name="address" placeholder="https://" autoFocus required /></label>
-          {invalid && <p className="inline-error" role="alert">请输入有效的网址或邮件链接</p>}
+          <ActionError error={invalid ? "请输入有效的网址或邮件链接" : undefined} />
           <div className="dialog-actions">
             <Dialog.Close><Button type="button" variant="soft" color="gray">取消</Button></Dialog.Close>
             <Button type="submit">插入</Button>

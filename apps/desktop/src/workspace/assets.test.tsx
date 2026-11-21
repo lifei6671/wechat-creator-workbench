@@ -246,9 +246,11 @@ it("edits saved S3 credentials in place and disables hosting without clearing fi
     await vi.waitFor(() => expect(container.querySelector('button[value="save"]')?.textContent).toBe("已保存"));
     expect(container.querySelector(".image-storage-feedback")?.textContent).toBe("");
     expect(save).toHaveBeenLastCalledWith(target, secret, { filenameTemplate: "", quality: "standard", autoUpload: true });
+    await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>('button[value="test"]')?.disabled).toBe(false), { timeout: 1600 });
     submit("test");
     await vi.waitFor(() => expect(container.querySelector('.image-storage-feedback[data-error="true"]')?.textContent).toBe("测试失败"));
     flushSync(() => container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
+    await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>('button[value="save"]')?.disabled).toBe(false), { timeout: 1600 });
     submit("save");
     await vi.waitFor(() => expect(container.querySelector('button[value="save"]')?.textContent).toBe("已保存"));
     expect(container.querySelector(".image-storage-feedback")?.textContent).toBe("");
@@ -335,7 +337,7 @@ it("refreshes an off-page selection through upload failure, retry and completion
     flushSync(() => button("重试上传")!.click());
     await vi.waitFor(() => expect(container.querySelector(".asset-dimensions")?.textContent).toContain("等待重试"));
     expect(upload).toHaveBeenCalledExactlyOnceWith(first.id);
-    expect(button("上传")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('.asset-controls button[data-feedback-state="success"]')?.disabled).toBe(true);
     expect(container.querySelector(".asset-details [role=alert]")).toBeNull();
     first = { ...first, uploadStatus: null, publicUrl: "https://cdn.example.test/done.png" };
     changed();
@@ -356,7 +358,7 @@ it("refreshes an off-page selection through upload failure, retry and completion
     await vi.waitFor(() => expect(detail).toHaveBeenLastCalledWith(first.id));
     oldResult({ ...first, publicUrl: null, uploadStatus: "running" });
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(button("复制图床链接")).toBeDefined();
+    await vi.waitFor(() => expect(button("复制图床链接")?.disabled).toBe(false), { timeout: 1600 });
     flushSync(() => button("复制图床链接")!.click());
     expect(copy).toHaveBeenLastCalledWith(first.publicUrl);
 
@@ -387,4 +389,30 @@ it("refreshes an off-page selection through upload failure, retry and completion
     vi.unstubAllGlobals();
   }
   expect(listeners.size).toBe(0);
+});
+
+
+it("preserves an image import failure after the library refresh succeeds", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  let refresh!: () => void;
+  vi.spyOn(desktop, "onAssetsChanged").mockImplementation(async callback => { refresh = callback; return () => {}; });
+  const read = vi.spyOn(desktop, "assetLibrary").mockResolvedValue({ items: [], page: 0, hasNext: false, target: null });
+  const importImages = vi.fn().mockRejectedValue(new Error("图片无法导入，请检查文件"));
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    flushSync(() => root.render(<Theme><AssetPanel onImport={importImages} onInsert={vi.fn()} onCover={vi.fn()}
+      onConfigure={vi.fn()} canInsert={false} canCover={false} /></Theme>));
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [new File(["image"], "sample.png", { type: "image/png" })] });
+    flushSync(() => input.dispatchEvent(new Event("change", { bubbles: true })));
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toBe("图片无法导入，请检查文件"));
+    const calls = read.mock.calls.length;
+    refresh();
+    await vi.waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(calls));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("图片无法导入，请检查文件");
+    expect(importImages).toHaveBeenCalledOnce();
+  } finally { flushSync(() => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); }
 });

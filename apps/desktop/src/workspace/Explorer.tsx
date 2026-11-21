@@ -15,6 +15,7 @@ import { FolderInline } from "./FolderInline";
 import { InlineEntryTitle } from "./InlineEntryTitle";
 import { useExplorerDrag } from "./explorer-drag";
 import type { DocumentOpenMode } from "./preferences";
+import type { useButtonFeedback } from "../button-feedback";
 import { SearchHitRow, WorkspaceSearch, searchDisplayDefaults, searchDisplayKey } from "./WorkspaceSearch";
 
 export type Section = "folders" | "timeline" | "search" | "assets" | "trash" | "imports" | "collections";
@@ -94,6 +95,7 @@ export interface ExplorerHandle {
 }
 
 interface ExplorerProps {
+  feedback?: ReturnType<typeof useButtonFeedback>;
   ref?: Ref<ExplorerHandle>;
   section: Exclude<Section, "assets" | "collections">;
   library: Library | null;
@@ -146,7 +148,7 @@ interface ExplorerProps {
   onMore(): void;
 }
 
-export type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "treeLocked" | "openMode" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError" | "onMoveEntry" | "collectionOptions" | "onAddToCollection"> & {
+export type RowActions = Pick<ExplorerProps, "active" | "readOnlyIds" | "treeLocked" | "openMode" | "onOpen" | "onRowAction" | "onRenameEntry" | "onFolderError" | "onMoveEntry" | "collectionOptions" | "onAddToCollection" | "feedback"> & {
   categories: Category[];
 };
 
@@ -638,7 +640,7 @@ function SearchNote({ row, matches, actions, search, selected, collapsed, showCo
 
 export function ContentRow({ row, actions, detail = false, pinned, draggable, dragging, placement, timeline, search }: {
   row: EntryRow; actions: RowActions; detail?: boolean; pinned?: boolean; draggable?: boolean; dragging?: boolean; placement?: CategoryPlacement;
-  timeline?: { id: string; content: ReactNode };
+  timeline?: { id: string; content(feedback: ReactNode): ReactNode };
   search?: { toggle: ReactNode; count: number; results: ReactNode };
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -653,23 +655,32 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
   const isPinned = pinned || row.pinned;
   const pinLabel = isPinned ? "取消置顶" : "置顶";
   const PinIcon = isPinned ? PinOff : Pin;
+  const feedback = actions.feedback;
+  const copyKeys = [`copyTitle:${row.id}`, `copyPath:${row.id}`];
+  const copyKey = copyKeys.find(key => feedback?.status(key));
+  const copyLocked = copyKeys.some(key => feedback?.isLocked(key));
+  const copyState = copyKey ? feedback?.status(copyKey) : undefined;
+  const copyLabel = copyKey && feedback ? feedback.label(copyKey, "正在复制…",
+    copyKey === copyKeys[0] ? "标题已复制" : "路径已复制", "复制失败") : null;
+  const rowIcon = pinned ? <Pin size={15} /> : <FileText size={15} />;
   const act = (action: EntryRowAction) => {
     if (timeline) actions.onRowAction(row, action, document.getElementById(rowId));
     else actions.onRowAction(row, action);
   };
   const trigger = <ContextMenu.Trigger>
-    {timeline ? <div className="plain-button timeline-entry" data-menu-target={menuOpen || undefined}>
+    {timeline ? <div className="plain-button timeline-entry" data-menu-target={menuOpen || undefined} data-feedback-state={copyState}>
       <button type="button" id={rowId} className="timeline-entry-open" aria-label={title}
-        aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)} />
-      {timeline.content}
+        aria-current={row.id === actions.active ? "true" : undefined} aria-busy={copyState === "pending" || undefined} onClick={() => actions.onOpen(row.id)} />
+      {timeline.content(copyKey && feedback ? <span className="entry-copy-result">{feedback.icon(copyKey, <Copy size={15} />, 15)}{copyLabel}</span> : null)}
     </div> : <button type="button" id={rowId}
       className={`plain-button entry-row ${detail ? "entry-detail" : "tree-entry"}`}
       data-tree-kind={detail ? undefined : "entry"} data-tree-id={row.id}
       data-tree-title={detail ? undefined : title}
       data-tree-draggable={draggable || undefined} data-tree-pinned={pinned || undefined} data-dragging={dragging || undefined}
       data-menu-target={menuOpen || undefined}
-      aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)}>
-      {!search && (pinned ? <Pin size={15} /> : <FileText size={15} />)}<span className="entry-title">{title}</span>
+      data-feedback-state={copyState} aria-busy={copyState === "pending" || undefined}
+      aria-label={title} aria-current={row.id === actions.active ? "true" : undefined} onClick={() => actions.onOpen(row.id)}>
+      {!search && (copyKey && feedback ? feedback.icon(copyKey, rowIcon, 15) : rowIcon)}<span className="entry-title">{copyLabel ?? title}</span>
       {detail && <span className="entry-meta"><span>{statusLabels[row.status]}</span><time dateTime={new Date(row.updatedAt).toISOString()}>{dateLabel(row.updatedAt)}</time></span>}
     </button>}
   </ContextMenu.Trigger>;
@@ -726,8 +737,8 @@ export function ContentRow({ row, actions, detail = false, pinned, draggable, dr
             onAdd={collection => actions.onAddToCollection?.(row.id, collection)} onError={actions.onFolderError} />}
         </>}
         <ContextMenu.Separator />
-        <ContextMenu.Item onSelect={() => act("copyTitle")}><Copy size={14} />复制标题</ContextMenu.Item>
-        <ContextMenu.Item onSelect={() => act("copyPath")}><Link size={14} />复制工作区路径</ContextMenu.Item>
+        <ContextMenu.Item disabled={copyLocked} onSelect={() => act("copyTitle")}><Copy size={14} />复制标题</ContextMenu.Item>
+        <ContextMenu.Item disabled={copyLocked} onSelect={() => act("copyPath")}><Link size={14} />复制工作区路径</ContextMenu.Item>
         <ContextMenu.Item onSelect={() => act("history")}><History size={14} />历史版本</ContextMenu.Item>
         <ContextMenu.Item onSelect={() => act("export")}><FileDown size={14} />导出 Markdown</ContextMenu.Item>
         <ContextMenu.Separator />

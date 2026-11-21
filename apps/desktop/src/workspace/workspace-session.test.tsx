@@ -3,7 +3,7 @@ import { Theme } from "@radix-ui/themes";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { useImperativeHandle, type ComponentProps } from "react";
+import { act, useImperativeHandle, type ComponentProps } from "react";
 import type { Collection, Entry, EntryPage } from "../../../../packages/shared-types";
 import { desktop, type AiHistoryItem, type AiStreamEvent } from "../desktop";
 import { AiPanel } from "./AiPanel";
@@ -80,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   flushSync(() => root.unmount());
   container.remove();
   localStorage.clear();
@@ -91,6 +92,99 @@ afterEach(() => {
 function openTabs() {
   return [...container.querySelectorAll('[role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
+
+it.each([
+  ["folders", "copyTitle", false], ["folders", "copyPath", false],
+  ["timeline", "copyTitle", false], ["timeline", "copyPath", false],
+  ["tab", "copyPath", false], ["folders", "copyTitle", true],
+  ["search", "copyPath", false], ["search", "copyTitle", true],
+] as const)("keeps %s %s feedback visible after its menu closes (failure=%s)", async (surface, action, failure) => {
+  vi.spyOn(desktop, "entry").mockResolvedValue(entry("manual"));
+  let complete!: () => void;
+  const copy = vi.spyOn(desktop, "copyText").mockReturnValue(new Promise<void>((resolve, reject) => {
+    complete = () => failure ? reject(new Error("剪贴板暂不可用")) : resolve();
+  }));
+  if (surface === "tab" || surface === "search") saveDocumentTabs(workspaceId, { ids: ["manual"], activeId: "manual" });
+  if (surface === "search") vi.mocked(desktop.entries).mockImplementation(async filter => ({
+    items: filter.workspaceSearch?.text ? [{ ...entry("manual"), searchMatches: { version: 1, total: 1, nextOffset: null,
+      items: [{ line: 1, start: 0, text: "manual", ranges: [{ start: 0, end: 6 }], before: null, after: null, leading: false, trailing: false }] } }] : [],
+    nextOffset: null,
+  }));
+  flushSync(() => root.render(<DesktopShell />));
+  if (surface === "timeline") {
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="文章时间流"]')).not.toBeNull());
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="文章时间流"]')!.click());
+  }
+  if (surface === "search") {
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="全文搜索"]')).not.toBeNull());
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="全文搜索"]')!.click());
+    const input = container.querySelector<HTMLInputElement>('[aria-label="搜索笔记"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "manual");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  const selector = surface === "tab" ? "#tab-manual" : surface === "timeline" ? "#timeline-row-manual" : "#entry-row-manual";
+  await vi.waitFor(() => expect(container.querySelector(selector)).not.toBeNull());
+  const trigger = () => container.querySelector<HTMLButtonElement>(selector)!;
+  if (surface === "search") {
+    expect(trigger().closest(".search-note-header")).not.toBeNull();
+    expect(trigger().getAttribute("aria-current")).toBe("true");
+  }
+  const feedbackHost = () => surface === "timeline" ? trigger().closest<HTMLElement>(".timeline-entry")! : trigger();
+  const label = action === "copyTitle" ? "复制标题" : "复制工作区路径";
+  const menuItems = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  const openMenu = () => act(async () => {
+    trigger().focus();
+    trigger().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
+  });
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  try {
+    const errorSlot = container.querySelector(".status-action-feedback");
+    await openMenu();
+    await act(async () => {
+      const item = menuItems().find(item => item.textContent === label)!;
+      if (surface === "tab") {
+        item.focus();
+        item.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      } else item.click();
+    });
+    expect(copy).toHaveBeenCalledExactlyOnceWith(action === "copyTitle" ? "manual" : "目录 / manual");
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(feedbackHost().dataset.feedbackState).toBe("pending");
+    expect(feedbackHost().textContent).toContain("正在复制");
+    if (surface !== "search") expect(feedbackHost().querySelector('.button-feedback-icon[data-state="pending"]')).not.toBeNull();
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(feedbackHost().dataset.feedbackState).toBe("pending");
+    await openMenu();
+    for (const item of menuItems().filter(item => ["复制标题", "复制工作区路径"].includes(item.textContent ?? ""))) {
+      expect(item.getAttribute("aria-disabled")).toBe("true");
+      await act(async () => item.click());
+    }
+    expect(copy).toHaveBeenCalledOnce();
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    await act(async () => complete());
+    expect(feedbackHost().dataset.feedbackState).toBe(failure ? "error" : "success");
+    expect(feedbackHost().textContent).toContain(failure ? "复制失败" : action === "copyTitle" ? "标题已复制" : "路径已复制");
+    await openMenu();
+    const resultItem = menuItems().find(item => item.textContent === label)!;
+    expect(resultItem.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => resultItem.click());
+    expect(copy).toHaveBeenCalledOnce();
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await act(async () => vi.advanceTimersByTime(999));
+    expect(feedbackHost().dataset.feedbackState).toBe(failure ? "error" : "success");
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(feedbackHost().dataset.feedbackState).toBeUndefined();
+    expect(feedbackHost().textContent).toContain("manual");
+    expect(container.querySelector(".status-action-feedback")).toBe(errorSlot);
+    expect(errorSlot?.textContent).toBe(failure ? "剪贴板暂不可用" : "");
+    await openMenu();
+    expect(menuItems().find(item => item.textContent === label)?.getAttribute("aria-disabled")).not.toBe("true");
+  } finally { vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", false); }
+});
 
 it.each([false, true])("resolves pasted local images through the active host only when automatic upload is %s", async autoUpload => {
   const target = { endpoint: "https://s3.example.test", region: "auto", bucket: "images", prefix: "workspace", publicBase: "https://images.example.test", autoUpload };
@@ -222,7 +316,7 @@ it("opens an already collected clipping without overwriting it and reports delet
   await vi.waitFor(() => expect(editorClipboards.has("original")).toBe(true));
   await editorClipboards.get("original")!.read();
   await vi.waitFor(() => expect(openTabs()).toContain("existing"));
-  expect(container.textContent).toContain("原文已收录，已打开已有文章");
+  expect(container.querySelector(".workspace-toast")).toBeNull();
   imported.mockResolvedValue({ entryId: "deleted", existing: true, deleted: true, unavailableImages: 0 });
   await editorClipboards.get("existing")!.read();
   await vi.waitFor(() => expect(container.textContent).toContain("请先从回收站恢复"));
@@ -907,7 +1001,7 @@ it("marks joined topics and updates the menu after adding an article without ope
   });
   flushSync(() => destination.click());
   await vi.waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith(topic.id, { kind: "entry", entryId: "manual" }, { x: 24, y: 24 }));
-  await vi.waitFor(() => expect(container.textContent).toContain("已加入「待研究」"));
+  expect(container.querySelector(".workspace-toast")).toBeNull();
   expect(container.querySelector("#collection-tab-reading-list")).toBeNull();
   memberships.mockResolvedValue([joined, topic]);
   openSubmenu();
