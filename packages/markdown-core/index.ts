@@ -1,10 +1,19 @@
 import MarkdownIt from "markdown-it";
 import mark from "markdown-it-mark";
+import { tasklist } from "@mdit/plugin-tasklist";
 import createDOMPurify from "dompurify";
 import { renderCallouts } from "./callouts";
 
 export function createMarkdownParser() {
-  const parser = new MarkdownIt({ html: true }).use(mark).use(renderCallouts);
+  const parser = new MarkdownIt({ html: true }).use(mark).use(renderCallouts).use(tasklist, { label: false });
+  parser.core.ruler.before("task_list", "workbench_task_spacing", state => {
+    state.tokens.forEach((token, index, tokens) => {
+      if (token.type === "inline" && tokens[index - 1]?.type === "paragraph_open" && tokens[index - 2]?.type === "list_item_open") {
+        token.content = token.content.replace(/^(\[[ xX]\])\t/, "$1 ");
+      }
+    });
+  });
+  parser.renderer.rules.checkbox_input = (tokens, index) => `<span class="workbench-task-marker">${tokens[index].attrGet("checked") ? "☑" : "☐"}</span>`;
   parser.renderer.rules.heading_open = (tokens, index, options, _env, renderer) => {
     const token = tokens[index];
     if (token.map) token.attrSet("data-line", String(token.map[0] + 1));

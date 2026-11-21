@@ -26,12 +26,15 @@ function wechatThemeCss(theme: typeof wechatThemes[number]) {
     `${selector.split(",").map(part => `[class="plainly-article"]${part.trim() === "container" ? "" : ` ${part.trim()}`}`).join(",")}{${styles}}`);
   return styleRules.join("\n")
     + ".plainly-article mark{background-color:#fff7c2;color:inherit;}"
-    + `.plainly-article blockquote.workbench-callout{padding:${calloutPadding};border-left-width:0.5px;font-style:normal;}`
-    + ".plainly-article blockquote.workbench-callout-info{background-color:#e6f4fe !important;border-left-color:#8ec8f6;}"
-    + ".plainly-article blockquote.workbench-callout-warning{background-color:#fff7c2 !important;border-left-color:#e9c162;}"
-    + ".plainly-article .workbench-callout-info .workbench-callout-title{color:#0d74ce;}.plainly-article .workbench-callout-warning .workbench-callout-title{color:#ab6400;}"
+    + `.plainly-article blockquote.workbench-callout{padding:${calloutPadding};border:0;border-left:0.5px solid;font-style:normal;text-align:start;}`
+    + ".plainly-article .workbench-callout .workbench-callout-title{padding:0;background:transparent !important;border-radius:0;font-weight:600;}.plainly-article .workbench-callout .workbench-callout-title strong{color:inherit !important;padding:0;background:transparent !important;}"
+    + ".plainly-article .workbench-callout-tone-info{background-color:#e6f4fe !important;border-left-color:#8ec8f6;}.plainly-article .workbench-callout-tone-info .workbench-callout-title{color:#0d74ce !important;}"
+    + ".plainly-article .workbench-callout-tone-warning{background-color:#fff7c2 !important;border-left-color:#e9c162;}.plainly-article .workbench-callout-tone-warning .workbench-callout-title{color:#ab6400 !important;}"
+    + ".plainly-article .workbench-callout-tone-success{background-color:#e6f6eb !important;border-left-color:#adddc0;}.plainly-article .workbench-callout-tone-success .workbench-callout-title{color:#218358 !important;}"
+    + ".plainly-article .workbench-callout-tone-danger{background-color:#feebec !important;border-left-color:#f4a9aa;}.plainly-article .workbench-callout-tone-danger .workbench-callout-title{color:#ce2c31 !important;}"
     + ".plainly-article .plainly-inline-math{display:inline-block;margin:0 2px;vertical-align:middle;width:auto;max-width:100%;border-radius:0;}"
     + ".plainly-article .plainly-reference-title{margin:28px 0 10px;padding:0;border:0;}"
+    + ".plainly-article li.task-list-item{list-style:none;}.plainly-article .workbench-task-marker{display:inline-block;min-width:1em;margin-right:4px;}"
     + ".plainly-article .footnotes-list{list-style:none;margin:0;padding:0;}"
     + ".plainly-article .footnote-item{list-style:none;margin:4px 0;overflow-wrap:anywhere;}"
     + ".plainly-article .footnote-item>p:first-of-type{display:inline;margin:0 !important;}"
@@ -48,24 +51,54 @@ export function wechatEditorStyles(id?: string | null) {
   if (cached) return cached;
   const template = document.createElement("template");
   const headings = ["h1", "h2", "h3", "h4", "h5", "h6"];
-  const sample = `<section class="plainly-article"><p>正文</p>${headings.map(name => `<${name}>标题</${name}>`).join("")}<blockquote><p>引用</p></blockquote><blockquote class="workbench-callout"><p>提示</p></blockquote><h2 class="plainly-reference-title">参考资料</h2></section>`;
-  template.innerHTML = juice.inlineContent(sample, wechatThemeCss(theme), { preserveImportant: true });
+  const article = document.createElement("section");
+  article.className = "plainly-article";
+  article.innerHTML = `<p>正文</p>${headings.map(name => `<${name}>标题</${name}>`).join("")}<blockquote><p>引用</p><p>引用末段</p></blockquote><blockquote class="workbench-callout workbench-callout-tone-info"><p>提示</p><p>提示末段</p></blockquote><ul><li>紧密列表</li><li><p>松散列表</p></li></ul><ol><li>有序列表</li></ol><table><thead><tr><th>表头</th></tr></thead><tbody><tr><td>单元格</td></tr></tbody></table><pre><code class="language-javascript">const value = 1;</code></pre><section><h2 class="plainly-reference-title">参考资料</h2></section>`;
+  if ("layout" in theme && theme.layout === "gzh-design") applyGzhDesign(article);
+  template.innerHTML = juice.inlineContent(article.outerHTML, wechatThemeCss(theme), { preserveImportant: true });
   const variables: Record<string, string> = {};
-  for (const name of [...headings, "p", "blockquote"]) {
-    const { style } = template.content.querySelector<HTMLElement>(name)!;
+  function box(name: string, style: CSSStyleDeclaration) {
     for (const property of ["margin", "padding"] as const) {
       variables[`--article-${name}-${property}-block`] = `${style.getPropertyValue(`${property}-top`) || "0px"} ${style.getPropertyValue(`${property}-bottom`) || "0px"}`;
+      variables[`--article-${name}-${property}-inline`] = `${style.getPropertyValue(`${property}-left`) || "0px"} ${style.getPropertyValue(`${property}-right`) || "0px"}`;
     }
-    if (headings.includes(name)) {
-      variables[`--article-${name}-padding-inline`] = `${style.paddingLeft || "0px"} ${style.paddingRight || "0px"}`;
-      for (const property of ["width", "style"] as const) {
-        variables[`--article-${name}-border-${property}`] = ["top", "right", "bottom", "left"]
-          .map(side => style.getPropertyValue(`border-${side}-${property}`) || (property === "width" ? "0px" : "none")).join(" ");
-      }
-      variables[`--article-${name}-background`] = style.backgroundColor && style.backgroundColor !== "transparent"
-        ? "var(--article-quote)" : "transparent";
+    for (const property of ["width", "style"] as const) {
+      variables[`--article-${name}-border-${property}`] = ["top", "right", "bottom", "left"]
+        .map(side => style.getPropertyValue(`border-${side}-${property}`) || (property === "width" ? "0px" : "none")).join(" ");
     }
+    const background = style.backgroundColor;
+    variables[`--article-${name}-background`] = !background || background === "initial" || background === "transparent" || background === "rgba(0, 0, 0, 0)"
+      ? "transparent" : "var(--article-quote)";
+    variables[`--article-${name}-text-align`] = style.textAlign || "inherit";
+    variables[`--article-${name}-font-style`] = style.fontStyle || "inherit";
+    variables[`--article-${name}-border-radius`] = style.borderRadius || "0px";
   }
+  for (const name of [...headings, "p", "blockquote", "ul", "ol", "li", "table", "th", "td"]) {
+    box(name, template.content.querySelector<HTMLElement>(name)!.style);
+  }
+  const cell = template.content.querySelector<HTMLElement>("td")!.style;
+  if (cell.backgroundColor === "rgb(255, 255, 255)") variables["--article-td-background"] = "var(--app-bg)";
+  const header = template.content.querySelector<HTMLElement>("th")!.style;
+  variables["--article-th-font-weight"] = header.fontWeight || "bold";
+  variables["--article-th-color"] = header.color === "rgb(255, 255, 255)" ? "var(--gray-1)" : "inherit";
+  if (header.backgroundColor === "rgb(128, 128, 128)") variables["--article-th-background"] = "var(--gray-9)";
+  const listParagraph = template.content.querySelector<HTMLElement>("li > p")!.style;
+  variables["--article-list-paragraph-margin-block"] = `${listParagraph.marginTop || "0px"} ${listParagraph.marginBottom || "0px"}`;
+  const pre = template.content.querySelector<HTMLElement>("pre")!;
+  const frame = pre.closest<HTMLElement>(".gzh-code") ?? pre;
+  box("code-frame", frame.style);
+  if (theme.id === "plainly-default") {
+    variables["--article-code-frame-background"] = "var(--gray-3)";
+    variables["--article-th-background"] = "var(--gray-3)";
+  }
+  variables["--article-code-padding"] = pre.style.padding;
+  variables["--article-code-padding-top"] = pre.style.paddingTop;
+  variables["--article-code-padding-left"] = pre.style.paddingLeft;
+  variables["--article-code-padding-right"] = pre.style.paddingRight;
+  const codeLabel = frame.querySelector<HTMLElement>(".gzh-code-label");
+  variables["--article-code-label-padding"] = codeLabel?.style.padding || "0px";
+  variables["--article-code-label-border"] = codeLabel ? `${codeLabel.style.borderBottomWidth} ${codeLabel.style.borderBottomStyle} var(--article-rule)` : "0px none";
+  variables["--article-code-label-line-height"] = codeLabel?.style.lineHeight || (template.content.firstElementChild as HTMLElement).style.lineHeight || "normal";
   variables["--article-quote-paragraph-end"] = template.content.querySelector<HTMLElement>("blockquote > p:last-child")!.style.marginBottom || "0px";
   const quoteParagraph = template.content.querySelector<HTMLElement>("blockquote > p")!.style;
   variables["--article-quote-paragraph-margin-block"] = `${quoteParagraph.marginTop} ${quoteParagraph.marginBottom}`;

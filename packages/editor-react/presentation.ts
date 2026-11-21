@@ -2,7 +2,7 @@ import { DOMSerializer, Fragment, type Mark, type Node as ProseNode } from "@mil
 import { Plugin, PluginKey, Selection, TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/kit/prose/view";
 import { ReplaceStep } from "@milkdown/kit/prose/transform";
-import { readCalloutMarker } from "../markdown-core/callouts";
+import { calloutTone, readCalloutMarker } from "../markdown-core/callouts";
 import { codeHighlight } from "./code-view";
 import { tableSelectionDecorations } from "./table-view";
 import { documentLinkFootnotes, hasLinkFootnoteContent } from "./link-footnotes";
@@ -98,6 +98,7 @@ function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumb
       const callout = first?.isText && !first.marks.length && readCalloutMarker(first.text!);
       if (callout) {
         attrs["data-callout"] = callout.kind;
+        attrs["data-callout-tone"] = calloutTone(callout.kind);
         const start = pos + 2;
         let headerEnd = paragraph.content.size;
         paragraph.forEach((child, offset) => {

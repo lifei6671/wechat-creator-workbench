@@ -13,7 +13,8 @@ vi.mock("../workspace/EditorContextMenu", () => ({ EditorContextMenu: ({ childre
 
 it.each(wechatThemes)("takes spacing and heading decoration from the $id publication theme", async theme => {
   const markdown = ["正文", ...Array.from({ length: 6 }, (_, index) => `${"#".repeat(index + 1)} 标题`),
-    "> 引用第一段\n>\n> 引用最后一段", "> [!NOTE]\n> 提示正文", "正文脚注[^1]", "[^1]: 纯文本来源"].join("\n\n");
+    "> 引用第一段\n>\n> 引用最后一段", "> [!NOTE]\n> 提示正文", "- 列表第一项\n- 列表第二项", "1. 有序第一项\n2. 有序第二项",
+    "| 表头 |\n| --- |\n| 单元格 |", "```javascript\nconst value = 1;\n```", "正文脚注[^1]", "[^1]: 纯文本来源"].join("\n\n");
   const result = await renderWechat({ markdown, themeId: theme.id, revision: 1, output: "preview" }, {
     sources: vi.fn(), derive: vi.fn(), image: vi.fn(),
   });
@@ -21,19 +22,21 @@ it.each(wechatThemes)("takes spacing and heading decoration from the $id publica
     const template = document.createElement("template");
     template.innerHTML = result.html;
     const spacing = wechatEditorStyles(theme.id);
-    for (const name of ["h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote"]) {
+    for (const name of ["h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "ul", "ol", "li", "table", "th", "td"]) {
       const { style } = template.content.querySelector<HTMLElement>(name)!;
       for (const property of ["margin", "padding"]) {
         const expected = ["top", "bottom"].map(side => style.getPropertyValue(`${property}-${side}`) || "0px").join(" ");
         expect(spacing[`--article-${name}-${property}-block`], `${name} ${property}`).toBe(expected);
       }
-      if (/^h[1-6]$/.test(name)) {
+      if (/^h[1-6]$/.test(name) || ["blockquote", "th", "td"].includes(name)) {
         expect(spacing[`--article-${name}-padding-inline`]).toBe(`${style.paddingLeft || "0px"} ${style.paddingRight || "0px"}`);
         for (const property of ["width", "style"]) {
           const expected = ["top", "right", "bottom", "left"]
             .map(side => style.getPropertyValue(`border-${side}-${property}`) || (property === "width" ? "0px" : "none")).join(" ");
           expect(spacing[`--article-${name}-border-${property}`]).toBe(expected);
         }
+        expect(spacing[`--article-${name}-text-align`]).toBe(style.textAlign || "inherit");
+        expect(spacing[`--article-${name}-font-style`]).toBe(style.fontStyle || "inherit");
       }
     }
     const last = template.content.querySelector<HTMLElement>("blockquote > p:last-child")!;
@@ -45,6 +48,15 @@ it.each(wechatThemes)("takes spacing and heading decoration from the $id publica
     const reference = [...template.content.querySelectorAll<HTMLElement>("h2")].find(node => node.textContent === "参考资料")!;
     expect(spacing["--article-reference-margin"]).toBe(reference.style.margin);
     expect(spacing["--article-reference-padding"]).toBe(reference.style.padding);
+    const pre = template.content.querySelector<HTMLElement>("pre")!;
+    const frame = pre.parentElement === template.content.firstElementChild ? pre : pre.parentElement!;
+    expect(spacing["--article-code-padding"]).toBe(pre.style.padding);
+    expect(spacing["--article-code-frame-margin-block"]).toBe(`${frame.style.marginTop || "0px"} ${frame.style.marginBottom || "0px"}`);
+    for (const property of ["width", "style"]) {
+      const expected = ["top", "right", "bottom", "left"]
+        .map(side => frame.style.getPropertyValue(`border-${side}-${property}`) || (property === "width" ? "0px" : "none")).join(" ");
+      expect(spacing[`--article-code-frame-border-${property}`]).toBe(expected);
+    }
   } finally { result.dispose(); }
 });
 
@@ -76,6 +88,12 @@ it.each(["preview", "clipboard", "html"] as const)("halves the technical theme's
 it("uses the default theme spacing for unknown or missing theme identifiers", () => {
   expect(wechatEditorStyles("missing-theme")).toEqual(wechatEditorStyles("plainly-default"));
   expect(wechatEditorStyles(null)).toEqual(wechatEditorStyles("plainly-default"));
+});
+
+it("keeps transparent gradient bases transparent while retaining filled theme headings", () => {
+  expect(wechatEditorStyles("plainly-tech")["--article-h2-background"]).toBe("transparent");
+  expect(wechatEditorStyles("gzh-moyu-ticket")["--article-h2-background"]).toBe("var(--article-quote)");
+  expect(wechatEditorStyles("plainly-elegant")["--article-blockquote-background"]).toBe("transparent");
 });
 
 it("updates the existing document's spacing when its theme changes without editing its Markdown", () => {

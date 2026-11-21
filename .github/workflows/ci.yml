@@ -64,6 +64,8 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium webkit
+      - run: pnpm test:browser
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.3

@@ -54,9 +54,9 @@
   padding-block: 6px; border-inline-start-color: var(--callout-border); background: var(--callout-bg); color: var(--text-main);
 }
 .rich-editor blockquote[data-callout] > p:last-child { margin-block-end: var(--article-quote-paragraph-end, 0); }
-.rich-editor blockquote:is([data-callout="warning"], [data-callout="question"]) { --callout-bg: var(--amber-a3); --callout-border: var(--amber-a7); --callout-title: var(--amber-11); }
-.rich-editor blockquote:is([data-callout="failure"], [data-callout="danger"], [data-callout="bug"]) { --callout-bg: var(--red-a3); --callout-border: var(--red-a7); --callout-title: var(--red-11); }
-.rich-editor blockquote:is([data-callout="tip"], [data-callout="success"]) { --callout-bg: var(--green-a3); --callout-border: var(--green-a7); --callout-title: var(--green-11); }
+.rich-editor blockquote[data-callout-tone="warning"] { --callout-bg: var(--amber-a3); --callout-border: var(--amber-a7); --callout-title: var(--amber-11); }
+.rich-editor blockquote[data-callout-tone="danger"] { --callout-bg: var(--red-a3); --callout-border: var(--red-a7); --callout-title: var(--red-11); }
+.rich-editor blockquote[data-callout-tone="success"] { --callout-bg: var(--green-a3); --callout-border: var(--green-a7); --callout-title: var(--green-11); }
 .rich-callout-title { color: var(--callout-title); font-weight: 600; }
 .rich-callout-marker { font-size: 0; }
 .rich-callout-marker[data-callout-label]::before { content: attr(data-callout-label); font-size: var(--workspace-font); }
@@ -71,15 +71,16 @@
 .rich-code-block.rich-code-active pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
 .rich-code-block.rich-code-active code { font-family: inherit; }
 .rich-code-block code { display: block; background: transparent; }
+.rich-code-header { float: inline-end; margin-block-start: -6px; margin-inline: 8px -8px; max-width: 45%; }
 .rich-code-language {
-  float: inline-end; margin-block-start: -6px; margin-inline: 8px -8px; max-width: 45%;
+  margin: 0; max-width: 100%;
   padding: 2px 4px; border: 0; border-radius: 4px; background: transparent;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none;
   font: var(--small-font)/1.5 var(--writing-font); color: var(--text-muted);
 }
 button.rich-code-language:hover { background: var(--gray-a4); }
 .rich-code-language-passive { display: none; }
-.rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-language { display: none; }
+.rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-header { display: none; }
 .rich-code-fence { display: none; color: var(--gray-11); user-select: none; }
 .rich-code-block:is(.rich-code-active, .rich-code-language-editing) .rich-code-fence { display: block; }
 .rich-code-fence-open input {

@@ -1,0 +1,62 @@
+import { expect, test } from "@playwright/test";
+
+const themes = [
+  { id: "plainly-default", top: 16, bottom: 16, end: 16 },
+  { id: "plainly-elegant", top: 20, bottom: 20, end: 20 },
+  { id: "plainly-tech", top: 10, bottom: 10, end: 10 },
+  { id: "gzh-moyu-green", top: 0, bottom: 20, end: 0 },
+  { id: "gzh-red-white", top: 0, bottom: 20, end: 0 },
+  { id: "gzh-graphite-minimal", top: 0, bottom: 22, end: 0 },
+  { id: "gzh-zen-whitespace", top: 0, bottom: 26, end: 0 },
+  { id: "gzh-moyu-ticket", top: 0, bottom: 20, end: 0 },
+  { id: "gzh-olive-journal", top: 0, bottom: 24, end: 0 },
+];
+
+for (const theme of themes) for (const newline of ["lf", "crlf"]) {
+  test(`${theme.id} ${newline}: single/multiple quote paragraphs and all callouts`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`/tests/theme-quotes.html?theme=${theme.id}&newline=${newline}`);
+    await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
+    const editor = page.locator(".ProseMirror");
+    await expect(editor.locator(":scope > blockquote")).toHaveCount(15);
+    await expect(editor.locator("blockquote[data-callout]")).toHaveCount(13);
+
+    for (const reading of [false, true, false]) {
+      await page.getByLabel("阅读模式").setChecked(reading);
+      await expect(editor).toHaveAttribute("contenteditable", String(!reading));
+      const measurements = await page.evaluate(() => {
+        function measure(root: Element) {
+          return [...root.querySelectorAll(":scope > blockquote")].map(quote => {
+            const paragraphs = [...quote.querySelectorAll<HTMLElement>(":scope > p")];
+            return paragraphs.map((paragraph, index) => {
+              const style = getComputedStyle(paragraph);
+              return {
+                top: parseFloat(style.marginTop), bottom: parseFloat(style.marginBottom),
+                gap: index ? paragraph.getBoundingClientRect().top - paragraphs[index - 1].getBoundingClientRect().bottom : null,
+              };
+            });
+          });
+        }
+        return [measure(document.querySelector(".ProseMirror")!),
+          ...[...document.querySelectorAll<HTMLElement>("[data-output]")].map(host => measure(host.shadowRoot!.querySelector("section")!))];
+      });
+      expect(measurements).toHaveLength(4);
+      for (const [output, quotes] of measurements.entries()) {
+        expect(quotes, `output ${output}, reading ${reading}`).toHaveLength(15);
+        for (const [quoteIndex, paragraphs] of quotes.entries()) {
+          expect(paragraphs).toHaveLength(quoteIndex === 0 ? 1 : 3);
+          for (const [index, paragraph] of paragraphs.entries()) {
+            expect(paragraph.top, `output ${output} quote ${quoteIndex} paragraph ${index} top`).toBe(theme.top);
+            expect(paragraph.bottom, `output ${output} quote ${quoteIndex} paragraph ${index} bottom`)
+              .toBe(index === paragraphs.length - 1 ? theme.end : theme.bottom);
+            if (paragraph.gap !== null) expect(paragraph.gap).toBeCloseTo(Math.max(theme.top, theme.bottom), 1);
+          }
+        }
+      }
+    }
+    await page.getByRole("button", { name: "核对原文" }).click();
+    await expect(page.locator("body")).toHaveAttribute("data-source-unchanged", "true");
+    expect(errors).toEqual([]);
+  });
+}
