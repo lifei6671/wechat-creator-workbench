@@ -67,21 +67,41 @@ fn main() {
     #[cfg(target_os = "macos")]
     let builder = builder
         .menu(|app| {
-            use tauri::menu::{Menu, MenuItem, MenuItemKind};
+            use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 
             let menu = Menu::default(app)?;
+            let close_text = PredefinedMenuItem::close_window(app, None)?.text()?;
             for item in menu.items()? {
-                if let MenuItemKind::Submenu(edit) = item
-                    && edit.text()? == "Edit"
-                {
+                let MenuItemKind::Submenu(submenu) = item else {
+                    continue;
+                };
+                if submenu.text()? == "Edit" {
                     // Native undo uses WebKit's history, which misses editor transactions such as paste.
                     for (index, id, label, shortcut) in [
                         (0, "workspace-undo", "撤销", "CmdOrCtrl+Z"),
                         (1, "workspace-redo", "重做", "CmdOrCtrl+Shift+Z"),
                     ] {
-                        edit.remove_at(index)?;
-                        edit.insert(
+                        submenu.remove_at(index)?;
+                        submenu.insert(
                             &MenuItem::with_id(app, id, label, true, Some(shortcut))?,
+                            index,
+                        )?;
+                    }
+                }
+                for (index, item) in submenu.items()?.into_iter().enumerate() {
+                    if let MenuItemKind::Predefined(close) = item
+                        && close.text()? == close_text
+                    {
+                        // Cmd+W belongs to the configurable preview shortcut in the webview.
+                        submenu.remove_at(index)?;
+                        submenu.insert(
+                            &MenuItem::with_id(
+                                app,
+                                format!("workspace-close-{}", close.id().as_ref()),
+                                close_text.as_str(),
+                                true,
+                                None::<&str>,
+                            )?,
                             index,
                         )?;
                     }
@@ -90,6 +110,14 @@ fn main() {
             Ok(menu)
         })
         .on_menu_event(|app, event| {
+            if event.id.as_ref().starts_with("workspace-close-") {
+                if let Some(window) = app.get_window("main")
+                    && let Err(error) = close_workspace(&window)
+                {
+                    eprintln!("Could not close workspace window: {error:?}");
+                }
+                return;
+            }
             let action = match event.id.as_ref() {
                 "workspace-undo" => "undo",
                 "workspace-redo" => "redo",

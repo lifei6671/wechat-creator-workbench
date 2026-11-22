@@ -6,16 +6,17 @@ import type { SaveQueue } from "../editor/save-queue";
 import { commandKey } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
-import { SyncStatus } from "./SyncStatus";
+import { getSyncStatus, SyncStatus } from "./SyncStatus";
 import { ActionError } from "../button-feedback";
 
-export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, backupProgress, migrationProgress,
+export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunning, mcpError, backupProgress, migrationProgress,
   imageStorageEnabled, assetRevision, imageUpload, syncBinding, syncActivity, syncError, syncWaitingReason, onSync, onError, onMcp, onPalette, onTrash, onSettings }: {
   queue?: SaveQueue;
-  actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat" | "feedback">;
+  actions: Pick<DocumentActions, "mode" | "setMode" | "focusMode" | "onFocusMode" | "reading" | "publishing" | "onCopyWechat" | "feedback" | "shortcutLabels">;
   trashActive: boolean;
   settingsOpen: boolean;
   mcpRunning?: boolean;
+  mcpError?: string;
   backupProgress: string | null;
   migrationProgress: "export" | "import" | null;
   imageStorageEnabled: boolean;
@@ -34,13 +35,18 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
 }) {
   const commandButton = useRef<HTMLButtonElement>(null);
   const previewing = actions.mode === "preview";
+  const paletteShortcut = actions.shortcutLabels ? actions.shortcutLabels.palette : `${commandKey}K`;
   const canCopy = queue?.entry.deletedAt === null;
   const backup = backupProgress ?? (migrationProgress === "export" ? "正在导出工作区…" : migrationProgress === "import" ? "正在导入工作区…" : null);
-  const mcpLabel = mcpRunning === undefined ? "MCP 设置" : mcpRunning ? "MCP（运行中）" : "MCP（未运行）";
+  const mcpLabel = mcpError ? "MCP 状态异常" : mcpRunning === undefined ? "正在读取 MCP 状态" : mcpRunning ? "MCP（运行中）" : "MCP（未运行）";
+  const mcpDetail = mcpError ? `${mcpLabel}：${mcpError}` : mcpLabel;
+  const mcpState = mcpError ? "error" : mcpRunning === undefined ? "unknown" : mcpRunning ? "success" : "error";
+  const syncProps = { binding: syncBinding, activity: syncActivity, error: syncError, waitingReason: syncWaitingReason };
+  const sync = getSyncStatus(syncProps);
 
   return <footer className="status-bar" aria-label="工作区状态栏">
     {!actions.focusMode && <div className="button-strip">
-      <Tooltip content={`命令面板（${commandKey}K）`}>
+      <Tooltip content={paletteShortcut ? `命令面板（${paletteShortcut}）` : "命令面板"}>
         <button ref={commandButton} className="plain-button status-button status-command" type="button"
           aria-label="命令面板" aria-haspopup="dialog" onClick={event => onPalette(event.currentTarget)}>
           <ListFilter size={15} /><span className="status-command-label">命令面板</span>
@@ -49,14 +55,15 @@ export function StatusBar({ queue, actions, trashActive, settingsOpen, mcpRunnin
       <Tool label="回收站" className="chrome-icon" aria-current={trashActive ? "page" : undefined} onClick={onTrash}>
         <Trash size={16} strokeWidth={1.8} />
       </Tool>
-      <Tooltip content="MCP 设置"><button type="button" className="plain-button status-button status-mcp"
-        aria-label={mcpLabel} aria-haspopup="dialog" data-running={mcpRunning} onClick={event => onMcp(event.currentTarget)}>
-        <Plug size={15} aria-hidden="true" /><span>MCP</span>
+      <Tooltip content={mcpDetail}><button type="button" className="plain-button status-button status-icon-button status-mcp"
+        aria-label={mcpDetail} aria-haspopup="dialog" onClick={event => onMcp(event.currentTarget)}>
+        <span className="status-indicator"><Plug size={15} aria-hidden="true" />
+          <span className="status-dot" data-state={mcpState} aria-hidden="true" /></span>
       </button></Tooltip>
     </div>}
-    <Tooltip content="同步设置"><button type="button" className="plain-button status-button status-sync"
-      aria-label="同步设置" aria-haspopup="dialog" onClick={event => onSync(event.currentTarget)}>
-      <SyncStatus binding={syncBinding} activity={syncActivity} error={syncError} waitingReason={syncWaitingReason} />
+    <Tooltip content={sync.detail}><button type="button" className="plain-button status-button status-icon-button status-sync"
+      aria-label={`同步设置：${sync.label}`} aria-haspopup="dialog" onClick={event => onSync(event.currentTarget)}>
+      <SyncStatus {...syncProps} compact />
     </button></Tooltip>
     {backup && <Tooltip content={backup}><span className="background-status" role="status" aria-label={backup}>
       <span className="background-status-icon" aria-hidden="true"><DatabaseBackup size={15} /></span>

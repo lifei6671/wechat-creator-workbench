@@ -221,6 +221,31 @@ it("moves complete outline sections through the save queue and restores them wit
   }
 });
 
+it("replaces the current tab without an exit visual and still animates a later explicit close", () => {
+  const first = new SaveQueue(entry("one", "第一篇"), vi.fn(), () => {});
+  const second = new SaveQueue(entry("two", "第二篇"), vi.fn(), () => {});
+  const third = new SaveQueue(entry("three", "第三篇"), vi.fn(), () => {});
+  const next = new SaveQueue(entry("next", "新文章"), vi.fn(), () => {});
+  const replacement = { from: "two", to: "next" };
+  function render(sessions: SaveQueue[], replaced?: typeof replacement) {
+    flushSync(() => root.render(<Theme><DocumentTabs sessions={sessions} replacement={replaced} activeId={sessions[1].entry.id} categories={[]}
+      readingIds={[]} lockedIds={[]} onMove={vi.fn()} onSwitch={vi.fn()} onClose={vi.fn()} onAction={vi.fn()}
+      onReorder={vi.fn()} onRename={vi.fn()} onError={vi.fn()} /></Theme>));
+  }
+  render([first, second, third]);
+  render([first, third]);
+  expect(container.querySelector(".tab-exiting")?.textContent).toBe("第二篇");
+  render([first, second, third]);
+  expect(container.querySelector(".tab-exiting")).toBeNull();
+  render([first, next, third], replacement);
+  expect([...container.querySelectorAll(".tabs > .tab")].map(tab => tab.getAttribute("data-tab-id"))).toEqual(["one", "next", "three"]);
+  expect(container.querySelector(".tab-exiting")).toBeNull();
+  render([first, next, third, second], replacement);
+  render([first, next, third], replacement);
+  expect(container.querySelector(".tab-exiting")?.textContent).toBe("第二篇");
+  for (const queue of [first, second, third, next]) queue.dispose();
+});
+
 it("keeps only noninteractive exit visuals after tabs close and honors reduced motion", async () => {
   const first = new SaveQueue(entry("one", "第一篇"), vi.fn(), () => {});
   const second = new SaveQueue(entry("two", "第二篇"), vi.fn(), () => {});

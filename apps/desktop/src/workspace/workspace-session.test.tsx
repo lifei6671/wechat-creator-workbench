@@ -12,6 +12,7 @@ import type { DocumentEditor } from "./Document";
 import type { CollectionCanvas } from "./CollectionCanvas";
 import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./preferences";
 import { SaveQueue } from "../editor/save-queue";
+import { commandKey } from "../labels";
 import * as markdown from "../../../../packages/markdown-core";
 
 const { editorQueues, editorClipboards } = vi.hoisted(() => ({
@@ -734,6 +735,32 @@ it("flushes the open canvas before replay and reloads a remotely changed canvas 
   expect(apply).toHaveBeenCalledOnce();
 });
 
+it("updates MCP dots from native events, exposes read errors and recovers", async () => {
+  let changed!: () => void;
+  let resolveInitial!: (value: Awaited<ReturnType<typeof desktop.mcpStatus>>) => void;
+  vi.mocked(desktop.onMcpStatusChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  vi.mocked(desktop.mcpStatus).mockImplementationOnce(() => new Promise(resolve => { resolveInitial = resolve; }));
+  flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
+  const indicator = () => container.querySelector<HTMLButtonElement>(".status-mcp")!;
+  expect(indicator().querySelector(".status-dot")?.getAttribute("data-state")).toBe("unknown");
+  await vi.waitFor(() => expect(resolveInitial).toBeDefined());
+  const status = { running: true, config: { enabled: true, port: 8787, permission: "read" as const }, error: null };
+  resolveInitial(status);
+  await vi.waitFor(() => expect(indicator().getAttribute("aria-label")).toBe("MCP（运行中）"));
+  expect(indicator().textContent).toBe("");
+  expect(indicator().querySelector(".status-dot")?.getAttribute("data-state")).toBe("success");
+  vi.mocked(desktop.mcpStatus).mockRejectedValueOnce(new Error("服务读取失败"));
+  flushSync(changed);
+  await vi.waitFor(() => expect(indicator().getAttribute("aria-label")).toBe("MCP 状态异常：服务读取失败"));
+  expect(indicator().querySelector(".status-dot")?.getAttribute("data-state")).toBe("error");
+  vi.mocked(desktop.mcpStatus).mockResolvedValue({ ...status, running: false });
+  flushSync(changed);
+  await vi.waitFor(() => expect(indicator().getAttribute("aria-label")).toBe("MCP（未运行）"));
+  expect(indicator().querySelector(".status-dot")?.getAttribute("data-state")).toBe("error");
+  flushSync(() => indicator().click());
+  await vi.waitFor(() => expect(document.querySelector('.settings-nav-item[aria-current="location"]')?.textContent).toBe("MCP 服务"));
+});
+
 it("updates the status bar through sync phases and opens sync settings from it", async () => {
   let changed!: () => void;
   vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
@@ -745,19 +772,19 @@ it("updates the status bar through sync phases and opens sync settings from it",
   vi.spyOn(desktop, "syncConflicts").mockResolvedValue([]);
   flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
   const indicator = () => container.querySelector<HTMLButtonElement>(".status-sync")!;
-  await vi.waitFor(() => expect(indicator()?.textContent).toBe("正在下载"));
-  expect(indicator().getAttribute("aria-label")).toBe("同步设置");
-  expect(indicator().querySelector(".rt-Spinner")).not.toBeNull();
+  await vi.waitFor(() => expect(indicator()?.getAttribute("aria-label")).toBe("同步设置：正在下载"));
+  expect(indicator().textContent).toBe("");
+  expect(indicator().querySelector(".status-dot")?.getAttribute("data-state")).toBe("busy");
   vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase: "merging" });
   flushSync(changed);
-  await vi.waitFor(() => expect(indicator().textContent).toBe("正在合并"));
+  await vi.waitFor(() => expect(indicator()?.getAttribute("aria-label")).toBe("同步设置：正在合并"));
   vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase: "idle", issues: 1 });
   flushSync(changed);
-  await vi.waitFor(() => expect(indicator().textContent).toBe("有内容需要处理"));
+  await vi.waitFor(() => expect(indicator()?.getAttribute("aria-label")).toBe("同步设置：有内容需要处理"));
   vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, phase: "idle" });
   flushSync(changed);
-  await vi.waitFor(() => expect(indicator().textContent).toBe("已同步"));
-  expect(indicator().querySelector(".rt-Spinner")).toBeNull();
+  await vi.waitFor(() => expect(indicator()?.getAttribute("aria-label")).toBe("同步设置：已同步"));
+  expect(indicator().querySelector(".status-dot")?.getAttribute("data-state")).toBe("success");
   flushSync(() => indicator().click());
   await vi.waitFor(() => expect(document.querySelector('.settings-nav-item[aria-current="location"]')?.textContent).toBe("同步"));
 });
@@ -779,7 +806,7 @@ it("applies while viewing sync settings and explains waits for other pages and c
     return { changedEntries: [], changedCollections: [] };
   });
   flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：已同步"));
   flushSync(() => container.querySelector<HTMLButtonElement>(".status-sync")!.click());
   const address = await vi.waitFor(() => {
     const input = document.querySelector<HTMLInputElement>("#sync-bound-url");
@@ -791,14 +818,14 @@ it("applies while viewing sync settings and explains waits for other pages and c
   incoming = true;
   flushSync(notify);
   await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：已同步"));
   expect(document.querySelector(".settings-dialog")).not.toBeNull();
 
   const nav = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-item")].find(button => button.textContent === name)!;
   flushSync(() => nav("通用").click());
   incoming = true;
   flushSync(notify);
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待关闭当前弹窗"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：等待关闭当前弹窗"));
   expect(apply).toHaveBeenCalledOnce();
 
   flushSync(() => nav("同步").click());
@@ -807,7 +834,7 @@ it("applies while viewing sync settings and explains waits for other pages and c
   flushSync(() => revoke.click());
   await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
   flushSync(notify);
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待关闭确认对话框"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：等待关闭确认对话框"));
   expect(apply).toHaveBeenCalledOnce();
   const cancel = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(button => button.textContent === "取消")!;
   flushSync(() => cancel.click());
@@ -837,7 +864,7 @@ it("waits for a sync settings operation and disables actions during automatic re
     return { changedEntries: [], changedCollections: [] };
   });
   flushSync(() => root.render(<Theme><DesktopShell /></Theme>));
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：已同步"));
   flushSync(() => container.querySelector<HTMLButtonElement>(".status-sync")!.click());
   const copy = await vi.waitFor(() => {
     const button = [...document.querySelectorAll<HTMLButtonElement>(".sync-settings button")].find(button => button.textContent === "复制连接信息");
@@ -847,7 +874,7 @@ it("waits for a sync settings operation and disables actions during automatic re
   flushSync(() => copy.click());
   incoming = true;
   flushSync(notify);
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待当前操作完成"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：等待当前操作完成"));
   expect(apply).not.toHaveBeenCalled();
   finishInfo({ url: "https://sync.example.test", accessKey: "test-key" });
   await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
@@ -877,7 +904,7 @@ it("does not replay again when a phase read finishes after its own replay", asyn
     return { changedEntries: [], changedCollections: [] };
   });
   flushSync(() => root.render(<DesktopShell />));
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("有内容需要处理"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：有内容需要处理"));
   vi.mocked(desktop.syncActivity).mockResolvedValue({ ...state, incoming: true });
   flushSync(changed);
   await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
@@ -952,11 +979,11 @@ it("checks the remote on restoration while unsaved input keeps downloaded change
   expect(apply).not.toHaveBeenCalled();
   expect(queue.snapshot().fields.contentMd).toBe("仍在输入的本地正文");
   expect(queue.isDirty()).toBe(true);
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待文稿保存完成"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：等待文稿保存完成"));
 
   await queue.flush();
   statusChanged();
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("等待结束编辑"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：等待结束编辑"));
   expect(apply).not.toHaveBeenCalled();
   input.blur();
   statusChanged();
@@ -1028,17 +1055,24 @@ it("restores pending article tabs while the user opens a topic", async () => {
 });
 
 it.each([
-  ["current", ["first", "manual"]],
-  ["new-tab", ["first", "second", "manual"]],
-] as const)("opens a clicked document using the saved %s preference", async (mode, expected) => {
+  ["current", false, ["first", "manual"]],
+  ["new-tab", false, ["first", "second", "manual"]],
+  ["current", true, ["first", "second", "manual"]],
+  ["new-tab", true, ["first", "second", "manual"]],
+] as const)("opens a clicked document using %s with modifier=%s", async (mode, modifier, expected) => {
   localStorage.setItem("document-open-mode", JSON.stringify(mode));
   saveDocumentTabs(workspaceId, { ids: ["first", "second"], activeId: "second" });
   vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
   flushSync(() => root.render(<DesktopShell />));
   await vi.waitFor(() => expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("tab-second"));
-  flushSync(() => container.querySelector<HTMLButtonElement>("#entry-row-manual")!.click());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#entry-row-manual")!.dispatchEvent(new MouseEvent("click", {
+    bubbles: true, [commandKey === "⌘" ? "metaKey" : "ctrlKey"]: modifier,
+  })));
   await vi.waitFor(() => expect(openTabs()).toEqual(expected));
+  expect(container.querySelectorAll(".tabs > .tab")).toHaveLength(expected.length);
+  expect(container.querySelector(".tab-exiting")).toBeNull();
   expect(readDocumentTabs(workspaceId)).toEqual({ ids: expected, activeId: "manual" });
+  expect(localStorage.getItem("document-open-mode")).toBe(JSON.stringify(mode));
 });
 
 it("restores the last sidebar and document views while keeping their defaults", async () => {
@@ -1873,13 +1907,13 @@ it.each(["visible", "hidden"] as const)("applies downloaded changes without fore
     return { changedEntries: [], changedCollections: [] };
   });
   flushSync(() => root.render(<DesktopShell />));
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：已同步"));
   incoming = true;
   const input = container.appendChild(document.createElement("input"));
   input.focus();
   notify();
   await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("已同步"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：已同步"));
 });
 
 it("reports pending uploads as processing upload tasks", async () => {
@@ -1887,7 +1921,102 @@ it("reports pending uploads as processing upload tasks", async () => {
   vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: true, pending: true, incoming: false,
     issues: 0, phase: "idle", error: null, lastExchangeAt: 1 });
   flushSync(() => root.render(<DesktopShell />));
-  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.textContent).toBe("正在处理上传任务"));
+  await vi.waitFor(() => expect(container.querySelector(".status-sync")?.getAttribute("aria-label")).toBe("同步设置：正在处理上传任务"));
+});
+
+it.each(["copyMarkdown", "copyWechat"] as const)("runs %s from its shortcut with current text, feedback and no editor formatting", async action => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["copy-key"], activeId: "copy-key" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), contentMd: "# 原文" }));
+  vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  const plain = vi.spyOn(desktop, "copyText").mockReturnValue(pending);
+  const html = vi.spyOn(desktop, "copyHtml").mockReturnValue(pending);
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("copy-key")).toBe(true));
+  flushSync(() => editorQueues.get("copy-key")!.edit({ contentMd: "# 当前草稿\n\n**未保存内容**" }));
+  const target = container.appendChild(document.createElement("div")); target.contentEditable = "true";
+  const format = vi.fn(); target.addEventListener("keydown", format);
+  const stroke = { code: "KeyC", key: "C", [commandKey === "⌘" ? "metaKey" : "ctrlKey"]: true,
+    shiftKey: action === "copyMarkdown", altKey: action === "copyWechat", bubbles: true, cancelable: true };
+  const press = (extra: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent("keydown", { ...stroke, ...extra });
+    flushSync(() => target.dispatchEvent(event)); return event;
+  };
+  expect(press({ isComposing: true }).defaultPrevented).toBe(false);
+  expect(plain).not.toHaveBeenCalled(); expect(html).not.toHaveBeenCalled();
+  format.mockClear();
+  expect(press().defaultPrevented).toBe(true);
+  const copied = action === "copyMarkdown" ? plain : html;
+  await vi.waitFor(() => expect(copied).toHaveBeenCalledOnce());
+  expect(format).not.toHaveBeenCalled();
+  if (action === "copyMarkdown") expect(plain).toHaveBeenLastCalledWith("# 当前草稿\n\n**未保存内容**");
+  else { expect(html.mock.lastCall![0]).toContain("<strong"); expect(html.mock.lastCall![1]).toContain("未保存内容"); }
+  press(); press({ repeat: true });
+  expect(copied).toHaveBeenCalledOnce();
+  finish();
+  await vi.waitFor(() => expect(container.querySelector(`[data-feedback-state="success"]`)).not.toBeNull());
+  press(); expect(copied).toHaveBeenCalledOnce();
+});
+
+it("uses persisted custom workspace keys and honors disabled defaults", async () => {
+  localStorage.setItem("workspace-shortcuts", JSON.stringify({ palette: { code: "F8", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, create: "none" }));
+  const create = vi.spyOn(desktop, "create");
+  flushSync(() => root.render(<DesktopShell />));
+  const press = (init: KeyboardEventInit) => flushSync(() => window.dispatchEvent(new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true })));
+  press({ key: "k", code: "KeyK", ctrlKey: true });
+  press({ key: "n", code: "KeyN", ctrlKey: true });
+  expect(document.querySelector('[role="dialog"]')).toBeNull(); expect(create).not.toHaveBeenCalled();
+  press({ key: "F8", code: "F8" });
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
+});
+
+it("toggles reading with Mod+R and preview with Mod+W without reloading or closing the current tab", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["mode-keys"], activeId: "mode-keys" });
+  const load = vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("mode-keys")).toBe(true));
+  const mod = { ctrlKey: commandKey !== "⌘", metaKey: commandKey === "⌘" };
+  const press = (code: string, extra: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent("keydown", { ...mod, code, key: code.slice(-1).toLowerCase(), bubbles: true, cancelable: true, ...extra });
+    flushSync(() => document.body.dispatchEvent(event)); return event;
+  };
+  const reading = () => container.querySelector(".reading-toggle")?.getAttribute("aria-pressed");
+  expect(reading()).toBe("false");
+  expect(press("KeyR").defaultPrevented).toBe(true);
+  expect(reading()).toBe("true");
+  press("KeyR", { repeat: true }); expect(reading()).toBe("true");
+  press("KeyR"); expect(reading()).toBe("false");
+  expect(press("KeyW").defaultPrevented).toBe(true);
+  expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("preview");
+  press("KeyW", { repeat: true });
+  expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("preview");
+  press("KeyW");
+  expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("edit");
+  expect(openTabs()).toEqual(["mode-keys"]);
+  expect(load).toHaveBeenCalledOnce();
+});
+
+it("records workspace shortcuts in settings and applies them without restarting", async () => {
+  flushSync(() => root.render(<DesktopShell />));
+  flushSync(() => container.querySelector<HTMLButtonElement>('.status-bar [aria-label="设置"]')!.click());
+  const record = await vi.waitFor(() => {
+    const button = document.querySelector<HTMLButtonElement>("#shortcut-palette"); expect(button).not.toBeNull(); return button!;
+  });
+  flushSync(() => record.click());
+  const input = document.querySelector<HTMLInputElement>("input#shortcut-palette")!;
+  flushSync(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "F8", code: "F8", bubbles: true, cancelable: true })));
+  expect(JSON.parse(localStorage.getItem("workspace-shortcuts")!).palette.code).toBe("F8");
+  expect(document.querySelector('input[aria-label="查找命令或笔记"]')).toBeNull();
+  const close = document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!;
+  flushSync(() => close.click());
+  await vi.waitFor(() => expect(document.querySelector('[aria-label="关闭设置"]')).toBeNull());
+  flushSync(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "F8", code: "F8", bubbles: true, cancelable: true })));
+  await vi.waitFor(() => expect(document.querySelector('input[aria-label="查找命令或笔记"]')).not.toBeNull());
 });
 
 it("uses a recorded shortcut immediately without firing for a different chord or repeat", async () => {
@@ -1905,6 +2034,25 @@ it("uses a recorded shortcut immediately without firing for a different chord or
   expect(preview()).toBe(true);
   flushSync(() => window.dispatchEvent(new KeyboardEvent("keydown", { ...chord, key: "j", repeat: true, bubbles: true, cancelable: true })));
   expect(preview()).toBe(true);
+});
+
+it("reassigns the released WeChat copy chord to view switching before editor formatting", async () => {
+  const chord = { code: "KeyC", ctrlKey: commandKey !== "⌘", metaKey: commandKey === "⌘", altKey: true, shiftKey: false };
+  localStorage.setItem("workspace-shortcuts", JSON.stringify({ copyWechat: "none" }));
+  localStorage.setItem("view-shortcut", JSON.stringify(chord));
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["reassigned"], activeId: "reassigned" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("reassigned")).toBe(true));
+  const target = container.appendChild(document.createElement("div")); target.contentEditable = "true";
+  const format = vi.fn((event: KeyboardEvent) => event.preventDefault()); target.addEventListener("keydown", format);
+  const event = new KeyboardEvent("keydown", { ...chord, key: "c", bubbles: true, cancelable: true });
+  flushSync(() => target.dispatchEvent(event));
+  expect(event.defaultPrevented).toBe(true);
+  expect(format).not.toHaveBeenCalled();
+  expect(container.querySelector(".status-bar")?.textContent).toContain("继续编辑");
 });
 
 it.each(["empty", "promote", "trash"] as const)("deletes a folder with the %s choice", async choice => {

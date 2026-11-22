@@ -503,11 +503,11 @@ function AiUserMessage({ text, children }: { text: string; children: ReactNode }
       ?? (custom.action === "rewrite" ? proposalOf(state.thread.messages[state.message.index + 1])?.originalMarkdown : undefined);
   });
   return <>
+    {!selectedText && typeof citation === "string" && <span className="ai-user-citation">{citation}</span>}
     {selectedText && <blockquote className="ai-user-quote" aria-label="所选内容" tabIndex={0}>{selectedText}</blockquote>}
     <p className="ai-user-message">{text}</p>
     <div className="button-strip ai-user-actions">
       {children}
-      {!selectedText && typeof citation === "string" && <p className="ai-user-citation">{citation}</p>}
     </div>
   </>;
 }

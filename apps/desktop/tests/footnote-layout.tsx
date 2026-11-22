@@ -29,7 +29,7 @@ function Fixture() {
     <DocumentEditor queue={queue} active locked={false} reading={reading}
       clipboard={{ read: unexpected, write: unexpected, onError: unexpected }}
       display={{ limitWidth: true, lineNumbers: false, showTitle: false, convertLinks: true }} onDisplayChange={unexpected}
-      handle={value => { editor = value; }} onImages={unexpected} onImageZoom={unexpected} onError={unexpected} />
+      handle={value => { editor = value; }} onImages={unexpected} onImageZoom={unexpected} onError={error => { throw error; }} />
   </TooltipProvider></Theme>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);

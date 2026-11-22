@@ -748,7 +748,7 @@ it("records shortcuts through the inline input and preserves bindings on cancell
   try {
     flushSync(() => root.render(<Theme><Setting /></Theme>));
     const trigger = () => container.querySelector<HTMLButtonElement>("button#view-shortcuts")!;
-    const clear = () => container.querySelector<HTMLButtonElement>('button[aria-label="删除快捷键"]')!;
+    const clear = () => container.querySelector<HTMLButtonElement>('button[aria-label="删除切换编辑视图快捷键"]')!;
     const press = (init: KeyboardEventInit) => flushSync(() => container.querySelector<HTMLInputElement>("input#view-shortcuts")!
       .dispatchEvent(new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true })));
     expect(trigger().textContent).toBe("点击设置");

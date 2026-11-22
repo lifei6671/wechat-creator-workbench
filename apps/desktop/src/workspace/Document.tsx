@@ -27,9 +27,10 @@ export type ViewMode = "edit" | "preview";
 export type TabAction = "closeOthers" | "reading" | "properties" | "search"
   | "copyPath" | "history" | "export" | "delete" | "restore";
 
-export function DocumentTabs({ sessions, feedback, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
+export function DocumentTabs({ sessions, replacement, feedback, activeId, readingIds, lockedIds, categories, collections = [], activeCollectionId,
   collectionOptions = [], onAddToCollection, onSwitchCollection, onCloseCollection, onMove, onSwitch, onClose, onAction, onReorder, onRename, onError }: {
   sessions: SaveQueue[];
+  replacement?: { from: string; to: string };
   feedback?: ReturnType<typeof useButtonFeedback>;
   activeId: string | null;
   collections?: Collection[];
@@ -57,15 +58,19 @@ export function DocumentTabs({ sessions, feedback, activeId, readingIds, lockedI
     ...collections.map(item => ({ key: `collection:${item.id}`, title: item.title })),
   ];
   const previousTabs = useRef(snapshots);
+  const previousReplacement = useRef(replacement);
   const previousOrder = useRef(snapshots.map(tab => tab.key));
   const [closingTabs, setClosingTabs] = useState<{ key: string; title: string; index: number }[]>([]);
   useLayoutEffect(() => {
     const keys = new Set(snapshots.map(tab => tab.key));
-    const removed = previousTabs.current.flatMap(tab => keys.has(tab.key) ? [] : [{ ...tab, index: previousOrder.current.indexOf(tab.key) }]);
+    const replaced = replacement !== previousReplacement.current && replacement && keys.has(replacement.to) ? replacement.from : undefined;
+    const removed = previousTabs.current.flatMap(tab => keys.has(tab.key) || tab.key === replaced ? [] : [{ ...tab, index: previousOrder.current.indexOf(tab.key) }]);
+    previousReplacement.current = replacement;
     previousTabs.current = snapshots;
     previousOrder.current = tabKeys;
-    if (removed.length && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setClosingTabs(current => [...current.filter(tab => !keys.has(tab.key) && !removed.some(item => item.key === tab.key)), ...removed]);
+    if ((removed.length || closingTabs.some(tab => keys.has(tab.key) || tab.key === replaced))
+      && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setClosingTabs(current => [...current.filter(tab => !keys.has(tab.key) && tab.key !== replaced && !removed.some(item => item.key === tab.key)), ...removed]);
     }
   });
   useEffect(() => {
@@ -533,6 +538,7 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
 }
 
 export interface DocumentActions {
+  shortcutLabels?: { save: string | null; palette: string | null };
   feedback?: ReturnType<typeof useButtonFeedback>;
   exportedPath?: string;
   onRevealExport?(): void;
@@ -600,6 +606,7 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
   locked: boolean;
   onDisplayChange(option: keyof EditorDisplay, checked: boolean): void;
 }) {
+  const shortcutLabels = actions.shortcutLabels ?? { save: `${commandKey}S`, palette: `${commandKey}K` };
   const { fields } = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const deleted = queue.entry.deletedAt !== null;
   const folder = categories.find(category => category.id === fields.categoryId);
@@ -650,7 +657,7 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
           {actions.mode === "edit" && <DropdownMenu.CheckboxItem checked={actions.outlineOpen}
             onCheckedChange={actions.onOutline}><ListTree size={14} />显示文档大纲</DropdownMenu.CheckboxItem>}
           {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("copyMarkdown")} onSelect={actions.onCopyMarkdown}><Copy size={14} />复制 Markdown</DropdownMenu.Item>}
-          {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("save")} onSelect={actions.onSave}><Save size={14} />保存版本 <kbd className="menu-shortcut">{commandKey}S</kbd></DropdownMenu.Item>}
+          {!deleted && !actions.reading && <DropdownMenu.Item disabled={feedback?.isLocked("save")} onSelect={actions.onSave}><Save size={14} />保存版本 {shortcutLabels.save && <kbd className="menu-shortcut">{shortcutLabels.save}</kbd>}</DropdownMenu.Item>}
           {!deleted && !actions.reading && actions.onHostImages && <DropdownMenu.Item disabled={locked || actions.hostingImages || feedback?.isLocked("hostImages")}
             onSelect={actions.onHostImages}>
             {actions.hostingImages ? <span className="image-upload-menu-spinner rich-progress" aria-hidden="true" /> : <CloudUpload size={14} />}
@@ -678,7 +685,7 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
           </DropdownMenu.Sub>}
           {!actions.reading && <DropdownMenu.CheckboxItem checked={actions.aiOpen} onCheckedChange={actions.onAi} disabled={actions.focusMode}><Sparkles size={15} />AI 助手</DropdownMenu.CheckboxItem>}
           <DropdownMenu.Item onSelect={actions.onFocusMode}><Focus size={15} />{actions.focusMode ? "退出专注写作" : "专注写作"}</DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={actions.onPalette}><ListFilter size={15} />命令面板 <kbd className="menu-shortcut">{commandKey}K</kbd></DropdownMenu.Item>
+          <DropdownMenu.Item onSelect={actions.onPalette}><ListFilter size={15} />命令面板 {shortcutLabels.palette && <kbd className="menu-shortcut">{shortcutLabels.palette}</kbd>}</DropdownMenu.Item>
           {!actions.reading && <>
             <DropdownMenu.Separator />
             <DropdownMenu.Item color={deleted ? undefined : "red"} onSelect={actions.onDelete}>
