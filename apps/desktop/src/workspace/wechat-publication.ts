@@ -180,6 +180,7 @@ export class PublicationSession {
         const original = this.queue.snapshot().fields.wechatPublication;
         let config = original ?? emptyPublication();
         const fingerprint = await recommendationFingerprint(input);
+        if (this.disposed) throw new Error("文章已关闭");
         if (force || config.recommendations.mode === "auto" && config.recommendations.inputFingerprint !== fingerprint) {
           const generated = await desktop.wechatRecommendations(input);
           if (this.disposed) throw new Error("文章已关闭");

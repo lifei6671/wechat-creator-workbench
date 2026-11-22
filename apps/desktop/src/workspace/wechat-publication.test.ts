@@ -20,6 +20,20 @@ beforeEach(() => {
 });
 afterEach(() => { publishing.dispose(); queue.dispose(); vi.restoreAllMocks(); });
 
+it("does not request recommendations when the article closes during fingerprint calculation", async () => {
+  let finish!: (hash: ArrayBuffer) => void;
+  const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const pending = publishing.session(queue).ensure();
+  const rejected = expect(pending).rejects.toThrow("文章已关闭");
+  await vi.waitFor(() => expect(digest).toHaveBeenCalledOnce());
+  publishing.dispose();
+  finish(new ArrayBuffer(32));
+  await rejected;
+  expect(desktop.wechatRecommendations).not.toHaveBeenCalled();
+  expect(desktop.resolveWechatRecommendations).not.toHaveBeenCalled();
+  expect(commit).not.toHaveBeenCalled();
+});
+
 it("keeps a deliberately empty manual list through body edits and prepares without changing the body", async () => {
   const session = publishing.session(queue);
   await session.ensure();
