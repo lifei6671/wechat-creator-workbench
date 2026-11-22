@@ -66,6 +66,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm test:browser
+        id: browser-tests
+      - uses: actions/upload-artifact@v6
+        if: ${{ failure() && steps.browser-tests.outcome == 'failure' }}
+        with:
+          name: playwright-${{ matrix.os }}
+          path: output/playwright/test-results
+          retention-days: 7
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.3

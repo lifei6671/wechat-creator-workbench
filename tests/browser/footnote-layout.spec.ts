@@ -9,6 +9,7 @@ for (const { theme, newline } of cases) test(`${theme} ${newline}: footnotes ali
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`/tests/footnote-layout.html?theme=${theme}&newline=${newline}`);
   const editor = page.locator(".ProseMirror");
+  await expect(editor).toBeVisible({ timeout: 15_000 });
   await expect(editor.locator('dl[data-type="footnote_definition"]')).toHaveCount(6);
 
   for (const width of [340, 840]) for (const zoom of [1, 1.25]) {
