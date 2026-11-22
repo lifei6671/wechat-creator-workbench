@@ -30,6 +30,8 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps the upper right sideba
   await page.goto("/tests/workspace-resize.html?priority=1&edit=1");
   const scroll = page.locator(".document-editor:not([hidden]) .editor-scroll");
   await expect(scroll).toBeVisible();
+  expect(await page.locator(".document-editor:not([hidden]) .editor-area").evaluate(element => getComputedStyle(element).marginInlineEnd)).toBe("4px");
+  expect(await page.locator(".sidebar-workspace .explorer-scroll").first().evaluate(element => getComputedStyle(element).marginInlineEnd)).toBe("4px");
   const right = page.locator('#ai-sidebar[data-panel]');
   await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
   await expect(page.locator('#workspace-panels')).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
@@ -45,15 +47,16 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps the upper right sideba
   await page.mouse.move(metrics.x, metrics.y + metrics.thumbHeight / 2 - 8, { steps: 10 });
   await page.mouse.up();
   await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(0);
+  await page.screenshot({ path: test.info().outputPath("scrollbar-insets.png") });
   expect((await right.boundingBox())!.width).toBeCloseTo(widthBeforeScroll, 0);
   const separator = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
   for (const y of [20, 65, 110, 180]) {
     const bounds = (await separator.boundingBox())!;
     const before = (await right.boundingBox())!.width;
-    await page.mouse.move(bounds.x - 5, y);
+    await page.mouse.move(bounds.x - 2, y);
     await page.mouse.down();
     try {
-      await page.mouse.move(bounds.x - 10, y);
+      await page.mouse.move(bounds.x - 7, y);
       await expect.poll(async () => (await right.boundingBox())!.width).toBeCloseTo(before + 5, 0);
       await page.mouse.move(bounds.x - 60, y, { steps: 6 });
     } finally { await page.mouse.up(); }
