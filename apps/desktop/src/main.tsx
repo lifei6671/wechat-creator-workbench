@@ -11,5 +11,7 @@ import { restoreWorkspacePreferences } from "./workspace/preferences";
 
 document.addEventListener("contextmenu", event => event.preventDefault());
 void desktop.takeMigratedPreferences().then(restoreWorkspacePreferences, () => {}).finally(() => {
-  createRoot(document.getElementById("root")!).render(<TooltipProvider><DesktopShell /></TooltipProvider>);
+  createRoot(document.getElementById("root")!, {
+    onUncaughtError(error, info) { console.error("Workspace render failed", error, info.componentStack); },
+  }).render(<TooltipProvider><DesktopShell /></TooltipProvider>);
 });

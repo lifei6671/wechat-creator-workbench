@@ -1,23 +1,11 @@
 import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { TextField } from "@radix-ui/themes";
-import { ChevronRight, GripVertical, ListTree, Search, X } from "lucide-react";
+import { ChevronRight, GripVertical, Search } from "lucide-react";
 import type { MarkdownEditorHandle, OutlineItem, OutlinePlacement } from "../../../../packages/editor-react";
-import { Tool } from "../ui";
 import { usePointerDrag } from "./pointer-drag";
 
 const titleOf = (item: OutlineItem) => item.title || "空标题";
-
-function positionOutlineGhost(element: HTMLDivElement, x: number, y: number) {
-  const { offsetWidth: width, offsetHeight: height, ownerDocument } = element;
-  const edge = 8;
-  const gap = 10;
-  const left = x - width - gap;
-  const top = y - height / 2;
-  const { clientWidth, clientHeight } = ownerDocument.documentElement;
-  const ghostX = Math.max(edge, Math.min(left >= edge ? left : x + gap, clientWidth - width - edge));
-  const ghostY = Math.max(edge, Math.min(top, clientHeight - height - edge));
-  element.style.translate = `${ghostX}px ${ghostY}px`;
-}
+type OutlineDrop = { id: string; placement: OutlinePlacement };
 
 function revealCurrentHeading(viewport: HTMLElement) {
   const row = viewport.querySelector('[aria-current="location"]');
@@ -30,8 +18,8 @@ function revealCurrentHeading(viewport: HTMLElement) {
   else if (bottom > visibleBottom) viewport.scrollTop += Math.ceil(bottom - visibleBottom);
 }
 
-export function Outline({ editor, readOnly, onClose }: {
-  editor: MarkdownEditorHandle; readOnly: boolean; onClose(): void;
+export function Outline({ editor, readOnly, onNavigate }: {
+  editor: MarkdownEditorHandle; readOnly: boolean; onNavigate?(item: OutlineItem): void;
 }) {
   const items = useSyncExternalStore(editor.subscribeOutline, editor.getOutline);
   const list = useRef<HTMLDivElement>(null);
@@ -69,7 +57,7 @@ export function Outline({ editor, readOnly, onClose }: {
   }
   useLayoutEffect(() => revealCurrentHeading(list.current!), [visibleActive, query]);
 
-  const drag = usePointerDrag<OutlineItem, { id: string; placement: OutlinePlacement }>(
+  const drag = usePointerDrag<OutlineItem, OutlineDrop>(
     element => {
       if (readOnly || !element.closest("[data-outline-grip]")) return null;
       const id = element.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId;
@@ -95,10 +83,17 @@ export function Outline({ editor, readOnly, onClose }: {
         return target && editor.canMoveOutlineSection(item, target, placement) ? { id: target.id, placement } : null;
       };
       const row = rowAt(clientY);
-      return row ? destination(row) : destination(rowAt(clientY - 4)) ?? destination(rowAt(clientY + 4));
+      if (row) return destination(row);
+      const nearby = destination(rowAt(clientY - 4)) ?? destination(rowAt(clientY + 4));
+      if (nearby) return nearby;
+      // A sidebar leaves space beyond its headings; snap there at the dragged heading's level.
+      const rows = [...viewport.querySelectorAll<HTMLElement>("[data-outline-id]")].filter(row => !row.closest("[inert]"));
+      const peers = rows.filter(row => headings.get(row.dataset.outlineId!)!.level === item.level);
+      if (rows.length && clientY < rows[0].getBoundingClientRect().top) return destination(peers[0] ?? null);
+      if (rows.length && clientY >= rows.at(-1)!.getBoundingClientRect().bottom) return destination(peers.at(-1) ?? null);
+      return null;
     },
     (item, { id, placement }) => editor.moveOutlineSection(item, headings.get(id)!, placement),
-    positionOutlineGhost,
   );
 
   function toggle(id: string) {
@@ -122,7 +117,7 @@ export function Outline({ editor, readOnly, onClose }: {
             aria-label={`${expanded ? "折叠" : "展开"} ${title}`} onClick={() => toggle(item.id)}><ChevronRight size={14} strokeWidth={1.6} /></button>
             : <span className="outline-expand" />}
           <button type="button" className="plain-button outline-heading" title={title}
-            aria-current={visibleActive === item.id ? "location" : undefined} onClick={() => editor.scrollToHeading(item)}
+            aria-current={visibleActive === item.id ? "location" : undefined} onClick={() => onNavigate ? onNavigate(item) : editor.scrollToHeading(item)}
             aria-keyshortcuts={readOnly ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
             onKeyDown={event => {
               if (readOnly || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
@@ -143,15 +138,12 @@ export function Outline({ editor, readOnly, onClose }: {
             if (expanded && event.target === event.currentTarget && event.propertyName === "grid-template-rows" &&
               event.currentTarget.querySelector('[aria-current="location"]')) revealCurrentHeading(list.current!);
           }}>{renderBranches(item.children, depth + 1)}</div>}
+        {drag.hint?.id === item.id && <span className="outline-drop-indicator" aria-hidden="true" />}
       </li>;
     })}</ul>;
   }
 
   return <nav className="document-outline" aria-label="文档大纲">
-    <div className="outline-toolbar">
-      <h2>文档大纲</h2>
-      <Tool className="chrome-icon" label="隐藏文档大纲" onClick={onClose}><X size={16} strokeWidth={1.6} /></Tool>
-    </div>
     <TextField.Root className="outline-search" size="2" color="gray" variant="soft" placeholder="搜索标题" aria-label="搜索标题"
       value={input} onChange={event => setInput(event.target.value)}
       onKeyDown={event => { if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) setInput(""); }}>
@@ -162,7 +154,5 @@ export function Outline({ editor, readOnly, onClose }: {
         {items.length ? "没有匹配的标题" : "暂无标题"}
       </p> : renderBranches(items, 0)}
     </div>
-    {drag.ghost && <div className="tree-drag-ghost outline-drag-ghost" ref={drag.ghostElement} aria-hidden="true"
-      data-snapped={Boolean(drag.hint) || undefined}><ListTree size={15} /><span>{titleOf(drag.ghost)}</span></div>}
   </nav>;
 }

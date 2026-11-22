@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Entry } from "../../../../packages/shared-types";
 import { SaveQueue } from "../editor/save-queue";
-import { PropertiesDialog } from "./Dialogs";
+import { PropertiesDialog, PropertiesPanel } from "./Dialogs";
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -35,6 +35,19 @@ function fill(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
 }
 function blur(input: HTMLElement) {
   flushSync(() => input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+}
+function key(input: HTMLElement, value: string) {
+  flushSync(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })));
+}
+function mountPanel(fields: Partial<Entry>, locked = false) {
+  const commit = vi.fn<ConstructorParameters<typeof SaveQueue>[1]>().mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  queue = new SaveQueue({ ...entry, ...fields }, commit, () => {});
+  const flushRef = { current: null as null | (() => Promise<boolean>) };
+  const render = (readOnly: boolean) => flushSync(() => root.render(<Theme><PropertiesPanel queue={queue}
+    categories={[]} tagSuggestions={["历史标签"]} locked={readOnly} flushRef={flushRef} onClose={vi.fn()} onOpen={vi.fn()}
+    onSave={async (_, change) => { queue.edit(change); if (!await queue.flush({ retry: true })) throw queue.saveError(); }} /></Theme>));
+  render(locked);
+  return { commit, flushRef, render };
 }
 async function choose(trigger: HTMLElement, text: string) {
   flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
@@ -164,4 +177,54 @@ it("keeps newer edits open when an older in-flight save conflicts during close",
   expect(recover).toHaveBeenCalledOnce();
   expect(queue.snapshot().fields.title).toBe("保存期间继续编辑的标题");
   expect(commit).toHaveBeenCalledOnce();
+});
+
+it.each(["locked", "deleted"])("keeps %s publication controls read-only for Enter and arrow keys", async mode => {
+  const { commit, flushRef } = mountPanel({
+    deletedAt: mode === "deleted" ? 1 : null,
+    publicationPlatforms: [{ platform: "CSDN", url: "https://example.com/article" }],
+  }, mode === "locked");
+  const platform = container.querySelector<HTMLInputElement>('[aria-label="发布平台 1"]')!;
+  flushSync(() => platform.focus());
+  for (const value of ["Enter", "ArrowDown", "ArrowUp", "Enter"]) key(platform, value);
+  expect(platform.readOnly).toBe(true);
+  expect(platform.value).toBe("CSDN");
+  expect(platform.getAttribute("aria-expanded")).toBe("false");
+  expect(document.querySelector('[aria-label="发布平台选项"]')).toBeNull();
+  expect(await flushRef.current!()).toBe(true);
+  expect(commit).not.toHaveBeenCalled();
+});
+
+it("closes platform suggestions when editing becomes locked without reopening them on unlock", () => {
+  const { render } = mountPanel({ publicationPlatforms: [{ platform: "CSDN", url: "" }] });
+  flushSync(() => container.querySelector<HTMLInputElement>('[aria-label="发布平台 1"]')!.focus());
+  expect(document.querySelector('[aria-label="发布平台选项"]')).not.toBeNull();
+  render(true);
+  expect(document.querySelector('[aria-label="发布平台选项"]')).toBeNull();
+  render(false);
+  expect(document.querySelector('[aria-label="发布平台选项"]')).toBeNull();
+});
+
+it.each(["Enter", "suggestion"])("saves a custom tag immediately after %s while the input stays focused", async action => {
+  const { commit } = mountPanel({ customProperties: [{ key: "主题", kind: "tags", value: ["原标签"] }] });
+  const input = container.querySelector<HTMLInputElement>('[aria-label="属性值"]')!;
+  flushSync(() => input.focus());
+  fill(input, action === "Enter" ? "新标签" : "历史");
+  if (action === "Enter") key(input, "Enter");
+  else flushSync(() => container.querySelector<HTMLElement>('[role="option"]')!.click());
+  await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+  expect(document.activeElement).toBe(input);
+  expect(input.value).toBe("");
+  expect(commit.mock.lastCall![2].customProperties).toEqual([
+    { key: "主题", kind: "tags", value: ["原标签", action === "Enter" ? "新标签" : "历史标签"] },
+  ]);
+  expect(queue.isDirty()).toBe(false);
+});
+
+it("saves custom tag removal without requiring a blur", async () => {
+  const { commit } = mountPanel({ customProperties: [{ key: "主题", kind: "tags", value: ["原标签"] }] });
+  flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="移除标签 原标签"]')!.click());
+  await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+  expect(commit.mock.lastCall![2].customProperties).toEqual([{ key: "主题", kind: "tags", value: [] }]);
+  expect(queue.isDirty()).toBe(false);
 });

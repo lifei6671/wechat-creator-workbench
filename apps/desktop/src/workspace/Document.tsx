@@ -2,7 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useEffectEvent, useLayoutEffe
 import { Button, ContextMenu, DropdownMenu, Spinner, Theme } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
-  ListFilter, ListTree, Palette, PencilLine, Save, Search, Send, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
+  ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
@@ -555,8 +555,6 @@ export interface DocumentActions {
   onFocusMode(): void;
   onPalette(): void;
   onAi(): void;
-  onWechat?(): void;
-  wechatOpen?: boolean;
   aiOpen: boolean;
   onSave(): void;
   onSearch(): void;
@@ -633,8 +631,6 @@ export function DocumentToolbar({ queue, categories, actions, onReveal, display,
       <ChevronRight size={12} /><BreadcrumbTitle key={queue.sessionId} queue={queue} title={fields.title} readOnly={deleted || actions.reading || locked} />
     </nav>
     <div className="button-strip document-actions">
-      {!deleted && actions.onWechat && <button type="button" className="plain-button wechat-publishing-toggle" aria-pressed={actions.wechatOpen}
-        onClick={actions.onWechat}><Send size={15} />公众号</button>}
       {deleted && <Button size="1" variant="ghost" color="gray" onClick={actions.onDelete}><ArchiveRestore size={15} />恢复</Button>}
       <DropdownMenu.Root>
         <Tooltip content="分享"><DropdownMenu.Trigger><button className="plain-button chrome-icon" type="button" aria-label="分享">

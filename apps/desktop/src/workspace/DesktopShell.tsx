@@ -18,7 +18,7 @@ import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { WorkspaceToast, type Notice } from "./WorkspaceToast";
 import { readCollectionTabs, readDocumentTabs, readWorkspaceLayout, readWorkspaceNavigation, saveCollectionTabs, saveDocumentTabs, saveWorkspaceLayout,
   saveWorkspaceNavigation, workspacePreferences, type CollectionTabsPreference, type DocumentOpenMode, type DocumentOptions, type TimelineDirectory } from "./preferences";
-import { Confirm, DeleteCategoryDialog, PropertiesDialog, RevisionsDialog } from "./Dialogs";
+import { Confirm, DeleteCategoryDialog, PropertiesPanel, RevisionsDialog } from "./Dialogs";
 import { DocumentEditor, DocumentSaveError, DocumentTabs, DocumentToolbar, MarkdownPreview, type DocumentActions, type TabAction, type ViewMode } from "./Document";
 import { StatusBar } from "./StatusBar";
 import type { EditorDisplay } from "./EditorContextMenu";
@@ -44,6 +44,8 @@ import type { CollectionCanvasHandle } from "./CollectionCanvas";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 import { WechatPublishing, type PublicationSession } from "./wechat-publication";
 import { WechatPublicationPanel } from "./WechatPublicationPanel";
+import { RightSidebarToolbar, type RightSidebarMode } from "./RightSidebar";
+import "../styles/right-sidebar.css";
 import "../styles/wechat-publication.css";
 import "./collection-canvas.css";
 
@@ -64,7 +66,7 @@ function hasWorkspaceSize(group: HTMLDivElement | null): group is HTMLDivElement
 
 type Modal =
   | { type: "palette" | "reload" | "emptyTrash" }
-  | { type: "properties" | "revisions"; id: string }
+  | { type: "revisions"; id: string }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
   | { type: "linkImport"; categoryId: string | null }
@@ -207,8 +209,11 @@ export function DesktopShell() {
   const [migrationWorking, setMigrationWorking] = useState<"export" | "import" | null>(null);
   const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
-  const [aiOverride, setAiOpen] = useState<boolean | null>(null);
-  const aiOpen = aiOverride ?? initialLayout.aiOpen;
+  const [rightPanelOverride, setRightPanel] = useState<RightSidebarMode | null | undefined>(undefined);
+  const [sidebarWorking, setSidebarWorking] = useState<RightSidebarMode | "close" | null>(null);
+  const documentOutline = activeId !== null && (documentOptions.get(activeId)?.outline ?? defaultOutline);
+  const rightPanel = rightPanelOverride === undefined ? (documentOutline ? "outline" : initialLayout.aiOpen ? "ai" : null) : rightPanelOverride;
+  const aiOpen = rightPanel === "ai";
   const [aiVisited, setAiVisited] = useState(false);
   useEffect(() => { if (aiOpen) setAiVisited(true); }, [aiOpen]);
   const [aiSettings, setAiSettings] = useState<AiSettings>();
@@ -240,11 +245,15 @@ export function DesktopShell() {
   const defaultExplorer = preferredExplorer ?? !compact;
   const explorer = explorerOverride ?? defaultExplorer;
   const reading = activeId !== null && readingIds.includes(activeId);
-  const [wechatOpen, setWechatOpen] = useState(false);
-  const showWechatPanel = wechatOpen && activeId !== null && sessions.some(session => session.entry.id === activeId && session.entry.kind === "article") && !collectionMode && !focusMode && !reading;
-  const timelineTooNarrow = useMedia(`(width < ${minimumTimelineWidth + minimumWritingWidth + minimumAiWidth + 2 * dividerWidth}px)`);
-  const showAiPanel = aiOpen && !showWechatPanel && !collectionMode && !focusMode && !reading && (aiOverride !== null || tabsRestored || tabSessions !== null)
-    && (!timelineMode || !explorer || !timelineTooNarrow);
+  const [propertiesId, updatePropertiesId] = useState<string | null>(null);
+  const propertiesTarget = useRef<string | null>(null);
+  function setPropertiesId(id: string | null) {
+    propertiesTarget.current = id;
+    updatePropertiesId(id);
+  }
+  const lastRightPanel = useRef<RightSidebarMode>("ai");
+  const showWechatPanel = rightPanel === "wechat" && activeId !== null && sessions.some(session => session.entry.id === activeId && session.entry.kind === "article" && session.entry.deletedAt === null) && !collectionMode && !focusMode && !reading;
+  const showAiPanel = aiOpen && !showWechatPanel && !collectionMode && !focusMode && !reading && (rightPanelOverride !== undefined || tabsRestored || tabSessions !== null);
   const loadAgentModels = showAiPanel && aiSettings?.preferences.enabled === true && aiSettings.agents.some(agent => agent.installed);
   useEffect(() => {
     if (!loadAgentModels) return;
@@ -257,9 +266,11 @@ export function DesktopShell() {
   const viewMode = reading || focusMode ? "edit" : (activeId ? documentOptions.get(activeId)?.view : undefined) ?? preferredView;
   const queues = useRef(new Map<string, SaveQueue>());
   const [wechatPublishing] = useState(() => new WechatPublishing());
-  const showRightPanel = showAiPanel || showWechatPanel;
+  const showPropertiesPanel = rightPanel === "properties" && propertiesId !== null && !focusMode;
+  const showOutlinePanel = rightPanel === "outline" && activeId !== null && !collectionMode && !focusMode;
+  const showRightPanel = showAiPanel || showWechatPanel || showPropertiesPanel || showOutlinePanel;
   useEffect(() => () => wechatPublishing.dispose(), [wechatPublishing]);
-  const propertiesFlush = useRef<(() => Promise<boolean>) | null>(null);
+  const propertiesFlush = useRef<((closing?: boolean) => Promise<boolean>) | null>(null);
   const propertiesQueue = useRef<SaveQueue | null>(null);
   const active = useRef<string | null>(null);
   const handles = useRef(new Map<string, MarkdownEditorHandle>());
@@ -296,6 +307,7 @@ export function DesktopShell() {
   const writingChrome = useRef<HTMLElement>(null);
   const navigationElement = useRef<HTMLDivElement>(null);
   const layoutSuspended = useRef(false);
+  const manualLayout = useRef<{ side: "navigation" | "ai-sidebar"; width: number } | null>(null);
   const timelineLayoutReady = useRef(false);
   const directoryDrag = useRef<{ pointerId: number; startX: number; width: number; articleWidth: number; currentWidth: number }>(null);
   const directoryTransition = useRef(0);
@@ -329,6 +341,7 @@ export function DesktopShell() {
   }
 
   async function applySync(operation: () => Promise<SyncApplied>) {
+    if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
     flushSync(() => setGlobalLock(true));
     try {
       await flushWorkspaceForSync();
@@ -336,12 +349,16 @@ export function DesktopShell() {
       const { changedEntries, changedCollections } = applied;
       if (applied.publicationDefaultsChanged) await wechatPublishing.defaults.load(true);
       const reopened = await Promise.all([...new Set(changedEntries)].flatMap(id => {
-        const queue = queues.current.get(id);
+        const queue = queues.current.get(id) ?? (propertiesQueue.current?.entry.id === id ? propertiesQueue.current : undefined);
         return queue ? [desktop.entry(id).then(entry => ({ queue, entry }))] : [];
       }));
       for (const { queue, entry } of reopened) {
         if (entry.purgedAt != null) removePurgedEntries([entry.id]);
         else if (!queue.isDirty() && queues.current.get(entry.id) === queue) install(entry, queue);
+        else if (!queue.isDirty() && propertiesQueue.current === queue) {
+          queue.dispose();
+          propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+        }
       }
       if (changedCollections.length) {
         collectionListRevision.current += 1;
@@ -408,7 +425,7 @@ export function DesktopShell() {
     const viewingSyncSettings = modal?.type === "settings" && settingsPage.current === "sync";
     if (modal && !viewingSyncSettings) return "等待关闭当前弹窗";
     if (document.querySelector('[role="alertdialog"]')) return "等待关闭确认对话框";
-    const unsaved = [...queues.current.values()].filter(queue => queue.isDirty() || queue.isSaving());
+    const unsaved = [...queues.current.values(), ...(propertiesQueue.current ? [propertiesQueue.current] : [])].filter(queue => queue.isDirty() || queue.isSaving());
     if (unsaved.length) return unsaved.some(queue => queue.saveError()) ? "等待重试文稿保存" : "等待文稿保存完成";
     if (!(collectionCanvas.current?.canApplySync() ?? true)) return "等待画布操作结束";
     if (!viewingSyncSettings && document.visibilityState === "visible" && document.hasFocus()
@@ -690,13 +707,21 @@ export function DesktopShell() {
   function commitBreadcrumb() {
     const field = document.activeElement;
     if (field instanceof HTMLInputElement && field.classList.contains("path-title-input")) field.blur();
-    else if (field instanceof HTMLElement && field.closest(".wechat-publishing-panel")) field.blur();
+    else if (field instanceof HTMLElement && field.closest(".wechat-publishing-panel, .properties-sidebar")) field.blur();
   }
 
-  function select(id: string | null, restored = false) {
+  function select(id: string | null, restored = false, propertiesSaved = false) {
     const previous = active.current;
     if (id === previous) return;
     commitBreadcrumb();
+    if (!propertiesSaved && propertiesFlush.current) {
+      const selection = selecting.current, intent = viewIntent.current;
+      run(async () => {
+        if (!await propertiesFlush.current!()) return;
+        if (active.current === previous && selecting.current === selection && viewIntent.current === intent && !exit.current) select(id, restored, true);
+      });
+      return;
+    }
     if (wechatPublishing.needsFlush(previous ? queues.current.get(previous) : undefined)) {
       const selection = selecting.current;
       const intent = viewIntent.current;
@@ -709,6 +734,12 @@ export function DesktopShell() {
     if (pendingEditorFocus.current !== id) pendingEditorFocus.current = null;
     if (previous) void queues.current.get(previous)?.flush();
     active.current = id;
+    const nextOutline = id !== null && (documentOptions.get(id)?.outline ?? defaultOutline);
+    if (rightPanel === "outline" || rightPanel === null && nextOutline) setRightPanel(nextOutline ? "outline" : null);
+    if (rightPanel === "properties" && id) setPropertiesId(id);
+    if (rightPanel === "properties" && id === null && propertiesId === previous) {
+      setRightPanel(null); setPropertiesId(null); releasePropertiesQueue();
+    }
     setTabSelection(id === null ? null : { id, restored });
     if (id === null) setFocusMode(false);
   }
@@ -729,6 +760,9 @@ export function DesktopShell() {
     const ticket = ++selecting.current;
     const view = ++viewIntent.current;
     const superseded = () => ticket !== selecting.current || view !== viewIntent.current || exit.current;
+    commitBreadcrumb();
+    if (propertiesFlush.current && !await propertiesFlush.current()) return;
+    if (superseded()) return;
     const replacing = !collectionMode && mode === "current" && active.current ? queues.current.get(active.current) : undefined;
     const canvas = collectionMode ? collectionCanvas.current : null;
     if (collectionMode) {
@@ -818,6 +852,7 @@ export function DesktopShell() {
   async function withEntryLock(id: string, operation: () => Promise<void>) {
     if (locking.current.has(id)) return;
     if (id === active.current) commitBreadcrumb();
+    if (propertiesId === id && propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
     locking.current.add(id);
     setLocked([...locking.current]);
     try { await operation(); }
@@ -848,10 +883,12 @@ export function DesktopShell() {
 
   function afterCanvasSaved(action: () => void) {
     const canvas = collectionCanvas.current;
-    if (!canvas) { action(); return; }
-    void waitForCollectionWrites().then(() => canvas.flush()).then(() => {
-      if (!exit.current) action();
-    }, showError);
+    const proceed = () => {
+      if (!canvas) { action(); return; }
+      void waitForCollectionWrites().then(() => canvas.flush()).then(() => { if (!exit.current) action(); }, showError);
+    };
+    if (propertiesFlush.current) void propertiesFlush.current().then(saved => { if (saved && !exit.current) proceed(); }, showError);
+    else proceed();
   }
 
   function navigate(next: Section, onNavigated?: () => void) {
@@ -861,8 +898,7 @@ export function DesktopShell() {
       switchSection(next);
       onNavigated?.();
     };
-    if (next === "collections") apply();
-    else afterCanvasSaved(apply);
+    afterCanvasSaved(apply);
   }
 
   function switchSection(next: Section) {
@@ -1254,6 +1290,10 @@ export function DesktopShell() {
   }
 
   function removePurgedEntries(ids: string[]) {
+    if (propertiesId && ids.includes(propertiesId)) {
+      setPropertiesId(null); releasePropertiesQueue();
+      if (rightPanel === "properties") setRightPanel(null);
+    }
     for (const id of ids) if (queues.current.has(id)) remove(id);
     reloadCanvases(collectionTabs?.ids ?? []);
     refresh();
@@ -1289,6 +1329,11 @@ export function DesktopShell() {
       const queue = queues.current.get(id);
       if (queue && !await queue.flush()) { select(id); return; }
       const entry = await desktop.setDeleted(id, queue?.snapshot().version ?? (await desktop.entry(id)).version, deleted);
+      if (propertiesTarget.current === id) {
+        setPropertiesId(null);
+        setRightPanel(current => current === "properties" ? null : current);
+      }
+      if (propertiesQueue.current?.entry.id === id) releasePropertiesQueue();
       if (queue) remove(id);
       if (!deleted && queue) {
         install(entry);
@@ -1325,7 +1370,7 @@ export function DesktopShell() {
         case "pin": case "unpin": await desktop.setEntryPinned(row.id, action === "pin"); refresh(); return;
         case "export": return exportMarkdown(row.id);
         case "history": showModal({ type: "revisions", id: row.id }, trigger); return;
-        case "properties": showModal({ type: "properties", id: row.id }, trigger); return;
+        case "properties": return showSidebar("properties", row.id);
         case "duplicate": {
           const entry = await currentEntry(row.id);
           activateCreated(await desktop.create("article", {
@@ -1364,8 +1409,7 @@ export function DesktopShell() {
         setReadingIds(current => current.includes(id) ? current.filter(other => other !== id) : [...current, id]);
         break;
       case "properties":
-        switchTab(id);
-        showModal({ type: "properties", id }, trigger);
+        run(() => showSidebar("properties", id));
         break;
       case "search":
         switchTab(id);
@@ -1405,7 +1449,10 @@ export function DesktopShell() {
       }
       queue = propertiesQueue.current;
     }
-    queue.edit(change);
+    const current = queue.snapshotFields();
+    if (Object.keys(change).some(key => JSON.stringify(current[key as keyof EntryFields]) !== JSON.stringify(change[key as keyof EntryFields]))) {
+      queue.edit(change);
+    }
     if (!await queue.flush({ retry: true })) throw queue.saveError();
   }
 
@@ -1415,7 +1462,7 @@ export function DesktopShell() {
     setSessions([...queues.current.values()]);
     if (collectionMode) switchSection("folders");
     revealFolder(queue.snapshot().fields.categoryId);
-    select(entry.id);
+    select(entry.id, false, true);
   }
 
   function renameEntry(id: string, title: string) {
@@ -1431,10 +1478,6 @@ export function DesktopShell() {
   }
 
   function closeModal() {
-    if (propertiesQueue.current) {
-      if (!queues.current.has(propertiesQueue.current.entry.id)) propertiesQueue.current.dispose();
-      propertiesQueue.current = null;
-    }
     setModal(null);
     setConfirmRestore(false);
     const origin = focusOrigin.current;
@@ -1477,6 +1520,7 @@ export function DesktopShell() {
   async function deleteCategory(target: Category, trashContents: boolean) {
     const removed = new Set([target.id, ...(trashContents ? library?.categories ?? [] : []).filter(cat => cat.parentId === target.id).map(cat => cat.id)]);
     commitBreadcrumb();
+    if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
     flushSync(() => setGlobalLock(true));
     try {
       const failed = (await waitForCollectionWrites()).find(write => write.status === "rejected");
@@ -1500,8 +1544,8 @@ export function DesktopShell() {
   const copy = desktop.copyText;
 
   const selected = activeId ? queues.current.get(activeId) : undefined;
-  const outlineOpen = (activeId ? documentOptions.get(activeId)?.outline : undefined) ?? defaultOutline;
-  const outlineEditor = outlineOpen && viewMode === "edit" && activeId ? handles.current.get(activeId) : undefined;
+  const canShowWechat = selected?.entry.kind === "article" && selected.entry.deletedAt === null;
+  const outlineEditor = showOutlinePanel && activeId ? handles.current.get(activeId) : undefined;
   const displayFor = (id: string | null): EditorDisplay => ({
     ...editorDisplay, convertLinks: (id ? documentOptions.get(id)?.convertLinks : undefined) ?? defaultConvertLinks,
   });
@@ -1580,23 +1624,77 @@ export function DesktopShell() {
     });
   }
 
-  function openAi() {
-    const openPanel = () => {
-      setWechatOpen(false);
-      setFocusMode(false);
-      if (timelineMode && timelineTooNarrow) setExplorerOverride(false);
-      setAiOpen(true);
-    };
-    if (wechatPublishing.needsFlush(selected ?? undefined)) run(async () => {
-      if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
-      openPanel();
-    });
-    else openPanel();
+  const sidebarIntent = useRef(0);
+  function releasePropertiesQueue() {
+    const queue = propertiesQueue.current;
+    if (queue && !queues.current.has(queue.entry.id)) queue.dispose();
+    propertiesQueue.current = null;
   }
+  function showSidebar(mode: RightSidebarMode | null, entryId = active.current ?? propertiesId, restoreFocus = false): Promise<boolean> {
+    const ticket = ++sidebarIntent.current;
+    const currentId = active.current, intent = viewIntent.current;
+    commitBreadcrumb();
+    const activate = () => {
+      if (ticket !== sidebarIntent.current || mode !== null && (currentId !== active.current || intent !== viewIntent.current) || exit.current) return false;
+      setSidebarWorking(null);
+      if (mode !== "properties") releasePropertiesQueue();
+      if (activeId && (mode === "outline" || rightPanel === "outline")) updateDocumentOptions(activeId, { outline: mode === "outline" });
+      if (rightPanel) lastRightPanel.current = rightPanel;
+      if (mode) lastRightPanel.current = mode;
+      if (mode === "properties") setPropertiesId(entryId);
+      setRightPanel(mode);
+      if (restoreFocus) document.getElementById("ai-panel-trigger")?.focus();
+      if (mode) {
+        setFocusMode(false);
+      }
+      return true;
+    };
+    const prepare = async () => {
+      if (mode === "properties") {
+        if (!entryId) return false;
+        if (!queues.current.has(entryId) && propertiesQueue.current?.entry.id !== entryId) {
+          const entry = await desktop.entry(entryId);
+          if (ticket !== sidebarIntent.current || exit.current) return false;
+          releasePropertiesQueue();
+          propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+        }
+      }
+      return activate();
+    };
+    const wait = async (operation: () => Promise<boolean>) => {
+      setSidebarWorking(mode ?? "close");
+      try { return await operation(); }
+      finally { if (ticket === sidebarIntent.current) setSidebarWorking(null); }
+    };
+    if (propertiesFlush.current || wechatPublishing.needsFlush(selected ?? undefined)) return wait(async () => {
+      if (propertiesFlush.current && !await propertiesFlush.current(mode === null)) return false;
+      if (!await wechatPublishing.flush()) return false;
+      return prepare();
+    });
+    return mode === "properties" ? wait(prepare) : Promise.resolve(activate());
+  }
+  function openAi() { run(() => showSidebar("ai")); }
 
   function toggleAi() {
-    if (showAiPanel) setAiOpen(false);
+    if (showAiPanel) run(() => showSidebar(null));
     else openAi();
+  }
+
+  function toggleRightPanel() {
+    const mode = lastRightPanel.current;
+    run(() => showSidebar(showRightPanel ? null : mode === "wechat" && !canShowWechat ? "ai" : mode));
+  }
+
+  function toggleFocusMode() {
+    if (focusMode) { setFocusMode(false); return; }
+    commitBreadcrumb();
+    if (!propertiesFlush.current && !wechatPublishing.needsFlush(selected ?? undefined)) { setFocusMode(true); return; }
+    const currentId = active.current, intent = viewIntent.current;
+    run(async () => {
+      if (propertiesFlush.current && !await propertiesFlush.current()) return;
+      if (!await wechatPublishing.flush()) return;
+      if (currentId === active.current && intent === viewIntent.current && !exit.current) setFocusMode(true);
+    });
   }
 
   function publication(output: "clipboard" | "html") {
@@ -1664,19 +1762,11 @@ export function DesktopShell() {
   const actions: DocumentActions = {
     shortcutLabels: { save: workspaceShortcutLabel(workspaceShortcuts, "save") ?? null, palette: workspaceShortcutLabel(workspaceShortcuts, "palette") ?? null },
     feedback: documentButtons, exportedPath, onRevealExport: () => run(() => documentButtons.run("revealExport", () => desktop.revealFile(exportedPath))),
-    mode: viewMode, setMode: view, focusMode, onFocusMode: () => setFocusMode(value => !value),
+    mode: viewMode, setMode: view, focusMode, onFocusMode: toggleFocusMode,
     reading, onReading: toggleReading,
-    outlineOpen, onOutline: checked => { if (activeId) updateDocumentOptions(activeId, { outline: checked }); },
+    outlineOpen: showOutlinePanel, onOutline: checked => { run(() => showSidebar(checked ? "outline" : null)); },
     onPalette: () => showModal({ type: "palette" }),
     onAi: toggleAi, aiOpen: showAiPanel,
-    onWechat: selected?.entry.kind === "article" ? () => run(async () => {
-      if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
-      if (showWechatPanel) { setWechatOpen(false); return; }
-      setAiOpen(false); setFocusMode(false); view("preview");
-      if (timelineMode && timelineTooNarrow) setExplorerOverride(false);
-      setWechatOpen(true);
-    }) : undefined,
-    wechatOpen: showWechatPanel,
     onSave: () => {
       if (!reading && selected?.entry.deletedAt === null) {
         commitBreadcrumb();
@@ -1689,7 +1779,7 @@ export function DesktopShell() {
       requestAnimationFrame(() => handles.current.get(selected.entry.id)?.search());
     },
     onProperties: () => {
-      if (activeId) showModal({ type: "properties", id: activeId }, document.getElementById("document-action-trigger"));
+      if (activeId) run(() => showSidebar("properties", activeId));
     },
     onSavedVersions: () => { if (selected) showModal({ type: "revisions", id: selected.entry.id }, document.getElementById("document-action-trigger")); },
     onExport: () => { if (selected) run(() => exportMarkdown(selected.entry.id)); },
@@ -1822,8 +1912,9 @@ export function DesktopShell() {
   const hideEvent = useEffectEvent(async () => {
     if (hiding.current || exit.current) return;
     hiding.current = true;
-    flushSync(() => setGlobalLock(true));
     try {
+      if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
+      flushSync(() => setGlobalLock(true));
       (document.activeElement as HTMLElement | null)?.blur();
       await flushWorkspaceForSync();
       await desktop.confirmHide();
@@ -1924,10 +2015,10 @@ export function DesktopShell() {
   const showTimelineDirectory = showExplorer && timelineMode && timelineDirectory === "shown";
   const restorePanelSizes = useEffectEvent((group: HTMLDivElement) => {
     const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showRightPanel));
-    const navigationLimit = available - minimumWritingWidth - (showRightPanel ? minimumAiWidth : 0);
+    const navigationLimit = available - (showRightPanel ? minimumAiWidth : 0);
     const navigation = showExplorer ? Math.min(preferredNavigationWidth(), navigationLimit) : 0;
     const aiLimit = Math.min(available / 2, available - minimumWritingWidth - navigation);
-    const ai = showRightPanel ? Math.min(aiSidebarWidth.current, aiLimit) : 0;
+    const ai = showRightPanel ? Math.max(minimumAiWidth, Math.min(aiSidebarWidth.current, aiLimit)) : 0;
     workspacePanels.current!.setLayout({
       navigation: navigation / available * 100,
       writing: (available - navigation - ai) / available * 100,
@@ -1937,13 +2028,15 @@ export function DesktopShell() {
   useLayoutEffect(() => {
     const group = sidebarGroup.current!;
     let frame = 0;
+    let width = group.clientWidth;
     const observer = new ResizeObserver(() => {
       // Windows can report its minimized taskbar size while the WebView is still visible.
       if (!hasWorkspaceSize(group)) {
         layoutSuspended.current = true;
-      } else if (layoutSuspended.current && !frame) frame = requestAnimationFrame(() => {
+      } else if ((layoutSuspended.current || group.clientWidth !== width) && !frame) frame = requestAnimationFrame(() => {
         frame = 0;
         if (!hasWorkspaceSize(group)) return;
+        width = group.clientWidth;
         restorePanelSizes(group);
         layoutSuspended.current = false;
       });
@@ -2003,7 +2096,8 @@ export function DesktopShell() {
         settled = requestAnimationFrame(() => {
           delete group.dataset.sidebarRestoring;
           timelineLayoutReady.current = timelineMode && showExplorer;
-          if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group)) rememberTimelineWidth(timelineNavigationWidth());
+          restorePanelSizes(group);
+        if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group)) fitTimelineDirectory(timelineNavigationWidth());
         });
       });
     });
@@ -2019,31 +2113,13 @@ export function DesktopShell() {
     };
   }, [showExplorer, timelineMode, sidebarPanel]);
   useLayoutEffect(() => {
-    const panel = aiSidebarPanel.current!;
     const group = sidebarGroup.current!;
     if (!hasWorkspaceSize(group)) return;
-    if (showRightPanel !== panel.isCollapsed()) return;
     group.dataset.aiSidebarMoving = "true";
-    if (showRightPanel && !showExplorer) {
-      const available = group.clientWidth - dividerWidth;
-      const aiShare = Math.min(50, aiSidebarWidth.current / available * 100);
-      workspacePanels.current!.setLayout({ navigation: 0, writing: 100 - aiShare, "ai-sidebar": aiShare });
-    } else if (showRightPanel) panel.resize(aiSidebarWidth.current);
-    else if (showExplorer) {
-      const available = group.clientWidth - dividerWidth;
-      const width = Math.min(preferredNavigationWidth(), available - minimumWritingWidth);
-      const share = width / available * 100;
-      workspacePanels.current!.setLayout({ navigation: share, writing: 100 - share, "ai-sidebar": 0 });
-    } else panel.collapse();
+    restorePanelSizes(group);
     const clear = () => { delete group.dataset.aiSidebarMoving; };
     const timer = window.setTimeout(clear, 270);
-    const frame = requestAnimationFrame(() => {
-      if (showRightPanel && !layoutSuspended.current && hasWorkspaceSize(group)) {
-        const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
-        rememberAiWidth(available * workspacePanels.current!.getLayout()["ai-sidebar"] / 100);
-      }
-    });
-    return () => { window.clearTimeout(timer); cancelAnimationFrame(frame); clear(); };
+    return () => { window.clearTimeout(timer); clear(); };
   }, [showRightPanel, showExplorer, aiSidebarPanel, workspacePanels]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
@@ -2075,15 +2151,14 @@ export function DesktopShell() {
     openAi();
     setAiChatSelection({ sessionId: session.sessionId, selection });
   }
-  function closeAi() {
-    setAiOpen(false);
-    document.getElementById("ai-panel-trigger")?.focus();
+  function closeRightPanel() {
+    run(() => showSidebar(null, undefined, true));
   }
   const aiPanel = <AiPanel open={showAiPanel} queue={queue} editor={aiEditor} target={aiTarget} selection={aiSelection}
     targetPicker={<AiTargetPicker settings={aiSettings} catalog={agentCatalog} selection={aiSelection}
       label={aiTarget.label ?? aiTarget.hint ?? "选择 AI 目标"} saving={savingAiSettings}
       onSelect={selectAiTarget} />}
-    canChat={canChat} canEdit={canEditWithAi} tagSuggestions={library?.tagSuggestions} onClose={closeAi} onSettings={showModel}
+    canChat={canChat} canEdit={canEditWithAi} tagSuggestions={library?.tagSuggestions} onClose={closeRightPanel} onSettings={showModel}
     canSend={() => !exit.current}
     trackWrite={trackAssetTask}
     selectionRequest={aiChatSelection?.sessionId === queue?.sessionId ? aiChatSelection?.selection : undefined}
@@ -2180,17 +2255,37 @@ export function DesktopShell() {
       inert={Boolean(exitMessage)}>
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup} groupRef={workspacePanels}
         resizeTargetMinimumSize={dividerHitTarget}
+        onPointerDownCapture={event => {
+          const separator = document.activeElement;
+          if (separator?.parentElement === event.currentTarget && separator.hasAttribute("data-separator")) manualLayout.current = {
+            side: separator.classList.contains("ai-sidebar-divider") ? "ai-sidebar" : "navigation", width: event.currentTarget.clientWidth,
+          };
+        }}
+        onPointerUpCapture={() => { manualLayout.current = null; }}
+        onKeyDownCapture={event => {
+          const separator = event.target as HTMLElement;
+          if (separator.parentElement === event.currentTarget && separator.hasAttribute("data-separator")) manualLayout.current = {
+            side: separator.classList.contains("ai-sidebar-divider") ? "ai-sidebar" : "navigation", width: event.currentTarget.clientWidth,
+          };
+        }}
+        onKeyUpCapture={() => { manualLayout.current = null; }}
         onLayoutChange={layout => {
           const group = sidebarGroup.current;
-          if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group) && !group.dataset.timelineDirectoryMoving
+          if (manualLayout.current?.side === "navigation" && manualLayout.current.width === group?.clientWidth && timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group) && !group.dataset.timelineDirectoryMoving
             && !directoryDrag.current) fitTimelineDirectory(timelineNavigationWidth(layout));
         }}
         onLayoutChanged={layout => {
           const group = sidebarGroup.current;
+          const manual = manualLayout.current;
+          manualLayout.current = null;
+          if (!manual || manual.width !== group?.clientWidth) return;
           if (layoutSuspended.current || !hasWorkspaceSize(group) || group.dataset.timelineDirectoryMoving) return;
           const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showRightPanel));
           const moving = group.dataset.sidebarMoving || group.dataset.sidebarRestoring || group.dataset.aiSidebarMoving;
-          if (showRightPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
+          if (manual.side === "ai-sidebar") {
+            if (showRightPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
+            return;
+          }
           if (!showExplorer || moving) return;
           const width = Math.round(available * layout.navigation / 100);
           if (timelineMode) {
@@ -2285,7 +2380,7 @@ export function DesktopShell() {
           {showExplorer && <Separator className={`divider sidebar-divider${timelineMode ? " navigation-divider" : ""}`}
             disableDoubleClick aria-label={timelineMode ? "调整文章时间流宽度" : "调整资源导航宽度"}
             onPointerDown={timelineMode ? stopDirectoryTransition : undefined} />}
-        <Panel id="writing" minSize={minimumWritingWidth} style={{ overflow: "hidden" }}>
+        <Panel id="writing" minSize="0px" style={{ overflow: "hidden" }}>
           <main className="main-workspace" aria-label="写作工作区">
             <header className="workbench-chrome chrome-band" ref={writingChrome}>
               {!showExplorer && <Tool id="show-sidebar" className="chrome-icon sidebar-toggle restore-sidebar" label={focusMode ? "退出专注写作" : "显示左侧栏"}
@@ -2300,9 +2395,9 @@ export function DesktopShell() {
                 onImportMarkdown={() => importMarkdown()}
                 onCreateCollection={createCollection} disabled={globalLock} />}
               <WindowDragRegion onError={showError} />
-              {!reading && !focusMode && !collectionMode && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
-                label={showAiPanel ? "隐藏 AI 侧栏" : "显示 AI 侧栏"} aria-expanded={showAiPanel}
-                aria-controls="ai-sidebar" onClick={toggleAi}><SidebarToggleIcon side="right" expanded={showAiPanel} /></Tool>}
+              {!focusMode && (showRightPanel || !reading && !collectionMode) && <Tool id="ai-panel-trigger" className="chrome-icon sidebar-toggle ai-panel-trigger"
+                label={showRightPanel ? "隐藏右侧栏" : "显示右侧栏"} aria-expanded={showRightPanel}
+                aria-controls="ai-sidebar" onClick={toggleRightPanel}><SidebarToggleIcon side="right" expanded={showRightPanel} /></Tool>}
             </header>
             {collectionMode && <>
               {activeCollection ? <Suspense fallback={<div id="collection-canvas-panel" role="tabpanel"
@@ -2330,7 +2425,7 @@ export function DesktopShell() {
                 locked={globalLock || locked.includes(queue.entry.id)}
                 display={display} onDisplayChange={(option, checked) => updateEditorDisplay(queue.entry.id, option, checked)}
                 onReveal={id => { navigate("folders"); revealDirectory(); revealFolder(id); }} />
-              <div className="document-body" data-view={viewMode} data-outline-open={Boolean(outlineEditor) || undefined}
+              <div className="document-body" data-view={viewMode}
                 id="document-body" role="tabpanel" aria-labelledby={`tab-${activeId}`}>
                 <div className="editor-stack" hidden={viewMode === "preview"}>
                   {sessions.map(session => <DocumentEditor key={session.sessionId}
@@ -2347,12 +2442,6 @@ export function DesktopShell() {
                 </div>
                 {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks}
                   publication={queue.entry.kind === "article" && queue.entry.deletedAt === null ? wechatPublishing.session(queue) : undefined} sourceRevision={refreshCount} /></div>}
-                {outlineEditor && <Outline key={queue.sessionId} editor={outlineEditor}
-                  readOnly={reading || Boolean(exitMessage) || globalLock || locked.includes(queue.entry.id) || queue.entry.deletedAt !== null}
-                  onClose={() => {
-                    actions.onOutline(false);
-                    document.getElementById("document-action-trigger")?.focus();
-                  }} />}
                 {!collectionMode && workspaceNotice}
               </div>
               <DocumentSaveError key={queue.sessionId} queue={queue} actions={actions} />
@@ -2371,20 +2460,54 @@ export function DesktopShell() {
           </main>
         </Panel>
         {showRightPanel && <Separator className="divider ai-sidebar-divider"
-          disableDoubleClick aria-label={showWechatPanel ? "调整公众号侧栏宽度" : "调整 AI 侧栏宽度"} />}
+          disableDoubleClick aria-label="调整右侧栏宽度" />}
         <Panel id="ai-sidebar" defaultSize="0px" minSize={minimumAiWidth} maxSize="50%" collapsible collapsedSize="0px"
           panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
           onResize={(size, _id, previous) => {
             if (showRightPanel && previous?.inPixels && !size.inPixels && !layoutSuspended.current
-              && hasWorkspaceSize(sidebarGroup.current) && !sidebarGroup.current.dataset.aiSidebarMoving) { setAiOpen(false); setWechatOpen(false); }
+              && hasWorkspaceSize(sidebarGroup.current) && !sidebarGroup.current.dataset.aiSidebarMoving) {
+              run(async () => { if (!await showSidebar(null)) aiSidebarPanel.current!.resize(aiSidebarWidth.current); });
+            }
           }}>
-          <div className="ai-sidebar" inert={!showAiPanel} hidden={showWechatPanel}>
-            {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
-          </div>
-          {showWechatPanel && queue?.entry.kind === "article" && <WechatPublicationPanel session={wechatPublishing.session(queue)}
-            sourceRevision={refreshCount}
-            locked={globalLock || locked.includes(queue.entry.id)} publishing={publishing} copyFeedback={documentButtons}
-            onClose={() => setWechatOpen(false)} onCopy={actions.onCopyWechat} />}
+          <aside className="right-sidebar" aria-label="右侧栏">
+            {showRightPanel && <RightSidebarToolbar value={rightPanel!} working={sidebarWorking} onError={showError} disabled={{
+              wechat: globalLock || !canShowWechat || reading || collectionMode,
+              ai: globalLock || reading || collectionMode,
+              properties: globalLock || !(activeId || propertiesId),
+              outline: globalLock || !queue || collectionMode,
+            }} onChange={mode => run(() => showSidebar(mode))} />}
+            <div className="right-sidebar-content">
+              <div role="region" id="right-sidebar-ai-panel" aria-labelledby="right-sidebar-ai-button" hidden={!showAiPanel}>
+                <div className="ai-sidebar" inert={!showAiPanel}>
+                  {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
+                </div>
+              </div>
+              <div role="region" id="right-sidebar-wechat-panel" aria-labelledby="right-sidebar-wechat-button" hidden={!showWechatPanel}>
+                {showWechatPanel && queue?.entry.kind === "article" && <WechatPublicationPanel embedded session={wechatPublishing.session(queue)}
+                  sourceRevision={refreshCount} locked={globalLock || locked.includes(queue.entry.id)} publishing={publishing} copyFeedback={documentButtons}
+                  onClose={closeRightPanel} onCopy={actions.onCopyWechat} />}
+              </div>
+              <div role="region" id="right-sidebar-properties-panel" aria-labelledby="right-sidebar-properties-button" hidden={!showPropertiesPanel}>
+                {showPropertiesPanel && propertiesId && (queues.current.get(propertiesId) ?? propertiesQueue.current) && <PropertiesPanel
+                  key={`${propertiesId}:${(queues.current.get(propertiesId) ?? propertiesQueue.current)!.sessionId}`}
+                  queue={(queues.current.get(propertiesId) ?? propertiesQueue.current)!} flushRef={propertiesFlush}
+                  categories={library?.categories ?? []} tagSuggestions={library?.tagSuggestions ?? []}
+                  locked={globalLock || readingIds.includes(propertiesId) || locked.includes(propertiesId)}
+                  onSave={(entry, change) => trackAssetTask(savePropertyFields(entry, change))} onConflict={openPropertyConflict}
+                  onClose={closeRightPanel} onOpen={id => run(() => open(id))} onOpenCollection={openCollection} />}
+              </div>
+              <div role="region" id="right-sidebar-outline-panel" aria-labelledby="right-sidebar-outline-button" hidden={!showOutlinePanel}>
+                {queue && outlineEditor && <Outline key={`${queue.sessionId}:${viewMode}`} editor={outlineEditor}
+                  readOnly={reading || viewMode === "preview" || Boolean(exitMessage) || globalLock || locked.includes(queue.entry.id) || queue.entry.deletedAt !== null}
+                  onNavigate={item => {
+                    if (viewMode === "preview") {
+                      view("edit");
+                      requestAnimationFrame(() => outlineEditor.scrollToHeading(item));
+                    } else outlineEditor.scrollToHeading(item);
+                  }} />}
+              </div>
+            </div>
+          </aside>
         </Panel>
       </Group>
       {windowsTitleBar && <WindowControls onError={showError} />}
@@ -2473,13 +2596,6 @@ export function DesktopShell() {
       {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} onClose={closeModal} />}
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
-      {modal?.type === "properties" && <PropertiesDialog key={modal.id} id={modal.id} queue={queues.current.get(modal.id)}
-        flushRef={propertiesFlush}
-        categories={library?.categories ?? []} tagSuggestions={library?.tagSuggestions ?? []}
-        locked={globalLock || readingIds.includes(modal.id) || locked.includes(modal.id)}
-        onSave={(entry, change) => trackAssetTask(savePropertyFields(entry, change))} onConflict={openPropertyConflict}
-        onClose={closeModal} onOpen={id => run(() => open(id))}
-        onOpenCollection={openCollection} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <DeleteCategoryDialog target={modal.target}
         onClose={closeModal} onConfirm={trashContents => deleteCategory(modal.target, trashContents)} />}

@@ -6,11 +6,11 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import { Button, Checkbox, ContextMenu, DropdownMenu, TextField, VisuallyHidden } from "@radix-ui/themes";
-import { ArrowUp, Check, ChevronDown, Copy, FileText, History, PencilLine, Plus, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Copy, FileText, History, LoaderCircle, PencilLine, Plus, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
 import { diffLines } from "diff";
 import type { MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { renderMarkdown } from "../../../../packages/markdown-core";
-import { desktop, errorMessage, windowsTitleBar, type AiPropertyField, type AiPropertyValues, type AiProposalStatus, type AiSelection } from "../desktop";
+import { desktop, errorMessage, type AiPropertyField, type AiPropertyValues, type AiProposalStatus, type AiSelection } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
 import { aiActions, captureAiIntent, matchesAiTarget, messageText, requestedProperties, scopeLabels, type AiAction, type CapturedTarget, type ChatSelection, type ScopeChoice } from "../ai/context";
 import { propertyProposalOf, proposalOf, useWritingRuntime, type WritingThreads } from "../ai/runtime";
@@ -19,7 +19,6 @@ import { messageTimeLabel, untitled } from "../labels";
 import { Tool } from "../ui";
 import { ActionError, useButtonFeedback } from "../button-feedback";
 import { addTag } from "./TagInput";
-import { WindowDragRegion } from "./WindowTitle";
 
 const readNothing = () => null;
 const subscribeNothing = () => () => {};
@@ -355,20 +354,20 @@ function ConversationView({
       event.stopPropagation(); onClose();
     }
   }}>
-    <header className="ai-chat-header">
-      <h2>AI 聊天</h2>
+    <div className="ai-chat-actions" role="group" aria-label="对话操作">
+      <Tool label="对话记录" className="chrome-icon" color="gray" aria-pressed={view === "threads"} disabled={!ready || switching || historyLoading}
+        aria-busy={historyLoading || undefined} onClick={toggleHistory}>{historyLoading
+          ? <span className="button-feedback-icon" data-state="pending" aria-hidden="true"><LoaderCircle size={18} /></span>
+          : <History size={18} strokeWidth={1.8} />}</Tool>
       <Tool label="新对话" className="chrome-icon" color="gray" disabled={!ready || running || switching}
-        onClick={() => void switchThread()}><Plus size={18} strokeWidth={1.8} /></Tool>
-      {open && windowsTitleBar && <WindowDragRegion onError={report} />}
-      <div className="ai-chat-header-tools">
-        <Tool label="对话记录" className="chrome-icon" color="gray" aria-pressed={view === "threads"} disabled={!ready || switching || historyLoading}
-          onClick={toggleHistory}><History size={18} strokeWidth={1.8} /></Tool>
-      </div>
-    </header>
+        aria-busy={switching || undefined} onClick={() => void switchThread()}>{switching
+          ? <span className="button-feedback-icon" data-state="pending" aria-hidden="true"><LoaderCircle size={18} /></span>
+          : <Plus size={18} strokeWidth={1.8} />}</Tool>
+    </div>
     <ThreadPrimitive.Viewport className="ai-transcript">
       {view === "threads"
         ? historyLoading || listLoading ? <p role="status" className="muted-text">正在读取对话…</p>
-          : <ConversationList runtime={runtime} disabled={!ready || running || switching} select={id => void switchThread(id)} report={report} />
+          : <ConversationList runtime={runtime} disabled={!ready || running || switching} select={id => void switchThread(id)} />
         : !ready || loading || switching ? <p role="status" className="muted-text">正在读取对话…</p>
         : <>
           <ThreadPrimitive.Empty><div className="ai-chat-empty">
@@ -658,14 +657,14 @@ function formatThreadTime(date: Date) {
 }
 
 function ConversationList({ runtime, disabled, select }: {
-  runtime: AssistantRuntime; disabled: boolean; select(id: string): void; report(failure: unknown): void;
+  runtime: AssistantRuntime; disabled: boolean; select(id: string): void;
 }) {
   const ids = useAuiState(state => state.threads.archivedThreadIds);
   const [editing, setEditing] = useState("");
   const [deleting, setDeleting] = useState("");
   const buttons = useButtonFeedback();
   if (!ids.length) return <p className="muted-text">暂无对话</p>;
-  return <><ActionError error={buttons.error()} /><ul className="ai-thread-list" aria-label="对话记录"><ThreadListPrimitive.Items archived>{({ threadListItem }) => {
+  return <ul className="ai-thread-list" aria-label="对话记录"><ThreadListPrimitive.Items archived>{({ threadListItem }) => {
     const { id, title, lastMessageAt } = threadListItem;
     const name = title || "新对话";
     const inactive = disabled || Boolean(deleting);
@@ -702,7 +701,7 @@ function ConversationList({ runtime, disabled, select }: {
         </ContextMenu.Content>
       </ContextMenu.Root>}
     </li>;
-  }}</ThreadListPrimitive.Items></ul></>;
+  }}</ThreadListPrimitive.Items></ul>;
 }
 
 function AiReply({ text, streaming, onError }: { text: string; streaming: boolean; onError(error: unknown): void }) {

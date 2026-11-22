@@ -12,8 +12,8 @@ function linkKey(value: string) {
   return url.pathname === "/s" ? JSON.stringify(["__biz", "mid", "idx"].map(key => url.searchParams.get(key))) : url.pathname;
 }
 
-export function WechatPublicationPanel({ session, locked, onClose, onCopy, publishing, copyFeedback, sourceRevision = 0 }: {
-  session: PublicationSession; locked: boolean; onClose(): void; onCopy(): void; publishing: boolean; copyFeedback?: ReturnType<typeof useButtonFeedback>; sourceRevision?: number;
+export function WechatPublicationPanel({ session, locked, onClose, onCopy, publishing, copyFeedback, sourceRevision = 0, embedded = false }: {
+  session: PublicationSession; locked: boolean; onClose(): void; onCopy(): void; publishing: boolean; copyFeedback?: ReturnType<typeof useButtonFeedback>; sourceRevision?: number; embedded?: boolean;
 }) {
   const { fields, revision } = useSyncExternalStore(session.queue.subscribe, session.queue.snapshot);
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
@@ -52,10 +52,10 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
   const failure = state.error || defaults.error || feedback.error() || copyFeedback?.error("copyWechat")
     || state.resolved.invalid.map(item => `${recommendations.items.find(row => row.entryId === item.entryId)?.title ?? "推荐文章"}：${item.message}`).join("；");
   return <aside className="wechat-publishing-panel" aria-label="公众号配置">
-    <header className="wechat-publishing-header"><h2>公众号</h2><button type="button" className="plain-button chrome-icon" aria-label="关闭公众号侧栏"
+    {!embedded && <header className="wechat-publishing-header"><h2>公众号</h2><button type="button" className="plain-button chrome-icon" aria-label="关闭公众号侧栏"
       {...feedback.props("close")} onClick={() => void feedback.run("close", async () => {
         if (!await session.flush()) throw new Error(session.snapshot().error); onClose();
-      })}>{feedback.icon("close", <X size={16} />)}</button></header>
+      })}>{feedback.icon("close", <X size={16} />)}</button></header>}
     <div className="wechat-publishing-tabs" role="tablist" aria-label="配置范围">
       {[["article", "当前文章"], ["defaults", "默认设置"]].map(([id, label]) => <button key={id} id={`wechat-${id}-tab`} type="button" role="tab"
         aria-selected={tab === id} aria-controls={`wechat-${id}-panel`} tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)}
