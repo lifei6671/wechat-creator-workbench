@@ -1,0 +1,11 @@
+.right-sidebar { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--app-bg); }
+.right-sidebar-header { padding-inline: 12px; border-bottom: 0; }
+[data-windows-titlebar] .right-sidebar-header { padding-inline-end: calc(var(--window-controls-width) + 6px); }
+.right-sidebar-tools { display: flex; flex: none; align-items: center; gap: 12px; }
+.right-sidebar-button { margin: 0; width: 28px; min-width: 28px; height: 28px; }
+.right-sidebar-header .window-drag { flex-basis: 0; min-width: 0; }
+.right-sidebar-button[aria-pressed="true"] { color: var(--text-main); background: var(--chrome-selected); }
+.right-sidebar-content { flex: 1; min-height: 0; }
+.right-sidebar-content > [role="region"] { height: 100%; min-height: 0; }
+.properties-sidebar { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--app-bg); }
+.properties-sidebar .properties-form { flex: 1; }

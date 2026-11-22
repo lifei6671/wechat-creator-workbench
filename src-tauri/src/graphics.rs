@@ -100,7 +100,10 @@ pub(crate) fn ensure_usable_window_size(window: &tauri::Window) -> tauri::Result
         config.min_height.unwrap_or(0.0),
     )
     .to_physical::<u32>(window.scale_factor()?);
-    let size = window.inner_size()?;
+    // Frameless Windows minimum tracking sizes apply to the outer bounds. The
+    // client area is slightly smaller, so checking it would reset a valid window
+    // while the user keeps dragging against the native minimum size.
+    let size = window.outer_size()?;
     if size.width < minimum.width || size.height < minimum.height {
         window.set_size(tauri::LogicalSize::new(config.width, config.height))?;
         window.center()?;

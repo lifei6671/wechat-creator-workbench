@@ -4,6 +4,10 @@ for (const appearance of ["light", "dark"]) {
   test(`keeps context badges above user messages in ${appearance}`, async ({ page }) => {
     await page.goto(`/tests/ai-citations.html?appearance=${appearance}`);
     await page.getByRole("button", { name: "对话记录", exact: true }).click();
+    const actions = (await page.locator(".ai-chat-actions").boundingBox())!;
+    const history = (await page.locator(".ai-thread-list").boundingBox())!;
+    expect(history.y - actions.y - actions.height).toBeGreaterThanOrEqual(0);
+    expect(history.y - actions.y - actions.height).toBeLessThanOrEqual(12);
     await page.getByRole("button", { name: /^标签布局测试/ }).click();
     await expect(page.locator(".ai-user-message")).toHaveCount(5);
     for (const width of [520, 320]) for (const zoom of [1, 1.5]) {

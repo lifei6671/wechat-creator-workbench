@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Button, Checkbox, Dialog, DropdownMenu, Select, TextArea, Text as RadixText } from "@radix-ui/themes";
 import { CalendarDays, Folder, Link, Plus, Send, Tags, Text, Trash2, X } from "lucide-react";
 import type { Category, Collection, CustomProperty, Entry, EntryFields, PublicationPlatform, Revision } from "../../../../packages/shared-types";
@@ -113,18 +113,31 @@ export function PropertiesDialog({ id, queue, onClose, flushRef, ...form }: Prop
   </Dialog.Root>;
 }
 
-function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen, onOpenCollection, flushRef, onConflict }: Omit<PropertiesDialogProps, "id" | "queue"> & {
-  entry: Entry;
-  fields: EntryFields;
-  flushRef: { current: ((closing?: boolean) => Promise<boolean>) | null };
-}) {
-  const [draft, setDraft] = useState(() => ({ values: {
+function propertyValues(entry: Entry, fields: EntryFields): Record<Builtin, string> {
+  return {
     title: fields.title, sourceUrl: fields.source?.url ?? "", author: fields.source?.author ?? "",
     accountName: fields.source?.accountName ?? "", originalDate: formatPropertyDate(fields.source?.originalPublishedAt),
     createdDate: formatPropertyDate(entry.createdAt), summary: fields.summary, tags: "",
     publishedDate: formatPropertyDate(fields.publishedAt), publishedUrl: fields.publishedUrl,
     status: fields.status, category: fields.categoryId ?? "",
-  } as Record<Builtin, string>,
+  } as Record<Builtin, string>;
+}
+
+export function PropertiesPanel({ queue, flushRef, ...form }: Omit<PropertiesDialogProps, "id" | "queue"> & { queue: SaveQueue }) {
+  const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
+  const localFlush = useRef<((closing?: boolean) => Promise<boolean>) | null>(null);
+  return <section className="properties-sidebar" aria-label="内容属性">
+    <PropertiesForm {...form} entry={queue.entry} fields={fields} flushRef={flushRef ?? localFlush} live />
+  </section>;
+}
+
+function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen, onOpenCollection, flushRef, onConflict, live = false }: Omit<PropertiesDialogProps, "id" | "queue"> & {
+  entry: Entry;
+  fields: EntryFields;
+  flushRef: { current: ((closing?: boolean) => Promise<boolean>) | null };
+  live?: boolean;
+}) {
+  const [draft, setDraft] = useState(() => ({ values: propertyValues(entry, fields),
     cover: fields.coverAssetId ?? null, tags: fields.tags, tagDraft: "",
     properties: (fields.customProperties ?? []).map((property, id) => ({ ...property, id, tagDraft: "" })) as PropertyDraft[],
     publications: (fields.publicationPlatforms ?? []).map((value, id) => ({ id, ...value })),
@@ -150,6 +163,22 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
   const sequence = useRef(0);
   const serial = useRef<Promise<boolean>>(Promise.resolve(true));
   const pending = useRef(new Map<string, { revision: number; promise: Promise<boolean> }>());
+  useEffect(() => {
+    if (!live || fields === saved.current || dirty.current.size || pending.current.size) return;
+    const current = draftRef.current;
+    const nextValues = propertyValues(entry, fields);
+    const publicationsChanged = JSON.stringify(fields.publicationPlatforms ?? []) !== JSON.stringify(saved.current.publicationPlatforms ?? []);
+    const customChanged = JSON.stringify(fields.customProperties ?? []) !== JSON.stringify(saved.current.customProperties ?? []);
+    const nextPublications = publicationsChanged
+      ? (fields.publicationPlatforms ?? []).map(value => ({ id: nextPublicationId.current++, ...value })) : current.publications;
+    const nextProperties = customChanged
+      ? (fields.customProperties ?? []).map(value => ({ ...value, id: nextPropertyId.current++, tagDraft: "" })) : current.properties;
+    saved.current = fields;
+    if (publicationsChanged) acceptedPublications.current = new Map(nextPublications.map(({ id, platform, url }) => [id, { platform, url }]));
+    if (customChanged) setHidden(new Set(nextProperties.filter(property => property.value.length === 0).map(property => property.id)));
+    setShown(current => new Set([...current, ...builtinNames.filter(name => name === "tags" ? fields.tags.length > 0 : nextValues[name].trim() !== "")]));
+    updateDraft({ values: nextValues, cover: fields.coverAssetId ?? null, tags: fields.tags, properties: nextProperties, publications: nextPublications });
+  });
   const fieldScope = (name: Builtin) => name === "sourceUrl" || sourceFields.includes(name) ? "source" : name;
   const mark = (scope: string) => dirty.current.set(scope, ++sequence.current);
   function setError(scope: string, message: string) {
@@ -248,10 +277,8 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
         change = { publicationPlatforms: [...nextPublications.values()] };
       }
       try {
-        if (Object.keys(change).some(key => JSON.stringify(saved.current[key as keyof EntryFields]) !== JSON.stringify(change[key as keyof EntryFields]))) {
-          await onSave(entry, change);
-          saved.current = { ...saved.current, ...change };
-        }
+        await onSave(entry, change);
+        saved.current = { ...saved.current, ...change };
         if (publication) acceptedPublications.current = nextPublications;
         conflicts.current.delete(scope);
         if (dirty.current.get(scope) === revision) { dirty.current.delete(scope); setError(scope, ""); }
@@ -377,7 +404,10 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
             <div className="property-editor">
               {property.kind === "tags" ? <TagInput label="属性值" tags={property.value} draft={property.tagDraft}
                 history={tagSuggestions} readOnly={readOnly}
-                onTags={tags => update(old => ({ ...old, kind: "tags", value: tags }))}
+                onTags={tags => {
+                  update(old => ({ ...old, kind: "tags", value: tags }));
+                  queueMicrotask(() => void saveScope("custom"));
+                }}
                 onDraft={tagDraft => update(old => ({ ...old, tagDraft }))} />
                 : <input className="property-value" aria-label="属性值" placeholder="没有值" type={property.kind}
                   readOnly={readOnly} value={property.value} onChange={event => {

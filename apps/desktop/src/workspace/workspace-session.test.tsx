@@ -96,7 +96,7 @@ afterEach(() => {
 });
 
 function openTabs() {
-  return [...container.querySelectorAll('[role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
+  return [...container.querySelectorAll('.tabs [role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
 
 it.each([
@@ -571,6 +571,94 @@ it("saves the final document edit before confirming a tray hide without starting
   await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
   expect(beginExit).not.toHaveBeenCalled();
   expect(cancel).not.toHaveBeenCalled();
+});
+
+async function openPropertyTestEntry() {
+  saveDocumentTabs(workspaceId, { ids: ["property-draft"], activeId: "property-draft" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), title: "A", summary: "原摘要" }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("property-draft")).toBe(true));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-properties-button")!.click());
+  return await vi.waitFor(() => {
+    const title = container.querySelector<HTMLInputElement>('.properties-sidebar [name="title"]');
+    expect(title).not.toBeNull(); return title!;
+  });
+}
+
+function fillProperty(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  });
+}
+function blurProperty(input: HTMLElement) {
+  flushSync(() => input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+}
+
+it.each(["after failure", "while saving"])("persists a reverted property %s before saving another field", async timing => {
+  let reject!: (error: Error) => void;
+  const save = vi.spyOn(desktop, "save").mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }))
+    .mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  const title = await openPropertyTestEntry();
+  fillProperty(title, "B"); blurProperty(title);
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  if (timing === "after failure") {
+    reject(new Error("模拟保存失败"));
+    await vi.waitFor(() => expect(container.textContent).toContain("模拟保存失败"));
+  }
+  fillProperty(title, "A"); blurProperty(title);
+  if (timing === "while saving") reject(new Error("模拟保存失败"));
+  await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(editorQueues.get("property-draft")!.isDirty()).toBe(false));
+  expect(save.mock.lastCall![2].title).toBe("A");
+  expect(title.value).toBe("A");
+  const summary = container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]')!;
+  fillProperty(summary, "新摘要"); blurProperty(summary);
+  await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(3));
+  expect(save.mock.lastCall![2]).toMatchObject({ title: "A", summary: "新摘要" });
+  expect(container.textContent).not.toContain("模拟保存失败");
+});
+
+it("skips a property persistence call when a draft returns to the unchanged queue value before blur", async () => {
+  const save = vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  const title = await openPropertyTestEntry();
+  fillProperty(title, "B"); fillProperty(title, "A"); blurProperty(title);
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector("#right-sidebar-ai-panel")?.hasAttribute("hidden")).toBe(false));
+  expect(save).not.toHaveBeenCalled();
+  expect(editorQueues.get("property-draft")!.isDirty()).toBe(false);
+});
+
+it.each(["success", "failure"])("flushes focused property drafts before tray hide with save %s", async outcome => {
+  let requestHide!: () => void;
+  vi.mocked(desktop.onHideRequested).mockImplementation(async callback => { requestHide = callback; return () => {}; });
+  const confirm = vi.spyOn(desktop, "confirmHide").mockResolvedValue();
+  const cancel = vi.spyOn(desktop, "cancelHide").mockResolvedValue();
+  let resolve!: (value: { version: number }) => void;
+  let reject!: (error: Error) => void;
+  const save = vi.spyOn(desktop, "save").mockImplementation(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+  const title = await openPropertyTestEntry();
+  flushSync(() => title.focus());
+  fillProperty(title, "未失焦的标题");
+  flushSync(() => { requestHide(); requestHide(); });
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(save.mock.lastCall![2].title).toBe("未失焦的标题");
+  expect(confirm).not.toHaveBeenCalled();
+  if (outcome === "success") {
+    resolve({ version: 2 });
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+    expect(cancel).not.toHaveBeenCalled();
+    expect(editorQueues.get("property-draft")!.isDirty()).toBe(false);
+  } else {
+    reject(new Error("磁盘已满"));
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(confirm).not.toHaveBeenCalled();
+    expect(title.value).toBe("未失焦的标题");
+    expect(title.readOnly).toBe(false);
+    expect(editorQueues.get("property-draft")!.isDirty()).toBe(true);
+    expect(container.textContent).toContain("磁盘已满");
+  }
 });
 
 it("cancels the tray hide and keeps save feedback when a document cannot be saved", async () => {
@@ -1205,7 +1293,7 @@ it("keeps the AI pane hidden while the saved reading tab loads", async () => {
   saveWorkspaceLayout({ section: "timeline", explorerOverride: null, timelineDirectory: "shown", focusMode: false, aiOpen: true });
   let resolveEntry!: (value: Entry) => void;
   const load = vi.spyOn(desktop, "entry").mockReturnValue(new Promise<Entry>(resolve => { resolveEntry = resolve; }));
-  const aiDivider = () => container.querySelector('[aria-label="调整 AI 侧栏宽度"]');
+  const aiDivider = () => container.querySelector('[aria-label="调整右侧栏宽度"]');
   flushSync(() => root.render(<DesktopShell />));
   await vi.waitFor(() => expect(load).toHaveBeenCalledWith("saved"));
   expect(aiDivider()).toBeNull();
@@ -1408,14 +1496,14 @@ it("keeps folder, tag, and content-directory pins independent", async () => {
   ]);
 });
 
-it("keeps the AI sidebar toggle in the writing header when the panel opens or closes", async () => {
+it("keeps the right sidebar toggle in the writing header when the AI panel opens or closes", async () => {
   vi.spyOn(desktop, "aiSettings").mockResolvedValue({ preferences: { enabled: false, defaultTarget: null }, models: [], agents: [] });
   flushSync(() => root.render(<DesktopShell />));
   const toggle = container.querySelector<HTMLButtonElement>(".workbench-chrome #ai-panel-trigger")!;
-  expect(toggle.getAttribute("aria-label")).toBe("显示 AI 侧栏");
+  expect(toggle.getAttribute("aria-label")).toBe("显示右侧栏");
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   flushSync(() => toggle.click());
-  expect(toggle.getAttribute("aria-label")).toBe("隐藏 AI 侧栏");
+  expect(toggle.getAttribute("aria-label")).toBe("隐藏右侧栏");
   expect(container.querySelector(".ai-sidebar")?.hasAttribute("inert")).toBe(false);
   await vi.waitFor(() => expect(container.querySelector(".ai-panel")).not.toBeNull());
   flushSync(() => container.querySelector(".ai-panel")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
@@ -1423,6 +1511,217 @@ it("keeps the AI sidebar toggle in the writing header when the panel opens or cl
   expect(container.querySelector(".ai-sidebar")?.hasAttribute("inert")).toBe(true);
   expect(document.activeElement).toBe(toggle);
   expect(container.querySelector(".workbench-chrome #ai-panel-trigger")).toBe(toggle);
+});
+
+it.each(["edit", "preview"])("keeps the %s view when opening WeChat settings", async mode => {
+  localStorage.setItem("view", JSON.stringify(mode));
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["wechat-view"], activeId: "wechat-view" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("wechat-view")).toBe(true));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-wechat-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector(".wechat-publishing-panel")).not.toBeNull());
+  expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe(mode);
+});
+
+it("restores document outline preferences in the shared sidebar and closes through its main toggle", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["outline-first", "outline-second"], activeId: "outline-first",
+    options: { "outline-first": { outline: true }, "outline-second": { outline: false } } });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  const selected = () => container.querySelector("#right-sidebar-outline-button")?.getAttribute("aria-pressed");
+  await vi.waitFor(() => expect(selected()).toBe("true"));
+  expect(container.querySelector(".document-body .document-outline")).toBeNull();
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  await vi.waitFor(() => expect(readDocumentTabs(workspaceId)?.options?.["outline-first"].outline).toBe(false));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  await vi.waitFor(() => expect(selected()).toBe("true"));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#tab-outline-second")!.click());
+  await vi.waitFor(() => expect(selected()).toBeUndefined());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  await vi.waitFor(() => expect(selected()).toBe("true"));
+  await vi.waitFor(() => expect(readDocumentTabs(workspaceId)?.options?.["outline-second"].outline).toBe(true));
+});
+
+it("uses the existing default outline setting to open the right sidebar", async () => {
+  localStorage.setItem("default-document-outline", "true");
+  saveDocumentTabs(workspaceId, { ids: ["outline-default"], activeId: "outline-default" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector("#right-sidebar-outline-button")?.getAttribute("aria-pressed")).toBe("true"));
+  expect(container.querySelector("#ai-panel-trigger")?.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("toggles the current WeChat sidebar and restores it through the shared header button", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["wechat-toggle"], activeId: "wechat-toggle" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("wechat-toggle")).toBe(true));
+  expect(container.querySelector('[aria-label="公众号"]')).toBeNull();
+  const toggle = container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!;
+  flushSync(() => toggle.click());
+  const wechat = container.querySelector<HTMLButtonElement>('#right-sidebar-wechat-button')!;
+  expect(wechat.textContent).toBe("");
+  expect(wechat.querySelector('svg[aria-hidden="true"] path')).not.toBeNull();
+  flushSync(() => wechat.click());
+  await vi.waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
+  expect(toggle.getAttribute("aria-label")).toBe("隐藏右侧栏");
+  expect(toggle.querySelector("svg rect[fill=currentColor]")).not.toBeNull();
+  expect(wechat.getAttribute("aria-pressed")).toBe("true");
+  flushSync(() => toggle.click());
+  await vi.waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("false"));
+  expect(toggle.getAttribute("aria-label")).toBe("显示右侧栏");
+  expect(container.querySelector(".wechat-publishing-panel")).toBeNull();
+  flushSync(() => toggle.click());
+  await vi.waitFor(() => expect(container.querySelector(".wechat-publishing-panel")).not.toBeNull());
+  expect(toggle.getAttribute("aria-label")).toBe("隐藏右侧栏");
+  expect(container.querySelector(".ai-sidebar")?.hasAttribute("inert")).toBe(true);
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector("#right-sidebar-ai-panel")?.hasAttribute("hidden")).toBe(false));
+  expect(container.querySelector(".ai-sidebar")?.hasAttribute("inert")).toBe(false);
+  expect(container.querySelector(".wechat-publishing-panel")).toBeNull();
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-properties-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")).not.toBeNull());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+it("cancels a pending properties load when the shared sidebar is closed and reopened", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["open-note"], activeId: "open-note" });
+  let finishLoad!: (value: Entry) => void;
+  vi.spyOn(desktop, "entry").mockImplementation(id => id === "manual"
+    ? new Promise(resolve => { finishLoad = resolve; }) : Promise.resolve(entry(id)));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("open-note")).toBe(true));
+  const toggle = container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!;
+  flushSync(() => toggle.click());
+  const row = await vi.waitFor(() => {
+    const node = container.querySelector("#entry-row-manual"); expect(node).not.toBeNull(); return node!;
+  });
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "内容属性")!.click());
+  expect(container.querySelector("#right-sidebar-properties-button")?.getAttribute("aria-busy")).toBe("true");
+  flushSync(() => toggle.click());
+  flushSync(() => toggle.click());
+  expect(container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")?.disabled).toBe(false);
+  finishLoad(entry("manual"));
+  await Promise.resolve();
+  expect(container.querySelector("#right-sidebar-ai-button")?.getAttribute("aria-pressed")).toBe("true");
+  expect(container.querySelector(".properties-sidebar")).toBeNull();
+});
+
+it("saves focused properties before switching modules and reflects subsequent editor changes", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["inspector", "other"], activeId: "inspector" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), summary: "原摘要", contentMd: "保留正文" }));
+  vi.spyOn(desktop, "aiThreads").mockResolvedValue([]);
+  const save = vi.spyOn(desktop, "save").mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("inspector")).toBe(true));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  await vi.waitFor(() => expect(container.querySelector("#right-sidebar-properties-button")).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-properties-button")!.click());
+  const summary = await vi.waitFor(() => {
+    const field = container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]'); expect(field).not.toBeNull(); return field!;
+  });
+  let finishProperty!: (value: {version:number}) => void;
+  save.mockReturnValueOnce(new Promise(resolve => { finishProperty = resolve; }));
+  flushSync(() => {
+    summary.focus();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "尚未失焦的摘要");
+    summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click();
+  });
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ summary: "尚未失焦的摘要", contentMd: "保留正文" }), "auto"));
+  expect(container.querySelector(".properties-sidebar")).not.toBeNull();
+  expect(container.querySelector("#right-sidebar-ai-button")?.getAttribute("aria-busy")).toBe("true");
+  finishProperty({ version: 2 });
+  await vi.waitFor(() => expect(container.querySelector("#right-sidebar-ai-panel")?.hasAttribute("hidden")).toBe(false));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-properties-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]')?.value).toBe("尚未失焦的摘要"));
+  flushSync(() => editorQueues.get("inspector")!.edit({ title: "从编辑器更新的标题" }));
+  await vi.waitFor(() => expect(container.querySelector<HTMLInputElement>('.properties-sidebar [name="title"]')?.value).toBe("从编辑器更新的标题"));
+  const nextSummary = container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]')!;
+  flushSync(() => {
+    nextSummary.focus();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(nextSummary, "切换文章前的摘要");
+    nextSummary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    editorQueues.get("inspector")!.edit({ contentMd: "编辑器中的最新正文" });
+  });
+  expect(nextSummary.value).toBe("切换文章前的摘要");
+  flushSync(() => container.querySelector<HTMLButtonElement>("#tab-other")!.click());
+  await vi.waitFor(() => expect(container.querySelector("#tab-other")?.getAttribute("aria-selected")).toBe("true"));
+  expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ summary: "切换文章前的摘要", contentMd: "编辑器中的最新正文" }), "auto");
+  await vi.waitFor(() => expect(container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]')?.value).toBe("原摘要"));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector("#right-sidebar-ai-button")?.getAttribute("aria-pressed")).toBe("true"));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#tab-inspector")!.click());
+  await vi.waitFor(() => expect(container.querySelector("#tab-inspector")?.getAttribute("aria-selected")).toBe("true"));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-properties-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]')?.value).toBe("切换文章前的摘要"));
+  const title = container.querySelector<HTMLInputElement>('.properties-sidebar [name="title"]')!;
+  flushSync(() => {
+    title.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "当前文章的标题");
+    title.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click();
+  });
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ title: "当前文章的标题" }), "auto"));
+});
+
+it("keeps invalid properties visible when switching modules or documents", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["first", "second"], activeId: "first" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), source: { url: "https://example.com/article", author: "", accountName: "", originalPublishedAt: null, importedAt: null } }));
+  const save = vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("first")).toBe(true));
+  flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-properties-button")!.click());
+  const source = await vi.waitFor(() => {
+    const field = container.querySelector<HTMLInputElement>('.properties-sidebar [name="sourceUrl"]'); expect(field).not.toBeNull(); return field!;
+  });
+  flushSync(() => {
+    source.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(source, "invalid-url");
+    source.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click();
+  });
+  await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")?.textContent).toContain("HTTP"));
+  expect(source.value).toBe("invalid-url");
+  expect(container.querySelector("#right-sidebar-properties-button")?.getAttribute("aria-pressed")).toBe("true");
+  flushSync(() => container.querySelector<HTMLButtonElement>("#tab-second")!.click());
+  await Promise.resolve();
+  expect(container.querySelector("#tab-first")?.getAttribute("aria-selected")).toBe("true");
+  expect(save).not.toHaveBeenCalled();
+  flushSync(() => container.querySelector<HTMLButtonElement>("#document-action-trigger")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+  const focusItem = await vi.waitFor(() => {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "专注写作");
+    expect(item).toBeDefined(); return item!;
+  });
+  flushSync(() => focusItem.click());
+  await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
+  expect(container.querySelector(".properties-sidebar")).not.toBeNull();
+  expect(source.value).toBe("invalid-url");
+  expect(container.querySelector("#ai-panel-trigger")).not.toBeNull();
+  flushSync(() => {
+    source.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(source, "https://example.com/fixed");
+    source.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    container.querySelector<HTMLButtonElement>("#document-action-trigger")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+  });
+  const retryFocus = await vi.waitFor(() => {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "专注写作");
+    expect(item).toBeDefined(); return item!;
+  });
+  flushSync(() => retryFocus.click());
+  await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")).toBeNull());
+  expect(container.querySelector("#show-sidebar")?.getAttribute("aria-label")).toBe("退出专注写作");
+  expect(save).toHaveBeenLastCalledWith("first", expect.any(Number), expect.objectContaining({ source: expect.objectContaining({ url: "https://example.com/fixed" }) }), "auto");
 });
 
 it("keeps timeline results visible until a folder or tag query settles and ignores superseded results", async () => {
@@ -1653,7 +1952,7 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
   expect(last.textContent).toBe("内容属性");
   flushSync(() => last.click());
   const summary = await vi.waitFor(() => {
-    const field = document.querySelector<HTMLTextAreaElement>(".properties-panel textarea[name=summary]");
+    const field = document.querySelector<HTMLTextAreaElement>(".properties-sidebar textarea[name=summary]");
     expect(field?.value).toBe(target.summary);
     return field!;
   });
@@ -1672,9 +1971,73 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
     summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
   });
   await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(target.id, 4, expect.objectContaining({ summary: "再次更新摘要" }), "auto"));
-  flushSync(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭内容属性"]')!.click());
-  await vi.waitFor(() => expect(document.querySelector(".properties-panel")).toBeNull());
+  expect(document.querySelector('[aria-label="关闭右侧栏"]')).toBeNull();
+  flushSync(() => document.querySelector<HTMLButtonElement>('#ai-panel-trigger')!.click());
+  await vi.waitFor(() => expect(document.querySelector(".properties-sidebar")).toBeNull());
   expect(openTabs()).toEqual(["open-note"]);
+});
+
+it("saves and closes an unopened article's properties when the article is deleted", async () => {
+  const target = { ...entry("closed-delete"), summary: "原摘要", version: 3 };
+  let persistedVersion = target.version;
+  vi.spyOn(desktop, "entry").mockImplementation(async id => id === target.id ? { ...target, version: persistedVersion } : entry(id));
+  vi.mocked(desktop.entries).mockResolvedValue({ items: [target], nextOffset: null });
+  const save = vi.spyOn(desktop, "save").mockImplementation(async () => ({ version: ++persistedVersion }));
+  const remove = vi.spyOn(desktop, "setDeleted").mockResolvedValue({ ...target, deletedAt: 1, version: 5 });
+  flushSync(() => root.render(<DesktopShell />));
+  const row = await vi.waitFor(() => {
+    const node = container.querySelector("#entry-row-closed-delete"); expect(node).not.toBeNull(); return node!;
+  });
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "内容属性")!.click());
+  const summary = await vi.waitFor(() => {
+    const field = container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]'); expect(field).not.toBeNull(); return field!;
+  });
+  flushSync(() => {
+    summary.focus();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "删除前保留的摘要");
+    summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true }));
+  });
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "移入回收站")!.click());
+  await vi.waitFor(() => expect(remove).toHaveBeenCalledExactlyOnceWith(target.id, 4, true));
+  expect(save).toHaveBeenCalledExactlyOnceWith(target.id, 3, expect.objectContaining({ summary: "删除前保留的摘要" }), "auto");
+  await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")).toBeNull());
+  expect(openTabs()).not.toContain(target.id);
+});
+
+it("keeps the new article's property draft when an earlier deletion finishes", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["open-note", "second"], activeId: "open-note" });
+  const target = entry("delete-pending");
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), source: { url: "https://example.com/original", author: "", accountName: "", originalPublishedAt: null, importedAt: null } }));
+  vi.mocked(desktop.entries).mockResolvedValue({ items: [target], nextOffset: null });
+  let finishDelete!: (value: Entry) => void;
+  const remove = vi.spyOn(desktop, "setDeleted").mockReturnValue(new Promise(resolve => { finishDelete = resolve; }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("second")).toBe(true));
+  const row = await vi.waitFor(() => {
+    const node = container.querySelector("#entry-row-delete-pending"); expect(node).not.toBeNull(); return node!;
+  });
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "内容属性")!.click());
+  await vi.waitFor(() => expect(container.querySelector<HTMLInputElement>('.properties-sidebar [name="title"]')?.value).toBe(target.id));
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "移入回收站")!.click());
+  await vi.waitFor(() => expect(remove).toHaveBeenCalledOnce());
+  flushSync(() => container.querySelector<HTMLButtonElement>("#tab-second")!.click());
+  await vi.waitFor(() => expect(container.querySelector<HTMLInputElement>('.properties-sidebar [name="title"]')?.value).toBe("second"));
+  const source = container.querySelector<HTMLInputElement>('.properties-sidebar [name="sourceUrl"]')!;
+  flushSync(() => {
+    source.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(source, "invalid-url");
+    source.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  });
+  await act(async () => { finishDelete({ ...target, deletedAt: 1, version: 2 }); });
+  expect(container.querySelector<HTMLInputElement>('.properties-sidebar [name="title"]')?.value).toBe("second");
+  expect(container.querySelector<HTMLInputElement>('.properties-sidebar [name="sourceUrl"]')?.value).toBe("invalid-url");
+  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click());
+  await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")?.textContent).toContain("HTTP"));
+  expect(container.querySelector("#right-sidebar-properties-button")?.getAttribute("aria-pressed")).toBe("true");
 });
 
 it.each([true, false])("recovers property conflicts without losing drafts for an initially open=%s article", async initiallyOpen => {
@@ -1698,14 +2061,14 @@ it.each([true, false])("recovers property conflicts without losing drafts for an
     summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
     summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
   });
-  await vi.waitFor(() => expect(document.querySelector(".properties-panel")?.textContent).toContain("内容版本已变化"));
+  await vi.waitFor(() => expect(document.querySelector(".properties-sidebar")?.textContent).toContain("内容版本已变化"));
   const title = document.querySelector<HTMLInputElement>('[name="title"]')!;
   flushSync(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "关闭前的标题");
     title.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    document.querySelector<HTMLButtonElement>('[aria-label="关闭内容属性"]')!.click();
+    document.querySelector<HTMLButtonElement>('#ai-panel-trigger')!.click();
   });
-  await vi.waitFor(() => expect(document.querySelector(".properties-panel")).toBeNull());
+  await vi.waitFor(() => expect(document.querySelector(".properties-sidebar")).toBeNull());
   expect(openTabs()).toContain(target.id);
   expect(editorQueues.get(target.id)!.snapshot().fields).toMatchObject({ title: "关闭前的标题", summary: "冲突时保留的摘要", publicationPlatforms: target.publicationPlatforms });
   expect(save).toHaveBeenCalledOnce();
@@ -2142,7 +2505,8 @@ it("refreshes a previously invalid recommendation after a workspace change witho
     : { items: [], invalid: [{ entryId: "past", message: "文章尚不可用" }] });
   flushSync(() => root.render(<DesktopShell />));
   await vi.waitFor(() => expect(editorQueues.has("reference-recovery")).toBe(true));
-  const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "公众号")!;
+  flushSync(() => container.querySelector<HTMLButtonElement>('#ai-panel-trigger')!.click());
+  const trigger = container.querySelector<HTMLButtonElement>('#right-sidebar-wechat-button')!;
   flushSync(() => trigger.click());
   const copy = () => container.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
   await vi.waitFor(() => expect(container.querySelector(".wechat-publishing-panel")?.textContent).toContain("文章尚不可用"));

@@ -144,7 +144,7 @@ it("moves complete outline sections through the save queue and restores them wit
     flushSync(() => root.render(<Theme>
       {renderEditor(original, editor, reading, !switchDocument)}
       {switchDocument && reopened && renderEditor(reopened, restored, false, true)}
-      {!switchDocument && editor.current && <Outline editor={editor.current} readOnly={reading} onClose={vi.fn()} />}
+      {!switchDocument && editor.current && <Outline editor={editor.current} readOnly={reading} />}
     </Theme>));
   }
   const rows = () => [...container.querySelectorAll<HTMLButtonElement>(".outline-heading")].filter(row => !row.closest("[inert]"));
