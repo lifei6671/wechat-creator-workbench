@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+// Exercise native scrollbar hit testing instead of Playwright's hidden scrollbars.
+test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
+
 async function mockNativeWindow(page: Page, platform: string) {
   await page.addInitScript(platform => {
     Object.defineProperty(navigator, "platform", { value: platform });
@@ -18,6 +21,195 @@ async function mockNativeWindow(page: Page, platform: string) {
     });
   }, platform);
 }
+
+for (const platform of ["Win32", "MacIntel"]) test(`keeps the upper right sidebar divider draggable after editor scrolling on ${platform}`, async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/tests/workspace-resize.html?priority=1&edit=1");
+  const scroll = page.locator(".document-editor:not([hidden]) .editor-scroll");
+  await expect(scroll).toBeVisible();
+  const right = page.locator('#ai-sidebar[data-panel]');
+  await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
+  await expect(page.locator('#workspace-panels')).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
+  const widthBeforeScroll = (await right.boundingBox())!.width;
+  await scroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const metrics = await scroll.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    return { x: box.right - 5, y: box.y, height: box.height, top: element.scrollTop,
+      thumbHeight: element.clientHeight * element.clientHeight / element.scrollHeight };
+  });
+  await page.mouse.move(metrics.x, metrics.y + metrics.height - metrics.thumbHeight / 2 - 2);
+  await page.mouse.down();
+  await page.mouse.move(metrics.x, metrics.y + metrics.thumbHeight / 2 - 8, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(0);
+  expect((await right.boundingBox())!.width).toBeCloseTo(widthBeforeScroll, 0);
+  const separator = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
+  for (const y of [20, 65, 110, 180]) {
+    const bounds = (await separator.boundingBox())!;
+    const before = (await right.boundingBox())!.width;
+    await page.mouse.move(bounds.x - 5, y);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(bounds.x - 10, y);
+      await expect.poll(async () => (await right.boundingBox())!.width).toBeCloseTo(before + 5, 0);
+      await page.mouse.move(bounds.x - 60, y, { steps: 6 });
+    } finally { await page.mouse.up(); }
+    await expect.poll(async () => (await right.boundingBox())!.width, `drag at y=${y}`).toBeGreaterThan(before + 50);
+  }
+  expect(errors).toEqual([]);
+});
+
+for (const platform of ["Win32", "MacIntel"]) test(`keeps title tabs and the right sidebar toggle positioned with the left sidebar collapsed on ${platform}`, async ({ page }) => {
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1800, height: 900 });
+  await page.goto("/tests/workspace-resize.html?priority=1&collapsed=1");
+  await expect(page.locator("#tab-resize")).toBeVisible();
+  await expect(page.getByRole("button", { name: "显示左侧栏", exact: true })).toBeVisible();
+  for (const module of ["initial", "properties"]) {
+    if (module === "properties") await page.getByRole("button", { name: "内容属性", exact: true }).click();
+    for (const width of [1800, 1000, 2400, 1360]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect.poll(async () => {
+        const header = (await page.locator(".workbench-chrome").boundingBox())!;
+        const toggle = (await page.locator("#ai-panel-trigger").boundingBox())!;
+        const gap = header.x + header.width - toggle.x - toggle.width;
+        expect(gap).toBeGreaterThanOrEqual(-1);
+        return gap;
+      }).toBeLessThan(20);
+      const viewport = (await page.locator(".workbench-chrome .tabs").boundingBox())!;
+      const tab = (await page.locator("#tab-resize").boundingBox())!;
+      expect(viewport.width).toBeGreaterThan(110);
+      expect(Math.min(tab.x + tab.width, viewport.x + viewport.width) - Math.max(tab.x, viewport.x)).toBeGreaterThan(80);
+      await page.screenshot({ path: test.info().outputPath(`titlebar-${module}-${width}.png`), clip: { x: 0, y: 0, width, height: 100 } });
+    }
+  }
+});
+
+for (const platform of ["Win32", "MacIntel"]) test(`keeps panel widths stable through diagonal window resize on ${platform}`, async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/tests/workspace-resize.html?priority=1");
+  const right = page.locator('#ai-sidebar[data-panel]');
+  await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
+  await page.evaluate(() => {
+    const group = document.querySelector<HTMLElement>('#workspace-panels')!;
+    const navigation = document.querySelector<HTMLElement>('#navigation[data-panel]')!;
+    const right = document.querySelector<HTMLElement>('#ai-sidebar[data-panel]')!;
+    const samples: { group: number; navigation: number; right: number }[] = [];
+    Object.assign(window, { resizeSamples: samples });
+    new ResizeObserver(() => samples.push({ group: group.clientWidth, navigation: navigation.getBoundingClientRect().width,
+      right: right.getBoundingClientRect().width })).observe(right);
+  });
+  for (const width of [1540, 1480, 1420, 1360, 1600]) {
+    await page.setViewportSize({ width, height: width / 2 + 100 });
+    await expect.poll(() => page.evaluate(width => (window as unknown as {
+      resizeSamples: { group: number }[];
+    }).resizeSamples.some(sample => sample.group === width), width)).toBe(true);
+    await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
+  }
+  const samples = await page.evaluate(() => (window as unknown as {
+    resizeSamples: { group: number; navigation: number; right: number }[];
+  }).resizeSamples);
+  expect(samples.length).toBeGreaterThan(0);
+  for (const sample of samples) {
+    expect(sample.navigation, JSON.stringify(samples)).toBeCloseTo(480, 0);
+    expect(sample.right, JSON.stringify(samples)).toBeCloseTo(420, 0);
+  }
+  await test.info().attach("diagonal-resize-samples", { body: JSON.stringify(samples), contentType: "application/json" });
+  expect(errors).toEqual([]);
+});
+
+for (const platform of ["Win32", "MacIntel"]) test(`collapses the right sidebar at its threshold and stays draggable after reopening on ${platform}`, async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/tests/workspace-resize.html?priority=1");
+  const group = page.locator('#workspace-panels');
+  const right = page.locator('#ai-sidebar[data-panel]');
+  const toggle = page.locator('#ai-panel-trigger');
+  const separator = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
+  await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
+  await expect(group).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
+  for (const module of ["AI 助手", "内容属性"]) {
+    await page.getByRole("button", { name: module, exact: true }).click();
+    const bounds = (await separator.boundingBox())!;
+    const expandedWidth = (await right.boundingBox())!.width;
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(bounds.x + expandedWidth - 200, bounds.y + bounds.height / 2, { steps: 4 });
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(separator).toBeVisible();
+      await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(300);
+      await page.mouse.move(bounds.x + expandedWidth - 100, bounds.y + bounds.height / 2, { steps: 4 });
+      await expect.poll(async () => (await right.boundingBox())!.width).toBe(0);
+      await expect(separator).toHaveCount(1);
+      await page.mouse.move(bounds.x + expandedWidth - 50, bounds.y + bounds.height / 2);
+      await page.mouse.move(bounds.x - 20, bounds.y + bounds.height / 2, { steps: 4 });
+      await expect.poll(async () => (await right.boundingBox())!.width).toBeGreaterThan(expandedWidth);
+      await page.mouse.move(bounds.x + expandedWidth - 100, bounds.y + bounds.height / 2, { steps: 4 });
+      await expect.poll(async () => (await right.boundingBox())!.width).toBe(0);
+    } finally { await page.mouse.up(); }
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(group).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
+    const reopened = (await separator.boundingBox())!;
+    const before = (await right.boundingBox())!.width;
+    expect(before).toBeCloseTo(expandedWidth, 0);
+    await page.mouse.move(reopened.x + reopened.width / 2, reopened.y + reopened.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(reopened.x - 80, reopened.y + reopened.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(async () => (await right.boundingBox())!.width).toBeGreaterThan(before + 60);
+  }
+  expect(errors).toEqual([]);
+});
+
+for (const platform of ["Win32", "MacIntel"]) test(`restores a dragged closed sidebar when properties cannot be saved on ${platform}`, async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/tests/workspace-resize.html?priority=1");
+  await page.getByRole("button", { name: "内容属性", exact: true }).click();
+  await page.getByRole("button", { name: "添加属性", exact: true }).click();
+  await page.getByRole("menuitem", { name: "原文链接", exact: true }).click();
+  const url = page.getByLabel("原文链接", { exact: true });
+  await url.fill("invalid-url");
+  const right = page.locator('#ai-sidebar[data-panel]');
+  const separator = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
+  const toggle = page.locator('#ai-panel-trigger');
+  await expect(page.locator('#workspace-panels')).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
+  for (const valid of [false, true]) {
+    if (valid) await url.fill("https://example.com/source");
+    const width = (await right.boundingBox())!.width;
+    const bounds = (await separator.boundingBox())!;
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(bounds.x + width - 100, bounds.y + bounds.height / 2, { steps: 6 });
+      await expect.poll(async () => (await right.boundingBox())!.width).toBe(0);
+    } finally { await page.mouse.up(); }
+    if (!valid) {
+      await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(Math.round(width));
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(url).toHaveValue("invalid-url");
+      await expect(page.locator('.properties-sidebar').getByRole('alert')).toContainText("HTTP");
+    } else {
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await toggle.click();
+      await expect(url).toHaveValue("https://example.com/source");
+    }
+  }
+  expect(errors).toEqual([]);
+});
 
 for (const appearance of ["light", "dark"]) test(`highlights Windows minimize and maximize controls on hover in ${appearance}`, async ({ page }) => {
   await mockNativeWindow(page, "Win32");
