@@ -145,6 +145,7 @@ fn validate_history(conn: &Connection) -> Result<()> {
 
 fn queue_untracked(conn: &Connection) -> Result<()> {
     for (kind, table) in [
+        ("wechat_publication_defaults", "wechat_publication_defaults"),
         ("asset", "assets"),
         ("category", "categories"),
         ("entry", "entries"),

@@ -87,7 +87,7 @@ impl SyncConnection {
                 .get(url.join("v1/meta").map_err(invalid_response)?),
         )
         .await?;
-        if meta.protocol_version != 1
+        if meta.protocol_version != 2
             || !valid_id(&meta.server_instance_id)
             || !valid_id(&meta.sync_epoch)
         {
@@ -289,13 +289,14 @@ fn invalid_response(_: impl std::fmt::Display) -> AppError {
 }
 
 async fn send(request: RequestBuilder) -> Result<reqwest::Response> {
-    let response = request.send().await.map_err(network_error)?;
+    let response = request.header("X-Sync-Protocol", "2").send().await.map_err(network_error)?;
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
     let code: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
     let error = match code["error"].as_str() {
+        Some("unsupported_protocol") => AppError::new("SYNC_PROTOCOL", "同步协议不兼容，请配套更新同步服务与所有设备上的客户端"),
         Some("invalid_setup_secret") => AppError::new("SYNC_CODE", "认领密钥无效"),
         Some("invalid_access_key") => AppError::new("SYNC_CODE", "连接密钥无效或已更换"),
         Some("invalid_recovery_key") => AppError::new("SYNC_CODE", "恢复密钥无效、已使用或已撤销"),

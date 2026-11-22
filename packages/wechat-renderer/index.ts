@@ -8,6 +8,7 @@ import { theme as elegant } from "./themes/wechat-elegant";
 import { theme as tech } from "./themes/wechat-tech";
 import { applyGzhDesign, gzhDesignThemes, wrapGzhLeaves } from "./themes/gzh-design";
 import type { GraphicKind } from "./graphics";
+import type { WechatRecommendation } from "../shared-types";
 
 export const wechatThemes = [
   { id: "plainly-default", label: defaultTheme.name, styles: defaultTheme.styles },
@@ -112,7 +113,7 @@ export function wechatEditorStyles(id?: string | null) {
 }
 
 export type Output = "preview" | "clipboard" | "html";
-export interface RenderInput { markdown: string; revision: number; themeId?: string | null; githubRepo?: string; output: Output }
+export interface RenderInput { markdown: string; revision: number; themeId?: string | null; githubRepo?: string; output: Output; recommendations?: WechatRecommendation[] }
 export interface ImageResult { src: string | null; width: number; height: number }
 export interface SourceFragment { kind: GraphicKind; source: string; line: number }
 export interface RenderServices {
@@ -214,6 +215,27 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
   const article = document.createElement("section");
   article.className = "plainly-article";
   article.append(body);
+  const recommendations = input.output === "html" ? [] : input.recommendations ?? [];
+  if (recommendations.length) {
+    const section = document.createElement("section");
+    section.className = "plainly-recommendations";
+    section.style.marginTop = "28px";
+    const heading = document.createElement("p");
+    heading.textContent = "推荐阅读：";
+    heading.setAttribute("style", "margin:0 0 18px;font-weight:500;text-align:start;");
+    section.append(heading);
+    for (const item of recommendations) {
+      if (!isWechatArticleLink(item.url)) throw new Error("推荐文章必须使用有效的微信发布链接");
+      const paragraph = document.createElement("p");
+      paragraph.setAttribute("style", "margin:0 0 14px;text-align:start;");
+      const anchor = document.createElement("a");
+      anchor.href = item.url;
+      anchor.textContent = item.title;
+      paragraph.append(anchor);
+      section.append(paragraph);
+    }
+    article.append(section);
+  }
   if (input.output === "clipboard") checkWechatLinks(article);
   const images: RenderedWechat["images"] = [];
   const warnings: string[] = [];
@@ -314,6 +336,8 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
       }
     }
     const plain = article.cloneNode(true) as Element;
+    const recommended = plain.querySelector(".plainly-recommendations");
+    if (recommended) recommended.textContent = "推荐阅读：\n\n" + recommendations.map(item => `${item.title}\n${item.url}`).join("\n\n");
     for (const img of plain.querySelectorAll("img")) {
       img.replaceWith(document.createTextNode(img.alt || "[图片]"));
     }

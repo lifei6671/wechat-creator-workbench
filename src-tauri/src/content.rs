@@ -1,4 +1,5 @@
 pub mod collections;
+pub mod publication;
 mod search;
 pub(crate) mod sync;
 pub mod taxonomy;
@@ -120,6 +121,8 @@ pub struct Fields {
     published_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publication_platforms: Option<Vec<PublicationPlatform>>,
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    wechat_publication: Option<Option<publication::Publication>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     custom_properties: Option<Vec<CustomProperty>>,
 }
@@ -266,6 +269,8 @@ pub struct EntryPatch {
     pub published_at: Option<Option<i64>>,
     pub published_url: Option<String>,
     pub publication_platforms: Option<Vec<PublicationPlatform>>,
+    #[serde(default, deserialize_with = "present")]
+    pub wechat_publication: Option<Option<publication::Publication>>,
 }
 
 fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -302,6 +307,9 @@ impl EntryPatch {
         }
         if let Some(value) = self.publication_platforms {
             fields.publication_platforms = Some(value);
+        }
+        if let Some(value) = self.wechat_publication {
+            fields.wechat_publication = Some(value);
         }
     }
 }
@@ -596,10 +604,11 @@ impl Workspace {
                 "UPDATE entries SET title=?2, content_md=?3, status=?4, category_id=?5, source_id=?6, summary=?7,
                  published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12,
                  custom_properties=COALESCE(?13, custom_properties), source_details=?14,
-                 publication_platforms=COALESCE(?15, publication_platforms) WHERE id=?1",
+                 publication_platforms=COALESCE(?15, publication_platforms),
+                 wechat_publication=COALESCE(?16, wechat_publication) WHERE id=?1",
                 params![id, fields.title, fields.content_md, fields.status, fields.category_id, source_id,
                         fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id,
-                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?],
+                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?, fields.encoded_wechat_publication()?],
             )?;
             crate::assets::references::sync_entry(tx, id, &fields.content_md)?;
             taxonomy::replace_tags(tx, id, &fields.tags)?;
@@ -742,6 +751,7 @@ impl Fields {
             published_at: None,
             published_url: String::new(),
             publication_platforms: None,
+            wechat_publication: None,
             custom_properties: None,
         }
     }
@@ -763,6 +773,13 @@ impl Fields {
             publications.push(PublicationPlatform { platform: platform.into(), url: url.into() });
         }
         Ok(Some(serde_json::to_string(&publications).expect("publication platforms serialize to JSON")))
+    }
+
+    fn encoded_wechat_publication(&self) -> Result<Option<String>> {
+        self.wechat_publication.as_ref().map(|value| {
+            if let Some(value) = value { value.validate()?; }
+            serde_json::to_string(value).map_err(|error| AppError::invalid(error.to_string()))
+        }).transpose()
     }
 
     fn encoded_properties(&self) -> Result<Option<String>> {
@@ -884,7 +901,7 @@ fn entry_preview(
 }
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
-    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version, e.custom_properties, e.publication_platforms,
+    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version, e.custom_properties, e.publication_platforms, e.wechat_publication,
            s.source_url,
            COALESCE(e.source_details->>'$.author',s.author) AS author,
            COALESCE(e.source_details->>'$.accountName',s.account_name) AS account_name,
@@ -920,6 +937,10 @@ fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
             source,
             published_at: r.get("published_at")?,
             published_url: r.get("published_url")?,
+            wechat_publication: Some(serde_json::from_str(&r.get::<_, String>("wechat_publication")?)
+                .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
+                    r.as_ref().column_index("wechat_publication").expect("selected wechat_publication"), rusqlite::types::Type::Text, Box::new(error)
+                ))?),
             publication_platforms: Some(serde_json::from_str(&r.get::<_, String>("publication_platforms")?)
                 .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
                     r.as_ref().column_index("publication_platforms").expect("selected publication_platforms"), rusqlite::types::Type::Text, Box::new(error)
@@ -984,11 +1005,11 @@ fn insert_entry(
     let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp, false)?;
     tx.execute(
         "INSERT INTO entries (id, kind, title, content_md, status, category_id, source_id, summary,
-                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties, source_details, publication_platforms)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'),?15,COALESCE(?16,'[]'))",
+                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties, source_details, publication_platforms, wechat_publication)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'),?15,COALESCE(?16,'[]'),COALESCE(?17,'null'))",
         params![entry_id, kind.key(), fields.title, fields.content_md, fields.status,
                 fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id,
-                fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?],
+                fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?, fields.encoded_wechat_publication()?],
     )?;
     crate::assets::references::sync_entry(tx, &entry_id, &fields.content_md)?;
     taxonomy::replace_tags(tx, &entry_id, &fields.tags)?;

@@ -52,6 +52,7 @@ fn article(title: &str, text: &str) -> Fields {
         published_at: None,
         published_url: String::new(),
         publication_platforms: None,
+        wechat_publication: None,
         custom_properties: None,
     }
 }

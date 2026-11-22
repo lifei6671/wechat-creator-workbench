@@ -11,7 +11,8 @@
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "recovery:cloudflare": "node scripts/cloudflare-recovery.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "test:remote": "node --test tests/remote.test.mjs"
+    "test:remote": "node --test tests/remote.test.mjs",
+    "test:native": "npm run build && node tests/native-client.mjs"
   },
   "cloudflare": {
     "bindings": {

@@ -24,7 +24,7 @@ test("unpacked Cloudflare and VPS distributions run the same HTTP contract", {
     const directory = join(scratch, archive.slice(0, -7));
     assert.equal(existsSync(join(directory, "src")), false);
     const version = JSON.parse(readFileSync(join(directory, "version.json"), "utf8"));
-    assert.equal(version.protocol, 1);
+    assert.equal(version.protocol, 2);
     assert.equal(version.version, JSON.parse(readFileSync(join(directory, "package.json"))).version);
     assert.ok(JSON.parse(readFileSync(join(directory, "third-party.json"))).length > 0);
     const secret = randomBytes(32).toString("hex");

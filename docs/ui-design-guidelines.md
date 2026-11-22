@@ -441,3 +441,7 @@ apps/desktop/src/
 - 通用交互与可用性：[Nielsen 十项可用性原则](https://www.nngroup.com/articles/ten-usability-heuristics/)
 - 键盘与焦点：[WAI-ARIA APG 模态对话框](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)、[按钮模式](https://www.w3.org/WAI/ARIA/apg/patterns/button/)
 - 无障碍检查基准：[WCAG 2.2](https://www.w3.org/TR/WCAG22/)；相关条目链接见第 5.5、5.6 节。减少动态效果额外参考 2.3.3（AAA），不将其标为 AA 要求。
+
+### 公众号侧栏
+
+公众号入口位于文章工具栏，打开后显示排版预览；与 AI 侧栏共用右侧空间。当前文章与默认设置使用两个标签页。生成数量不限制人工列表长度。排序手柄提供拖动、Alt+方向键和菜单上移/下移；选择器只展示有微信发布链接的已发布文章，并提供相关推荐、全部文章、搜索、多选和分页加载。数量输入失焦保存，关闭、切换文稿、复制、同步、备份及退出在相应保存屏障后继续。使用既有 Radix Colors、0.5px 边框、固定错误区域和按钮反馈规范。

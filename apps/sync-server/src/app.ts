@@ -3,7 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { authenticate, claim, connect, createAccessKey, createRecoveryKey, join, listDevices, recover, revoke, type DeviceAuthorization } from "./auth.js";
 import {
   entityType, hashPattern, id, integer, invalid, MAX_BLOB_BYTES, MAX_PUSH_BYTES,
-  operation, queryInteger, record, SyncError, text,
+  operation, queryInteger, record, SyncError, text, PROTOCOL_VERSION,
 } from "./protocol.js";
 import { identity, query, type BlobStore, type Database, type Identity } from "./storage.js";
 import { apply, bootstrap, checkIdentity, checkPush, getEntity, lookupReceipt, pull, seed, type Client } from "./sync.js";
@@ -34,10 +34,16 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     return c.json({ error: "internal_error" }, 500);
   });
   app.notFound((c) => c.json({ error: "not_found" }, 404));
+  app.use("/v1/*", async (c, next) => {
+    if (c.req.path !== "/v1/meta" && c.req.header("X-Sync-Protocol") !== String(PROTOCOL_VERSION)) {
+      throw new SyncError(426, "unsupported_protocol");
+    }
+    await next();
+  });
   app.get("/v1/meta", async (c) => {
     const state = await identity(db);
     return c.json({
-      protocolVersion: 1, serverInstanceId: state.instance_id, syncEpoch: state.epoch,
+      protocolVersion: PROTOCOL_VERSION, serverInstanceId: state.instance_id, syncEpoch: state.epoch,
       claimed: Boolean(state.claimed), seedStatus: state.seed_status,
       canvasSync: true, connectionRecovery: true, workspaceAccess: true,
       unifiedConnect: true, operationReceiptLookup: true, seedDeviceId: state.seed_device,
@@ -105,7 +111,7 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
   });
   app.post("/v1/sync/push", limitBody(MAX_PUSH_BYTES), async (c) => {
     const input = await json(c);
-    if (input.protocolVersion !== 1) throw new SyncError(400, "unsupported_protocol");
+    if (input.protocolVersion !== PROTOCOL_VERSION) throw new SyncError(400, "unsupported_protocol");
     const cursor = integer(input.cursor);
     checkPush(c.get("identity"), c.get("client"), cursor);
     if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 20) {

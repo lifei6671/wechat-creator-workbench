@@ -67,7 +67,7 @@ pub(super) fn purge_entry(conn: &Connection, id: &str, timestamp: i64) -> Result
     let entry = get_entry(conn, id)?;
     let status = Kind::from_key(&entry.row.kind).statuses()[0];
     conn.execute("UPDATE entries SET title='',content_md='',summary='',category_id=NULL,source_id=NULL,
-        cover_asset_id=NULL,theme_id=NULL,published_at=NULL,published_url='',custom_properties='[]',source_details=NULL,publication_platforms='[]',
+        cover_asset_id=NULL,theme_id=NULL,published_at=NULL,published_url='',custom_properties='[]',source_details=NULL,publication_platforms='[]',wechat_publication='null',
         pinned_order=NULL,status=?2,purged_at=?3,deleted_at=COALESCE(deleted_at,?3),updated_at=?3,version=version+1
         WHERE id=?1", params![id, status, timestamp])?;
     for sql in [

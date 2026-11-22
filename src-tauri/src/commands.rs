@@ -38,6 +38,31 @@ pub async fn get_entry(state: State<'_, Workspace>, id: String) -> Result<Entry>
 }
 
 #[tauri::command]
+pub async fn wechat_publication_defaults(state: State<'_, Workspace>) -> Result<crate::content::publication::Defaults> {
+    state.wechat_defaults()
+}
+
+#[tauri::command]
+pub async fn save_wechat_publication_defaults(state: State<'_, Workspace>, expected_version: i64, config: crate::content::publication::DefaultsConfig) -> Result<crate::content::publication::Defaults> {
+    state.save_wechat_defaults(expected_version, config)
+}
+
+#[tauri::command]
+pub async fn wechat_recommendations(state: State<'_, Workspace>, input: crate::content::publication::Input) -> Result<crate::content::publication::RecommendationResult> {
+    state.wechat_recommend(&input)
+}
+
+#[tauri::command]
+pub async fn wechat_recommendation_candidates(state: State<'_, Workspace>, input: crate::content::publication::Input, query: String, related: bool, offset: usize) -> Result<crate::content::publication::CandidatePage> {
+    state.wechat_candidates(&input, &query, related, offset)
+}
+
+#[tauri::command]
+pub async fn resolve_wechat_recommendations(state: State<'_, Workspace>, input: crate::content::publication::Input, items: Vec<crate::content::publication::Recommendation>) -> Result<crate::content::publication::Resolved> {
+    state.wechat_resolve(&input, &items)
+}
+
+#[tauri::command]
 pub async fn create_entry(
     state: State<'_, Workspace>,
     kind: Kind,

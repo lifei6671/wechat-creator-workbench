@@ -434,10 +434,22 @@ mod tests {
         let staging = tempfile::tempdir().unwrap();
         let source = staging.path().join("source.sqlite");
         let downloaded = staging.path().join("downloaded.sqlite");
-        rusqlite::Connection::open(&source)
-            .unwrap()
-            .execute_batch("CREATE TABLE probe(value TEXT); INSERT INTO probe VALUES ('R2 P5');")
-            .unwrap();
+        let live_path = staging.path().join("live.sqlite");
+        let live = Workspace::open(&live_path).unwrap();
+        let publication = serde_json::json!({"schemaVersion":1,"recommendations":{"enabled":true,"mode":"manual","countOverride":7,
+            "inputFingerprint":null,"items":[{"entryId":"second","title":"第二篇","url":"https://mp.weixin.qq.com/s/second"},
+            {"entryId":"first","title":"第一篇","url":"https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete"}]}});
+        let empty = serde_json::json!({"schemaVersion":1,"recommendations":{"enabled":false,"mode":"manual","countOverride":null,"inputFingerprint":null,"items":[]}});
+        live.write(|tx| {
+            tx.execute("UPDATE app_settings SET value=?1 WHERE key='workspace_id'", [&workspace])?;
+            tx.execute("INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at,wechat_publication) VALUES('configured','article','推荐配置','draft','正文',1,1,?1)", [publication.to_string()])?;
+            tx.execute("INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at,wechat_publication) VALUES('empty','article','人工删空','draft','正文',1,1,?1)", [empty.to_string()])?;
+            crate::content::publication::apply_defaults(tx, "default", &serde_json::json!({"schemaVersion":1,"recommendationCount":8,"updatedAt":1}))?;
+            tx.execute("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'https://sync.example.test/','instance','epoch','device')", [])?;
+            Ok(())
+        }).unwrap();
+        std::fs::File::create(&source).unwrap();
+        super::super::restore::make_snapshot(&live_path, &source, &workspace).unwrap();
         let source_bytes = std::fs::read(&source).unwrap();
         let mut names = Vec::new();
         let outcome = async {
@@ -481,7 +493,20 @@ mod tests {
             probe_check(
                 std::fs::read(&downloaded).map_err(backup_file)? == source_bytes,
                 "下载的快照与上传字节不一致",
-            )
+            )?;
+            super::super::restore::prepare_file(&downloaded, &super::super::restore::PendingRestore {
+                workspace: workspace.clone(), name: "remote.sqlite".into(), migration: None,
+            })?;
+            let recovered = Workspace::open(&downloaded)?;
+            recovered.read(|conn| {
+                for (id, expected) in [("configured", &publication), ("empty", &empty)] {
+                    let raw: String = conn.query_row("SELECT wechat_publication FROM entries WHERE id=?1", [id], |row| row.get(0))?;
+                    probe_check(serde_json::from_str::<serde_json::Value>(&raw).unwrap() == *expected, "恢复后的推荐配置不一致")?;
+                }
+                probe_check(crate::content::publication::defaults_snapshot(conn, "default")?.unwrap()["recommendationCount"] == 8, "恢复后的默认设置不一致")?;
+                let pause: String = conn.query_row("SELECT pause_reason FROM sync_binding WHERE paused=1", [], |row| row.get(0))?;
+                probe_check(pause == "backup_restored", "恢复后同步未暂停")
+            })
         }
         .await;
         let mut cleanup_error = None;

@@ -40,9 +40,9 @@ export class SaveQueue {
     private readonly commit: Commit,
     private readonly onCommit: () => void,
   ) {
-    const { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties } = entry;
+    const { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties, wechatPublication } = entry;
     this.state = {
-      fields: { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties },
+      fields: { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties, wechatPublication },
       version: entry.version, revision: 0, savedRevision: 0, saving: false, error: null,
     };
   }

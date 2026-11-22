@@ -8,11 +8,12 @@ import { SyncStatus } from "./SyncStatus";
 
 const conflictLabels: Record<SyncConflict["entityType"], string> = {
   entry: "文稿冲突", category: "目录冲突", asset: "素材冲突",
-  collection: "专题冲突", collection_node: "画布卡片冲突", collection_edge: "画布连线冲突",
+  collection: "专题冲突", collection_node: "画布卡片冲突", collection_edge: "画布连线冲突", wechat_publication_defaults: "公众号默认设置冲突",
 };
 
 function canvasVersion(type: SyncConflict["entityType"], version: SyncConflict["local"], deleted: boolean) {
   if (deleted || !version) return "此项已删除";
+  if (type === "wechat_publication_defaults") return `默认生成数量：${version.recommendationCount} 篇`;
   if (type === "collection") return `标题：${version.title}\n说明：${version.description}`;
   if (type === "collection_edge") return `连线文字：${version.label}\n起点：${version.sourceNodeId}\n终点：${version.targetNodeId}`;
   const kinds: Record<string, string> = { text: "文字", entry: "文章引用", image: "图片", web: "网页" };
@@ -237,7 +238,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
               value={issue.entityType === "entry" ? issue.remote?.contentMd ?? "" : canvasVersion(issue.entityType, issue.remote, issue.remoteDeleted)} />
           </label>
         </div>}
-        {issue.entityType !== "entry" && <p className="setting-hint">
+        {issue.entityType !== "entry" && issue.entityType !== "wechat_publication_defaults" && <p className="setting-hint">
           仅处理当前冲突项。另存副本会完整复制本地白板的卡片、布局和连线，保留文章及图片引用，再让原冲突项采用云端版本。
           {issue.remoteDeleted && "云端已删除此项，需另存副本以保留本地内容。"}
           {!issue.local && "本地已删除此项，无法另存副本。"}
@@ -246,7 +247,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
           {([["copy", issue.entityType === "entry" ? "另存本地稿" : "另存副本"],
             ["local", issue.directoryDifference?.onlyDifference ? "保留本地目录" : issue.entityType === "entry" ? "保留本地稿" : "保留本地版本"],
             ["cloud", issue.directoryDifference?.onlyDifference ? "采用云端目录" : issue.entityType === "entry" ? "采用云端稿" : "采用云端版本"]] as const).map(([choice, label]) =>
-            <Button key={choice} type="button" size="1" variant="soft"
+            (issue.entityType === "wechat_publication_defaults" && choice === "copy") ? null : <Button key={choice} type="button" size="1" variant="soft"
               onClick={() => void perform("resolve", () => resolve(issue, choice), `resolve:${issue.entityType}:${issue.entityId}:${choice}`)} {...buttonProps(`resolve:${issue.entityType}:${issue.entityId}:${choice}`, blocked || binding?.paused ||
               (issue.entityType !== "entry" && (choice === "local" && !issue.canKeepLocal || choice === "copy" && !issue.local)))}>
               {buttonLabel(`resolve:${issue.entityType}:${issue.entityId}:${choice}`, label, "处理完成")}

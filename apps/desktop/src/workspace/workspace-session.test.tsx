@@ -14,6 +14,8 @@ import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./prefe
 import { SaveQueue } from "../editor/save-queue";
 import { commandKey } from "../labels";
 import * as markdown from "../../../../packages/markdown-core";
+import { recommendationFingerprint } from "./wechat-publication";
+import * as publishing from "./Publishing";
 
 const { editorQueues, editorClipboards } = vi.hoisted(() => ({
   editorQueues: new Map<string, SaveQueue>(),
@@ -57,6 +59,9 @@ let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
   editorQueues.clear();
+  vi.spyOn(desktop, "wechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 });
+  vi.spyOn(desktop, "wechatRecommendations").mockImplementation(async input => ({ inputFingerprint: await recommendationFingerprint(input), items: [] }));
+  vi.spyOn(desktop, "resolveWechatRecommendations").mockImplementation(async (_input, items) => ({ items, invalid: [] }));
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -2075,6 +2080,77 @@ it.each(["copyMarkdown", "copyWechat"] as const)("runs %s from its shortcut with
   finish();
   await vi.waitFor(() => expect(container.querySelector(`[data-feedback-state="success"]`)).not.toBeNull());
   press(); expect(copied).toHaveBeenCalledOnce();
+});
+
+it("rejects a stale clipboard render after the recommendation list changes", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["copy-stale"], activeId: "copy-stale" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  const copied = vi.spyOn(desktop, "copyHtml").mockResolvedValue();
+  let finish!: (value: Awaited<ReturnType<typeof publishing.renderForPublication>>) => void;
+  const render = vi.spyOn(publishing, "renderForPublication").mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("copy-stale")).toBe(true));
+  flushSync(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyC", key: "c", altKey: true,
+    [commandKey === "⌘" ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true })));
+  await vi.waitFor(() => expect(render).toHaveBeenCalledOnce());
+  const queue = editorQueues.get("copy-stale")!;
+  const current = queue.capture().fields.wechatPublication!;
+  flushSync(() => queue.edit({ wechatPublication: { ...current, recommendations: { ...current.recommendations, mode: "manual", enabled: false, items: [] } } }));
+  const dispose = vi.fn();
+  finish({ result: { html: "旧推荐", text: "旧推荐", revision: 1, themeId: "plainly-default", images: [], warnings: [], dispose }, hosting: false, exportImages: [] });
+  await vi.waitFor(() => expect(container.textContent).toContain("文章或推荐内容已变化"));
+  expect(copied).not.toHaveBeenCalled();
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it("previews a deleted article without generating or saving recommendations and can restore it", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  localStorage.setItem("view", JSON.stringify("preview"));
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), deletedAt: 1 }));
+  const save = vi.spyOn(desktop, "save").mockResolvedValue({ version: 2 });
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  const restore = vi.spyOn(desktop, "setDeleted").mockResolvedValue({ ...entry("deleted-preview"), version: 2 });
+  vi.mocked(desktop.entries).mockResolvedValue({ items: [{ ...entry("deleted-preview"), deletedAt: 1 }], nextOffset: null });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="回收站"]')).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="回收站"]')!.click());
+  await vi.waitFor(() => expect(container.querySelector('#entry-row-deleted-preview')).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>('#entry-row-deleted-preview')!.click());
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="公众号排版预览"]')).not.toBeNull());
+  expect(desktop.wechatRecommendations).not.toHaveBeenCalled();
+  expect(save).not.toHaveBeenCalled();
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "恢复");
+  expect(button).toBeDefined();
+  flushSync(() => button!.click());
+  await vi.waitFor(() => expect(restore).toHaveBeenCalledWith("deleted-preview", 1, false));
+});
+
+it("refreshes a previously invalid recommendation after a workspace change without reopening the sidebar", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["reference-recovery"], activeId: "reference-recovery" });
+  const recommendation = { entryId: "past", title: "往期文章", url: "https://mp.weixin.qq.com/s/past" };
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), wechatPublication: { schemaVersion: 1, recommendations: {
+    enabled: true, mode: "manual", countOverride: null, inputFingerprint: null, items: [recommendation],
+  } } }));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  let valid = false;
+  let notify!: () => void;
+  vi.mocked(desktop.onWorkspaceChanged).mockImplementation(async listener => { notify = listener; return () => {}; });
+  vi.mocked(desktop.resolveWechatRecommendations).mockImplementation(async () => valid ? { items: [recommendation], invalid: [] }
+    : { items: [], invalid: [{ entryId: "past", message: "文章尚不可用" }] });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("reference-recovery")).toBe(true));
+  const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "公众号")!;
+  flushSync(() => trigger.click());
+  const copy = () => container.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
+  await vi.waitFor(() => expect(container.querySelector(".wechat-publishing-panel")?.textContent).toContain("文章尚不可用"));
+  expect(copy().disabled).toBe(true);
+  valid = true; flushSync(() => notify());
+  await vi.waitFor(() => expect(copy().disabled).toBe(false));
+  expect(desktop.wechatRecommendations).not.toHaveBeenCalled();
+  expect(editorQueues.get("reference-recovery")!.capture().fields.wechatPublication?.recommendations.mode).toBe("manual");
 });
 
 it("uses persisted custom workspace keys and honors disabled defaults", async () => {

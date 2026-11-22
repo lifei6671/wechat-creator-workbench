@@ -114,6 +114,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0027_trash_retention.sql"),
     include_str!("../migrations/0028_category_icon_color.sql"),
     include_str!("../migrations/0029_publication_platforms.sql"),
+    include_str!("../migrations/0030_wechat_publication.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 

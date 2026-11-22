@@ -29,6 +29,12 @@ curl http://127.0.0.1:8787/v1/meta
 
 ## 协议和测试
 
+当前协议版本为 **2**。除 `GET /v1/meta` 外，所有 `/v1` 请求携带 `X-Sync-Protocol: 2`；缺失或版本不匹配返回 `426 unsupported_protocol`。推送正文的 `protocolVersion` 同样为 2。客户端与服务端需一起升级，已有设备令牌、实例 ID、同步世代、游标和数据继续保留。
+
+文章载荷中的 `wechatPublication` 保存推荐开关、自动或手动模式、数量覆盖、输入指纹和有序列表。共享默认数量使用独立实体 `wechat_publication_defaults/default`，载荷为 `{ "schemaVersion": 1, "recommendationCount": 5, "updatedAt": 0 }`，只接受版本化更新。同一文章或共享默认配置并发修改时保留冲突，不能将推荐列表合并为并集。推荐项只接受微信文章链接。
+
+升级前备份原数据库及私有文件，部署协议 2 服务，再升级参与同步的桌面端。旧客户端在升级窗口内保留本地内容并停止同步。服务端本轮无需新增数据库迁移，不能以清库、重新认领或更换实例代替升级。
+
 1. 请求 `GET /v1/meta` 取得 `serverInstanceId` 和 `syncEpoch`。
 2. 确认元数据的 `unifiedConnect` 和 `operationReceiptLookup` 为 `true`，使用 `POST /v1/connect` 提交 `accessKey`、预先持久化的 `deviceToken` 和 `name`，同时携带元数据对应的 `X-Sync-Instance` 与 `X-Sync-Epoch`。首台设备、第二台设备和重装后的电脑使用同一把连接密钥，每次安装使用独立设备令牌。成功返回 HTTP 200 和设备、实例、世代及初始化状态。响应丢失时重试原设备令牌，只产生一次登记；也可用该令牌查询 `GET /v1/devices` 确认结果。
 3. 同步和 blob 请求带上 `Authorization: Bearer <deviceToken>`、`X-Sync-Instance` 和 `X-Sync-Epoch`。首次上传设备依次调用 `POST /v1/sync/seed` 的 `begin`、`push`、`finish`。
@@ -80,3 +86,5 @@ npm run recovery:cloudflare -- DEVICE_ID
 兑换成功后，应用沿用原设备 ID，并换发该设备的凭据。原认领状态、同步进度、云端数据及其他设备不受影响。命令在本地终端显示明文密钥，D1 仅保存密钥摘要和到期时间。
 
 同步世代恢复流程见主仓库的 v1.1 设计。预留的增量保留水位支持过期游标检查，日志保留窗口需按实际写入量确定。
+
+`npm run test:native` 需要 Rust 工具链和系统凭据存储，自动创建独立回环 HTTP 服务和临时数据库，验证原生客户端双设备同步、重装恢复、人工推荐顺序、删空及共享默认数量。不会连接生产服务。R2 备份验收由桌面端 Rust 的隔离测试前缀完成。

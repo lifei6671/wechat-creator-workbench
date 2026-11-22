@@ -88,7 +88,7 @@
 }
 ~~~
 
-继续返回现有协议版本、`claimed`、`seedStatus`、`serverInstanceId` 和 `syncEpoch`，补充 `seedDeviceId`，供首次初始化等待和恢复提示使用。协议版本保持 1，新增能力由标记表达。
+继续返回现有协议版本、`claimed`、`seedStatus`、`serverInstanceId` 和 `syncEpoch`，补充 `seedDeviceId`，供首次初始化等待和恢复提示使用。公众号配置接入后协议升级为 2，所有受保护请求携带 `X-Sync-Protocol: 2`；原有连接和对账能力仍由标记表达。
 
 新增 `POST /v1/connect`：
 
@@ -106,7 +106,7 @@
 
 ~~~json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "deviceId": "<设备ID>",
   "serverInstanceId": "<服务实例ID>",
   "syncEpoch": "<同步世代>",

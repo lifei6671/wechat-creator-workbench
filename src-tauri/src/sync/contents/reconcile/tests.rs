@@ -11,6 +11,47 @@ use reqwest::Method;
 use serde_json::json;
 
 #[test]
+fn reconciliation_enrolls_untracked_publication_defaults_without_losing_local_value() {
+    let (_root, db) = workspace();
+    let key = Key { entity_type: Kind::WechatPublicationDefaults, entity_id: "default".into() };
+    db.write(|tx| {
+        tx.execute("UPDATE sync_progress SET capture=0", [])?;
+        crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":8,"updatedAt":1}))?;
+        tx.execute("UPDATE sync_progress SET capture=1", [])?;
+        assert!(generation(tx, &key)?.is_none());
+        Ok(())
+    }).unwrap();
+    apply_snapshot(&db).unwrap();
+    db.read(|conn| {
+        assert!(generation(conn, &key)?.is_some());
+        assert_eq!(local_snapshot(conn, &key)?.unwrap()["recommendationCount"], 8);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn replacing_baseline_resets_defaults_and_emits_refresh_even_without_cloud_record() {
+    for cloud in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (db, backups) = crate::backup::Backups::open(root.path()).unwrap();
+        db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id,paused) VALUES(1,'http://localhost/','i','e','d',1); UPDATE sync_progress SET bootstrap_cursor=20;")?;
+            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":8,"updatedAt":1}))?;
+            if cloud {
+                let remote = Entity { key: Key { entity_type: Kind::WechatPublicationDefaults, entity_id: "default".into() },
+                    payload: json!({"schemaVersion":1,"recommendationCount":9,"updatedAt":2}), remote_revision: 2, deleted_at: None };
+                tx.execute("INSERT INTO sync_bootstrap VALUES('wechat_publication_defaults','default',2,?1)", [encode(&remote)?])?;
+            }
+            Ok(())
+        }).unwrap();
+        let rebuilt = super::super::replace_baseline(&db, &backups).unwrap();
+        assert!(rebuilt.changed.publication_defaults_changed);
+        assert_eq!(db.wechat_defaults().unwrap().config.recommendation_count, if cloud { 9 } else { 5 });
+        assert!(std::path::Path::new(&rebuilt.recovery_archive).exists());
+    }
+}
+
+#[test]
 fn legacy_category_default_color_converges_in_reconcile_replay_and_frozen_targets() {
     for deferred in [false, true] {
         for color in [None, Some("blue")] {
@@ -756,7 +797,7 @@ async fn blob_group_receipt_survives_response_loss_and_device_reregistration() {
     }));
     let receipt: Receipt =
         response(remote.request(Method::POST, "v1/sync/push").unwrap().json(
-            &json!({"protocolVersion":1,"cursor":progress(&db).unwrap().2,"operations":[wire]}),
+            &json!({"protocolVersion":2,"cursor":progress(&db).unwrap().2,"operations":[wire]}),
         ))
         .await
         .unwrap();
