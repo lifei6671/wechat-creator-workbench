@@ -487,18 +487,23 @@ it("keeps the source and publishing fields available on an imported note", async
     const add = document.querySelector(".property-add")!;
     flushSync(() => add.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
     const option = await vi.waitFor(() => {
-      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(row => row.textContent === "发布链接");
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(row => row.textContent === "发布平台");
       expect(item).toBeDefined();
       return item!;
     });
     flushSync(() => option.click());
-    const published = document.querySelector<HTMLInputElement>('input[name="publishedUrl"]')!;
+    const platform = document.querySelector<HTMLInputElement>('[aria-label="发布平台 1"]')!;
+    flushSync(() => {
+      setInput.call(platform, "微信公众号");
+      platform.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const published = document.querySelector<HTMLInputElement>('[aria-label="发布链接 1"]')!;
     flushSync(() => {
       setInput.call(published, "https://mp.weixin.qq.com/s/published");
       published.dispatchEvent(new Event("input", { bubbles: true }));
     });
     flushSync(() => published.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     expect(queue.snapshot().fields.source).toEqual(note.source);
-    expect(queue.snapshot().fields.publishedUrl).toBe("https://mp.weixin.qq.com/s/published");
+    await vi.waitFor(() => expect(queue.snapshot().fields.publicationPlatforms).toEqual([{ platform: "微信公众号", url: "https://mp.weixin.qq.com/s/published" }]));
   } finally { queue.dispose(); }
 });

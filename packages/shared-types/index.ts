@@ -18,6 +18,8 @@ export type CustomProperty = { key: string } & (
   { kind: "text" | "date"; value: string } | { kind: "tags"; value: string[] }
 );
 
+export interface PublicationPlatform { platform: string; url: string }
+
 export interface EntryFields {
   title: string;
   contentMd: string;
@@ -30,6 +32,7 @@ export interface EntryFields {
   source: Source | null;
   publishedAt: number | null;
   publishedUrl: string;
+  publicationPlatforms?: PublicationPlatform[];
   customProperties?: CustomProperty[];
 }
 

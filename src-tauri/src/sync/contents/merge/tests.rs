@@ -7,6 +7,18 @@ use rusqlite::{Connection, params};
 use std::io::Cursor;
 
 #[test]
+fn publication_platform_defaults_match_legacy_snapshots_without_hiding_records() {
+    use super::same_content;
+    use super::super::Kind;
+    let legacy = serde_json::json!({"title":"文章"});
+    let empty = serde_json::json!({"title":"文章","publicationPlatforms":[]});
+    assert!(same_content(Kind::Entry, empty.clone(), &legacy));
+    assert!(same_content(Kind::Entry, legacy.clone(), &empty));
+    let published = serde_json::json!({"title":"文章","publicationPlatforms":[{"platform":"知乎","url":"https://example.com/article"}]});
+    assert!(!same_content(Kind::Entry, published, &legacy));
+}
+
+#[test]
 fn first_join_copies_local_category_color_when_preserving_a_conflict() {
     use super::super::{Applied, Entity, Key, Kind, encode};
     let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();

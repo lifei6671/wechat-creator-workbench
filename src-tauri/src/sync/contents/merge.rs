@@ -96,6 +96,9 @@ pub(super) fn same_content(kind: Kind, mut local: Value, remote: &Value) -> bool
             if kind == Kind::Category {
                 object.entry("iconColor").or_insert(Value::Null);
             }
+            if kind == Kind::Entry {
+                object.entry("publicationPlatforms").or_insert_with(|| serde_json::json!([]));
+            }
             object.remove("updatedAt");
             object.remove("createdAt");
             object.remove("contentBlobHash");

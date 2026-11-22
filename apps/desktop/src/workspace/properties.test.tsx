@@ -90,7 +90,7 @@ it("reveals only selected empty properties and edits custom types from their ico
     await choose(row.querySelector(".property-icon")!, "menuitemradio", "标签");
     fill(row.querySelector('input[role="combobox"]')!, "待阅读");
     flushSync(() => document.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-    await vi.waitFor(() => expect(save).toHaveBeenCalledWith("clip", 1, expect.objectContaining({
+    await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("clip", expect.any(Number), expect.objectContaining({
       customProperties: [
         { key: "出处", kind: "text", value: "外部资料" },
         { key: "空属性", kind: "text", value: "" },
@@ -98,6 +98,8 @@ it("reveals only selected empty properties and edits custom types from their ico
         { key: "用途", kind: "tags", value: ["待阅读"] },
       ],
     }), "auto"));
+    expect(row.querySelector<HTMLInputElement>('input[role="combobox"]')?.value).toBe("");
+    expect(row.textContent).toContain("待阅读");
   } finally {
     queue.dispose();
     flushSync(() => root.unmount());

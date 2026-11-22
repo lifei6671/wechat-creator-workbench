@@ -49,7 +49,7 @@ vi.mock(import("./CollectionCanvas"), () => ({
 
 const workspaceId = "session-test";
 const entry = (id: string, categoryId: string | null = null): Entry => ({
-  id, categoryId, title: id, kind: "article", contentMd: "", status: "draft", updatedAt: 0, deletedAt: null,
+  id, categoryId, title: id, kind: "article", contentMd: "", status: "draft", createdAt: 0, updatedAt: 0, deletedAt: null,
   tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "", version: 1, links: [],
 });
 let container: HTMLDivElement;
@@ -1118,10 +1118,50 @@ it("restores the last sidebar and document views while keeping their defaults", 
   expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe("preview");
 });
 
+it.each([
+  [new Date(2026, 10, 22, 14), ["今天", "昨天", "前天", "本周", "上周", "11月", "10月"]],
+  [new Date(2026, 10, 23, 14), ["今天", "昨天", "前天", "上周", "11月", "10月"]],
+  [new Date(2026, 0, 1, 14), ["今天", "昨天", "前天", "本周", "上周", "2025年12月", "2025年11月"]],
+] as const)("keeps timeline creation-date groups and order after editing on %s", async (today, labels) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(today);
+  const articles = [0, 1, 2, 3, 6, 7, 8, 13, 14, 40].map(daysAgo => {
+    const createdAt = new Date(today.getFullYear(), today.getMonth(), today.getDate() - daysAgo, 9).getTime();
+    return { ...entry(`day-${daysAgo}`), createdAt, updatedAt: createdAt };
+  });
+  let refresh!: () => void;
+  vi.mocked(desktop.onWorkspaceChanged).mockImplementation(async callback => { refresh = callback; return () => {}; });
+  let reads = 0;
+  vi.mocked(desktop.entries).mockImplementation(async filter => {
+    if (!filter.includePreview || filter.pinned) return { items: [], nextOffset: null };
+    reads++;
+    return { items: [...articles].sort((a, b) => filter.sort === "created" ? b.createdAt - a.createdAt : b.updatedAt - a.updatedAt), nextOffset: null };
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('.sidebar-chrome [aria-label="文章时间流"]')).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>('.sidebar-chrome [aria-label="文章时间流"]')!.click());
+  const rows = () => [...container.querySelectorAll<HTMLButtonElement>(".timeline-entry-open")];
+  await vi.waitFor(() => expect(rows()).toHaveLength(articles.length));
+  const groups = () => [...container.querySelectorAll(".timeline-group ul")].map(group => ({
+    label: group.getAttribute("aria-label"), titles: [...group.querySelectorAll("strong")].map(title => title.textContent),
+  }));
+  expect(groups().map(group => group.label)).toEqual(labels);
+  const initialGroups = groups();
+  const previousReads = reads;
+  articles.forEach((article, index) => { article.updatedAt = Date.now() + index * 1000; });
+  flushSync(() => refresh());
+  await vi.waitFor(() => expect(reads).toBeGreaterThan(previousReads));
+  await vi.waitFor(() => expect(container.querySelector(".timeline-entries")?.getAttribute("aria-busy")).toBe("false"));
+  expect(groups()).toEqual(initialGroups);
+  expect(rows().map(row => row.id)).toEqual(articles.map(article => `timeline-row-${article.id}`));
+  expect([...container.querySelectorAll<HTMLTimeElement>(".timeline-entry time")].map(time => time.dateTime))
+    .toEqual(articles.map(article => new Date(article.createdAt).toISOString()));
+});
+
 it("restores the timeline selection, its collapsed date and tree groups, and the manually hidden directory pane", async () => {
   const initial = await desktop.library();
   vi.mocked(desktop.library).mockResolvedValue({ ...initial, tags: [{ id: "wechat", name: "微信" }] });
-  const row = { ...entry("时间流文章", "closed"), updatedAt: Date.now() };
+  const row = { ...entry("时间流文章", "closed"), createdAt: Date.now(), updatedAt: Date.now() };
   vi.mocked(desktop.entries).mockImplementation(async filter => ({
     items: filter.categoryId === "closed" && filter.includePreview && !filter.pinned ? [row] : [], nextOffset: null,
   }));
@@ -1180,9 +1220,9 @@ it("browses a folder and its descendants in the timeline while opening the docum
   vi.mocked(desktop.library).mockResolvedValue({ ...initial, categories: [...initial.categories,
     { id: "child", parentId: "closed", sortOrder: 0, name: "子目录", icon: "folder" },
   ] });
-  const first = { ...entry("父目录文章", "closed"), updatedAt: new Date(2025, 2, 7, 10).getTime(),
+  const first = { ...entry("父目录文章", "closed"), createdAt: new Date(2025, 2, 7, 10).getTime(), updatedAt: Date.now(),
     preview: { summary: "父目录摘要", image: null } };
-  const second = { ...entry("子目录文章", "child"), updatedAt: new Date(2025, 3, 7, 10).getTime(),
+  const second = { ...entry("子目录文章", "child"), createdAt: new Date(2025, 3, 7, 10).getTime(), updatedAt: Date.now(),
     preview: { summary: "子目录摘要", image: "asset://one" } };
   let firstPageMore = true;
   const setPin = vi.spyOn(desktop, "setEntryPinned").mockImplementation(async (_id, pinned) => { second.pinned = pinned; });
@@ -1235,11 +1275,11 @@ it("browses a folder and its descendants in the timeline while opening the docum
   expect(container.querySelector("#folder-closed")).toBe(branch);
   expect(titles()).toEqual(["子目录文章"]);
   expect(desktop.entries).toHaveBeenCalledWith(expect.objectContaining({
-    categoryId: "closed", exactCategory: false, sort: "updated", kind: "article", includePreview: true, pinned: false,
+    categoryId: "closed", exactCategory: false, sort: "created", kind: "article", includePreview: true, pinned: false,
   }));
   expect(rows()[0].textContent).toContain("子目录摘要");
   expect(rows()[0].querySelector(".timeline-cover")).not.toBeNull();
-  expect(rows()[0].querySelector("time")?.dateTime).toBe(new Date(second.updatedAt).toISOString());
+  expect(rows()[0].querySelector("time")?.dateTime).toBe(new Date(second.createdAt).toISOString());
   const more = [...container.querySelectorAll("button")].find(button => button.textContent === "加载更多")!;
   more.focus();
   flushSync(() => more.click());
@@ -1591,7 +1631,7 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
   vi.mocked(desktop.entries).mockImplementation(async filter => ({
     items: filter.exactCategory && !filter.pinned ? [target] : [], nextOffset: null,
   }));
-  const save = vi.spyOn(desktop, "save").mockResolvedValue({ version: 4 });
+  const save = vi.spyOn(desktop, "save").mockImplementation(async (_id, version) => ({ version: version + 1 }));
   flushSync(() => root.render(<DesktopShell />));
   await vi.waitFor(() => expect(openTabs()).toEqual(["open-note"]));
   if (mode === "timeline") {
@@ -1617,12 +1657,88 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "更新列表文章的摘要");
     summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
   });
-  flushSync(() => summary.form!.querySelector<HTMLButtonElement>('[type="submit"]')!.click());
+  flushSync(() => summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
   await vi.waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith(target.id, 3, expect.objectContaining({
     summary: "更新列表文章的摘要",
   }), "auto"));
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "再次更新摘要");
+    summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(target.id, 4, expect.objectContaining({ summary: "再次更新摘要" }), "auto"));
+  flushSync(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭内容属性"]')!.click());
   await vi.waitFor(() => expect(document.querySelector(".properties-panel")).toBeNull());
   expect(openTabs()).toEqual(["open-note"]);
+});
+
+it.each([true, false])("recovers property conflicts without losing drafts for an initially open=%s article", async initiallyOpen => {
+  const target = { ...entry("property-conflict"), summary: "原摘要", publicationPlatforms: [{ platform: "CSDN", url: "https://example.com/post" }] };
+  saveDocumentTabs(workspaceId, { ids: initiallyOpen ? [target.id] : [], activeId: initiallyOpen ? target.id : null });
+  vi.spyOn(desktop, "entry").mockResolvedValue(target);
+  vi.mocked(desktop.entries).mockResolvedValue({ items: [target], nextOffset: null });
+  const save = vi.spyOn(desktop, "save").mockRejectedValue({ code: "VERSION_CONFLICT", currentVersion: 2, message: "内容版本已变化" });
+  const create = vi.spyOn(desktop, "create").mockResolvedValue(entry("conflict-copy"));
+  flushSync(() => root.render(<DesktopShell />));
+  const row = await vi.waitFor(() => {
+    const node = container.querySelector("#entry-row-property-conflict"); expect(node).not.toBeNull(); return node!;
+  });
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "内容属性")!.click());
+  const summary = await vi.waitFor(() => {
+    const input = document.querySelector<HTMLTextAreaElement>('[name="summary"]'); expect(input).not.toBeNull(); return input!;
+  });
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "冲突时保留的摘要");
+    summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+  await vi.waitFor(() => expect(document.querySelector(".properties-panel")?.textContent).toContain("内容版本已变化"));
+  const title = document.querySelector<HTMLInputElement>('[name="title"]')!;
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "关闭前的标题");
+    title.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>('[aria-label="关闭内容属性"]')!.click();
+  });
+  await vi.waitFor(() => expect(document.querySelector(".properties-panel")).toBeNull());
+  expect(openTabs()).toContain(target.id);
+  expect(editorQueues.get(target.id)!.snapshot().fields).toMatchObject({ title: "关闭前的标题", summary: "冲突时保留的摘要", publicationPlatforms: target.publicationPlatforms });
+  expect(save).toHaveBeenCalledOnce();
+  const copy = [...document.querySelectorAll<HTMLButtonElement>(".save-error button")].find(button => button.textContent === "另存为副本")!;
+  expect(copy).toBeDefined();
+  flushSync(() => copy.click());
+  await vi.waitFor(() => expect(create).toHaveBeenCalledWith("article", expect.objectContaining({ title: "关闭前的标题", summary: "冲突时保留的摘要", publicationPlatforms: target.publicationPlatforms })));
+});
+
+it("waits for an unopened article's unblurred property edits before exiting", async () => {
+  const target = { ...entry("property-exit"), summary: "原摘要" };
+  vi.spyOn(desktop, "entry").mockResolvedValue(target);
+  vi.mocked(desktop.entries).mockResolvedValue({ items: [target], nextOffset: null });
+  let requestExit!: () => void;
+  vi.mocked(desktop.onExit).mockImplementation(async callback => { requestExit = callback; return () => {}; });
+  let completeSave!: () => void;
+  const save = vi.spyOn(desktop, "save").mockImplementation(() => new Promise(resolve => { completeSave = () => resolve({ version: 2 }); }));
+  const begin = vi.spyOn(desktop, "beginExit").mockResolvedValue();
+  const finish = vi.spyOn(desktop, "finishExit").mockResolvedValue();
+  flushSync(() => root.render(<DesktopShell />));
+  const row = await vi.waitFor(() => {
+    const node = container.querySelector("#entry-row-property-exit"); expect(node).not.toBeNull(); return node!;
+  });
+  flushSync(() => row.dispatchEvent(new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true })));
+  const properties = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "内容属性")!;
+  flushSync(() => properties.click());
+  const summary = await vi.waitFor(() => {
+    const input = document.querySelector<HTMLTextAreaElement>('[name="summary"]'); expect(input).not.toBeNull(); return input!;
+  });
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "退出前保存的摘要");
+    summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    requestExit();
+  });
+  await vi.waitFor(() => expect(save).toHaveBeenCalledWith(target.id, 1, expect.objectContaining({ summary: "退出前保存的摘要" }), "auto"));
+  expect(begin).not.toHaveBeenCalled(); expect(finish).not.toHaveBeenCalled();
+  completeSave();
+  await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
 });
 
 it("selects the root by default and only queries unfiled articles", async () => {

@@ -251,6 +251,8 @@ export function DesktopShell() {
   }, [loadAgentModels]);
   const viewMode = reading || focusMode ? "edit" : (activeId ? documentOptions.get(activeId)?.view : undefined) ?? preferredView;
   const queues = useRef(new Map<string, SaveQueue>());
+  const propertiesFlush = useRef<(() => Promise<boolean>) | null>(null);
+  const propertiesQueue = useRef<SaveQueue | null>(null);
   const active = useRef<string | null>(null);
   const handles = useRef(new Map<string, MarkdownEditorHandle>());
   const [editorHandlesRevision, refreshEditorHandles] = useState(0);
@@ -308,6 +310,7 @@ export function DesktopShell() {
   const [syncWaitingReason, setSyncWaitingReason] = useState<string>();
 
   async function flushWorkspaceForSync() {
+    if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
     await Promise.all(writing.current);
     const failed = (await waitForCollectionWrites()).find(write => write.status === "rejected");
     if (failed) throw failed.reason;
@@ -1302,7 +1305,7 @@ export function DesktopShell() {
           const entry = await currentEntry(row.id);
           activateCreated(await desktop.create("article", {
             ...entry, title: `${entry.title || untitled} 副本`, status: "draft",
-            source: null, publishedAt: null, publishedUrl: "",
+            source: null, publishedAt: null, publishedUrl: "", publicationPlatforms: [],
           }, entry.kind === "article" ? undefined : entry.id));
           return;
         }
@@ -1357,7 +1360,8 @@ export function DesktopShell() {
       queue.edit(change);
       if (!await queue.flush({ retry: true })) throw queue.snapshot().error;
     } else {
-      await desktop.save(entry.id, entry.version, { ...entry, ...change }, "auto");
+      const result = await desktop.save(entry.id, entry.version, { ...entry, ...change }, "auto");
+      Object.assign(entry, change, { version: result.version });
       refresh();
     }
   }
@@ -1365,6 +1369,28 @@ export function DesktopShell() {
   async function changeEntryLocation(entry: Entry, change: Partial<Pick<EntryFields, "title" | "categoryId">>) {
     await saveEntryFields(entry, change);
     if (change.categoryId !== undefined && entry.id === active.current) revealFolder(change.categoryId);
+  }
+
+  async function savePropertyFields(entry: Entry, change: Partial<EntryFields>) {
+    let queue = queues.current.get(entry.id);
+    if (!queue) {
+      if (propertiesQueue.current?.entry.id !== entry.id) {
+        propertiesQueue.current?.dispose();
+        propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+      }
+      queue = propertiesQueue.current;
+    }
+    queue.edit(change);
+    if (!await queue.flush({ retry: true })) throw queue.saveError();
+  }
+
+  function openPropertyConflict(entry: Entry) {
+    const queue = queues.current.get(entry.id) ?? propertiesQueue.current!;
+    queues.current.set(entry.id, queue);
+    setSessions([...queues.current.values()]);
+    if (collectionMode) switchSection("folders");
+    revealFolder(queue.snapshot().fields.categoryId);
+    select(entry.id);
   }
 
   function renameEntry(id: string, title: string) {
@@ -1380,6 +1406,10 @@ export function DesktopShell() {
   }
 
   function closeModal() {
+    if (propertiesQueue.current) {
+      if (!queues.current.has(propertiesQueue.current.entry.id)) propertiesQueue.current.dispose();
+      propertiesQueue.current = null;
+    }
     setModal(null);
     setConfirmRestore(false);
     const origin = focusOrigin.current;
@@ -1692,6 +1722,7 @@ export function DesktopShell() {
     (document.activeElement as HTMLElement | null)?.blur();
     setExitMessage(updating ? "正在保存并准备更新…" : attempt.restoring ? "正在保存并停止工作区…" : "正在保存并退出…");
     try {
+      if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
       const failedWrite = (await waitForCollectionWrites()).find(write => write.status === "rejected");
       if (failedWrite) throw failedWrite.reason;
       await collectionCanvas.current?.flush();
@@ -2389,9 +2420,11 @@ export function DesktopShell() {
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
       {modal?.type === "properties" && <PropertiesDialog key={modal.id} id={modal.id} queue={queues.current.get(modal.id)}
+        flushRef={propertiesFlush}
         categories={library?.categories ?? []} tagSuggestions={library?.tagSuggestions ?? []}
         locked={globalLock || readingIds.includes(modal.id) || locked.includes(modal.id)}
-        onSave={(entry, change) => trackAssetTask(saveEntryFields(entry, change))} onClose={closeModal} onOpen={id => run(() => open(id))}
+        onSave={(entry, change) => trackAssetTask(savePropertyFields(entry, change))} onConflict={openPropertyConflict}
+        onClose={closeModal} onOpen={id => run(() => open(id))}
         onOpenCollection={openCollection} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <DeleteCategoryDialog target={modal.target}

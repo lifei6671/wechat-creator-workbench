@@ -93,6 +93,12 @@ enum PropertyValue {
     Tags(Vec<String>),
 }
 
+#[derive(Deserialize, Serialize, rmcp::schemars::JsonSchema)]
+pub struct PublicationPlatform {
+    platform: String,
+    url: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Fields {
@@ -112,6 +118,8 @@ pub struct Fields {
     source: Option<Source>,
     published_at: Option<i64>,
     published_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_platforms: Option<Vec<PublicationPlatform>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     custom_properties: Option<Vec<CustomProperty>>,
 }
@@ -257,6 +265,7 @@ pub struct EntryPatch {
     #[serde(default, deserialize_with = "present")]
     pub published_at: Option<Option<i64>>,
     pub published_url: Option<String>,
+    pub publication_platforms: Option<Vec<PublicationPlatform>>,
 }
 
 fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -290,6 +299,9 @@ impl EntryPatch {
         }
         if let Some(value) = self.published_url {
             fields.published_url = value;
+        }
+        if let Some(value) = self.publication_platforms {
+            fields.publication_platforms = Some(value);
         }
     }
 }
@@ -583,10 +595,11 @@ impl Workspace {
             tx.execute(
                 "UPDATE entries SET title=?2, content_md=?3, status=?4, category_id=?5, source_id=?6, summary=?7,
                  published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12,
-                 custom_properties=COALESCE(?13, custom_properties), source_details=?14 WHERE id=?1",
+                 custom_properties=COALESCE(?13, custom_properties), source_details=?14,
+                 publication_platforms=COALESCE(?15, publication_platforms) WHERE id=?1",
                 params![id, fields.title, fields.content_md, fields.status, fields.category_id, source_id,
                         fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id,
-                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp)],
+                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?],
             )?;
             crate::assets::references::sync_entry(tx, id, &fields.content_md)?;
             taxonomy::replace_tags(tx, id, &fields.tags)?;
@@ -728,8 +741,28 @@ impl Fields {
             source: None,
             published_at: None,
             published_url: String::new(),
+            publication_platforms: None,
             custom_properties: None,
         }
+    }
+
+    fn encoded_publications(&self) -> Result<Option<String>> {
+        let Some(items) = &self.publication_platforms else { return Ok(None) };
+        let mut names = HashSet::new();
+        let mut publications = Vec::new();
+        for item in items {
+            let platform = item.platform.trim();
+            if platform.is_empty() {
+                return Err(AppError::invalid("请填写发布平台名称"));
+            }
+            if !names.insert(platform.to_lowercase()) {
+                return Err(AppError::invalid(format!("「{platform}」已添加")));
+            }
+            let url = item.url.trim();
+            if !url.is_empty() { http_url(url)?; }
+            publications.push(PublicationPlatform { platform: platform.into(), url: url.into() });
+        }
+        Ok(Some(serde_json::to_string(&publications).expect("publication platforms serialize to JSON")))
     }
 
     fn encoded_properties(&self) -> Result<Option<String>> {
@@ -851,7 +884,7 @@ fn entry_preview(
 }
 
 fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
-    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version, e.custom_properties,
+    let sql = format!("SELECT {HEAD}, {DIRECTORY_PIN} IS NOT NULL AS pinned, e.content_md, e.summary, e.published_at, e.published_url, e.version, e.custom_properties, e.publication_platforms,
            s.source_url,
            COALESCE(e.source_details->>'$.author',s.author) AS author,
            COALESCE(e.source_details->>'$.accountName',s.account_name) AS account_name,
@@ -887,6 +920,10 @@ fn get_entry(conn: &Connection, id: &str) -> Result<Entry> {
             source,
             published_at: r.get("published_at")?,
             published_url: r.get("published_url")?,
+            publication_platforms: Some(serde_json::from_str(&r.get::<_, String>("publication_platforms")?)
+                .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
+                    r.as_ref().column_index("publication_platforms").expect("selected publication_platforms"), rusqlite::types::Type::Text, Box::new(error)
+                ))?),
             custom_properties: serde_json::from_str::<Vec<CustomProperty>>(&r.get::<_, String>("custom_properties")?)
                 .map(Some)
                 .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
@@ -947,11 +984,11 @@ fn insert_entry(
     let source_id = validate_fields(tx, &entry_id, kind, &fields, timestamp, false)?;
     tx.execute(
         "INSERT INTO entries (id, kind, title, content_md, status, category_id, source_id, summary,
-                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties, source_details)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'),?15)",
+                              created_at, updated_at, published_at, published_url, cover_asset_id, theme_id, custom_properties, source_details, publication_platforms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,COALESCE(?14,'[]'),?15,COALESCE(?16,'[]'))",
         params![entry_id, kind.key(), fields.title, fields.content_md, fields.status,
                 fields.category_id, source_id, fields.summary, timestamp, fields.published_at, fields.published_url, fields.cover_asset_id, fields.theme_id,
-                fields.encoded_properties()?, source_details(&fields, timestamp)],
+                fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?],
     )?;
     crate::assets::references::sync_entry(tx, &entry_id, &fields.content_md)?;
     taxonomy::replace_tags(tx, &entry_id, &fields.tags)?;

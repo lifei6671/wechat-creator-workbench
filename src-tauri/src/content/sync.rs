@@ -74,22 +74,24 @@ pub fn apply(conn: &Connection, id: &str, payload: &Value, deleted: Option<i64>)
     let saved = payload["updatedAt"].as_i64().unwrap_or_else(now);
     let source = validate_fields(conn, id, kind, &fields, saved, true)?;
     let properties = fields.encoded_properties()?;
+    let publications = fields.encoded_publications()?;
     let external = payload["externalImported"].as_bool();
     conn.execute(
         "INSERT INTO entries (id,kind,title,content_md,status,category_id,source_id,summary,cover_asset_id,theme_id,
-            created_at,updated_at,published_at,published_url,deleted_at,pinned_order,wechat_imported,external_imported,custom_properties,source_details)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,COALESCE(?18,0),COALESCE(?19,'[]'),?20)
+            created_at,updated_at,published_at,published_url,deleted_at,pinned_order,wechat_imported,external_imported,custom_properties,source_details,publication_platforms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,COALESCE(?18,0),COALESCE(?19,'[]'),?20,COALESCE(?21,'[]'))
          ON CONFLICT(id) DO UPDATE SET title=excluded.title,content_md=excluded.content_md,
             status=excluded.status,category_id=excluded.category_id,source_id=excluded.source_id,summary=excluded.summary,
             cover_asset_id=excluded.cover_asset_id,theme_id=excluded.theme_id,updated_at=excluded.updated_at,
             published_at=excluded.published_at,published_url=excluded.published_url,deleted_at=excluded.deleted_at,
             pinned_order=excluded.pinned_order,wechat_imported=excluded.wechat_imported,
             external_imported=COALESCE(?18,entries.external_imported),
-            custom_properties=COALESCE(?19,entries.custom_properties),source_details=excluded.source_details,version=entries.version+1",
+            custom_properties=COALESCE(?19,entries.custom_properties),source_details=excluded.source_details,
+            publication_platforms=COALESCE(?21,entries.publication_platforms),version=entries.version+1",
         params![id,kind.key(),fields.title,fields.content_md,fields.status,fields.category_id,source,fields.summary,
             fields.cover_asset_id,fields.theme_id,payload["createdAt"].as_i64().unwrap_or(saved),saved,
             fields.published_at,fields.published_url,deleted,payload["pinnedOrder"].as_i64(),
-            payload["wechatImported"].as_bool().unwrap_or(false), external, properties, source_details(&fields, saved)],
+            payload["wechatImported"].as_bool().unwrap_or(false), external, properties, source_details(&fields, saved), publications],
     )?;
     conn.execute(
         "UPDATE entries SET folder_sort_order=?2 WHERE id=?1",

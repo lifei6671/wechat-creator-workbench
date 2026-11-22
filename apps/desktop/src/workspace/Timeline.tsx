@@ -22,15 +22,29 @@ type TimelineResults = { filter: TimelineFilter; heading: TimelineHeading; page:
 function groupEntries(items: EntryRow[]) {
   const today = new Date();
   const todayDay = calendarDay(today);
+  const weekStart = todayDay - ((today.getDay() + 6) % 7) * 86_400_000;
   const groups: { label: string; period: number | string; recent: boolean; items: EntryRow[] }[] = [];
   for (const item of items) {
-    const date = new Date(item.updatedAt);
-    const daysAgo = (todayDay - calendarDay(date)) / 86_400_000;
-    const month = `${date.getMonth() + 1}月`;
-    const label = daysAgo === 0 ? "今天" : daysAgo === 1 ? "昨天"
-      : today.getFullYear() === date.getFullYear() ? month : `${date.getFullYear()}年${month}`;
-    const recent = daysAgo === 0 || daysAgo === 1;
-    const period = recent ? calendarDay(date) : `${date.getFullYear()}-${date.getMonth() + 1}`;
+    const date = new Date(item.createdAt!);
+    const day = calendarDay(date);
+    const daysAgo = (todayDay - day) / 86_400_000;
+    const recent = daysAgo >= 0 && daysAgo <= 2;
+    let label: string;
+    let period: number | string;
+    if (recent) {
+      label = ["今天", "昨天", "前天"][daysAgo];
+      period = day;
+    } else if (day >= weekStart && day < todayDay) {
+      label = "本周";
+      period = `week:${weekStart}`;
+    } else if (day >= weekStart - 7 * 86_400_000 && day < weekStart) {
+      label = "上周";
+      period = `week:${weekStart - 7 * 86_400_000}`;
+    } else {
+      const month = `${date.getMonth() + 1}月`;
+      label = today.getFullYear() === date.getFullYear() ? month : `${date.getFullYear()}年${month}`;
+      period = `${date.getFullYear()}-${date.getMonth() + 1}`;
+    }
     if (groups.at(-1)?.period !== period) groups.push({ label, period, recent, items: [] });
     groups.at(-1)!.items.push(item);
   }
@@ -78,7 +92,7 @@ export function Timeline({ workspaceId, root, folder, tag, untagged, tags, onSel
     categoryId, exactCategory, tagIds: tagId ? [tagId] : undefined,
     untagged, deleted: false, pinned: false,
     timelineScope: categoryId ? { kind: "folder", id: categoryId } : tagId ? { kind: "tag", id: tagId } : { kind: untagged ? "untagged" : "root" },
-    sort: "updated", kind: "article", includePreview: true, offset: 0,
+    sort: "created", kind: "article", includePreview: true, offset: 0,
   }), [categoryId, exactCategory, tagId, untagged]);
 
   const switching = results !== null && results.filter !== filter;
@@ -235,7 +249,7 @@ function TimelineGroup({ label, items, actions, articleTags, recent, pinned, sco
     <div className="tree-section-content" data-collapsed={collapsed}>
       <ul id={listId} aria-label={label} inert={collapsed}>
         {items.map(item => {
-          const time = new Date(item.updatedAt);
+          const time = new Date(item.createdAt!);
           return <ContentRow key={item.id} row={item} actions={actions} pinned={pinned}
             timeline={{ id: `timeline-row-${item.id}`, content: feedback => <>
               <span className="timeline-entry-copy">
