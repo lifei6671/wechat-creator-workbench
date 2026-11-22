@@ -6,15 +6,21 @@ use tokio::io::AsyncReadExt;
 use url::Url;
 
 impl Assets {
+    pub(crate) fn automatic_upload_enabled(db: &Workspace) -> Result<bool> {
+        Ok(db.read_running(Profile::automatic)?.is_some())
+    }
+
     pub(crate) async fn import_markdown_images(
         &self,
         db: &Workspace,
         markdown: &str,
         directory: &Path,
     ) -> Result<(String, usize)> {
-        let download_remote = db.read_running(Profile::automatic)?.is_some();
-        self.download_markdown_images(db, markdown, Some(directory), download_remote)
-            .await
+        let download_remote = Self::automatic_upload_enabled(db)?;
+        let (markdown, unavailable) = self
+            .download_markdown_images(db, markdown, Some(directory), download_remote)
+            .await?;
+        Ok((self.host_imported_images(db, markdown).await?, unavailable))
     }
 
     pub(crate) async fn import_link_images(
@@ -23,16 +29,28 @@ impl Assets {
         markdown: String,
         download: bool,
     ) -> Result<(String, usize)> {
-        let automatic = db.read_running(Profile::automatic)?;
-        if !download && automatic.is_none() {
+        if !download && !Self::automatic_upload_enabled(db)? {
             return Ok((markdown, 0));
         }
         let (markdown, unavailable) = self
             .download_markdown_images(db, &markdown, None, true)
             .await?;
-        let Some(profile) = automatic else {
-            return Ok((markdown, unavailable));
+        Ok((self.host_imported_images(db, markdown).await?, unavailable))
+    }
+
+    async fn automatically_host_image(&self, db: &Workspace, url: &str) -> Result<String> {
+        let Some(profile) = db.read_running(Profile::automatic)? else {
+            return Ok(url.to_owned());
         };
+        let running = db.running_lifetime();
+        tokio::select! {
+            biased;
+            () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
+            result = self.public_image_for(db, url, Some(&profile.target)) => result,
+        }
+    }
+
+    async fn host_imported_images(&self, db: &Workspace, markdown: String) -> Result<String> {
         let running = db.running_lifetime();
         tokio::select! {
             biased;
@@ -41,9 +59,8 @@ impl Assets {
                 let sources = references::urls(&markdown)?;
                 let uploads = stream::iter(sources.into_iter().filter(|url| url.starts_with("asset://")))
                     .map(|source| {
-                        let target = &profile.target;
                         async move {
-                            self.public_image_for(db, &source, Some(target))
+                            self.automatically_host_image(db, &source)
                                 .await
                                 .map(|hosted| (source, hosted))
                         }
@@ -53,10 +70,12 @@ impl Assets {
                 let mut replacements = BTreeMap::new();
                 while let Some(uploaded) = uploads.next().await {
                     let (source, hosted) = uploaded?;
-                    replacements.insert(source, hosted);
+                    if hosted != source {
+                        replacements.insert(source, hosted);
+                    }
                 }
                 let edits = references::image_edits(&markdown, |url| Ok(replacements.get(url).cloned()))?;
-                Ok((references::apply_image_edits(&markdown, edits), unavailable))
+                Ok(references::apply_image_edits(&markdown, edits))
             } => result,
         }
     }

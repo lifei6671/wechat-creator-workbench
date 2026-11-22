@@ -2641,7 +2641,7 @@ it("inserts pasted images with their document, then resolves external and local 
   }
 });
 
-it.each(["paste", "insert"] as const)("replaces a new local image after automatic hosting through %s while keeping paste undoable", async method => {
+it.each(["paste", "insert", "html", "embedded", "external"] as const)("replaces a new image after automatic hosting through %s while keeping paste undoable", async method => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   let handle: MarkdownEditorHandle | null = null;
@@ -2650,14 +2650,22 @@ it.each(["paste", "insert"] as const)("replaces a new local image after automati
   const resolveImage = vi.fn(() => hosted);
   const onError = vi.fn();
   const onChange = vi.fn();
-  const source = "![粘贴图片](asset://pasted)";
+  const imageUrl = method === "external" ? "https://external.example.test/image.png" : "asset://pasted";
+  const source = `![粘贴图片](${imageUrl})`;
+  const importImage = vi.fn(async () => "asset://pasted");
   try {
     flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="auto-hosted"
       value="" readOnly={false} localizeImageLink={resolveImage} onError={onError} onChange={onChange} onBlur={() => {}} />));
     await vi.waitFor(() => expect(handle).not.toBeNull());
-    if (method === "paste") handle!.clipboard("paste", { read: async () => source, write: vi.fn(), onError, localizeImage: resolveImage });
-    else handle!.insert(source);
-    await vi.waitFor(() => expect(resolveImage).toHaveBeenCalledExactlyOnceWith("asset://pasted"));
+    if (method === "insert") handle!.insert(source);
+    else handle!.clipboard("paste", {
+      read: async () => method === "html" || method === "embedded"
+        ? { html: `<p><img src="${method === "embedded" ? "data:image/png;base64,AAEC" : imageUrl}" alt="粘贴图片"></p>` }
+        : source,
+      write: vi.fn(), onError, localizeImage: resolveImage, importImage,
+    });
+    await vi.waitFor(() => expect(resolveImage).toHaveBeenCalledExactlyOnceWith(imageUrl));
+    expect(importImage).toHaveBeenCalledTimes(method === "embedded" ? 1 : 0);
     expect(container.querySelector(".rich-image")).not.toBeNull();
     expect(onChange.mock.lastCall![2]).toContain(source);
     finish("https://images.example.test/pasted.webp");

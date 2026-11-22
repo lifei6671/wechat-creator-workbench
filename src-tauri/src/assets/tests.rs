@@ -106,6 +106,54 @@ async fn image_origin(assets: &mut Assets) -> (TcpListener, String) {
     (listener, url)
 }
 
+async fn upload_origin(db: &Workspace, assets: &mut Assets) -> TcpListener {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    assets.public_http = reqwest::Client::builder()
+        .no_proxy()
+        .resolve("cdn.example.test", listener.local_addr().unwrap())
+        .build()
+        .unwrap();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE storage_profiles SET public_base_url='http://cdn.example.test'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    listener
+}
+
+async fn complete_test_uploads(
+    db: &Workspace,
+    assets: &Assets,
+    listener: &TcpListener,
+    count: usize,
+) {
+    for _ in 0..count {
+        let upload = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(upload) = claim(db).unwrap() {
+                    break upload;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let bytes = assets
+            .read(db, &format!("asset://{}", upload.file.id))
+            .await
+            .unwrap();
+        let key = format!("{}.png", upload.file.id);
+        register_target(db, &upload, &key, upload.file.hash.as_deref().unwrap()).unwrap();
+        complete_upload(db, &upload, Ok(())).unwrap();
+        assets.activity.send_replace(());
+        let request = serve_image_response(listener, "200 OK", "", &bytes).await;
+        assert!(request.starts_with(&format!("GET /{key} ")));
+    }
+}
+
 #[tokio::test]
 async fn public_image_previews_cache_on_disk_without_creating_assets() {
     let (folder, db, mut assets) = setup();
@@ -849,7 +897,7 @@ async fn exiting_cancels_documents_with_inflight_image_downloads() {
 }
 
 #[tokio::test]
-async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavailable_links() {
+async fn imported_markdown_hosts_remote_and_local_images_and_preserves_unavailable_links() {
     let (folder, db, mut assets) = setup();
     let source = folder.path().join("article");
     std::fs::create_dir(&source).unwrap();
@@ -874,19 +922,21 @@ async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavaila
 
     image_profile(&db);
     enable_auto_upload(&db);
+    let public = upload_origin(&db, &mut assets).await;
     let mut remote = Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(5, 4)
         .write_to(&mut remote, ImageFormat::Png)
         .unwrap();
-    let (imported, _) = tokio::join!(
+    let (imported, _, _) = tokio::join!(
         assets.import_markdown_images(&db, &body, &source),
         serve_image_response(&server, "200 OK", "", remote.get_ref()),
+        complete_test_uploads(&db, &assets, &public, 2),
     );
     let (imported, unavailable) = imported.unwrap();
     assert_eq!(unavailable, 1);
-    assert!(imported.contains("![文档内](asset://"));
+    assert!(imported.contains("![文档内](http://cdn.example.test/"));
     assert!(imported.contains(" \"图片标题\")"));
-    assert!(imported.contains("![外链](asset://"));
+    assert!(imported.contains("![外链](http://cdn.example.test/"));
     assert!(imported.contains("![外部](../outside.png)"));
     assert!(imported.contains(&format!("`![字面]({url})`")));
     let library = assets.library(&db, 0).unwrap();
@@ -895,7 +945,7 @@ async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavaila
         library
             .items
             .iter()
-            .all(|row| row.upload_status.as_deref() == Some("queued"))
+            .all(|row| row.public_url.is_some() && row.upload_status.is_none())
     );
 }
 
