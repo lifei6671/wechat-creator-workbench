@@ -194,13 +194,13 @@ D1 单字段或单行上限为 2,000,000 字节。按序列化后的 UTF-8 字�
 | `GET /v1/sync/entities/:type/:id` | 已认证设备 | 查看当前实体或墓碑，供冲突详情及处理前更新版本使用 |
 | `HEAD/PUT/GET /v1/blobs/:sha256` | 已认证设备 | 根据哈希校验、上传、按需下载私有附件和长正文 |
 
-统一连接及同步、blob 请求携带 `X-Sync-Instance`、`X-Sync-Epoch`。服务端核对当前实例和世代，工作区就绪后的推送与增量拉取还需检查客户端已持久化的游标。`409 reset_required` 的 `reason` 区分 `cursor_expired`、`cursor_ahead`、`instance_changed` 和 `epoch_changed`：同世代游标低于保留水位时自动完整对账；游标超前、身份变化以及未知重置原因保留本地状态并暂停。同步查询通过同一个权威数据库读游标和快照，首版使用 D1 主库读写。元数据以 `unifiedConnect`、`operationReceiptLookup` 表达新增能力，并返回 `seedDeviceId`；协议版本仍为 1，旧认证接口继续提供。
+统一连接及同步、blob 请求携带 `X-Sync-Instance`、`X-Sync-Epoch`。服务端核对当前实例和世代，工作区就绪后的推送与增量拉取还需检查客户端已持久化的游标。`409 reset_required` 的 `reason` 区分 `cursor_expired`、`cursor_ahead`、`instance_changed` 和 `epoch_changed`：同世代游标低于保留水位时自动完整对账；游标超前、身份变化以及未知重置原因保留本地状态并暂停。同步查询通过同一个权威数据库读游标和快照，首版使用 D1 主库读写。元数据以 `unifiedConnect`、`operationReceiptLookup` 表达新增能力，并返回 `seedDeviceId`；协议版本为 2；除公开元数据外，所有请求须携带 `X-Sync-Protocol: 2`，缺失或不符返回 426。旧认证接口继续提供，但客户端也须升级。
 
 `push` 请求示意。每个 `operations[]` 元素是独立的事务和幂等单元：
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "cursor": 42,
   "operations": [
     {

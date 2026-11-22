@@ -10,6 +10,7 @@ import type { WebClipping } from "./editor/web-clipping";
 import type {
   CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
   Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection,
+  WechatPublicationDefaults, WechatRecommendationInput, WechatRecommendation, WechatCandidatePage, WechatRecommendationResult, WechatResolvedRecommendations,
 } from "../../../packages/shared-types";
 
 export interface ImageTarget { endpoint: string; region: string; bucket: string; prefix: string; publicBase: string }
@@ -56,15 +57,15 @@ export interface SyncActivity {
 export interface SyncDevice { deviceId: string; name: string; createdAt: number; revokedAt: number | null }
 export interface SyncDevices { currentDeviceId: string; devices: SyncDevice[] }
 export type SyncResolution = "cloud" | "local" | "copy";
-export interface SyncApplied { changedEntries: string[]; changedCollections: string[]; mergeArchive?: string }
+export interface SyncApplied { changedEntries: string[]; changedCollections: string[]; mergeArchive?: string; publicationDefaultsChanged?: boolean }
 export interface SyncConflict {
-  entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge";
+  entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge" | "wechat_publication_defaults";
   entityId: string;
   reason: string;
   local: { title?: string; name?: string; description?: string; contentMd?: string; label?: string;
     kind?: string; entryId?: string | null; assetId?: string | null; externalUrl?: string | null;
     collectionId?: string; sourceNodeId?: string; targetNodeId?: string;
-    color?: string | null; customColor?: string | null; x?: number; y?: number; width?: number; height?: number } | null;
+    color?: string | null; customColor?: string | null; x?: number; y?: number; width?: number; height?: number; recommendationCount?: number } | null;
   remote: SyncConflict["local"];
   remoteDeleted: boolean;
   resolvable: boolean;
@@ -131,6 +132,14 @@ export const desktop = {
   library: (includeArticleCounts = false) => invoke<Library>("library", { includeArticleCounts }),
   entries: (filter: EntryFilter) => invoke<EntryPage>("entries", { filter }),
   entry: (id: string) => invoke<Entry>("get_entry", { id }),
+  wechatPublicationDefaults: () => invoke<WechatPublicationDefaults>("wechat_publication_defaults"),
+  saveWechatPublicationDefaults: (expectedVersion: number, recommendationCount: number) =>
+    invoke<WechatPublicationDefaults>("save_wechat_publication_defaults", { expectedVersion, config: { schemaVersion: 1, recommendationCount } }),
+  wechatRecommendations: (input: WechatRecommendationInput) => invoke<WechatRecommendationResult>("wechat_recommendations", { input }),
+  wechatCandidates: (input: WechatRecommendationInput, query: string, related: boolean, offset = 0) =>
+    invoke<WechatCandidatePage>("wechat_recommendation_candidates", { input, query, related, offset }),
+  resolveWechatRecommendations: (input: WechatRecommendationInput, items: WechatRecommendation[]) =>
+    invoke<WechatResolvedRecommendations>("resolve_wechat_recommendations", { input, items }),
   collections: () => invoke<Collection[]>("list_collections"),
   saveCollection: (id: string | null, title: string, description: string) =>
     invoke<Collection>("save_collection", { id, title, description }),

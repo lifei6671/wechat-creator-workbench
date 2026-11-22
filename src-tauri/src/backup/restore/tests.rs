@@ -40,6 +40,13 @@ fn online_backup_includes_uncheckpointed_wal_and_produces_a_standalone_database(
         Ok(())
     })
     .unwrap();
+    let publication = serde_json::json!({"schemaVersion":1,"recommendations":{"enabled":true,"mode":"manual",
+        "countOverride":7,"inputFingerprint":null,"items":[{"entryId":"past","title":"往期文章","url":"https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete"}]}});
+    live.write(|tx| {
+        tx.execute("UPDATE entries SET wechat_publication=?1 WHERE id='entry'", [publication.to_string()])?;
+        crate::content::publication::apply_defaults(tx, "default", &serde_json::json!({"schemaVersion":1,"recommendationCount":8,"updatedAt":1}))?;
+        Ok(())
+    }).unwrap();
     assert!(
         fs::metadata(root.path().join("content.db-wal"))
             .unwrap()
@@ -79,6 +86,9 @@ fn online_backup_includes_uncheckpointed_wal_and_produces_a_standalone_database(
         )
         .unwrap();
     assert_eq!(restored, ("entry".into(), false, "旧会话".into()));
+    let restored_publication: String = conn.query_row("SELECT wechat_publication FROM entries WHERE id='entry'", [], |row| row.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&restored_publication).unwrap(), publication);
+    assert_eq!(crate::content::publication::defaults_snapshot(&conn, "default").unwrap().unwrap()["recommendationCount"], 8);
 }
 
 #[test]

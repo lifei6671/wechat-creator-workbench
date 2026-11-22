@@ -42,6 +42,9 @@ import { ImageViewer, LinkImportDialog, PublishImagesDialog, renderForPublicatio
 import { CollectionExplorer } from "./CollectionExplorer";
 import type { CollectionCanvasHandle } from "./CollectionCanvas";
 import type { RenderedWechat } from "../../../../packages/wechat-renderer";
+import { WechatPublishing, type PublicationSession } from "./wechat-publication";
+import { WechatPublicationPanel } from "./WechatPublicationPanel";
+import "../styles/wechat-publication.css";
 import "./collection-canvas.css";
 
 const AiPanel = lazy(() => import("./AiPanel").then(module => ({ default: module.AiPanel })));
@@ -237,8 +240,10 @@ export function DesktopShell() {
   const defaultExplorer = preferredExplorer ?? !compact;
   const explorer = explorerOverride ?? defaultExplorer;
   const reading = activeId !== null && readingIds.includes(activeId);
+  const [wechatOpen, setWechatOpen] = useState(false);
+  const showWechatPanel = wechatOpen && activeId !== null && sessions.some(session => session.entry.id === activeId && session.entry.kind === "article") && !collectionMode && !focusMode && !reading;
   const timelineTooNarrow = useMedia(`(width < ${minimumTimelineWidth + minimumWritingWidth + minimumAiWidth + 2 * dividerWidth}px)`);
-  const showAiPanel = aiOpen && !collectionMode && !focusMode && !reading && (aiOverride !== null || tabsRestored || tabSessions !== null)
+  const showAiPanel = aiOpen && !showWechatPanel && !collectionMode && !focusMode && !reading && (aiOverride !== null || tabsRestored || tabSessions !== null)
     && (!timelineMode || !explorer || !timelineTooNarrow);
   const loadAgentModels = showAiPanel && aiSettings?.preferences.enabled === true && aiSettings.agents.some(agent => agent.installed);
   useEffect(() => {
@@ -251,6 +256,11 @@ export function DesktopShell() {
   }, [loadAgentModels]);
   const viewMode = reading || focusMode ? "edit" : (activeId ? documentOptions.get(activeId)?.view : undefined) ?? preferredView;
   const queues = useRef(new Map<string, SaveQueue>());
+  const [wechatPublishing] = useState(() => new WechatPublishing());
+  const showRightPanel = showAiPanel || showWechatPanel;
+  useEffect(() => () => wechatPublishing.dispose(), [wechatPublishing]);
+  const propertiesFlush = useRef<(() => Promise<boolean>) | null>(null);
+  const propertiesQueue = useRef<SaveQueue | null>(null);
   const active = useRef<string | null>(null);
   const handles = useRef(new Map<string, MarkdownEditorHandle>());
   const [editorHandlesRevision, refreshEditorHandles] = useState(0);
@@ -308,6 +318,8 @@ export function DesktopShell() {
   const [syncWaitingReason, setSyncWaitingReason] = useState<string>();
 
   async function flushWorkspaceForSync() {
+    if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
+    if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
     await Promise.all(writing.current);
     const failed = (await waitForCollectionWrites()).find(write => write.status === "rejected");
     if (failed) throw failed.reason;
@@ -322,6 +334,7 @@ export function DesktopShell() {
       await flushWorkspaceForSync();
       const applied = await operation();
       const { changedEntries, changedCollections } = applied;
+      if (applied.publicationDefaultsChanged) await wechatPublishing.defaults.load(true);
       const reopened = await Promise.all([...new Set(changedEntries)].flatMap(id => {
         const queue = queues.current.get(id);
         return queue ? [desktop.entry(id).then(entry => ({ queue, entry }))] : [];
@@ -677,12 +690,22 @@ export function DesktopShell() {
   function commitBreadcrumb() {
     const field = document.activeElement;
     if (field instanceof HTMLInputElement && field.classList.contains("path-title-input")) field.blur();
+    else if (field instanceof HTMLElement && field.closest(".wechat-publishing-panel")) field.blur();
   }
 
   function select(id: string | null, restored = false) {
     const previous = active.current;
     if (id === previous) return;
     commitBreadcrumb();
+    if (wechatPublishing.needsFlush(previous ? queues.current.get(previous) : undefined)) {
+      const selection = selecting.current;
+      const intent = viewIntent.current;
+      run(async () => {
+        if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
+        if (active.current === previous && selecting.current === selection && viewIntent.current === intent && !exit.current) select(id, restored);
+      });
+      return;
+    }
     if (pendingEditorFocus.current !== id) pendingEditorFocus.current = null;
     if (previous) void queues.current.get(previous)?.flush();
     active.current = id;
@@ -721,6 +744,7 @@ export function DesktopShell() {
         const currentId = replacing.entry.id;
         if (locking.current.has(currentId)) throw new Error("当前标签页正在处理，请稍后再试");
         if (active.current === currentId) commitBreadcrumb();
+        if (!await wechatPublishing.flushQueue(replacing)) throw new Error("有公众号配置未保存，请处理后重试");
         const saved = await replacing.flush();
         if (superseded()) return;
         if (queues.current.get(currentId) !== replacing || queues.current.has(id)) break;
@@ -767,6 +791,7 @@ export function DesktopShell() {
   }
 
   function forgetTab(id: string) {
+    wechatPublishing.release(queues.current.get(id)!);
     queues.current.get(id)!.dispose();
     queues.current.delete(id);
     setReadingIds(current => current.filter(item => item !== id));
@@ -812,6 +837,7 @@ export function DesktopShell() {
       if (!queue) continue;
       let saved = true;
       await withEntryLock(id, async () => {
+        if (!await wechatPublishing.flushQueue(queue)) throw new Error("有公众号配置未保存，请处理后重试");
         saved = await queue.flush();
         if (saved) remove(id);
         else select(id);
@@ -946,6 +972,7 @@ export function DesktopShell() {
         if (!isCurrent() || queues.current.get(entryId) !== queue) return;
         if (!queue.isDirty()) {
           handles.current.delete(entryId);
+          wechatPublishing.release(queue);
           queue.dispose();
           install(latest);
         }
@@ -1005,8 +1032,8 @@ export function DesktopShell() {
   }
 
   function maxTimelineNavigationWidth() {
-    const available = sidebarGroup.current!.clientWidth - dividerWidth * (showAiPanel ? 2 : 1);
-    const aiShare = showAiPanel ? workspacePanels.current!.getLayout()["ai-sidebar"] / 100 : 0;
+    const available = sidebarGroup.current!.clientWidth - dividerWidth * (showRightPanel ? 2 : 1);
+    const aiShare = showRightPanel ? workspacePanels.current!.getLayout()["ai-sidebar"] / 100 : 0;
     return available * (1 - aiShare) - minimumWritingWidth;
   }
 
@@ -1156,6 +1183,7 @@ export function DesktopShell() {
       if (tab && !await tab.flush()) throw tab.saveError();
       saved = await desktop.save(id, version, fields, mode);
       if (tab && queues.current.get(id) === tab) {
+        wechatPublishing.release(tab);
         tab.dispose();
         install({ ...tab.entry, ...fields, version: saved.version });
       }
@@ -1302,7 +1330,7 @@ export function DesktopShell() {
           const entry = await currentEntry(row.id);
           activateCreated(await desktop.create("article", {
             ...entry, title: `${entry.title || untitled} 副本`, status: "draft",
-            source: null, publishedAt: null, publishedUrl: "",
+            source: null, publishedAt: null, publishedUrl: "", publicationPlatforms: [],
           }, entry.kind === "article" ? undefined : entry.id));
           return;
         }
@@ -1357,7 +1385,8 @@ export function DesktopShell() {
       queue.edit(change);
       if (!await queue.flush({ retry: true })) throw queue.snapshot().error;
     } else {
-      await desktop.save(entry.id, entry.version, { ...entry, ...change }, "auto");
+      const result = await desktop.save(entry.id, entry.version, { ...entry, ...change }, "auto");
+      Object.assign(entry, change, { version: result.version });
       refresh();
     }
   }
@@ -1365,6 +1394,28 @@ export function DesktopShell() {
   async function changeEntryLocation(entry: Entry, change: Partial<Pick<EntryFields, "title" | "categoryId">>) {
     await saveEntryFields(entry, change);
     if (change.categoryId !== undefined && entry.id === active.current) revealFolder(change.categoryId);
+  }
+
+  async function savePropertyFields(entry: Entry, change: Partial<EntryFields>) {
+    let queue = queues.current.get(entry.id);
+    if (!queue) {
+      if (propertiesQueue.current?.entry.id !== entry.id) {
+        propertiesQueue.current?.dispose();
+        propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+      }
+      queue = propertiesQueue.current;
+    }
+    queue.edit(change);
+    if (!await queue.flush({ retry: true })) throw queue.saveError();
+  }
+
+  function openPropertyConflict(entry: Entry) {
+    const queue = queues.current.get(entry.id) ?? propertiesQueue.current!;
+    queues.current.set(entry.id, queue);
+    setSessions([...queues.current.values()]);
+    if (collectionMode) switchSection("folders");
+    revealFolder(queue.snapshot().fields.categoryId);
+    select(entry.id);
   }
 
   function renameEntry(id: string, title: string) {
@@ -1380,6 +1431,10 @@ export function DesktopShell() {
   }
 
   function closeModal() {
+    if (propertiesQueue.current) {
+      if (!queues.current.has(propertiesQueue.current.entry.id)) propertiesQueue.current.dispose();
+      propertiesQueue.current = null;
+    }
     setModal(null);
     setConfirmRestore(false);
     const origin = focusOrigin.current;
@@ -1464,9 +1519,8 @@ export function DesktopShell() {
     setBackupFeedback(null);
     try {
       const result = await trackAssetTask((async () => {
-        await collectionCanvas.current?.flush();
-        const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
-        if (!saved.every(Boolean)) throw new Error("有稿件尚未保存，请处理后重新备份");
+        (document.activeElement as HTMLElement | null)?.blur();
+        await flushWorkspaceForSync();
         return await desktop.createBackup();
       })());
       setBackupListRevision(value => value + 1);
@@ -1502,9 +1556,8 @@ export function DesktopShell() {
     try {
       return await trackAssetTask((async () => {
         if (action === "export") {
-          await collectionCanvas.current?.flush();
-          const saved = await Promise.all([...queues.current.values()].map(queue => queue.flush()));
-          if (!saved.every(Boolean)) throw new Error("有稿件尚未保存，请处理后重新导出");
+          (document.activeElement as HTMLElement | null)?.blur();
+          await flushWorkspaceForSync();
           const path = await desktop.exportWorkspace(workspacePreferences());
           return path ? true : undefined;
         } else {
@@ -1528,9 +1581,17 @@ export function DesktopShell() {
   }
 
   function openAi() {
-    setFocusMode(false);
-    if (timelineMode && timelineTooNarrow) setExplorerOverride(false);
-    setAiOpen(true);
+    const openPanel = () => {
+      setWechatOpen(false);
+      setFocusMode(false);
+      if (timelineMode && timelineTooNarrow) setExplorerOverride(false);
+      setAiOpen(true);
+    };
+    if (wechatPublishing.needsFlush(selected ?? undefined)) run(async () => {
+      if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
+      openPanel();
+    });
+    else openPanel();
   }
 
   function toggleAi() {
@@ -1545,15 +1606,24 @@ export function DesktopShell() {
       if (projectLinks === null) throw new Error("编辑器正在加载，请稍后重试");
       setPublishing(true);
       try {
+        const recommendations = output === "clipboard" && selected.entry.kind === "article"
+          ? await wechatPublishing.session(selected).prepare() : undefined;
         const { fields, revision } = selected.capture();
         const input = { output, revision, markdown: projectLinks?.(fields.contentMd) ?? fields.contentMd,
-          themeId: fields.themeId, githubRepo: fields.source?.url };
+          themeId: fields.themeId, githubRepo: fields.source?.url, recommendations };
         const { result, hosting, exportImages } = await renderForPublication(input);
         try {
           if (exit.current) return false;
           if (output === "html") {
             const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>公众号文章</title><body>${result.html}</body></html>`;
             return await desktop.exportWechatHtml(html, exportImages);
+          }
+          if (selected.entry.kind === "article") {
+            const latest = await wechatPublishing.session(selected).prepare();
+            if (active.current !== selected.entry.id || queues.current.get(selected.entry.id) !== selected
+                || selected.capture().revision !== revision || JSON.stringify(latest) !== JSON.stringify(recommendations)) {
+              throw new Error("文章或推荐内容已变化，请重新复制");
+            }
           }
           await desktop.copyHtml(result.html, result.text);
           if (!hosting && result.images.length) showModal({ type: "publishImages", images: result.images });
@@ -1599,6 +1669,14 @@ export function DesktopShell() {
     outlineOpen, onOutline: checked => { if (activeId) updateDocumentOptions(activeId, { outline: checked }); },
     onPalette: () => showModal({ type: "palette" }),
     onAi: toggleAi, aiOpen: showAiPanel,
+    onWechat: selected?.entry.kind === "article" ? () => run(async () => {
+      if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
+      if (showWechatPanel) { setWechatOpen(false); return; }
+      setAiOpen(false); setFocusMode(false); view("preview");
+      if (timelineMode && timelineTooNarrow) setExplorerOverride(false);
+      setWechatOpen(true);
+    }) : undefined,
+    wechatOpen: showWechatPanel,
     onSave: () => {
       if (!reading && selected?.entry.deletedAt === null) {
         commitBreadcrumb();
@@ -1692,6 +1770,8 @@ export function DesktopShell() {
     (document.activeElement as HTMLElement | null)?.blur();
     setExitMessage(updating ? "正在保存并准备更新…" : attempt.restoring ? "正在保存并停止工作区…" : "正在保存并退出…");
     try {
+      if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
+      if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
       const failedWrite = (await waitForCollectionWrites()).find(write => write.status === "rejected");
       if (failedWrite) throw failedWrite.reason;
       await collectionCanvas.current?.flush();
@@ -1843,11 +1923,11 @@ export function DesktopShell() {
   const showExplorer = explorer && !focusMode;
   const showTimelineDirectory = showExplorer && timelineMode && timelineDirectory === "shown";
   const restorePanelSizes = useEffectEvent((group: HTMLDivElement) => {
-    const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showAiPanel));
-    const navigationLimit = available - minimumWritingWidth - (showAiPanel ? minimumAiWidth : 0);
+    const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showRightPanel));
+    const navigationLimit = available - minimumWritingWidth - (showRightPanel ? minimumAiWidth : 0);
     const navigation = showExplorer ? Math.min(preferredNavigationWidth(), navigationLimit) : 0;
     const aiLimit = Math.min(available / 2, available - minimumWritingWidth - navigation);
-    const ai = showAiPanel ? Math.min(aiSidebarWidth.current, aiLimit) : 0;
+    const ai = showRightPanel ? Math.min(aiSidebarWidth.current, aiLimit) : 0;
     workspacePanels.current!.setLayout({
       navigation: navigation / available * 100,
       writing: (available - navigation - ai) / available * 100,
@@ -1942,13 +2022,13 @@ export function DesktopShell() {
     const panel = aiSidebarPanel.current!;
     const group = sidebarGroup.current!;
     if (!hasWorkspaceSize(group)) return;
-    if (showAiPanel !== panel.isCollapsed()) return;
+    if (showRightPanel !== panel.isCollapsed()) return;
     group.dataset.aiSidebarMoving = "true";
-    if (showAiPanel && !showExplorer) {
+    if (showRightPanel && !showExplorer) {
       const available = group.clientWidth - dividerWidth;
       const aiShare = Math.min(50, aiSidebarWidth.current / available * 100);
       workspacePanels.current!.setLayout({ navigation: 0, writing: 100 - aiShare, "ai-sidebar": aiShare });
-    } else if (showAiPanel) panel.resize(aiSidebarWidth.current);
+    } else if (showRightPanel) panel.resize(aiSidebarWidth.current);
     else if (showExplorer) {
       const available = group.clientWidth - dividerWidth;
       const width = Math.min(preferredNavigationWidth(), available - minimumWritingWidth);
@@ -1958,13 +2038,13 @@ export function DesktopShell() {
     const clear = () => { delete group.dataset.aiSidebarMoving; };
     const timer = window.setTimeout(clear, 270);
     const frame = requestAnimationFrame(() => {
-      if (showAiPanel && !layoutSuspended.current && hasWorkspaceSize(group)) {
+      if (showRightPanel && !layoutSuspended.current && hasWorkspaceSize(group)) {
         const available = group.clientWidth - dividerWidth * group.querySelectorAll(":scope > [data-separator]").length;
         rememberAiWidth(available * workspacePanels.current!.getLayout()["ai-sidebar"] / 100);
       }
     });
     return () => { window.clearTimeout(timer); cancelAnimationFrame(frame); clear(); };
-  }, [showAiPanel, showExplorer, aiSidebarPanel, workspacePanels]);
+  }, [showRightPanel, showExplorer, aiSidebarPanel, workspacePanels]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
   const aiSelection = aiDefaultTarget && aiTarget.label
@@ -2108,9 +2188,9 @@ export function DesktopShell() {
         onLayoutChanged={layout => {
           const group = sidebarGroup.current;
           if (layoutSuspended.current || !hasWorkspaceSize(group) || group.dataset.timelineDirectoryMoving) return;
-          const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showAiPanel));
+          const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showRightPanel));
           const moving = group.dataset.sidebarMoving || group.dataset.sidebarRestoring || group.dataset.aiSidebarMoving;
-          if (showAiPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
+          if (showRightPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
           if (!showExplorer || moving) return;
           const width = Math.round(available * layout.navigation / 100);
           if (timelineMode) {
@@ -2265,7 +2345,8 @@ export function DesktopShell() {
                     onHostImage={image => hostDocumentImages(session, image)}
                     onImageZoom={(image, trigger) => showModal({ type: "imageViewer", ...image }, trigger)} />)}
                 </div>
-                {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks} /></div>}
+                {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks}
+                  publication={queue.entry.kind === "article" && queue.entry.deletedAt === null ? wechatPublishing.session(queue) : undefined} sourceRevision={refreshCount} /></div>}
                 {outlineEditor && <Outline key={queue.sessionId} editor={outlineEditor}
                   readOnly={reading || Boolean(exitMessage) || globalLock || locked.includes(queue.entry.id) || queue.entry.deletedAt !== null}
                   onClose={() => {
@@ -2289,17 +2370,21 @@ export function DesktopShell() {
             </div>
           </main>
         </Panel>
-        {showAiPanel && <Separator className="divider ai-sidebar-divider"
-          disableDoubleClick aria-label="调整 AI 侧栏宽度" />}
+        {showRightPanel && <Separator className="divider ai-sidebar-divider"
+          disableDoubleClick aria-label={showWechatPanel ? "调整公众号侧栏宽度" : "调整 AI 侧栏宽度"} />}
         <Panel id="ai-sidebar" defaultSize="0px" minSize={minimumAiWidth} maxSize="50%" collapsible collapsedSize="0px"
           panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
           onResize={(size, _id, previous) => {
-            if (showAiPanel && previous?.inPixels && !size.inPixels && !layoutSuspended.current
-              && hasWorkspaceSize(sidebarGroup.current) && !sidebarGroup.current.dataset.aiSidebarMoving) setAiOpen(false);
+            if (showRightPanel && previous?.inPixels && !size.inPixels && !layoutSuspended.current
+              && hasWorkspaceSize(sidebarGroup.current) && !sidebarGroup.current.dataset.aiSidebarMoving) { setAiOpen(false); setWechatOpen(false); }
           }}>
-          <div className="ai-sidebar" inert={!showAiPanel}>
+          <div className="ai-sidebar" inert={!showAiPanel} hidden={showWechatPanel}>
             {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
           </div>
+          {showWechatPanel && queue?.entry.kind === "article" && <WechatPublicationPanel session={wechatPublishing.session(queue)}
+            sourceRevision={refreshCount}
+            locked={globalLock || locked.includes(queue.entry.id)} publishing={publishing} copyFeedback={documentButtons}
+            onClose={() => setWechatOpen(false)} onCopy={actions.onCopyWechat} />}
         </Panel>
       </Group>
       {windowsTitleBar && <WindowControls onError={showError} />}
@@ -2389,9 +2474,11 @@ export function DesktopShell() {
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
       {modal?.type === "properties" && <PropertiesDialog key={modal.id} id={modal.id} queue={queues.current.get(modal.id)}
+        flushRef={propertiesFlush}
         categories={library?.categories ?? []} tagSuggestions={library?.tagSuggestions ?? []}
         locked={globalLock || readingIds.includes(modal.id) || locked.includes(modal.id)}
-        onSave={(entry, change) => trackAssetTask(saveEntryFields(entry, change))} onClose={closeModal} onOpen={id => run(() => open(id))}
+        onSave={(entry, change) => trackAssetTask(savePropertyFields(entry, change))} onConflict={openPropertyConflict}
+        onClose={closeModal} onOpen={id => run(() => open(id))}
         onOpenCollection={openCollection} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <DeleteCategoryDialog target={modal.target}
@@ -2399,6 +2486,7 @@ export function DesktopShell() {
       {modal?.type === "reload" && queue && <Confirm title="重新加载内容" text="重新加载将丢弃这篇内容尚未保存的修改。"
         action="重新加载" onClose={closeModal} onConfirm={async () => {
           const entry = await desktop.entry(queue.entry.id);
+          wechatPublishing.release(queue);
           queue.dispose();
           install(entry);
         }} />}
@@ -2406,9 +2494,20 @@ export function DesktopShell() {
   </Theme>;
 }
 
-function ActivePreview({ queue, projectLinks }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null }) {
+function ActivePreview({ queue, projectLinks, publication, sourceRevision }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null; publication?: PublicationSession; sourceRevision?: number }) {
   const materialized = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const { fields, revision } = useMemo(() => queue.capture(), [queue, materialized]);
-  return <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
+  return publication ? <PublicationPreview queue={queue} publication={publication} projectLinks={projectLinks} sourceRevision={sourceRevision} /> : <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
     githubRepo={fields.source?.url} projectLinks={projectLinks} />;
+}
+
+function PublicationPreview({ queue, publication, projectLinks, sourceRevision }: { queue: SaveQueue; publication: PublicationSession; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null; sourceRevision?: number }) {
+  const snapshot = useSyncExternalStore(queue.subscribe, queue.snapshot);
+  const state = useSyncExternalStore(publication.subscribe, publication.snapshot);
+  const defaults = useSyncExternalStore(publication.defaults.subscribe, publication.defaults.snapshot);
+  useEffect(() => { if (projectLinks !== null) void publication.ensure().catch(() => {}); }, [publication, snapshot.revision, defaults.value?.version, projectLinks, sourceRevision]);
+  const { fields, revision } = queue.capture();
+  const error = state.error || (state.resolved.invalid.length ? "推荐文章已失效，请在公众号侧栏修正或移除" : "");
+  return <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
+    githubRepo={fields.source?.url} projectLinks={projectLinks} recommendations={state.ready ? state.resolved.items : undefined} publicationError={error} />;
 }

@@ -54,7 +54,7 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
                 remember(conn, key, entity.remote_revision, true)?;
                 continue;
             }
-            if (key.entity_type == Kind::Entry || key.entity_type.is_canvas())
+            if (key.entity_type == Kind::Entry || key.entity_type.is_canvas() || key.entity_type == Kind::WechatPublicationDefaults)
                 && !entity.payload["purgedAt"].is_i64()
                 && !same_content(key.entity_type, local, &entity.payload)
             {
@@ -95,6 +95,10 @@ pub(super) fn same_content(kind: Kind, mut local: Value, remote: &Value) -> bool
         if let Some(object) = payload.as_object_mut() {
             if kind == Kind::Category {
                 object.entry("iconColor").or_insert(Value::Null);
+            }
+            if kind == Kind::Entry {
+                object.entry("publicationPlatforms").or_insert_with(|| serde_json::json!([]));
+                object.entry("wechatPublication").or_insert(Value::Null);
             }
             object.remove("updatedAt");
             object.remove("createdAt");

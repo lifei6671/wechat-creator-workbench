@@ -14,6 +14,7 @@ const operation = (...mutations) => ({ operationId: randomUUID(), mutations });
 
 export async function runContract(base, setupSecret) {
   const request = async (path, method = "GET", headers = {}, data) => {
+    headers = { "X-Sync-Protocol": "2", ...headers };
     const json = data !== undefined && !Buffer.isBuffer(data);
     let response;
     let bytes;
@@ -38,7 +39,9 @@ export async function runContract(base, setupSecret) {
     return res.body;
   };
   const meta = await ok(200, "meta");
-  assert.equal(meta.protocolVersion, 1);
+  assert.equal(meta.protocolVersion, 2);
+  assert.equal((await request("devices", "GET", { "X-Sync-Protocol": "1" })).status, 426);
+  assert.equal((await request("devices", "GET", { "X-Sync-Protocol": "" })).status, 426);
   assert.equal(meta.canvasSync, true);
   assert.equal(meta.connectionRecovery, true);
   assert.equal(meta.workspaceAccess, true);
@@ -84,7 +87,7 @@ export async function runContract(base, setupSecret) {
   await ok(409, "sync/seed", "POST", b, { action: "begin" });
   await ok(409, "sync/bootstrap", "GET", b);
   const push = async (who, ...operations) => (await ok(200, "sync/push", "POST", who, {
-    protocolVersion: 1, cursor: 0, operations,
+    protocolVersion: 2, cursor: 0, operations,
   })).results;
   const seed = operation(category("root", "Topics"), entry("draft", "初稿", 0, "root"));
   const [initial] = await push(a, seed);
@@ -267,6 +270,30 @@ export async function runContract(base, setupSecret) {
   assert.equal(remainder.hasMore, false);
   assert.deepEqual(await ok(409, "sync/pull?cursor=99999", "GET", a), { error: "reset_required", reason: "cursor_ahead" });
   const peerKey = await ok(201, "recovery-key", "POST", b);
+  const defaults = { entityType: "wechat_publication_defaults", entityId: "default", baseRevision: 0, operation: "upsert",
+    payload: { schemaVersion: 1, recommendationCount: 8, updatedAt: 1 } };
+  assert.equal((await push(a, operation(defaults)))[0].status, "applied");
+  assert.deepEqual((await ok(200, "sync/entities/wechat_publication_defaults/default", "GET", b)).payload, defaults.payload);
+  assert.equal((await push(b, operation({ ...defaults, payload: { ...defaults.payload, recommendationCount: 3 } })))[0].status, "conflict");
+  assert((await ok(200, "sync/bootstrap?afterType=entry&afterId=zzzzzz", "GET", b)).entities.some(item => item.entityType === "wechat_publication_defaults"));
+  for (const invalid of [
+    { ...defaults, entityId: "other" }, { ...defaults, operation: "delete" },
+    { ...defaults, payload: { ...defaults.payload, recommendationCount: 0 } },
+  ]) await ok(400, "sync/push", "POST", a, { protocolVersion: 2, operations: [operation(invalid)] });
+  const publication = { schemaVersion: 1, recommendations: { enabled: true, mode: "manual", countOverride: null, inputFingerprint: null,
+    items: [{ entryId: "past", title: "往期文章", url: "https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete" }] } };
+  const configured = entry("publication-roundtrip", "正文不追加推荐"); configured.payload.wechatPublication = publication;
+  assert.equal((await push(a, operation(configured)))[0].status, "applied");
+  assert.deepEqual((await ok(200, "sync/entities/entry/publication-roundtrip", "GET", b)).payload.wechatPublication, publication);
+  const emptied = { ...configured, baseRevision: 1, payload: { ...configured.payload, wechatPublication: { ...publication,
+    recommendations: { ...publication.recommendations, items: [] } } } };
+  assert.equal((await push(b, operation(emptied)))[0].status, "applied");
+  assert.deepEqual((await ok(200, "sync/entities/entry/publication-roundtrip", "GET", a)).payload.wechatPublication.recommendations.items, []);
+  const invalidPublication = { ...configured, payload: { ...configured.payload, wechatPublication: { ...publication,
+    recommendations: { ...publication.recommendations, items: [{ entryId: "past", title: "外站", url: "https://example.com/article" }] } } } };
+  await ok(400, "sync/push", "POST", a, { protocolVersion: 2, operations: [operation(invalidPublication)] });
+  await ok(400, "sync/push", "POST", a, { protocolVersion: 2, operations: [operation({ ...configured,
+    payload: { ...configured.payload, wechatPublication: { ...publication, recommendations: { ...publication.recommendations, mode: ["auto"] } } } })] });
   await ok(204, "devices/" + second.deviceId, "DELETE", a);
   await ok(401, "blobs/" + hash, "GET", b);
   await ok(401, "sync/pull", "GET", b);

@@ -51,8 +51,56 @@ fn article(title: &str, text: &str) -> Fields {
         source: None,
         published_at: None,
         published_url: String::new(),
+        publication_platforms: None,
+        wechat_publication: None,
         custom_properties: None,
     }
+}
+
+#[test]
+fn publication_platforms_persist_validate_and_roundtrip_through_sync() {
+    let db = memory();
+    let mut fields = article("多平台文章", "正文");
+    fields.published_url = "https://example.com/legacy".into();
+    fields.publication_platforms = Some(vec![
+        PublicationPlatform { platform: " 微信公众号 ".into(), url: " https://mp.weixin.qq.com/s/published ".into() },
+        PublicationPlatform { platform: "个人站点".into(), url: String::new() },
+    ]);
+    let entry = db.create_entry(Kind::Article, Some(fields), None).unwrap();
+    let expected = serde_json::json!([
+        {"platform": "微信公众号", "url": "https://mp.weixin.qq.com/s/published"},
+        {"platform": "个人站点", "url": ""},
+    ]);
+    assert_eq!(serde_json::to_value(&entry).unwrap()["publicationPlatforms"], expected);
+    let mut old_fields = db.get_entry(&entry.row.id).unwrap().fields;
+    old_fields.publication_platforms = None;
+    db.save_entry(&entry.row.id, entry.version, old_fields, SaveMode::Auto).unwrap();
+    let payload = db.read(|conn| sync::snapshot(conn, &entry.row.id)).unwrap().unwrap();
+    let remote = memory();
+    remote.write(|tx| sync::apply(tx, &entry.row.id, &payload, None)).unwrap();
+    let synced = remote.get_entry(&entry.row.id).unwrap();
+    assert_eq!(serde_json::to_value(&synced).unwrap()["publicationPlatforms"], expected);
+    assert_eq!(synced.fields.published_url, "https://example.com/legacy");
+    let mut legacy = payload.clone();
+    legacy.as_object_mut().unwrap().remove("publicationPlatforms");
+    remote.write(|tx| sync::apply(tx, &entry.row.id, &legacy, None)).unwrap();
+    assert_eq!(serde_json::to_value(remote.get_entry(&entry.row.id).unwrap()).unwrap()["publicationPlatforms"], expected);
+
+    for publications in [
+        serde_json::json!([{"platform":"CSDN","url":""},{"platform":" csdn ","url":""}]),
+        serde_json::json!([{"platform":" ","url":"https://example.com"}]),
+        serde_json::json!([{"platform":"知乎","url":"javascript:alert(1)"}]),
+    ] {
+        let mut fields = db.get_entry(&entry.row.id).unwrap().fields;
+        fields.publication_platforms = Some(serde_json::from_value(publications).unwrap());
+        let version = db.get_entry(&entry.row.id).unwrap().version;
+        assert!(db.save_entry(&entry.row.id, version, fields, SaveMode::Auto).is_err());
+        assert_eq!(serde_json::to_value(db.get_entry(&entry.row.id).unwrap()).unwrap()["publicationPlatforms"], expected);
+    }
+    let mut cleared = db.get_entry(&entry.row.id).unwrap();
+    cleared.fields.publication_platforms = Some(vec![]);
+    db.save_entry(&entry.row.id, cleared.version, cleared.fields, SaveMode::Auto).unwrap();
+    assert_eq!(serde_json::to_value(db.get_entry(&entry.row.id).unwrap()).unwrap()["publicationPlatforms"], serde_json::json!([]));
 }
 
 fn search(query: &str) -> Filter {

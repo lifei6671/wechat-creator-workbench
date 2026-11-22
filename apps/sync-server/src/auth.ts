@@ -1,4 +1,4 @@
-import { equalDigest, hashPattern, invalid, sha256, SyncError, token } from "./protocol.js";
+import { equalDigest, hashPattern, invalid, sha256, SyncError, token, PROTOCOL_VERSION } from "./protocol.js";
 import { query, type Database, type Device } from "./storage.js";
 
 export async function connect(db: Database, setupSecret: string | undefined, accessKey: unknown,
@@ -28,7 +28,7 @@ export async function connect(db: Database, setupSecret: string | undefined, acc
   if (state.instance_id !== instanceId) throw new SyncError(409, "reset_required", "instance_changed");
   if (state.epoch !== epoch) throw new SyncError(409, "reset_required", "epoch_changed");
   if (!devices.length) throw new SyncError(401, "invalid_access_key");
-  return { protocolVersion: 1, deviceId: (devices[0] as { id: string }).id,
+  return { protocolVersion: PROTOCOL_VERSION, deviceId: (devices[0] as { id: string }).id,
     serverInstanceId: state.instance_id, syncEpoch: state.epoch,
     seedStatus: state.seed_status, seedDeviceId: state.seed_device };
 }

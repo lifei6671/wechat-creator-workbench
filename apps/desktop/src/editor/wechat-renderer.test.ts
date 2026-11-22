@@ -6,6 +6,25 @@ import fixture from "../../../../fixtures/wechat-format.json?raw";
 
 const gzhThemes = wechatThemes.filter(theme => theme.id.startsWith("gzh-"));
 
+it.each(wechatThemes)("appends safe recommendations only to WeChat outputs in $label", async theme => {
+  const markdown = "正文保持原样";
+  const recommendations = [{ entryId: "past", title: '<img src=x onerror=alert(1)> 往期文章', url: "https://mp.weixin.qq.com/s?__biz=abc&mid=123&idx=1&sn=full#wechat_redirect" }];
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const result = await renderWechat({ markdown, output, themeId: theme.id, revision: 1, recommendations }, { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+    try {
+      const template = document.createElement("template"); template.innerHTML = result.html;
+      expect(template.content.textContent?.split("推荐阅读：").length).toBe(output === "html" ? 1 : 2);
+      expect(template.content.querySelector("img")).toBeNull();
+      if (output !== "html") {
+        expect(template.content.querySelector("a")?.getAttribute("href")).toBe(recommendations[0].url);
+        expect(template.content.textContent).toContain(recommendations[0].title);
+        expect(result.text).toContain(recommendations[0].url);
+      }
+      expect(template.content.textContent).toContain(markdown);
+    } finally { result.dispose(); }
+  }
+});
+
 it.each(["preview", "clipboard", "html"] as const)("limits copied article links without changing visible content in %s", async output => {
   const rendering = renderWechat({ output, revision: 1, themeId: "plainly-tech", markdown: [
     "正文 [验证页面](https://math.mit.edu/~drew/grh/)。",

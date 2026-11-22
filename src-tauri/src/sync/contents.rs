@@ -34,6 +34,7 @@ pub enum Kind {
     Collection,
     CollectionNode,
     CollectionEdge,
+    WechatPublicationDefaults,
 }
 
 impl Kind {
@@ -45,6 +46,7 @@ impl Kind {
             Self::Collection => "collection",
             Self::CollectionNode => "collection_node",
             Self::CollectionEdge => "collection_edge",
+            Self::WechatPublicationDefaults => "wechat_publication_defaults",
         }
     }
 
@@ -403,6 +405,7 @@ fn local_snapshot(conn: &Connection, key: &Key) -> Result<Option<Value>> {
     let id = &key.entity_id;
     match key.entity_type {
         Kind::Entry => entries::snapshot(conn, id),
+        Kind::WechatPublicationDefaults => crate::content::publication::defaults_snapshot(conn,id),
         Kind::Collection => canvas::snapshot_topic(conn,id),
         Kind::CollectionNode => canvas::snapshot_card(conn,id),
         Kind::CollectionEdge => canvas::snapshot_link(conn,id),
@@ -654,7 +657,7 @@ async fn push_one(
         }
         Err(error) => return Err(error),
     };
-    let encoded = encode(&json!({"protocolVersion":1,"cursor":cursor,"operations":[wire]}))?;
+    let encoded = encode(&json!({"protocolVersion":2,"cursor":cursor,"operations":[wire]}))?;
     if operation.mutations.len() > MAX_GROUP || encoded.len() > 1024 * 1024 {
         reject_outbox(db, &operation, &generations, "变更组超过服务限制")?;
         return Ok(true);
@@ -799,7 +802,8 @@ fn queue_local_items(conn: &Connection) -> Result<()> {
          INSERT OR IGNORE INTO sync_dirty SELECT 'entry',id,1,NULL FROM entries;
          INSERT OR IGNORE INTO sync_dirty SELECT 'collection',id,1,NULL FROM collections;
          INSERT OR IGNORE INTO sync_dirty SELECT 'collection_node',id,1,NULL FROM collection_nodes;
-         INSERT OR IGNORE INTO sync_dirty SELECT 'collection_edge',id,1,NULL FROM collection_edges;",
+         INSERT OR IGNORE INTO sync_dirty SELECT 'collection_edge',id,1,NULL FROM collection_edges;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'wechat_publication_defaults',id,1,NULL FROM wechat_publication_defaults;",
     )?;
     Ok(())
 }
@@ -808,6 +812,7 @@ fn empty_local(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT NOT EXISTS (SELECT 1 FROM entries) AND NOT EXISTS (SELECT 1 FROM assets)
          AND NOT EXISTS (SELECT 1 FROM collections)
+         AND NOT EXISTS (SELECT 1 FROM wechat_publication_defaults)
          AND (SELECT COUNT(*) FROM categories)=3
          AND (SELECT COUNT(*) FROM categories WHERE parent_id IS NULL AND icon_color IS NULL AND
             (id,name,sort_order,icon) IN (
@@ -1031,6 +1036,11 @@ fn apply_entity(conn: &Connection, entity: &Entity, changed: &mut Applied) -> Re
             images::apply(conn, id, &snapshot)?;
         }
         Kind::Entry => entries::apply(conn, id, data, entity.deleted_at)?,
+        Kind::WechatPublicationDefaults => {
+            if entity.deleted_at.is_some() { return Err(protocol_error()); }
+            crate::content::publication::apply_defaults(conn,id,data)?;
+            changed.publication_defaults_changed = true;
+        }
         Kind::Collection | Kind::CollectionNode | Kind::CollectionEdge => {
             let deleted = entity.deleted_at.is_some();
             let topic = match entity.key.entity_type {
@@ -1078,6 +1088,7 @@ fn apply_order(conn: &Connection, entity: &Entity) -> Result<u8> {
         Kind::Category if entity.deleted_at.is_none() && entity.payload["parentId"].is_null() => 1,
         Kind::Category if entity.deleted_at.is_none() => 2,
         Kind::Entry => 3,
+        Kind::WechatPublicationDefaults => 11,
         Kind::Collection if entity.deleted_at.is_none() => 6,
         Kind::CollectionNode if entity.deleted_at.is_none() => 7,
         Kind::CollectionEdge => 8,
@@ -1101,6 +1112,7 @@ fn apply_order(conn: &Connection, entity: &Entity) -> Result<u8> {
 #[serde(rename_all = "camelCase")]
 pub struct Applied {
     changed_entries: Vec<String>,
+    publication_defaults_changed: bool,
     changed_collections: std::collections::BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     merge_archive: Option<String>,
@@ -1111,6 +1123,7 @@ pub struct Applied {
 impl Applied {
     fn extend(&mut self, other: Self) {
         self.changed_entries.extend(other.changed_entries);
+        self.publication_defaults_changed |= other.publication_defaults_changed;
         self.changed_collections.extend(other.changed_collections);
         self.network_ready |= other.network_ready;
         if other.merge_archive.is_some() {
@@ -1472,6 +1485,7 @@ fn replace_baseline(db: &Workspace, backups: &crate::backup::Backups) -> Result<
              DELETE FROM categories;
              DELETE FROM collection_edges;
              DELETE FROM collection_nodes;
+             DELETE FROM wechat_publication_defaults;
              DELETE FROM sync_revisions;
              DELETE FROM sync_dirty;
              DELETE FROM sync_inbox;
@@ -1492,7 +1506,7 @@ fn replace_baseline(db: &Workspace, backups: &crate::backup::Backups) -> Result<
              RETURNING id",
         )?;
         let changed_collections = removed.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-        let mut changed = Applied { changed_entries,changed_collections,..Applied::default() };
+        let mut changed = Applied { changed_entries,changed_collections,publication_defaults_changed:true,..Applied::default() };
         release_asset_aliases(tx)?;
         changed.extend(apply_baseline(tx)?);
         tx.execute_batch("DELETE FROM sync_bootstrap; UPDATE sync_binding SET paused=0,pause_reason=NULL")?;
@@ -1630,10 +1644,10 @@ fn conflicts(conn: &Connection) -> Result<Vec<Conflict>> {
                 .map_err(invalid_response)?;
             let local_generation = generation(conn, &key)?;
             let remote_revision = remote.as_ref().map(|entity| entity.remote_revision);
-            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas())
+            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas() || entity_type == Kind::WechatPublicationDefaults)
                 && local_generation.is_some()
                 && remote.is_some();
-            let can_keep_local = entity_type.is_canvas()
+            let can_keep_local = (entity_type.is_canvas() || entity_type == Kind::WechatPublicationDefaults)
                 && local_generation.is_some()
                 && remote
                     .as_ref()
@@ -1715,7 +1729,10 @@ pub async fn sync_resolve(
         }
         return result;
     }
-    if !entity_type.is_canvas() {
+    if entity_type == Kind::WechatPublicationDefaults && matches!(choice, Resolution::Copy) {
+        return Err(AppError::invalid("公众号默认配置请选择本地或云端版本"));
+    }
+    if !entity_type.is_canvas() && entity_type != Kind::WechatPublicationDefaults {
         return Err(AppError::invalid("此同步冲突不支持所选处理方式"));
     }
     let result = canvas_conflicts::resolve(
@@ -1853,6 +1870,47 @@ mod tests {
     };
     use super::*;
     use crate::backup::Backups;
+
+    #[test]
+    fn publication_defaults_bootstrap_replay_and_conflict_resolution_preserve_versions() {
+        for choice in [Resolution::Local, Resolution::Cloud] {
+            let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+            let key = Key { entity_type: Kind::WechatPublicationDefaults, entity_id: "default".into() };
+            let generation = db.write(|tx| {
+                assert!(empty_local(tx)?);
+                tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d'); UPDATE sync_progress SET capture=1;")?;
+                let remote = Entity { key: key.clone(), payload: json!({"schemaVersion":1,"recommendationCount":7,"updatedAt":1}), remote_revision: 1, deleted_at: None };
+                let capture: bool = tx.query_row("SELECT capture FROM sync_progress", [], |row| row.get(0))?;
+                tx.execute("UPDATE sync_progress SET capture=0", [])?;
+                let mut applied = Applied::default();
+                apply_entity(tx, &remote, &mut applied)?;
+                remember(tx, &key, 1, false)?;
+                tx.execute("UPDATE sync_progress SET capture=?1", [capture])?;
+                assert!(applied.publication_defaults_changed);
+                assert!(generation(tx, &key)?.is_none());
+                assert!(!empty_local(tx)?);
+                crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":9,"updatedAt":2}))?;
+                queue_local_items(tx)?;
+                let generation = generation(tx, &key)?.unwrap();
+                let remote = Entity { payload: json!({"schemaVersion":1,"recommendationCount":3,"updatedAt":3}), remote_revision: 2, ..remote };
+                issue(tx, &key, generation, "双方修改", Some(&remote))?;
+                Ok(generation)
+            }).unwrap();
+            let issues = db.read(conflicts).unwrap();
+            assert!(issues[0].resolvable && issues[0].can_keep_local);
+            assert!(canvas_conflicts::resolve(&db, &key, Resolution::Cloud, 2, generation + 1).is_err());
+            let local = matches!(choice, Resolution::Local);
+            let applied = canvas_conflicts::resolve(&db, &key, choice, 2, generation).unwrap();
+            assert_eq!(applied.publication_defaults_changed, !local);
+            db.read(|conn| {
+                assert!(conflicts(conn)?.is_empty());
+                assert_eq!(local_snapshot(conn, &key)?.unwrap()["recommendationCount"], if local { 9 } else { 3 });
+                assert_eq!(super::generation(conn, &key)?.is_some(), local);
+                assert_eq!(revision(conn, &key)?.0, 2);
+                Ok(())
+            }).unwrap();
+        }
+    }
 
     #[test]
     fn category_icon_color_sync_roundtrip_and_old_payload_defaults() {
@@ -2603,6 +2661,11 @@ mod tests {
         a.write(|tx| {
             tx.execute_batch("INSERT INTO entries (id,kind,title,status,content_md,created_at,updated_at)
                 VALUES ('restored-draft','article','Restored draft','draft','before reinstall',1,1)")?;
+            let publication = json!({"schemaVersion":1,"recommendations":{"enabled":true,"mode":"manual","countOverride":7,"inputFingerprint":null,
+                "items":[{"entryId":"second","title":"第二篇","url":"https://mp.weixin.qq.com/s/second"},
+                {"entryId":"first","title":"第一篇","url":"https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete"}]}});
+            tx.execute("UPDATE entries SET wechat_publication=?1 WHERE id='restored-draft'", [publication.to_string()])?;
+            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":9,"updatedAt":1}))?;
             Ok(())
         }).unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
@@ -2631,6 +2694,12 @@ mod tests {
         assert_ne!(fresh.device_id, first.device_id);
         exchange(&reinstalled, &fresh_assets, &sync).await.unwrap();
         apply_received(&reinstalled).unwrap();
+        assert_eq!(reinstalled.wechat_defaults().unwrap().config.recommendation_count, 9);
+        let publication = reinstalled.read(|conn| entries::snapshot(conn, "restored-draft")).unwrap().unwrap()["wechatPublication"].clone();
+        assert_eq!(publication["recommendations"]["mode"], "manual");
+        assert_eq!(publication["recommendations"]["countOverride"], 7);
+        assert_eq!(publication["recommendations"]["items"][0]["entryId"], "second");
+        assert_eq!(publication["recommendations"]["items"][1]["url"], "https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete");
         let read = |db: &Workspace| {
             db.read(|conn| entries::snapshot(conn, "restored-draft"))
                 .unwrap()
@@ -2656,6 +2725,10 @@ mod tests {
                 "UPDATE entries SET content_md='reply from B' WHERE id='restored-draft'",
                 [],
             )?;
+            let mut empty = publication.clone();
+            empty["recommendations"]["items"] = json!([]);
+            tx.execute("UPDATE entries SET wechat_publication=?1 WHERE id='restored-draft'", [empty.to_string()])?;
+            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":3,"updatedAt":2}))?;
             Ok(())
         })
         .unwrap();
@@ -2663,6 +2736,10 @@ mod tests {
         exchange(&reinstalled, &fresh_assets, &sync).await.unwrap();
         apply_received(&reinstalled).unwrap();
         assert_eq!(read(&reinstalled), "reply from B");
+        assert_eq!(reinstalled.wechat_defaults().unwrap().config.recommendation_count, 3);
+        let empty = reinstalled.read(|conn| entries::snapshot(conn, "restored-draft")).unwrap().unwrap()["wechatPublication"].clone();
+        assert_eq!(empty["recommendations"]["mode"], "manual");
+        assert_eq!(empty["recommendations"]["items"], json!([]));
         fresh
             .key(&reinstalled)
             .unwrap()
@@ -2925,7 +3002,7 @@ mod tests {
             remote
                 .request(Method::POST, "v1/sync/push")
                 .unwrap()
-                .json(&json!({"protocolVersion":1,"cursor":cursor,"operations":[frozen]})),
+                .json(&json!({"protocolVersion":2,"cursor":cursor,"operations":[frozen]})),
         )
         .await
         .unwrap();

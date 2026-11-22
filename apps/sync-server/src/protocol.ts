@@ -1,6 +1,7 @@
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 export const KiB = 1024;
+export const PROTOCOL_VERSION = 2;
 export const MiB = 1024 * KiB;
 export const MAX_PUSH_BYTES = MiB;
 export const MAX_BLOB_BYTES = 25 * MiB;
@@ -48,7 +49,7 @@ export function queryInteger(value: string | undefined, fallback: number): numbe
 
 export function entityType(value: unknown) {
   if (value !== "asset" && value !== "category" && value !== "entry" && value !== "collection"
-      && value !== "collection_node" && value !== "collection_edge") invalid("unsupported_entity");
+      && value !== "collection_node" && value !== "collection_edge" && value !== "wechat_publication_defaults") invalid("unsupported_entity");
   return value;
 }
 
@@ -77,6 +78,7 @@ function mutation(value: unknown) {
   const entityId = id(input.entityId);
   const baseRevision = integer(input.baseRevision);
   const operation = input.operation;
+  if (type === "wechat_publication_defaults" && (entityId !== "default" || operation !== "upsert")) invalid("invalid_publication_defaults");
   if (operation !== "upsert" && !(operation === "delete" && type !== "asset")
       && !(operation === "restore" && type === "entry")) {
     invalid("invalid_operation");
@@ -84,6 +86,12 @@ function mutation(value: unknown) {
 
   const payload = operation === "delete" && (type !== "entry" || input.payload == null)
     ? null : record(input.payload);
+  if (payload && type === "wechat_publication_defaults") {
+    if (payload.schemaVersion !== 1 || !Number.isInteger(payload.recommendationCount)
+        || Number(payload.recommendationCount) < 1 || Number(payload.recommendationCount) > 0xffffffff) invalid("invalid_publication_defaults");
+    integer(payload.updatedAt);
+    if (Object.keys(payload).some(key => !["schemaVersion", "recommendationCount", "updatedAt"].includes(key))) invalid("invalid_publication_defaults");
+  }
   if (payload && type === "category") {
     text(payload.name, 256);
     if (payload.parentId != null) id(payload.parentId);
@@ -94,6 +102,7 @@ function mutation(value: unknown) {
     if (typeof payload.title !== "string") invalid("invalid_entry_title");
     if (payload.categoryId != null) id(payload.categoryId);
     if (payload.coverAssetId != null) id(payload.coverAssetId);
+    if (payload.wechatPublication != null) publication(payload.wechatPublication);
     for (const references of [payload.sourceEntryIds, payload.assetIds]) {
       if (references === undefined) continue;
       if (!Array.isArray(references)) invalid("invalid_references");
@@ -127,6 +136,37 @@ function mutation(value: unknown) {
   }
   if (utf8.encode(JSON.stringify(payload)).byteLength > 512 * KiB) throw new SyncError(413, "entity_too_large");
   return { entityType: type, entityId, baseRevision, operation, payload };
+}
+
+function publication(value: unknown) {
+  const config = record(value);
+  const recommendations = record(config.recommendations);
+  if (config.schemaVersion !== 1 || typeof recommendations.enabled !== "boolean"
+      || (recommendations.mode !== "auto" && recommendations.mode !== "manual") || !Array.isArray(recommendations.items)) invalid("invalid_publication");
+  if (recommendations.countOverride != null && (!Number.isInteger(recommendations.countOverride)
+      || Number(recommendations.countOverride) < 1 || Number(recommendations.countOverride) > 0xffffffff)) invalid("invalid_publication");
+  if (recommendations.inputFingerprint != null && (typeof recommendations.inputFingerprint !== "string"
+      || !hashPattern.test(recommendations.inputFingerprint))) invalid("invalid_publication");
+  const ids = new Set<string>();
+  const urls = new Set<string>();
+  for (const value of recommendations.items as unknown[]) {
+    const item = record(value);
+    const entryId = id(item.entryId);
+    if (typeof item.title !== "string" || !item.title.trim() || typeof item.url !== "string" || !URL.canParse(item.url)) invalid("invalid_publication");
+    const url = new URL(item.url as string);
+    if (!["http:", "https:"].includes(url.protocol) || url.host !== "mp.weixin.qq.com" || url.username || url.password) invalid("invalid_publication");
+    let canonical: string;
+    if (/^\/s\/[^/]+$/.test(url.pathname)) canonical = url.pathname;
+    else if (url.pathname === "/s" && ["__biz", "mid", "idx"].every(key => url.searchParams.get(key))) {
+      canonical = JSON.stringify(["__biz", "mid", "idx"].map(key => url.searchParams.get(key)));
+    } else invalid("invalid_publication");
+    if (ids.has(entryId) || urls.has(canonical)) invalid("duplicate_publication");
+    ids.add(entryId); urls.add(canonical);
+    if (Object.keys(item).some(key => !["entryId", "title", "url"].includes(key))) invalid("invalid_publication");
+  }
+  if (Object.keys(config).some(key => !["schemaVersion", "recommendations"].includes(key))
+      || Object.keys(recommendations).some(key => !["enabled", "mode", "countOverride", "inputFingerprint", "items"].includes(key))
+      || utf8.encode(JSON.stringify(config)).byteLength > 256 * KiB) invalid("invalid_publication");
 }
 
 function markdown(payload: Record<string, unknown>, invalidContent: string) {

@@ -1,15 +1,16 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Checkbox, Dialog, DropdownMenu, Select, TextArea, Text as RadixText } from "@radix-ui/themes";
-import { CalendarDays, Folder, Link, Plus, Tags, Text, Trash2, X } from "lucide-react";
-import type { Category, Collection, CustomProperty, Entry, EntryFields, Revision } from "../../../../packages/shared-types";
+import { CalendarDays, Folder, Link, Plus, Send, Tags, Text, Trash2, X } from "lucide-react";
+import type { Category, Collection, CustomProperty, Entry, EntryFields, PublicationPlatform, Revision } from "../../../../packages/shared-types";
 import { statuses } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { dateLabel, statusLabels, untitled } from "../labels";
-import type { SaveQueue } from "../editor/save-queue";
+import { isConflict, type SaveQueue } from "../editor/save-queue";
 import { AssetThumb } from "./Assets";
 import { FolderSelect } from "./FolderSelect";
 import { addTag, TagInput } from "./TagInput";
 import { ActionError, useButtonFeedback } from "../button-feedback";
+import { PublicationProperty } from "./PublicationProperty";
 
 interface PropertiesDialogProps {
   id: string;
@@ -21,6 +22,8 @@ interface PropertiesDialogProps {
   onClose(): void;
   onOpen(id: string): void;
   onOpenCollection?(id: string): void;
+  flushRef?: { current: ((closing?: boolean) => Promise<boolean>) | null };
+  onConflict?(entry: Entry): void;
 }
 
 const propertyTypes = {
@@ -64,8 +67,16 @@ function changePropertyType(property: PropertyDraft, kind: CustomProperty["kind"
   return { ...property, kind, value, tagDraft: "" };
 }
 
-export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDialogProps) {
+export function PropertiesDialog({ id, queue, onClose, flushRef, ...form }: PropertiesDialogProps) {
   const [open, setOpen] = useState(true);
+  const localFlush = useRef<((closing?: boolean) => Promise<boolean>) | null>(null);
+  const flushForm = flushRef ?? localFlush;
+  const closeFeedback = useButtonFeedback();
+  async function requestClose() {
+    if (!closeFeedback.start("close")) return;
+    if (!flushForm.current || await flushForm.current(true)) setOpen(false);
+    else closeFeedback.finish("close", false);
+  }
   const [loaded, setLoaded] = useState<Entry>();
   const [loadError, setLoadError] = useState("");
   useEffect(() => {
@@ -80,7 +91,7 @@ export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDial
   }, [id, queue]);
   const entry = queue?.entry ?? loaded;
 
-  return <Dialog.Root open={open} onOpenChange={setOpen}>
+  return <Dialog.Root open={open} onOpenChange={next => { if (!next) void requestClose(); }}>
     <Dialog.Content maxWidth="440px" className="properties-panel" aria-describedby={undefined}
       onCloseAutoFocus={event => {
         if (open) return;
@@ -91,9 +102,10 @@ export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDial
       }}>
       <header className="properties-header">
         <Dialog.Title>内容属性</Dialog.Title>
-        <Dialog.Close><button className="plain-button chrome-icon" type="button" aria-label="关闭内容属性"><X size={16} /></button></Dialog.Close>
+        <button className="plain-button chrome-icon" type="button" aria-label="关闭内容属性" {...closeFeedback.props("close")}
+          onClick={() => void requestClose()}>{closeFeedback.icon("close", <X size={16} />, 16)}</button>
       </header>
-      {entry ? <PropertiesForm {...form} entry={entry} fields={queue?.snapshot().fields ?? entry} onClose={() => setOpen(false)} />
+      {entry ? <PropertiesForm {...form} entry={entry} fields={queue?.snapshot().fields ?? entry} flushRef={flushForm} onClose={() => setOpen(false)} />
         : <div className="properties-fields">
           {loadError ? <p role="alert" className="inline-error">{loadError}</p> : <p role="status">正在读取内容属性…</p>}
         </div>}
@@ -101,32 +113,54 @@ export function PropertiesDialog({ id, queue, onClose, ...form }: PropertiesDial
   </Dialog.Root>;
 }
 
-function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen, onOpenCollection }: Omit<PropertiesDialogProps, "id" | "queue"> & {
+function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onSave, onClose, onOpen, onOpenCollection, flushRef, onConflict }: Omit<PropertiesDialogProps, "id" | "queue"> & {
   entry: Entry;
   fields: EntryFields;
+  flushRef: { current: ((closing?: boolean) => Promise<boolean>) | null };
 }) {
-  const [values, setValues] = useState<Record<Builtin, string>>(() => ({
+  const [draft, setDraft] = useState(() => ({ values: {
     title: fields.title, sourceUrl: fields.source?.url ?? "", author: fields.source?.author ?? "",
     accountName: fields.source?.accountName ?? "", originalDate: formatPropertyDate(fields.source?.originalPublishedAt),
     createdDate: formatPropertyDate(entry.createdAt), summary: fields.summary, tags: "",
     publishedDate: formatPropertyDate(fields.publishedAt), publishedUrl: fields.publishedUrl,
     status: fields.status, category: fields.categoryId ?? "",
+  } as Record<Builtin, string>,
+    cover: fields.coverAssetId ?? null, tags: fields.tags, tagDraft: "",
+    properties: (fields.customProperties ?? []).map((property, id) => ({ ...property, id, tagDraft: "" })) as PropertyDraft[],
+    publications: (fields.publicationPlatforms ?? []).map((value, id) => ({ id, ...value })),
   }));
+  const draftRef = useRef(draft);
+  const { values, cover, tags, tagDraft, properties, publications } = draft;
+  function updateDraft(change: Partial<typeof draft>) {
+    draftRef.current = { ...draftRef.current, ...change };
+    setDraft(draftRef.current);
+  }
   const [shown, setShown] = useState(() => new Set(builtinNames.filter(name =>
     name === "tags" ? fields.tags.length > 0 : values[name].trim() !== "")));
-  const [cover, setCover] = useState(fields.coverAssetId ?? null);
-  const [tags, setTags] = useState(fields.tags);
-  const [tagDraft, setTagDraft] = useState("");
-  const [properties, setProperties] = useState<PropertyDraft[]>(() =>
-    (fields.customProperties ?? []).map((property, id) => ({ ...property, id, tagDraft: "" })));
   const [hidden, setHidden] = useState(() => new Set(properties.filter(property => property.kind === "tags"
     ? property.value.length === 0 : !property.value.trim()).map(property => property.id)));
   const nextPropertyId = useRef(properties.length);
+  const nextPublicationId = useRef(publications.length);
   const focusAfterAdd = useRef<string>(null);
-  const [edited, setEdited] = useState(false);
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const saveButton = useButtonFeedback();
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const saved = useRef(fields);
+  const acceptedPublications = useRef(new Map(publications.map(({ id, platform, url }) => [id, { platform, url }])));
+  const dirty = useRef(new Map<string, number>());
+  const conflicts = useRef(new Map<string, number>());
+  const sequence = useRef(0);
+  const serial = useRef<Promise<boolean>>(Promise.resolve(true));
+  const pending = useRef(new Map<string, { revision: number; promise: Promise<boolean> }>());
+  const fieldScope = (name: Builtin) => name === "sourceUrl" || sourceFields.includes(name) ? "source" : name;
+  const mark = (scope: string) => dirty.current.set(scope, ++sequence.current);
+  function setError(scope: string, message: string) {
+    setErrors(current => { const next = { ...current }; if (message) next[scope] = message; else delete next[scope]; return next; });
+  }
+  function setCover(value: string | null) { updateDraft({ cover: value }); mark("cover"); void saveScope("cover"); }
+  function setTags(value: string[]) { updateDraft({ tags: value }); mark("tags"); queueMicrotask(() => void saveScope("tags")); }
+  function setTagDraft(value: string) { updateDraft({ tagDraft: value }); mark("tags"); }
+  function setProperties(update: (current: PropertyDraft[]) => PropertyDraft[]) {
+    updateDraft({ properties: update(draftRef.current.properties) }); mark("custom");
+  }
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionError, setCollectionError] = useState("");
   const showCollections = Boolean(onOpenCollection);
@@ -139,68 +173,117 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
   }, [entry.id, showCollections]);
   const readOnly = locked || entry.deletedAt !== null;
   function updateProperty(id: number, update: (property: PropertyDraft) => PropertyDraft) {
-    setEdited(true);
     setProperties(current => current.map(property => property.id === id ? update(property) : property));
   }
   function showBuiltin(name: Builtin) {
     setShown(current => new Set([...current, name, ...(sourceFields.includes(name) && !values.sourceUrl ? ["sourceUrl" as const] : [])]));
     focusAfterAdd.current = `property-${name}`;
   }
-  function setValue(name: Builtin, value: string) {
-    setEdited(true);
-    setValues(current => ({ ...current, [name]: value }));
+  function setValue(name: Builtin, value: string, commit = false) {
+    updateDraft({ values: { ...draftRef.current.values, [name]: value } });
+    mark(fieldScope(name));
+    if (commit) void saveScope(fieldScope(name));
   }
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (readOnly || saving) return;
-    const sourceUrl = values.sourceUrl.trim();
-    const publishedUrl = values.publishedUrl.trim();
-    const author = values.author.trim();
-    const accountName = values.accountName.trim();
-    const originalDate = values.originalDate;
-    if (!sourceUrl && (author || accountName || originalDate)) {
-      setError("请先填写原文链接，再保存来源信息");
-      return;
-    }
-    for (const value of [sourceUrl, publishedUrl]) {
-      if (value && (!/^https?:\/\//i.test(value) || !URL.canParse(value))) {
-        setError("请输入完整的 HTTP 或 HTTPS 链接");
-        return;
+  function saveScope(scope: string): Promise<boolean> {
+    const revision = dirty.current.get(scope);
+    if (revision === undefined) return Promise.resolve(true);
+    if (readOnly) return Promise.resolve(false);
+    const existing = pending.current.get(scope);
+    if (existing?.revision === revision) return existing.promise;
+    const current = draftRef.current;
+    const values = current.values;
+    let change: Partial<EntryFields>;
+    let publication: { id: number; value: PublicationPlatform | null } | undefined;
+    const invalid = (message: string) => { conflicts.current.delete(scope); setError(scope, message); return Promise.resolve(false); };
+    const validUrl = (value: string) => !value || /^https?:\/\//i.test(value) && URL.canParse(value);
+    if (scope.startsWith("publication:")) {
+      const id = Number(scope.slice("publication:".length));
+      const row = current.publications.find(row => row.id === id);
+      publication = { id, value: row ? { platform: row.platform.trim(), url: row.url.trim() } : null };
+      if (publication.value) {
+        const { platform, url } = publication.value;
+        if (!platform && !url && !acceptedPublications.current.has(id)) { dirty.current.delete(scope); setError(scope, ""); return Promise.resolve(true); }
+        if (!platform) return invalid("请选择或输入平台名称");
+        if (current.publications.some(other => other.id !== id && other.platform.trim().toLowerCase() === platform.toLowerCase())) return invalid(`「${platform}」已添加`);
+        if (!validUrl(url)) return invalid("请输入完整的 HTTP 或 HTTPS 链接");
       }
-    }
-    const customProperties: CustomProperty[] = properties.map(({ key, kind, value, tagDraft }) => kind === "tags"
-      ? { key: key.trim(), kind, value: addTag(value, tagDraft, []) } : { key: key.trim(), kind, value })
-      .filter(property => property.key || property.value.length > 0);
-    const keys = customProperties.map(property => property.key.toLowerCase());
-    if (keys.some(key => !key) || new Set(keys).size !== keys.length) {
-      setError("自定义属性名称不能为空或重复");
-      return;
-    }
-    const change: Partial<EntryFields> = {
-      title: values.title.trim(),
-      status: values.status as Entry["status"], categoryId: values.category || null,
-      tags: addTag(tags, tagDraft, tagSuggestions), summary: values.summary.trim(), publishedUrl, coverAssetId: cover,
-      publishedAt: readPropertyDate(values.publishedDate, fields.publishedAt)
-        ?? (values.status === "published" ? fields.publishedAt ?? Date.now() : null),
-      source: sourceUrl ? { url: sourceUrl, author, accountName,
-        originalPublishedAt: readPropertyDate(originalDate, fields.source?.originalPublishedAt),
-        importedAt: fields.source?.importedAt ?? null,
-      } : null,
-      customProperties,
+      change = {};
+    } else if (scope === "source") {
+      const url = values.sourceUrl.trim();
+      if (!url && (values.author.trim() || values.accountName.trim() || values.originalDate)) return invalid("请先填写原文链接，再保存来源信息");
+      if (!validUrl(url)) return invalid("请输入完整的 HTTP 或 HTTPS 链接");
+      change = { source: url ? { url, author: values.author.trim(), accountName: values.accountName.trim(),
+        originalPublishedAt: readPropertyDate(values.originalDate, saved.current.source?.originalPublishedAt),
+        importedAt: saved.current.source?.importedAt ?? null } : null };
+    } else if (scope === "custom") {
+      const customProperties: CustomProperty[] = current.properties.map(({ key, kind, value, tagDraft }) => kind === "tags"
+        ? { key: key.trim(), kind, value: addTag(value, tagDraft, []) } : { key: key.trim(), kind, value })
+        .filter(property => property.key || property.value.length > 0);
+      const keys = customProperties.map(property => property.key.toLowerCase());
+      if (keys.some(key => !key) || new Set(keys).size !== keys.length) return invalid("自定义属性名称不能为空或重复");
+      updateDraft({ properties: current.properties.map(property => property.kind === "tags"
+        ? { ...property, value: addTag(property.value, property.tagDraft, []), tagDraft: "" } : property) });
+      change = { customProperties };
+    } else if (scope === "tags") {
+      const tags = addTag(current.tags, current.tagDraft, tagSuggestions);
+      updateDraft({ tags, tagDraft: "" });
+      change = { tags };
+    } else if (scope === "cover") change = { coverAssetId: current.cover };
+    else if (scope === "category") change = { categoryId: values.category || null };
+    else if (scope === "status" || scope === "publishedDate") {
+      const publishedAt = readPropertyDate(values.publishedDate, saved.current.publishedAt)
+        ?? (values.status === "published" ? saved.current.publishedAt ?? Date.now() : null);
+      change = { publishedAt, ...(scope === "status" ? { status: values.status as Entry["status"] } : {}) };
+      if (scope === "status") updateDraft({ values: { ...values, publishedDate: formatPropertyDate(publishedAt) } });
+    } else if (scope === "publishedUrl") {
+      const publishedUrl = values.publishedUrl.trim();
+      if (!validUrl(publishedUrl)) return invalid("请输入完整的 HTTP 或 HTTPS 链接");
+      change = { publishedUrl };
+    } else change = { [scope]: values[scope as Builtin].trim() };
+    const run = async () => {
+      const nextPublications = new Map(acceptedPublications.current);
+      if (publication) {
+        if (publication.value) nextPublications.set(publication.id, publication.value);
+        else nextPublications.delete(publication.id);
+        change = { publicationPlatforms: [...nextPublications.values()] };
+      }
+      try {
+        if (Object.keys(change).some(key => JSON.stringify(saved.current[key as keyof EntryFields]) !== JSON.stringify(change[key as keyof EntryFields]))) {
+          await onSave(entry, change);
+          saved.current = { ...saved.current, ...change };
+        }
+        if (publication) acceptedPublications.current = nextPublications;
+        conflicts.current.delete(scope);
+        if (dirty.current.get(scope) === revision) { dirty.current.delete(scope); setError(scope, ""); }
+        return true;
+      } catch (error) {
+        if (isConflict(error)) {
+          conflicts.current.set(scope, revision);
+          if (publication) acceptedPublications.current = nextPublications;
+        }
+        else conflicts.current.delete(scope);
+        if (dirty.current.get(scope) === revision) setError(scope, errorMessage(error));
+        return false;
+      } finally {
+        if (pending.current.get(scope)?.revision === revision) pending.current.delete(scope);
+      }
     };
-    if (!saveButton.start("save")) return;
-    setSaving(true);
-    setError("");
-    try {
-      await onSave(entry, change);
-      onClose();
-    } catch (error) {
-      saveButton.finish("save", false);
-      setError(errorMessage(error));
-    } finally {
-      setSaving(false);
-    }
+    const promise = serial.current.then(run);
+    serial.current = promise;
+    pending.current.set(scope, { revision, promise });
+    return promise;
   }
+  async function flush(closing = false) {
+    const results = await Promise.all([...dirty.current.keys()].map(saveScope));
+    await serial.current;
+    if (results.every(Boolean) && dirty.current.size === 0) return true;
+    if (closing && onConflict && dirty.current.size > 0 && [...dirty.current].every(([scope, revision]) => conflicts.current.get(scope) === revision)) {
+      onConflict(entry);
+      return true;
+    }
+    return false;
+  }
+  useLayoutEffect(() => { flushRef.current = flush; return () => { flushRef.current = null; }; });
 
   function builtinRow(name: Builtin) {
     const field = builtinFields[name];
@@ -209,17 +292,17 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
     const fixed = readOnly || name === "createdDate";
     let editor: ReactNode;
     if (name === "tags") {
-      editor = <TagInput id={id} tags={tags} onTags={value => { setTags(value); setEdited(true); }}
-        draft={tagDraft} onDraft={value => { setTagDraft(value); setEdited(true); }}
+      editor = <TagInput id={id} tags={tags} onTags={setTags}
+        draft={tagDraft} onDraft={setTagDraft}
         history={tagSuggestions} readOnly={readOnly} label={field.label} />;
     } else if (name === "status") {
-      editor = <Select.Root size="1" value={values.status} onValueChange={value => setValue(name, value)} disabled={readOnly}>
+      editor = <Select.Root size="1" value={values.status} onValueChange={value => setValue(name, value, true)} disabled={readOnly}>
         <Select.Trigger id={id} aria-label={field.label} />
         <Select.Content>{statuses[entry.kind].map(value => <Select.Item value={value} key={value}>{statusLabels[value]}</Select.Item>)}</Select.Content>
       </Select.Root>;
     } else if (name === "category") {
       editor = <FolderSelect id={id} categories={categories} value={values.category || "none"}
-        onChange={value => setValue(name, value === "none" ? "" : value)} label={field.label} defaultLabel="根目录" disabled={readOnly} />;
+        onChange={value => setValue(name, value === "none" ? "" : value, true)} label={field.label} defaultLabel="根目录" disabled={readOnly} />;
     } else if (name === "summary") {
       editor = <textarea className="property-value" id={id} name={name} rows={1} readOnly={fixed} value={values[name]}
         onChange={event => setValue(name, event.target.value)} placeholder="没有值" />;
@@ -228,22 +311,35 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
       editor = <input className="property-value" id={id} name={name} type={type} readOnly={fixed} value={values[name]}
         onChange={event => setValue(name, event.target.value)} placeholder="没有值" />;
     }
-    return <div className="property-row" key={name}>
+    return <div className="property-row" key={name} data-property-scope={fieldScope(name)}>
       <span className="property-icon" title={propertyTypes[field.kind].label}><Icon size={16} /></span>
       <label htmlFor={id} className="property-name">{field.label}</label>
       <div className="property-editor">{editor}</div>
     </div>;
   }
 
-  const available = builtinNames.filter(name => name !== "createdDate" && !shown.has(name));
-  return <form className="properties-form" onSubmit={save} noValidate>
+  const available = builtinNames.filter(name => name !== "createdDate" && name !== "publishedUrl" && !shown.has(name));
+  const globalErrors = Object.entries(errors);
+  return <form className="properties-form" onSubmit={event => { event.preventDefault(); void flush(); }} noValidate
+    onBlur={event => {
+      const scope = event.target.closest<HTMLElement>("[data-property-scope]")?.dataset.propertyScope;
+      if (scope) void saveScope(scope);
+    }}>
     <div className="properties-fields">
       <div className="property-list">
         {builtinNames.filter(name => shown.has(name)).map(builtinRow)}
+        {publications.map(({ id, platform, url }) => <PublicationProperty key={id} id={id} value={{ platform, url }} readOnly={readOnly}
+          error={errors[`publication:${id}`]} onChange={value => {
+            updateDraft({ publications: draftRef.current.publications.map(row => row.id === id ? { id, ...value } : row) });
+            mark(`publication:${id}`);
+          }} onCommit={() => void saveScope(`publication:${id}`)} onRemove={() => {
+            updateDraft({ publications: draftRef.current.publications.filter(row => row.id !== id) });
+            mark(`publication:${id}`); void saveScope(`publication:${id}`);
+          }} />)}
         {properties.filter(property => !hidden.has(property.id)).map(property => {
           const { icon: Icon, label } = propertyTypes[property.kind];
           const update = (change: (old: PropertyDraft) => PropertyDraft) => updateProperty(property.id, change);
-          return <div key={property.id} className="property-row custom-property">
+          return <div key={property.id} className="property-row custom-property" data-property-scope="custom">
             {readOnly ? <span className="property-icon" title={label}><Icon size={16} /></span>
               : <DropdownMenu.Root modal={false}>
                 <DropdownMenu.Trigger>
@@ -257,9 +353,9 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
                     const converted = changePropertyType(property, value as CustomProperty["kind"]);
                     if (converted) {
                       update(() => converted);
-                      setError("");
+                      void saveScope("custom");
                     } else {
-                      setError("请先清空原值，或将它改为 YYYY-MM-DD 格式");
+                      setError("custom", "请先清空原值，或将它改为 YYYY-MM-DD 格式");
                     }
                   }}>
                     {Object.entries(propertyTypes).map(([kind, { label, icon: TypeIcon }]) =>
@@ -267,8 +363,8 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
                   </DropdownMenu.RadioGroup>
                   <DropdownMenu.Separator />
                   <DropdownMenu.Item color="red" onSelect={() => {
-                    setEdited(true);
                     setProperties(current => current.filter(value => value.id !== property.id));
+                    void saveScope("custom");
                   }}><Trash2 size={14} />移除属性</DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Root>}
@@ -301,6 +397,11 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
             requestAnimationFrame(() => document.getElementById(id)?.focus());
           }}>
             <DropdownMenu.Item onSelect={() => {
+              const id = nextPublicationId.current++;
+              updateDraft({ publications: [...draftRef.current.publications, { id, platform: "", url: "" }] });
+              focusAfterAdd.current = `publication-platform-${id}`;
+            }}><Send size={14} />发布平台</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => {
               const id = nextPropertyId.current++;
               setProperties(current => [...current, { id, key: "", kind: "text", value: "", tagDraft: "" }]);
               focusAfterAdd.current = `custom-property-${id}`;
@@ -331,26 +432,23 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
       {fields.source?.importedAt && <span className="muted-text">收录于 {dateLabel(fields.source.importedAt)}</span>}
       {cover && <div className="asset-details">
         <span>封面</span><AssetThumb id={cover} name="文章封面" />
-        {!readOnly && <Button type="button" size="1" variant="soft" onClick={() => { setCover(null); setEdited(true); }}>移除封面</Button>}
+        {!readOnly && <Button type="button" size="1" variant="soft" onClick={() => setCover(null)}>移除封面</Button>}
       </div>}
       {entry.links.length > 0 && <div className="linked-entries">
         <span>关联内容</span>
-        {entry.links.map(link => <Button key={link.id} variant="soft" size="1" type="button" onClick={() => { onClose(); onOpen(link.id); }}>
+        {entry.links.map(link => <Button key={link.id} variant="soft" size="1" type="button" onClick={async () => { if (await flush()) { onClose(); onOpen(link.id); } }}>
           {link.title || untitled}
         </Button>)}
       </div>}
       {collections.length > 0 && onOpenCollection && <div className="linked-entries">
         <span>所属专题</span>
         {collections.map(collection => <Button key={collection.id} variant="soft" size="1" type="button"
-          onClick={() => { onClose(); onOpenCollection(collection.id); }}>{collection.title}</Button>)}
+          onClick={async () => { if (await flush()) { onClose(); onOpenCollection(collection.id); } }}>{collection.title}</Button>)}
       </div>}
       {<div className="action-error-slot" tabIndex={(collectionError) ? 0 : -1}>{collectionError ? <p role="alert" className="inline-error">无法读取所属专题。{collectionError}</p> : null}</div>}
-      {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="inline-error">{error}</p> : null}</div>}
+      <div className="action-error-slot" tabIndex={globalErrors.length ? 0 : -1}>{globalErrors.length > 0 && <p role="alert" className="inline-error">{globalErrors.map(([scope, message], index) =>
+        <span key={scope} id={scope.startsWith("publication:") ? `publication-error-${scope.slice("publication:".length)}` : undefined}>{index > 0 ? "；" : ""}{message}</span>)}</p>}</div>
     </div>
-    {!readOnly && edited && <footer className="properties-footer">
-      <Dialog.Close><Button type="button" variant="soft" color="gray">取消</Button></Dialog.Close>
-      <Button type="submit" loading={saving} {...saveButton.props("save")}>{saveButton.label("save", "保存", "已保存", "保存失败")}</Button>
-    </footer>}
   </form>;
 }
 

@@ -18,6 +18,48 @@ export type CustomProperty = { key: string } & (
   { kind: "text" | "date"; value: string } | { kind: "tags"; value: string[] }
 );
 
+export interface PublicationPlatform { platform: string; url: string }
+
+export interface WechatRecommendation { entryId: string; title: string; url: string }
+export interface WechatPublication {
+  schemaVersion: 1;
+  recommendations: {
+    enabled: boolean;
+    mode: "auto" | "manual";
+    countOverride: number | null;
+    inputFingerprint: string | null;
+    items: WechatRecommendation[];
+  };
+}
+export interface WechatPublicationDefaults {
+  schemaVersion: 1;
+  recommendationCount: number;
+  version: number;
+  updatedAt: number;
+}
+export interface WechatRecommendationInput {
+  entryId: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  contentMd: string;
+  categoryId: string | null;
+  status: EntryStatus;
+  publishedAt: number | null;
+  count: number;
+}
+export interface WechatCandidate extends WechatRecommendation {
+  summary: string;
+  tags: string[];
+  publishedAt: number | null;
+}
+export interface WechatCandidatePage { items: WechatCandidate[]; nextOffset: number | null }
+export interface WechatRecommendationResult { inputFingerprint: string; items: WechatRecommendation[] }
+export interface WechatResolvedRecommendations {
+  items: WechatRecommendation[];
+  invalid: { entryId: string; message: string }[];
+}
+
 export interface EntryFields {
   title: string;
   contentMd: string;
@@ -30,6 +72,8 @@ export interface EntryFields {
   source: Source | null;
   publishedAt: number | null;
   publishedUrl: string;
+  publicationPlatforms?: PublicationPlatform[];
+  wechatPublication?: WechatPublication | null;
   customProperties?: CustomProperty[];
 }
 
