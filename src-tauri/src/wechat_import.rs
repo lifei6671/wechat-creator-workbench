@@ -170,13 +170,7 @@ impl Imports {
             let (bytes, origin) = self.fetch(url.clone(), false).await?;
             let html = String::from_utf8(bytes)
                 .map_err(|_| AppError::new("WECHAT_HTML", "公众号页面不是有效的 UTF-8"))?;
-            let mut article = parse(&html, &origin)?;
-            let existing = db.read_running(|conn| {
-                Ok(lookup(conn, article.canonical.as_str())?.or(lookup(conn, origin.as_str())?))
-            })?;
-            if existing.is_none() {
-                Self::host_images(db, assets, &mut article).await?;
-            }
+            let article = parse(&html, &origin)?;
             let (entry, inserted) = db.write(|tx| {
                 if let Some(entry) = lookup(tx, article.canonical.as_str())?.or(lookup(tx, origin.as_str())?) {
                     tx.execute("INSERT OR IGNORE INTO wechat_sources VALUES (?1,?2)", params![url.as_str(), entry])?;
@@ -329,35 +323,6 @@ impl Imports {
                 error=NULL,updated_at=?2 WHERE kind='wechat_import' AND entry_id=?1",params![entry,now()])?;
             Ok(())
         })
-    }
-
-    async fn host_images(db: &Workspace, assets: &Assets, article: &mut Article) -> Result<()> {
-        if !Assets::automatic_upload_enabled(db)? {
-            return Ok(());
-        }
-        let sources: BTreeMap<_, _> = article
-            .images
-            .iter()
-            .map(|(url, asset)| (format!("asset://{asset}"), url.clone()))
-            .collect();
-        let edits =
-            references::image_edits(&article.markdown, |url| Ok(sources.get(url).cloned()))?;
-        let (markdown, unavailable) = assets
-            .import_link_images(
-                db,
-                references::apply_image_edits(&article.markdown, edits),
-                true,
-            )
-            .await?;
-        if unavailable > 0 {
-            return Err(AppError::new(
-                "WECHAT_IMAGE",
-                format!("{unavailable} 张公众号图片下载失败，请重试导入"),
-            ));
-        }
-        article.markdown = markdown;
-        article.images.clear();
-        Ok(())
     }
 
     async fn fetch(&self, mut url: Url, image: bool) -> Result<(Vec<u8>, Url)> {
@@ -645,115 +610,6 @@ pub async fn wechat_retry_images(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn automatic_hosting_finishes_before_creating_a_wechat_article() {
-        use tokio::{
-            io::{AsyncReadExt, AsyncWriteExt},
-            net::TcpListener,
-        };
-        for valid_public in [true, false] {
-            let folder = tempfile::tempdir().unwrap();
-            let db = Workspace::open(&folder.path().join("content.db")).unwrap();
-            let assets = Assets::new(folder.path().join("assets"), &db).unwrap();
-            let mut image = std::io::Cursor::new(Vec::new());
-            image::DynamicImage::new_rgb8(2, 3)
-                .write_to(&mut image, image::ImageFormat::Png)
-                .unwrap();
-            let bytes = image.into_inner();
-            let asset = assets.import(&db, "图片.png", &bytes).unwrap();
-            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            let public = format!("{base}/image.png");
-            let source = "https://mmbiz.qpic.cn/image.png";
-            db.write(|tx| {
-                tx.execute("INSERT INTO storage_profiles VALUES ('images','images','https://s3.example.test','auto','images','',?1,'test')", [&base])?;
-                tx.execute("INSERT INTO app_settings VALUES ('image_storage_profile','images')", [])?;
-                tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at) SELECT sha256,'images','image.png',?1,1 FROM assets WHERE id=?2", params![public,asset])?;
-                tx.execute("INSERT INTO asset_urls SELECT ?1,sha256,'images' FROM assets WHERE id=?2", params![public,asset])?;
-                tx.execute("INSERT INTO asset_urls SELECT ?1,sha256,'images' FROM assets WHERE id=?2", params![source,asset])?;
-                Ok(())
-            }).unwrap();
-            let origin = normalize("https://mp.weixin.qq.com/s/hosting").unwrap();
-            let mut article = parse(&format!(r#"<h1 id="activity-name">文章</h1><div id="js_content"><p>正文</p><img data-src="{source}" alt="图片"><img data-src="{source}"></div>"#), &origin).unwrap();
-            let original = article.markdown.clone();
-            Imports::host_images(&db, &assets, &mut article)
-                .await
-                .unwrap();
-            assert_eq!(article.markdown, original);
-            assert_eq!(article.images.len(), 1);
-            db.write(|tx| {
-                tx.execute("INSERT INTO app_settings VALUES ('image_upload:images','{\"autoUpload\":true}')", [])?;
-                Ok(())
-            }).unwrap();
-            let response = async {
-                let (mut socket, _) =
-                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                        .await
-                        .unwrap()
-                        .unwrap();
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    request.push(socket.read_u8().await.unwrap());
-                }
-                let body = if valid_public {
-                    bytes.as_slice()
-                } else {
-                    b"wrong image".as_slice()
-                };
-                socket
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len()
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .unwrap();
-                socket.write_all(body).await.unwrap();
-                socket.shutdown().await.unwrap();
-            };
-            let (result, _) =
-                tokio::join!(Imports::host_images(&db, &assets, &mut article), response);
-            if valid_public {
-                result.unwrap();
-                assert_eq!(article.markdown.matches(&public).count(), 2);
-                assert!(article.images.is_empty());
-            } else {
-                assert_eq!(result.unwrap_err().code(), "S3_PUBLIC");
-                assert_eq!(article.markdown, original);
-                assert_eq!(article.images.len(), 1);
-            }
-            let mut unavailable = parse(
-                r#"<h1 id="activity-name">文章</h1><div id="js_content"><img src="https://127.0.0.1/unavailable.png"></div>"#,
-                &origin,
-            ).unwrap();
-            let original = unavailable.markdown.clone();
-            assert_eq!(
-                Imports::host_images(&db, &assets, &mut unavailable)
-                    .await
-                    .unwrap_err()
-                    .code(),
-                "WECHAT_IMAGE"
-            );
-            assert_eq!(unavailable.markdown, original);
-            assert_eq!(unavailable.images.len(), 1);
-            db.read(|conn| {
-                assert_eq!(
-                    conn.query_row("SELECT COUNT(*) FROM entries", [], |row| row
-                        .get::<_, i64>(0))?,
-                    0
-                );
-                Ok(())
-            })
-            .unwrap();
-            assert_eq!(
-                assets.read(&db, &format!("asset://{asset}")).await.unwrap(),
-                bytes
-            );
-        }
-    }
 
     #[tokio::test]
     async fn queued_imports_are_deduplicated_and_cancellable_before_network_access() {

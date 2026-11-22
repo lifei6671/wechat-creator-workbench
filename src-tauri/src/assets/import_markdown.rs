@@ -17,10 +17,8 @@ impl Assets {
         directory: &Path,
     ) -> Result<(String, usize)> {
         let download_remote = Self::automatic_upload_enabled(db)?;
-        let (markdown, unavailable) = self
-            .download_markdown_images(db, markdown, Some(directory), download_remote)
-            .await?;
-        Ok((self.host_imported_images(db, markdown).await?, unavailable))
+        self.download_markdown_images(db, markdown, Some(directory), download_remote)
+            .await
     }
 
     pub(crate) async fn import_link_images(
@@ -32,52 +30,8 @@ impl Assets {
         if !download && !Self::automatic_upload_enabled(db)? {
             return Ok((markdown, 0));
         }
-        let (markdown, unavailable) = self
-            .download_markdown_images(db, &markdown, None, true)
-            .await?;
-        Ok((self.host_imported_images(db, markdown).await?, unavailable))
-    }
-
-    async fn automatically_host_image(&self, db: &Workspace, url: &str) -> Result<String> {
-        let Some(profile) = db.read_running(Profile::automatic)? else {
-            return Ok(url.to_owned());
-        };
-        let running = db.running_lifetime();
-        tokio::select! {
-            biased;
-            () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
-            result = self.public_image_for(db, url, Some(&profile.target)) => result,
-        }
-    }
-
-    async fn host_imported_images(&self, db: &Workspace, markdown: String) -> Result<String> {
-        let running = db.running_lifetime();
-        tokio::select! {
-            biased;
-            () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
-            result = async {
-                let sources = references::urls(&markdown)?;
-                let uploads = stream::iter(sources.into_iter().filter(|url| url.starts_with("asset://")))
-                    .map(|source| {
-                        async move {
-                            self.automatically_host_image(db, &source)
-                                .await
-                                .map(|hosted| (source, hosted))
-                        }
-                    })
-                    .buffer_unordered(4);
-                let mut uploads = std::pin::pin!(uploads);
-                let mut replacements = BTreeMap::new();
-                while let Some(uploaded) = uploads.next().await {
-                    let (source, hosted) = uploaded?;
-                    if hosted != source {
-                        replacements.insert(source, hosted);
-                    }
-                }
-                let edits = references::image_edits(&markdown, |url| Ok(replacements.get(url).cloned()))?;
-                Ok(references::apply_image_edits(&markdown, edits))
-            } => result,
-        }
+        self.download_markdown_images(db, &markdown, None, true)
+            .await
     }
 
     async fn download_markdown_images(

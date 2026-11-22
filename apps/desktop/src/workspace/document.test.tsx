@@ -35,6 +35,44 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("saves background image replacements through the live queue without losing edits or versions", async () => {
+  const article = { ...entry("background", "后台图片"), contentMd: "![图片](asset://imported)" };
+  const save = vi.fn<ConstructorParameters<typeof SaveQueue>[1]>(async (_id, version) => ({ version: version + 1 }));
+  const queue = new SaveQueue(article, save, () => {});
+  let handle: MarkdownEditorHandle | null = null;
+  let uploaded = false;
+  let finish!: (url: string) => void;
+  const publicImage = vi.spyOn(desktop, "publicImage").mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  vi.spyOn(desktop, "assetDetail").mockImplementation(async () => ({
+    id: "imported", name: "图片.png", width: 2, height: 3, bytes: 100,
+    uploadStatus: uploaded ? null : "queued", uploadError: null, cleanupError: null,
+    publicUrl: uploaded ? "https://images.example.test/imported.png" : null,
+  }));
+  vi.spyOn(desktop, "assetRead").mockRejectedValue(new Error("预览尚未载入"));
+  const onError = vi.fn();
+  const render = (assetRevision: number) => flushSync(() => root.render(<Theme><DocumentEditor queue={queue} active locked={false} reading={false}
+    display={display} onDisplayChange={() => {}} handle={value => { handle = value; }} onImages={async () => ""}
+    clipboard={{ read: async () => "", write: async () => {}, onError }} onImageZoom={() => {}} onError={onError}
+    autoUploadImages assetRevision={assetRevision} /></Theme>));
+  render(0);
+  await vi.waitFor(() => expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(false));
+  expect(publicImage).not.toHaveBeenCalled();
+  uploaded = true;
+  render(1);
+  await vi.waitFor(() => expect(publicImage).toHaveBeenCalledWith("asset://imported"));
+  handle!.insert("用户修改\n\n");
+  expect(await queue.flush()).toBe(true);
+  expect(save.mock.lastCall![1]).toBe(1);
+  finish("https://images.example.test/imported.png");
+  await handle!.pendingEdits();
+  expect(await queue.flush()).toBe(true);
+  expect(save.mock.lastCall![1]).toBe(2);
+  expect(save.mock.lastCall![2].contentMd).toContain("用户修改");
+  expect(save.mock.lastCall![2].contentMd).toContain("https://images.example.test/imported.png");
+  expect(queue.saveError()).toBeNull();
+  expect(onError).not.toHaveBeenCalled();
+});
+
 it("shows preview progress before rendering and gives each table a scroll region", async () => {
   let resolveGraphics!: (result: Awaited<ReturnType<typeof desktop.wechatGraphics>>) => void;
   const graphics = new Promise<Awaited<ReturnType<typeof desktop.wechatGraphics>>>(resolve => { resolveGraphics = resolve; });

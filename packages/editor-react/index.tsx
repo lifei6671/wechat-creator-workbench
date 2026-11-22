@@ -91,6 +91,12 @@ export interface ClipboardIO {
   onError(error: unknown): void;
 }
 
+export interface ImageUploadState {
+  pending: boolean;
+  publicUrl?: string | null;
+  error?: string | null;
+}
+
 interface Props extends EditorImages {
   ref?: Ref<MarkdownEditorHandle>;
   entryId: string;
@@ -101,6 +107,9 @@ interface Props extends EditorImages {
   lineNumbers?: boolean;
   convertLinks?: boolean;
   localizeImageLink?(url: string): Promise<string>;
+  uploadRevision?: number;
+  readImageUploadState?(url: string): Promise<ImageUploadState>;
+  resolveHostedImage?(url: string): Promise<string>;
   title?: ReactNode;
   onDocumentChanged(entryId: string, localRevision: number): void;
   onBlur(): void;
@@ -113,6 +122,7 @@ type Range = { from: number; to: number };
 type PastedImage = Range & { node: ProseNode; src: string };
 const revision = new PluginKey<number>("workbenchRevision");
 const documentLayout = new PluginKey("workbenchDocumentLayout");
+const imageUploadUpdate = new PluginKey("workbenchImageUploadUpdate");
 const pasteProgress = new PluginKey("workbenchPasteProgress");
 const searchHighlights = new PluginKey<DecorationSet>("workbenchSearchHighlights");
 const workspaceSearchHighlights = new PluginKey<DecorationSet>("workspaceSearchHighlights");
@@ -570,6 +580,7 @@ export function MarkdownEditor(props: Props) {
   const searchInput = useRef<HTMLInputElement>(null);
   const savedSearch = useRef<SearchSettings>({ query: "", replacement: "", showReplace: false, caseSensitive: false, wholeWord: false, regexp: false });
   const viewRef = useRef<EditorView>(null);
+  const syncUploads = useRef<(() => void) | null>(null);
   const searchListeners = useRef(new Set<() => void>());
   const subscribeToSearch = useCallback((listener: () => void) => {
     searchListeners.current.add(listener);
@@ -581,6 +592,7 @@ export function MarkdownEditor(props: Props) {
   useEffect(() => { if (props.active === false || props.readOnly) setFootnote(null); }, [props.active, props.readOnly]);
   useLayoutEffect(() => { latest.current = props; }, [props]);
   useLayoutEffect(() => viewRef.current?.setProps({ editable: () => !props.readOnly }), [props.active, props.readOnly, props.lineNumbers, props.convertLinks]);
+  useEffect(() => { syncUploads.current?.(); }, [props.uploadRevision, props.readImageUploadState, props.resolveHostedImage]);
 
   useEffect(() => {
     const { entryId, value, ref } = latest.current;
@@ -601,6 +613,9 @@ export function MarkdownEditor(props: Props) {
     let pasteSequence = 0;
     const failedImages = new Set<() => void>();
     let disposed = false;
+    let uploadRequest = 0;
+    const publicChecks = new Map<string, Promise<string>>();
+    const uploadErrors = new Set<string>();
     let detachRef: (() => void) | undefined;
     function publish(doc: ProseNode) {
       const { node, end } = lastBodyBlock(doc);
@@ -678,7 +693,7 @@ export function MarkdownEditor(props: Props) {
 
     function localizeImages(view: EditorView, images: PastedImage[], localize: (url: string) => Promise<string>,
       onError?: (error: unknown) => void, beforeLayout = view.state.doc) {
-      if (!images.length) return;
+      if (!images.length || !isWritable(view)) return;
       if (view.state.doc !== beforeLayout) {
         // Moving footnotes preserves node identity but can shift images to new positions.
         const inserted = new Map(images.map(image => [image.node, image.src]));
@@ -690,12 +705,14 @@ export function MarkdownEditor(props: Props) {
       }
       const downloads = new Map<string, Promise<string>>();
       for (const { from, to, src } of images) {
+        const frame = imageContext(view.nodeDOM(from));
+        frame?.setUploading(true);
         const task = downloads.get(src) ?? localize(src).catch(error => {
           if (!disposed) onError?.(error);
           return src;
         });
         downloads.set(src, task);
-        track(view, { from, to }, () => task, ({ from }, url) => {
+        track(view, { from, to }, () => task.finally(() => frame?.setUploading(false)), ({ from }, url) => {
           if (url === src) return;
           const current = view.state.doc.nodeAt(from);
           if (current?.type.name === "image" && current.attrs.src === src) {
@@ -950,7 +967,7 @@ export function MarkdownEditor(props: Props) {
             return tr.getMeta(documentLayout) ? value : value + 1;
           },
         },
-        filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(documentLayout)),
+        filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(documentLayout)) || Boolean(tr.getMeta(imageUploadUpdate)),
         view: () => ({
           update(view, previous) {
             if (!view.composing || !view.editable) resumeCompositionEdits();
@@ -1309,6 +1326,58 @@ export function MarkdownEditor(props: Props) {
           return true;
         },
       };
+      syncUploads.current = () => {
+        const request = ++uploadRequest;
+        const { readImageUploadState, resolveHostedImage, uploadRevision } = latest.current;
+        const originals = new Map<string, Set<ProseNode>>();
+        view.state.doc.descendants((node, pos) => {
+          if (node.type.name !== "image" || !node.attrs.src.startsWith("asset://")) return;
+          const src: string = node.attrs.src;
+          const nodes = originals.get(src) ?? new Set<ProseNode>();
+          nodes.add(node);
+          originals.set(src, nodes);
+          if (!readImageUploadState) imageContext(view.nodeDOM(pos))?.setUploading(false, true);
+        });
+        if (!readImageUploadState || !resolveHostedImage) return;
+        const current = () => !disposed && request === uploadRequest
+          && latest.current.readImageUploadState === readImageUploadState && latest.current.uploadRevision === uploadRevision;
+        const uploading = (src: string, pending: boolean) => {
+          if (!current()) return;
+          view.state.doc.descendants((node, pos) => {
+            if (node.type.name === "image" && node.attrs.src === src) imageContext(view.nodeDOM(pos))?.setUploading(pending, true);
+          });
+        };
+        const job = Promise.all([...originals].map(async ([src, nodes]) => {
+          let keepPending = false;
+          try {
+            const state = await readImageUploadState(src);
+            if (!current()) return;
+            uploading(src, state.pending || Boolean(state.publicUrl));
+            keepPending = state.pending;
+            if (state.pending) return;
+            if (state.error) throw new Error(state.error);
+            if (!state.publicUrl) return;
+            const key = `${src}\n${state.publicUrl}`;
+            let check = publicChecks.get(key);
+            if (!check) { check = resolveHostedImage(src); publicChecks.set(key, check); }
+            const url = await check;
+            if (!current()) return;
+            const tr = view.state.tr;
+            view.state.doc.descendants((node, pos) => {
+              if (nodes.has(node) && node.attrs.src === src && url !== src) tr.setNodeAttribute(pos, "src", url);
+            });
+            if (tr.docChanged) view.dispatch(tr.setMeta(imageUploadUpdate, true).setMeta("addToHistory", false));
+          } catch (error) {
+            keepPending = false;
+            const key = `${src}\n${String(error)}`;
+            if (current() && !uploadErrors.has(key)) { uploadErrors.add(key); latest.current.onError?.(error); }
+          } finally {
+            if (!keepPending) uploading(src, false);
+          }
+        })).then(() => {}).finally(() => edits.delete(job));
+        edits.add(job);
+      };
+      syncUploads.current();
       if (typeof ref === "function") {
         const cleanup = ref(handle);
         detachRef = typeof cleanup === "function" ? cleanup : () => ref(null);
@@ -1320,6 +1389,7 @@ export function MarkdownEditor(props: Props) {
 
     return () => {
       disposed = true;
+      syncUploads.current = null;
       clearTimeout(compositionTimer);
       resumeCompositionEdits();
       pending.clear();

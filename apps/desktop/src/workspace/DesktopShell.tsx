@@ -2442,6 +2442,7 @@ export function DesktopShell() {
                     locked={Boolean(exitMessage) || globalLock || locked.includes(session.entry.id)} clipboard={editorClipboard}
                     handle={handle => registerEditor(session.entry.id, handle)}
                     onImages={importImages} onError={showError} localizeImageLink={imageTarget?.autoUpload ? localizeImage : undefined}
+                    autoUploadImages={imageTarget?.autoUpload} assetRevision={assetsRevision}
                     onAddSelectionToChat={selection => addSelectionToChat(session, selection)}
                     canHost={src => canHostImage(imageTarget, src)} hostBusy={Boolean(imageUpload)}
                     uploadingSource={imageUpload?.sessionId === session.sessionId ? imageUpload.src : undefined}
