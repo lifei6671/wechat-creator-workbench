@@ -1518,11 +1518,16 @@ it.each(["edit", "preview"])("keeps the %s view when opening WeChat settings", a
   localStorage.setItem("links-to-footnotes", "false");
   saveDocumentTabs(workspaceId, { ids: ["wechat-view"], activeId: "wechat-view" });
   vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  vi.spyOn(desktop, "save").mockImplementation(async (_id, version) => ({ version: version + 1 }));
   vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
   flushSync(() => root.render(<DesktopShell />));
   await vi.waitFor(() => expect(editorQueues.has("wechat-view")).toBe(true));
   flushSync(() => container.querySelector<HTMLButtonElement>("#ai-panel-trigger")!.click());
-  flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-wechat-button")!.click());
+  const wechat = await vi.waitFor(() => {
+    const button = container.querySelector<HTMLButtonElement>("#right-sidebar-wechat-button");
+    expect(button).not.toBeNull(); expect(button!.disabled).toBe(false); return button!;
+  });
+  flushSync(() => wechat.click());
   await vi.waitFor(() => expect(container.querySelector(".wechat-publishing-panel")).not.toBeNull());
   expect(container.querySelector("#document-body")?.getAttribute("data-view")).toBe(mode);
 });
