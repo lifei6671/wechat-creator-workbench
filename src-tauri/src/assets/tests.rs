@@ -900,6 +900,131 @@ async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavaila
 }
 
 #[tokio::test]
+async fn link_import_automatically_hosts_images_without_the_download_setting() {
+    for valid_public_image in [true, false] {
+        let (_folder, db, mut assets) = setup();
+        image_profile(&db);
+        enable_auto_upload(&db);
+        let (origin, url) = image_origin(&mut assets).await;
+        let public = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        assets.public_http = reqwest::Client::builder()
+            .no_proxy()
+            .resolve("cdn.example.test", public.local_addr().unwrap())
+            .build()
+            .unwrap();
+        db.write(|tx| {
+            tx.execute(
+                "UPDATE storage_profiles SET public_base_url='http://cdn.example.test'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let body = format!("![原图]({url} \"标题\")\n\n<img src=\"{url}\">\n\n`![示例]({url})`");
+        let bytes = png();
+        let public_bytes = if valid_public_image {
+            bytes.as_slice()
+        } else {
+            b"wrong image"
+        };
+        let upload = async {
+            let upload = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Some(upload) = claim(&db).unwrap() {
+                        break upload;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            register_target(
+                &db,
+                &upload,
+                "hosted.png",
+                upload.file.hash.as_deref().unwrap(),
+            )
+            .unwrap();
+            complete_upload(&db, &upload, Ok(())).unwrap();
+            assets.activity.send_replace(());
+        };
+        let (result, _, _, request) = tokio::join!(
+            assets.import_link_images(&db, body, false),
+            serve_image_response(&origin, "200 OK", "", &bytes),
+            upload,
+            serve_image_response(&public, "200 OK", "", public_bytes),
+        );
+        if !valid_public_image {
+            assert_eq!(result.unwrap_err().code(), "S3_PUBLIC");
+            continue;
+        }
+        let (rewritten, unavailable) = result.unwrap();
+        assert_eq!(unavailable, 0);
+        assert!(rewritten.contains("![原图](http://cdn.example.test/hosted.png \"标题\")"));
+        assert!(rewritten.contains("<img src=\"http://cdn.example.test/hosted.png\">"));
+        assert!(rewritten.contains(&format!("`![示例]({url})`")));
+        assert!(request.starts_with("GET /hosted.png "));
+        let library = assets.library(&db, 0).unwrap();
+        assert_eq!(library.items.len(), 1);
+        assert_eq!(
+            assets
+                .read(&db, &format!("asset://{}", library.items[0].id))
+                .await
+                .unwrap(),
+            bytes
+        );
+    }
+}
+
+#[tokio::test]
+async fn link_import_propagates_upload_failure_and_cancels_upload_wait_on_exit() {
+    for exiting in [false, true] {
+        let (_folder, db, assets) = setup();
+        image_profile(&db);
+        let asset = assets.import(&db, "图片.png", &png()).unwrap();
+        enable_auto_upload(&db);
+        assets.ready.notified().await;
+        let mut import = std::pin::pin!(assets.import_link_images(
+            &db,
+            format!("![图](asset://{asset})"),
+            false
+        ));
+        tokio::select! {
+            () = assets.ready.notified() => {},
+            result = &mut import => panic!("import completed before upload: {result:?}"),
+        }
+        let upload = claim(&db).unwrap().unwrap();
+        if exiting {
+            db.begin_exit();
+        } else {
+            complete_upload(
+                &db,
+                &upload,
+                Err(AppError::new("S3_PERMISSION", "上传权限不足")),
+            )
+            .unwrap();
+            assets.activity.send_replace(());
+        }
+        let error = tokio::time::timeout(Duration::from_secs(1), &mut import)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            if exiting { "EXIT_PENDING" } else { "S3_UPLOAD" }
+        );
+        if !exiting {
+            assert!(error.to_string().contains("上传权限不足"));
+        }
+        db.cancel_exit();
+        assert_eq!(
+            assets.read(&db, &format!("asset://{asset}")).await.unwrap(),
+            png()
+        );
+    }
+}
+
+#[tokio::test]
 async fn link_import_downloads_images_only_when_enabled_and_preserves_unavailable_urls() {
     let (_folder, db, mut assets) = setup();
     image_profile(&db);

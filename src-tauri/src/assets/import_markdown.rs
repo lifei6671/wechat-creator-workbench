@@ -23,11 +23,42 @@ impl Assets {
         markdown: String,
         download: bool,
     ) -> Result<(String, usize)> {
-        if !download {
+        let automatic = db.read_running(Profile::automatic)?;
+        if !download && automatic.is_none() {
             return Ok((markdown, 0));
         }
-        self.download_markdown_images(db, &markdown, None, true)
-            .await
+        let (markdown, unavailable) = self
+            .download_markdown_images(db, &markdown, None, true)
+            .await?;
+        let Some(profile) = automatic else {
+            return Ok((markdown, unavailable));
+        };
+        let running = db.running_lifetime();
+        tokio::select! {
+            biased;
+            () = running.cancelled() => Err(AppError::new("EXIT_PENDING", "正在保存并退出")),
+            result = async {
+                let sources = references::urls(&markdown)?;
+                let uploads = stream::iter(sources.into_iter().filter(|url| url.starts_with("asset://")))
+                    .map(|source| {
+                        let target = &profile.target;
+                        async move {
+                            self.public_image_for(db, &source, Some(target))
+                                .await
+                                .map(|hosted| (source, hosted))
+                        }
+                    })
+                    .buffer_unordered(4);
+                let mut uploads = std::pin::pin!(uploads);
+                let mut replacements = BTreeMap::new();
+                while let Some(uploaded) = uploads.next().await {
+                    let (source, hosted) = uploaded?;
+                    replacements.insert(source, hosted);
+                }
+                let edits = references::image_edits(&markdown, |url| Ok(replacements.get(url).cloned()))?;
+                Ok((references::apply_image_edits(&markdown, edits), unavailable))
+            } => result,
+        }
     }
 
     async fn download_markdown_images(

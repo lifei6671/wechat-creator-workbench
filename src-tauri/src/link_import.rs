@@ -72,7 +72,7 @@ pub async fn import_clipping(
         category_id,
         clipping.tags,
     )?;
-    if download_images && !existing {
+    if !existing {
         let _ = app.emit("assets-changed", ());
     }
     Ok(ImportedLink {
@@ -108,7 +108,7 @@ pub async fn import_link(
     } else {
         import_page(&db, &assets, address, category_id, download_images).await?
     };
-    if download_images && !article.existing {
+    if !article.existing {
         let _ = app.emit("assets-changed", ());
     }
     Ok(LinkImportResult::Article { article })
