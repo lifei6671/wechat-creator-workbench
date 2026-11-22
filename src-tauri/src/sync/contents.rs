@@ -23,6 +23,8 @@ const MAX_GROUP: usize = 256;
 
 mod canvas_conflicts;
 mod merge;
+#[cfg(test)]
+mod transport_tests;
 mod reconcile;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -197,6 +199,7 @@ impl<'a> Remote<'a> {
         let route = blob_route(hash)?;
         let head = self
             .request(Method::HEAD, &route)?
+            .header("X-Sync-Protocol", "2")
             .send()
             .await
             .map_err(network_error)?;
