@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expectedFiles, injectVersion, manifest, releaseNotes, releaseVersion, verifyVersions } from "./release.mjs";
+import { expectedFiles, injectVersion, manifest, releaseNotes, releaseOptions, releaseVersion, verifyVersions } from "./release.mjs";
 
 function workspace(t) {
   const root = mkdtempSync(join(tmpdir(), "wcb-release-"));
@@ -20,9 +20,24 @@ function workspace(t) {
   return root;
 }
 
-test("only stable canonical tags are accepted", () => {
+test("accepts canonical stable and numbered preview tags", () => {
   assert.equal(releaseVersion("v12.2.0"), "12.2.0");
-  for (const tag of ["1.0.0", "v01.0.0", "v1.0.0-rc.1", "v1.0", "v1.0.0/evil"]) assert.throws(() => releaseVersion(tag));
+  assert.equal(releaseVersion("v1.0.0-preview.1"), "1.0.0-preview.1");
+  for (const tag of ["1.0.0", "v01.0.0", "v1.0.0-rc.1", "v1.0", "v1.0.0/evil", "v1.0.0-preview.0", "v1.0.0-preview.01", "v1.0.0-preview.1/evil"]) assert.throws(() => releaseVersion(tag));
+});
+test("preview releases never become the stable latest release", () => {
+  assert.deepEqual(releaseOptions("v1.0.0-preview.1"), { prerelease: true, make_latest: "false" });
+  assert.deepEqual(releaseOptions("v1.0.0"), { prerelease: false, make_latest: "true" });
+});
+test("preview versions reach all version files and updater download URLs", t => {
+  const root = workspace(t), tag = "v1.0.0-preview.1", version = releaseVersion(tag);
+  injectVersion(root, tag);
+  verifyVersions(root, version);
+  const signature = Buffer.from("untrusted comment: test signature\nnot-a-real-signature").toString("base64");
+  for (const file of expectedFiles(version)) writeFileSync(join(root, file), file.endsWith(".sig") ? signature : "test fixture");
+  const value = manifest(root, tag, "预览版");
+  assert.equal(value.version, version);
+  for (const item of Object.values(value.platforms)) assert.ok(item.url.includes(`/download/${tag}/CreatorWorkbench-${version}-`));
 });
 test("injects only application versions and rejects drift", t => {
   const root = workspace(t);

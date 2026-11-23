@@ -10,8 +10,12 @@ export const targets = {
   "x86_64-pc-windows-msvc": { label: "windows-x64", key: "windows-x86_64", bundle: "nsis", extension: ".exe" },
 };
 export function releaseVersion(tag) {
-  if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)) throw new Error("发行标签须为 vX.Y.Z 正式版本");
+  if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-preview\.[1-9]\d*)?$/.test(tag)) throw new Error("发行标签须为 vX.Y.Z 或 vX.Y.Z-preview.N（N 为正整数）");
   return tag.slice(1);
+}
+export function releaseOptions(tag) {
+  const prerelease = releaseVersion(tag).includes("-preview.");
+  return { prerelease, make_latest: prerelease ? "false" : "true" };
 }
 export function releaseNotes(root, tag) {
   releaseVersion(tag);
