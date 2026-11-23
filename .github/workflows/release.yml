@@ -57,7 +57,7 @@ jobs:
       - run: pnpm test:release
       - run: pnpm web:build
       - run: npm test --prefix apps/sync-server
-      - run: node scripts/package-sync.mjs "$RELEASE_TAG"
+      - run: GITHUB_SHA="$(git rev-parse HEAD)" node scripts/package-sync.mjs "$RELEASE_TAG"
       - run: node --test scripts/package-sync.test.mjs scripts/docker-sync.test.mjs
         env:
           RELEASE_PACKAGE_TEST: '1'
