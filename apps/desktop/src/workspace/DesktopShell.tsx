@@ -1726,6 +1726,9 @@ export function DesktopShell() {
           await desktop.copyHtml(result.html, result.text);
           if (!hosting && result.images.length) showModal({ type: "publishImages", images: result.images });
         } finally { result.dispose(); }
+      } catch (error) {
+        if (selected.saveError() && errorMessage(error) === errorMessage(selected.saveError())) return false;
+        throw error;
       } finally { setPublishing(false); }
     }));
   }
@@ -2270,10 +2273,11 @@ export function DesktopShell() {
         onKeyUpCapture={() => { manualLayout.current = null; }}
         onLayoutChange={layout => {
           const group = sidebarGroup.current;
-          // The group must record its new size before applying the workspace's pixel widths.
+          // Wait for the group to record its size, then commit every panel before paint.
           if (hasWorkspaceSize(group) && (layoutSuspended.current || layoutWidth.current !== group.clientWidth)) {
             layoutSuspended.current = false;
-            restorePanelSizes(group);
+            if (layoutWidth.current) flushSync(() => restorePanelSizes(group));
+            else restorePanelSizes(group);
             return;
           }
           if (manualLayout.current?.side === "navigation" && manualLayout.current.width === group?.clientWidth && timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group) && !group.dataset.timelineDirectoryMoving
@@ -2624,7 +2628,8 @@ function PublicationPreview({ queue, publication, projectLinks, sourceRevision }
   const snapshot = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const state = useSyncExternalStore(publication.subscribe, publication.snapshot);
   const defaults = useSyncExternalStore(publication.defaults.subscribe, publication.defaults.snapshot);
-  useEffect(() => { if (projectLinks !== null) void publication.ensure().catch(() => {}); }, [publication, snapshot.revision, defaults.value?.version, projectLinks, sourceRevision]);
+  const idle = snapshot.revision === snapshot.savedRevision && !snapshot.saving;
+  useEffect(() => { if (projectLinks !== null && idle) void publication.refresh().catch(() => {}); }, [publication, idle, snapshot.savedRevision, defaults.value?.version, projectLinks, sourceRevision]);
   const { fields, revision } = queue.capture();
   const error = state.error || (state.resolved.invalid.length ? "推荐文章已失效，请在公众号侧栏修正或移除" : "");
   return <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}

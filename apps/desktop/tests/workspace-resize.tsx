@@ -16,10 +16,12 @@ const article: Entry = { id: "resize", title: "窗口缩放中的文章", kind: 
   createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null, tags: [], summary: "文章摘要", source: null, publishedAt: null, publishedUrl: "", version: 1, links: [] };
 const second = { ...article, id: "second", title: "另一篇用于检查标签布局的文章" };
 const thread = { id: "resize-thread", title: "当前对话", archived: false, updatedAt: 1 };
+const publicationTyping = { saves: 0, recommendations: 0 };
+Object.assign(window, { publicationTyping });
 desktop.library = async () => ({ workspaceId: "resize-fixture", categories: [], tags: [], tagSuggestions: [] });
 desktop.entries = async filter => ({ items: filter.pinned ? [] : [article, second], nextOffset: null });
 desktop.entry = async id => id === second.id ? second : article;
-desktop.save = async (_id, version) => ({ version: version + 1 });
+desktop.save = async (_id, version) => { publicationTyping.saves++; return { version: version + 1 }; };
 desktop.collections = async () => [];
 desktop.entryCollections = async () => [];
 desktop.imageStorageTarget = async () => null;
@@ -37,7 +39,7 @@ desktop.aiMessages = async () => [];
 desktop.aiUpdateThread = async () => {};
 desktop.wechatGraphics = async () => [];
 desktop.wechatPublicationDefaults = async () => ({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 });
-desktop.wechatRecommendations = async input => ({ inputFingerprint: await recommendationFingerprint(input), items: [] });
+desktop.wechatRecommendations = async input => { publicationTyping.recommendations++; return { inputFingerprint: await recommendationFingerprint(input), items: [] }; };
 desktop.resolveWechatRecommendations = async (_input, items) => ({ items, invalid: [] });
 for (const event of ["onExit", "onHistory", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onTrashEmptied", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {
   desktop[event] = async () => () => {};

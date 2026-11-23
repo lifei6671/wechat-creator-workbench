@@ -27,7 +27,8 @@ desktop.saveWechatPublicationDefaults = async (version, count) => {
   if (version !== defaults.version) throw new Error("默认配置已更新");
   return defaults = { ...defaults, recommendationCount: count, version: version + 1, updatedAt: Date.now() };
 };
-desktop.wechatRecommendations = async input => ({ inputFingerprint: await recommendationFingerprint(input), items: candidates.slice(0, input.count) });
+desktop.wechatRecommendations = async input => ({ inputFingerprint: await recommendationFingerprint(input),
+  items: candidates.slice(0, input.count).map(({ entryId, title, url }) => ({ entryId, title, url })) });
 desktop.wechatCandidates = async (_input, query, related) => ({ items: candidates.filter(item => item.title.includes(query)).slice(0, related ? 7 : 8), nextOffset: null });
 desktop.resolveWechatRecommendations = async (_input, items) => ({ items, invalid: [] });
 const thread = { id: "sidebar-fixture", title: "当前对话", archived: false, updatedAt: 1 };
@@ -43,6 +44,10 @@ function Fixture() {
   const [publishing] = useState(() => new WechatPublishing());
   const [saved, setSaved] = useState(entry);
   const [queue] = useState(() => new SaveQueue(entry, async (_id, version, fields) => {
+    for (const item of fields.wechatPublication?.recommendations.items ?? []) {
+      const unknown = Object.keys(item).find(key => !["entryId", "title", "url"].includes(key));
+      if (unknown) throw new Error(`unknown field '${unknown}', expected one of 'entryId', 'title', 'url'`);
+    }
     if (failure.once && fields.wechatPublication?.recommendations.mode === "manual") { failure.once = false; throw new Error("模拟保存失败"); }
     setSaved({ ...entry, ...fields, version: version + 1 }); return { version: version + 1 };
   }, () => {}));
