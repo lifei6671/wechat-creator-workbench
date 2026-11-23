@@ -58,6 +58,8 @@ subtle = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 semver = "1"
+# The embedded dictionary is part of the persisted index signature in search_index.rs.
+jieba-rs = "=0.11.0"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"

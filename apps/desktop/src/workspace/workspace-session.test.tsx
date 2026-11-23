@@ -99,6 +99,100 @@ function openTabs() {
   return [...container.querySelectorAll('.tabs [role="tab"]')].map(tab => tab.id.replace(/^tab-/, ""));
 }
 
+it.each([undefined, "name"])("uses relevance by default and preserves saved search sort %s", async saved => {
+  if (saved) localStorage.setItem("workspace-search-sort", JSON.stringify(saved));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="全文搜索"]')).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="全文搜索"]')!.click());
+  const input = container.querySelector<HTMLInputElement>('[aria-label="搜索笔记"]')!;
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "公众号排版");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await vi.waitFor(() => expect(vi.mocked(desktop.entries).mock.calls.some(([filter]) =>
+    filter.workspaceSearch?.text === "公众号排版" && filter.sort === (saved ?? "relevance"))).toBe(true));
+});
+
+it.each(["entries", "matches"] as const)("refreshes %s pagination across a background search-index cutover", async pagination => {
+  let generation = "0:literal";
+  let failure = "";
+  const hit = (text: string) => ({ line: 1, start: 0, text, ranges: [{ start: 0, end: 2 }],
+    before: null, after: null, leading: false, trailing: false });
+  let changed!: () => void;
+  vi.mocked(desktop.onWorkspaceChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  vi.mocked(desktop.entries).mockImplementation(async filter => {
+    if (!filter.workspaceSearch?.text) return { items: [], nextOffset: null };
+    const continuation = !!filter.offset || !!filter.workspaceSearch.matchPage;
+    if (continuation) generation = "1:words";
+    const text = continuation ? "拒绝混入的旧分页" : generation === "0:literal" ? "字面结果" : "完整词级结果";
+    return { items: [{ ...entry("manual"), searchMatches: { version: 1, indexGeneration: generation,
+      items: [hit(text)], total: 2, nextOffset: pagination === "matches" ? 1 : null } }],
+    nextOffset: pagination === "entries" ? 1 : null,
+    search: { total: 2, clauses: [], indexGeneration: generation, indexing: generation === "0:literal" && !failure, error: failure } };
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="全文搜索"]')).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="全文搜索"]')!.click());
+  const input = container.querySelector<HTMLInputElement>('[aria-label="搜索笔记"]')!;
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "搜索");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const summary = () => container.querySelector(".workspace-search-summary > span")!;
+  await vi.waitFor(() => expect(summary()?.textContent).toBe("正在载入…"));
+  expect(summary().getAttribute("aria-busy")).toBe("true");
+  expect(container.textContent).toContain("字面结果");
+  failure = "搜索索引重建失败";
+  flushSync(() => changed());
+  await vi.waitFor(() => expect(summary().textContent).toBe(failure));
+  expect(summary().getAttribute("role")).toBe("alert");
+  expect(container.textContent).toContain("字面结果");
+  failure = "";
+  const more = container.querySelector<HTMLButtonElement>(pagination === "entries" ? ".load-more" : ".load-more-hits")!;
+  flushSync(() => more.click());
+  await vi.waitFor(() => expect(container.textContent).toContain("完整词级结果"));
+  expect(container.textContent).not.toContain("拒绝混入的旧分页");
+  expect(container.textContent).not.toContain("字面结果");
+  expect(summary().textContent).toBe("2 篇笔记");
+  expect(summary().hasAttribute("aria-busy")).toBe(false);
+});
+
+it("discards an old continuation arriving after the new search homepage in the same request epoch", async () => {
+  let changed!: () => void;
+  let refreshing = false;
+  let home!: (page: EntryPage) => void;
+  let more!: (page: EntryPage) => void;
+  vi.mocked(desktop.onWorkspaceChanged).mockImplementation(async callback => { changed = callback; return () => {}; });
+  const page = (id: string, indexGeneration: string): EntryPage => ({
+    items: [entry(id)], nextOffset: 1, search: { total: 2, clauses: [], indexGeneration },
+  });
+  vi.mocked(desktop.entries).mockImplementation(async filter => {
+    if (!filter.workspaceSearch?.text) return { items: [], nextOffset: null };
+    if (filter.offset) return new Promise(resolve => { more = resolve; });
+    if (refreshing) return new Promise(resolve => { home = resolve; });
+    return page("字面首页", "0:literal");
+  });
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="全文搜索"]')).not.toBeNull());
+  flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="全文搜索"]')!.click());
+  const input = container.querySelector<HTMLInputElement>('[aria-label="搜索笔记"]')!;
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "搜索");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await vi.waitFor(() => expect(container.querySelector("#entry-row-字面首页")).not.toBeNull());
+  refreshing = true;
+  flushSync(() => changed());
+  await vi.waitFor(() => expect(home).toBeTypeOf("function"));
+  flushSync(() => container.querySelector<HTMLButtonElement>(".load-more")!.click());
+  await vi.waitFor(() => expect(more).toBeTypeOf("function"));
+  await act(async () => home(page("词级首页", "1:words")));
+  expect(container.querySelector("#entry-row-词级首页")).not.toBeNull();
+  await act(async () => more(page("过期字面续页", "0:literal")));
+  expect(container.querySelector("#entry-row-过期字面续页")).toBeNull();
+  expect(container.querySelector("#entry-row-词级首页")).not.toBeNull();
+});
+
 it.each([
   ["folders", "copyTitle", false], ["folders", "copyPath", false],
   ["timeline", "copyTitle", false], ["timeline", "copyPath", false],

@@ -129,9 +129,12 @@ export interface WorkspaceSearchHit extends WorkspaceSearchSnippet {
   before: string | null;
   after: string | null;
 }
-export interface WorkspaceSearchMatches { version: number; items: WorkspaceSearchHit[]; total: number; nextOffset: number | null }
+export interface WorkspaceSearchMatches { version: number; indexGeneration?: string; items: WorkspaceSearchHit[]; total: number; nextOffset: number | null }
 export interface WorkspaceSearchInfo {
   total: number;
+  indexing?: boolean;
+  indexGeneration?: string;
+  error?: string;
   clauses: {
     field: "text" | "content" | "file" | "path" | "tag" | "line" | "section" | "status" | "summary" | "source" | "unknownProperty";
     terms: string[];

@@ -406,7 +406,10 @@ export function Explorer(props: ExplorerProps) {
           persist(searchDisplayKey, value);
         }} />
       {query.trim() && <div className="workspace-search-summary">
-        <span aria-live="polite">{page ? `${page.search?.total ?? page.items.length} 篇笔记` : ""}</span>
+        <span aria-live="polite" aria-busy={page?.search?.indexing || undefined}
+          className={page?.search?.error ? "inline-error" : undefined} title={page?.search?.error}
+          role={page?.search?.error ? "alert" : undefined}>{page?.search?.error
+            || (page?.search?.indexing ? "正在载入…" : page ? `${page.search?.total ?? page.items.length} 篇笔记` : "")}</span>
         <Select.Root size="1" value={props.searchSort ?? "name"}
           onValueChange={value => props.onSearchSort?.(value as NonNullable<EntryFilter["sort"]>)}>
           <Select.Trigger aria-label="搜索结果排序" variant="ghost" />
@@ -485,7 +488,7 @@ export function Explorer(props: ExplorerProps) {
           : !page ? <li className="explorer-empty">正在载入…</li>
             : !page.items.length ? <li className="explorer-empty">{isSearch ? "没有匹配的内容" : section === "imports" ? "暂无导入文章" : "回收站为空"}</li>
               : page.items.map(row => isSearch && row.searchMatches && props.onSearchHit
-                ? <SearchNote key={JSON.stringify([row.id, row.searchMatches.version, query, props.caseSensitive, searchDisplay.collapse])}
+                ? <SearchNote key={JSON.stringify([row.id, row.searchMatches.version, row.searchMatches.indexGeneration, query, props.caseSensitive, searchDisplay.collapse])}
                   row={row} matches={row.searchMatches} actions={rowActions}
                   search={{ text: query, caseSensitive: props.caseSensitive }} selected={props.selectedSearchHit}
                   collapsed={searchDisplay.collapse} showContext={searchDisplay.context} onOpenHit={props.onSearchHit} onRefresh={props.onRetry} />
@@ -617,8 +620,8 @@ function SearchNote({ row, matches, actions, search, selected, collapsed, showCo
       const request = await desktop.entries({ deleted: false, offset: 0,
         workspaceSearch: { ...search, matchPage: { entryId: row.id, offset: next } } });
       const page = request.items[0]?.searchMatches;
-      if (!page || page.version !== matches.version) {
-        setError("笔记已更新，正在刷新结果");
+      if (!page || page.version !== matches.version || page.indexGeneration !== matches.indexGeneration) {
+        setError("搜索结果已更新，正在刷新");
         onRefresh();
         return;
       }

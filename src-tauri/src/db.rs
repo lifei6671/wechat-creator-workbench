@@ -69,6 +69,7 @@ enum Phase {
 
 pub struct Workspace(Mutex<Database>);
 pub struct Database {
+    search_worker: Option<crate::search_index::Worker>,
     conn: Option<Connection>,
     phase: Phase,
     running: tokio_util::sync::CancellationToken,
@@ -115,6 +116,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0028_category_icon_color.sql"),
     include_str!("../migrations/0029_publication_platforms.sql"),
     include_str!("../migrations/0030_wechat_publication.sql"),
+    include_str!("../migrations/0031_word_search.sql"),
+    include_str!("../migrations/0032_background_word_search.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -148,8 +151,10 @@ impl Workspace {
             ));
         }
         migrate(&mut conn, version, SCHEMA_VERSION)?;
+        crate::search_index::prepare_empty(&conn)?;
         check_integrity(&conn)?;
         Ok(Self(Mutex::new(Database {
+            search_worker: None,
             conn: Some(conn),
             phase: Phase::Running,
             running: tokio_util::sync::CancellationToken::new(),
@@ -162,6 +167,21 @@ impl Workspace {
 
     pub fn read<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         operation(self.lock().conn.as_ref().ok_or_else(closed)?)
+    }
+
+    pub(crate) fn start_search_index(&self, notify: impl Fn() + Send + Sync + 'static) -> Result<()> {
+        let mut db = self.lock();
+        let conn = db.conn.as_ref().ok_or_else(closed)?;
+        if crate::search_index::state(conn)?.table.is_some() { return Ok(()); }
+        let path = conn.path().filter(|path| !path.is_empty())
+            .ok_or_else(|| AppError::invalid("后台索引需要文件工作区"))?;
+        let path = std::path::PathBuf::from(path);
+        db.search_worker.get_or_insert_with(|| crate::search_index::Worker::start(path, notify));
+        Ok(())
+    }
+
+    pub(crate) fn search_index_error(&self) -> Option<String> {
+        self.lock().search_worker.as_ref().and_then(crate::search_index::Worker::error)
     }
 
     pub fn read_running<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -252,6 +272,7 @@ impl Workspace {
         let mut db = self.lock();
         db.phase = Phase::SavingForExit;
         db.running.cancel();
+        if let Some(worker) = &mut db.search_worker { worker.stop(); }
     }
     pub fn cancel_exit(&self) {
         let mut db = self.lock();
@@ -259,6 +280,7 @@ impl Workspace {
         if db.running.is_cancelled() {
             db.running = tokio_util::sync::CancellationToken::new();
         }
+        if let Some(worker) = &mut db.search_worker { worker.resume(); }
     }
     pub(crate) fn running_lifetime(&self) -> tokio_util::sync::CancellationToken {
         self.lock().running.clone()
@@ -271,12 +293,15 @@ impl Workspace {
         if db.phase != Phase::SavingForExit {
             return Err(AppError::new("UPDATE_PHASE", "请先保存并停止工作区"));
         }
+        if let Some(worker) = &mut db.search_worker { worker.stop(); }
         checkpoint(db.conn.as_ref().ok_or_else(closed)?)?;
         db.phase = Phase::Cleaning;
         Ok(())
     }
     pub fn finish_exit(&self) {
-        self.lock().phase = Phase::Exiting;
+        let mut db = self.lock();
+        if let Some(worker) = &mut db.search_worker { worker.stop(); }
+        db.phase = Phase::Exiting;
     }
     pub fn exit_committed(&self) -> bool {
         self.lock().phase == Phase::Exiting
@@ -290,6 +315,7 @@ impl Workspace {
                 "请先保存并停止工作区，再重启恢复",
             ));
         }
+        if let Some(worker) = &mut db.search_worker { worker.stop(); }
         let conn = db.conn.as_ref().ok_or_else(closed)?;
         checkpoint(conn)?;
         mark()?;
@@ -301,6 +327,7 @@ impl Workspace {
             db.conn = Some(conn);
             return Err(error.into());
         }
+        db.search_worker = None;
         db.phase = Phase::Exiting;
         Ok(())
     }
@@ -318,6 +345,7 @@ fn migrate(conn: &mut Connection, from: i64, to: i64) -> Result<()> {
 }
 
 fn apply_migrations(conn: &mut Connection, from: i64, to: i64, preview: bool) -> Result<()> {
+    crate::search_index::register(conn)?;
     for (version, sql) in (from + 1..=to).zip(&MIGRATIONS[from as usize..to as usize]) {
         let sql = if preview && (23..=25).contains(&version) {
             PREVIEW_MIGRATIONS[(version - BEFORE_SOURCE_MIGRATIONS - 1) as usize]

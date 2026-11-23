@@ -14,6 +14,7 @@ mod graphics;
 mod link_import;
 mod mcp;
 mod secrets;
+mod search_index;
 mod sync;
 mod updater;
 mod wechat_import;
@@ -182,6 +183,10 @@ fn main() {
             Assets::spawn(app.handle().clone());
             sync::scheduler::spawn(app.handle().clone());
             content::trash::spawn(app.handle().clone());
+            let index_events = app.handle().clone();
+            app.state::<Workspace>().start_search_index(move || {
+                let _ = index_events.emit("workspace-changed", ());
+            })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

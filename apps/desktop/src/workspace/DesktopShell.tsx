@@ -153,7 +153,7 @@ export function DesktopShell() {
   const [expandedFolders, setExpandedFolders] = useState(() => useStoredInitial<string[]>("expanded-folders", []));
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
-  const [searchSort, setSearchSort] = useState(() => useStoredInitial<NonNullable<EntryFilter["sort"]>>("workspace-search-sort", "name"));
+  const [searchSort, setSearchSort] = useState(() => useStoredInitial<NonNullable<EntryFilter["sort"]>>("workspace-search-sort", "relevance"));
   const [searchJump, setSearchJump] = useState<{ entryId: string; hit: WorkspaceSearchHit; version: number; showContext: boolean }>();
   const [selectedSearchHit, setSelectedSearchHit] = useState<{ entryId: string; start: number }>();
   const searchIntent = useRef(0);
@@ -636,7 +636,13 @@ export function DesktopShell() {
     if (offset == null) return;
     const epoch = filterEpoch.current;
     void desktop.entries({ ...filter, offset }).then(result => {
+      if (epoch === filterEpoch.current && section === "search"
+        && page?.search?.indexGeneration !== result.search?.indexGeneration) {
+        setRefreshCount(count => count + 1);
+        return;
+      }
       if (epoch === filterEpoch.current) setPage(previous => previous?.nextOffset === offset
+        && (section !== "search" || previous.search?.indexGeneration === result.search?.indexGeneration)
         ? { ...result, items: [...previous.items, ...result.items] } : previous);
     }, error => { if (epoch === filterEpoch.current) setListError(errorMessage(error)); });
   }

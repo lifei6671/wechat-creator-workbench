@@ -464,7 +464,7 @@ fn workspace_search_relevance_ranks_all_results_before_pagination() {
             .iter()
             .map(|item| item.id.as_str())
             .collect::<Vec<_>>(),
-        [more.as_str(), fewer.as_str()]
+        [fewer.as_str(), more.as_str()]
     );
     assert_eq!(page("[状态]", 0, 1).items[0].id, fewer);
 }

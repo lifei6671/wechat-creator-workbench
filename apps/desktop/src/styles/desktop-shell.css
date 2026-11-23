@@ -195,7 +195,8 @@
 .workspace-search-settings { grid-column: 1 / -1; display: grid; gap: 2px; padding: 4px 2px 0; }
 .workspace-search-settings label { display: flex; justify-content: space-between; align-items: center; min-height: 30px; gap: 12px; }
 .workspace-search-summary { display: flex; justify-content: space-between; align-items: center; min-height: 34px; padding: 4px 12px; color: var(--text-muted); border-bottom: var(--hairline); font-size: var(--small-font); }
-.workspace-search-summary > button { font-size: inherit; }
+.workspace-search-summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-search-summary > button { flex-shrink: 0; font-size: inherit; }
 .search-explanation {
   grid-column: 1 / -1; margin: 0; padding: 6px 4px 2px;
   color: var(--text-muted); font-size: var(--small-font); line-height: 1.4; overflow-wrap: anywhere;

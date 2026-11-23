@@ -1,6 +1,8 @@
 pub mod collections;
 pub mod publication;
 mod search;
+#[cfg(test)]
+pub(crate) use search::WorkspaceSearch;
 pub(crate) mod sync;
 pub mod taxonomy;
 pub mod trash;
@@ -195,6 +197,8 @@ pub struct Filter {
     pub untagged: bool,
     pub query: Option<String>,
     pub workspace_search: Option<search::WorkspaceSearch>,
+    #[serde(skip)]
+    pub compact_matches: bool,
     pub deleted: bool,
     #[serde(default)]
     pub wechat_imported: bool,
@@ -393,9 +397,24 @@ impl Workspace {
     }
 
     pub fn entries(&self, filter: Filter) -> Result<Page> {
-        let search = filter.workspace_search.map(search::WorkspaceSearch::parse);
-        let (rows, next_offset, total) = self.read(|conn| {
+        let mut search = filter
+            .workspace_search
+            .map(|search| search.parse(filter.compact_matches));
+        let index_error = self.search_index_error();
+        let (rows, next_offset, total, indexing) = self.read(|conn| {
+            let snapshot = conn.unchecked_transaction()?;
+            let conn = &snapshot;
+            let index = crate::search_index::state(conn)?;
+            if let Some(query) = &mut search { query.select_index(&index); }
             let mut values: Vec<Value> = Vec::new();
+            let score_query = if filter.pinned != Some(true) && matches!(filter.sort, Some(EntrySort::Relevance)) {
+                search.as_ref().and_then(search::Query::score_query)
+            } else { None };
+            let (score_prefix, score_join) = if let Some((table, query)) = score_query {
+                values.push(query.into());
+                (format!("WITH workspace_scores AS MATERIALIZED (SELECT rowid, bm25({table},5.0,1.0) AS score FROM {table} WHERE {table} MATCH ?) "),
+                    " LEFT JOIN workspace_scores ON workspace_scores.rowid=e.rowid")
+            } else { (String::new(), "") };
             let preview_columns = if filter.include_preview { ", e.summary, e.cover_asset_id, e.content_md" } else { "" };
             let search_columns = if search.is_some() { ", e.version AS search_version, COUNT(*) OVER() AS search_total" } else { "" };
             let (pin_order, pin_join) = if let Some(scope) = &filter.timeline_scope {
@@ -404,8 +423,8 @@ impl Workspace {
             } else {
                 (DIRECTORY_PIN, "")
             };
-            let mut sql = format!("SELECT {HEAD}, {pin_order} IS NOT NULL AS pinned{preview_columns}{search_columns}
-                FROM entries e{pin_join} WHERE e.purged_at IS NULL AND e.deleted_at IS {}NULL",
+            let mut sql = format!("{score_prefix}SELECT {HEAD}, {pin_order} IS NOT NULL AS pinned{preview_columns}{search_columns}
+                FROM entries e{pin_join}{score_join} WHERE e.purged_at IS NULL AND e.deleted_at IS {}NULL",
                 if filter.deleted { "NOT " } else { "" });
             if filter.wechat_imported {
                 sql.push_str(" AND e.wechat_imported = 1");
@@ -457,8 +476,13 @@ impl Workspace {
                 sql.push_str(&format!(" ORDER BY {pin_order}, e.id LIMIT ? OFFSET ?"));
             } else if let (Some(EntrySort::Relevance), Some(search)) = (&filter.sort, &search) {
                 search.register_relevance(conn)?;
-                sql.push_str(" ORDER BY workspace_title_rank(e.title) DESC, workspace_line_count(e.content_md) DESC,
-                    e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?");
+                sql.push_str(" ORDER BY workspace_title_exact(e.title) DESC,
+                    workspace_literal_rank(e.title,e.content_md) DESC, workspace_title_rank(e.title) DESC,
+                    COALESCE((SELECT SUM(workspace_tag_rank(t.name)) FROM entry_tags et JOIN tags t ON t.id=et.tag_id WHERE et.entry_id=e.id),0) DESC,");
+                if !score_join.is_empty() {
+                    sql.push_str(" workspace_scores.score IS NULL, workspace_scores.score,");
+                }
+                sql.push_str(" e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?");
             } else {
                 sql.push_str(match filter.sort {
                 Some(EntrySort::Name) => " ORDER BY e.title COLLATE NOCASE, e.id DESC LIMIT ? OFFSET ?",
@@ -501,7 +525,7 @@ impl Workspace {
             let next_offset = (items.len() > limit as usize).then(|| offset + limit);
             let total = items.first().and_then(|(_, _, result)| result.as_ref().map(|(_, _, total)| *total)).unwrap_or(0);
             items.truncate(limit as usize);
-            Ok((items, next_offset, total))
+            Ok((items, next_offset, total, index.table.is_none()))
         })?;
         let items = rows
             .into_iter()
@@ -520,6 +544,9 @@ impl Workspace {
             next_offset,
             search: search.map(|query| search::SearchInfo {
                 total,
+                indexing: indexing && index_error.is_none(),
+                index_generation: query.index_generation,
+                error: index_error,
                 clauses: query.clauses,
             }),
         })
