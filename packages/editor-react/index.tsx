@@ -110,6 +110,7 @@ interface Props extends EditorImages {
   uploadRevision?: number;
   readImageUploadState?(url: string): Promise<ImageUploadState>;
   resolveHostedImage?(url: string): Promise<string>;
+  onImageProcessingChange?(processing: boolean): void;
   title?: ReactNode;
   onDocumentChanged(entryId: string, localRevision: number): void;
   onBlur(): void;
@@ -615,7 +616,7 @@ export function MarkdownEditor(props: Props) {
     let disposed = false;
     let uploadRequest = 0;
     const publicChecks = new Map<string, Promise<string>>();
-    const uploadErrors = new Set<string>();
+    const uploadErrors = new Map<string, string>();
     let detachRef: (() => void) | undefined;
     function publish(doc: ProseNode) {
       const { node, end } = lastBodyBlock(doc);
@@ -1338,7 +1339,9 @@ export function MarkdownEditor(props: Props) {
           originals.set(src, nodes);
           if (!readImageUploadState) imageContext(view.nodeDOM(pos))?.setUploading(false, true);
         });
-        if (!readImageUploadState || !resolveHostedImage) return;
+        const enabled = Boolean(readImageUploadState && resolveHostedImage && originals.size);
+        latest.current.onImageProcessingChange?.(enabled);
+        if (!readImageUploadState || !resolveHostedImage || !originals.size) return;
         const current = () => !disposed && request === uploadRequest
           && latest.current.readImageUploadState === readImageUploadState && latest.current.uploadRevision === uploadRevision;
         const uploading = (src: string, pending: boolean) => {
@@ -1347,6 +1350,7 @@ export function MarkdownEditor(props: Props) {
             if (node.type.name === "image" && node.attrs.src === src) imageContext(view.nodeDOM(pos))?.setUploading(pending, true);
           });
         };
+        let queued = false;
         const job = Promise.all([...originals].map(async ([src, nodes]) => {
           let keepPending = false;
           try {
@@ -1354,12 +1358,20 @@ export function MarkdownEditor(props: Props) {
             if (!current()) return;
             uploading(src, state.pending || Boolean(state.publicUrl));
             keepPending = state.pending;
-            if (state.pending) return;
+            if (state.pending) { queued = true; return; }
             if (state.error) throw new Error(state.error);
             if (!state.publicUrl) return;
             const key = `${src}\n${state.publicUrl}`;
             let check = publicChecks.get(key);
-            if (!check) { check = resolveHostedImage(src); publicChecks.set(key, check); }
+            if (!check) {
+              uploadErrors.delete(src);
+              const attempt = resolveHostedImage(src).catch(error => {
+                if (publicChecks.get(key) === attempt) publicChecks.delete(key);
+                throw error;
+              });
+              check = attempt;
+              publicChecks.set(key, check);
+            }
             const url = await check;
             if (!current()) return;
             const tr = view.state.tr;
@@ -1369,12 +1381,14 @@ export function MarkdownEditor(props: Props) {
             if (tr.docChanged) view.dispatch(tr.setMeta(imageUploadUpdate, true).setMeta("addToHistory", false));
           } catch (error) {
             keepPending = false;
-            const key = `${src}\n${String(error)}`;
-            if (current() && !uploadErrors.has(key)) { uploadErrors.add(key); latest.current.onError?.(error); }
+            const message = String(error);
+            if (current() && uploadErrors.get(src) !== message) { uploadErrors.set(src, message); latest.current.onError?.(error); }
           } finally {
             if (!keepPending) uploading(src, false);
           }
-        })).then(() => {}).finally(() => edits.delete(job));
+        })).then(() => {
+          if (current()) latest.current.onImageProcessingChange?.(queued);
+        }).finally(() => edits.delete(job));
         edits.add(job);
       };
       syncUploads.current();
@@ -1389,6 +1403,7 @@ export function MarkdownEditor(props: Props) {
 
     return () => {
       disposed = true;
+      latest.current.onImageProcessingChange?.(false);
       syncUploads.current = null;
       clearTimeout(compositionTimer);
       resumeCompositionEdits();

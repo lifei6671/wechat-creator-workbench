@@ -111,6 +111,7 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
   const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const dirty = useSyncExternalStore(queue.subscribe, queue.isDirty);
   const saving = useSyncExternalStore(queue.subscribe, queue.isSaving);
+  const processingImages = useSyncExternalStore(queue.subscribe, queue.isProcessingImages);
   const error = useSyncExternalStore(queue.subscribe, queue.saveError);
   const wordSource = useDeferredValue(fields.contentMd);
   const count = useMemo(() => Array.from(wordSource.replace(/\s/g, "")).length.toLocaleString("zh-CN"), [wordSource]);
@@ -135,14 +136,14 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
   const uploadingImages = Boolean(upload && upload.total > 0);
   const [imageSavePending, setImageSavePending] = useState(false);
   useEffect(() => {
-    if (uploadingImages) {
+    if (uploadingImages || processingImages) {
       setImageSavePending(true);
       return;
     }
     if (!imageSavePending || dirty || saving) return;
     const timer = setTimeout(() => setImageSavePending(false), 1000);
     return () => clearTimeout(timer);
-  }, [uploadingImages, imageSavePending, dirty, saving]);
+  }, [uploadingImages, processingImages, imageSavePending, dirty, saving]);
   return <div className="document-status" role="group" aria-label="文章状态">
     {upload && upload.total > 0 && <Tooltip content={`图片上传 ${upload.completed}/${upload.total}`}>
       <span className="background-status" role="status" aria-label={`图片上传 ${upload.completed}/${upload.total}`}>
@@ -152,7 +153,7 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
     </Tooltip>}
     {reading && <span>只读</span>}
     <span role="status" className={error ? "status-error" : undefined}>
-      {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving || uploadingImages || imageSavePending ? "保存中…" : dirty ? "未保存" : "已保存"}
+      {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving || uploadingImages || processingImages || imageSavePending ? "保存中…" : dirty ? "未保存" : "已保存"}
     </span>
     <span>{count} 字</span>
   </div>;

@@ -383,6 +383,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
         uploadRevision={assetRevision}
         readImageUploadState={autoUploadImages && !locked && queue.entry.deletedAt === null ? readImageUploadState : undefined}
         resolveHostedImage={desktop.publicImage}
+        onImageProcessingChange={queue.setProcessingImages}
         githubRepo={fields.source?.url}
         title={display.showTitle && <div className="writing-title">
         {reading ? <h1>{fields.title || untitled}</h1> : <textarea aria-label="标题" rows={1}
