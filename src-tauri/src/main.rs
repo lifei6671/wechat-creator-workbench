@@ -40,7 +40,7 @@ use content::trash::{empty_trash, trash_retention};
 use db::Workspace;
 use graphics::gpu_acceleration;
 use link_import::{import_clipping, import_link};
-use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
+use mcp::{McpServer, mcp_copy_config, mcp_reset_token, mcp_save, mcp_status};
 use sync::contents::{
     sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
     sync_resolve, sync_run,
@@ -271,7 +271,8 @@ fn main() {
             wechat_graphics,
             mcp_status,
             mcp_save,
-            mcp_token,
+            mcp_copy_config,
+            mcp_reset_token,
             sync_status,
             sync_default_device_name,
             sync_connect,

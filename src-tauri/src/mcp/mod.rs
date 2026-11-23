@@ -56,10 +56,19 @@ impl Default for McpConfig {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpStatus {
     config: McpConfig,
     running: bool,
     error: Option<String>,
+    last_read: Option<ClientRead>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientRead {
+    client: String,
+    at: i64,
 }
 
 #[derive(Default)]
@@ -74,6 +83,7 @@ struct ServerState {
 
 struct Running {
     config: McpConfig,
+    last_read: Arc<Mutex<Option<ClientRead>>>,
     cancel: CancellationToken,
     server: JoinHandle<()>,
     tasks: TaskTracker,
@@ -145,6 +155,13 @@ impl ServerState {
                 .as_ref()
                 .is_some_and(|running| !running.server.is_finished()),
             error: self.error.clone(),
+            last_read: self.running.as_ref().and_then(|running| {
+                running
+                    .last_read
+                    .lock()
+                    .expect("MCP read status poisoned")
+                    .clone()
+            }),
         }
     }
 }
@@ -153,11 +170,13 @@ impl Running {
     fn start(app: &AppHandle, config: McpConfig, listener: TcpListener, token: &str) -> Self {
         let cancel = CancellationToken::new();
         let tasks = TaskTracker::new();
+        let last_read = Arc::new(Mutex::new(None));
         let tools = tools::Tools::new(
             app.clone(),
             config.permission,
             cancel.clone(),
             tasks.clone(),
+            last_read.clone(),
         );
         let service = StreamableHttpService::new(
             move || Ok(tools.clone()),
@@ -175,6 +194,7 @@ impl Running {
         let server = tokio::spawn(serve(listener, router, cancel.clone(), tasks.clone()));
         Self {
             config,
+            last_read,
             cancel,
             server,
             tasks,
@@ -332,26 +352,64 @@ pub async fn mcp_save(
 }
 
 #[tauri::command]
-pub async fn mcp_token(
-    db: State<'_, Workspace>,
-    mcp: State<'_, McpServer>,
-    rotate: bool,
-) -> Result<()> {
+pub async fn mcp_reset_token(db: State<'_, Workspace>, mcp: State<'_, McpServer>) -> Result<()> {
     let state = mcp.0.lock().await;
     if state.suspended {
         return Err(AppError::new("EXIT_PENDING", "正在保存并退出"));
     }
-    if rotate {
-        if state.running.is_some() {
-            return Err(AppError::invalid("请先停止 MCP 再重置令牌"));
-        }
-        let token = id();
-        secrets::entry(&db, CREDENTIAL)?
-            .set_password(&token)
-            .map_err(secrets::error)?;
-        return clipboard::clipboard_write(token);
+    if state.running.is_some() {
+        return Err(AppError::invalid("请先停止 MCP 再重置令牌"));
     }
-    clipboard::clipboard_write(access_token(&db)?)
+    secrets::entry(&db, CREDENTIAL)?
+        .set_password(&id())
+        .map_err(secrets::error)
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpClient {
+    Codex,
+    Claude,
+    Other,
+}
+
+impl McpClient {
+    fn configuration(self, port: u16, token: &str) -> String {
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        let authorization = format!("Bearer {token}");
+        match self {
+            Self::Codex => format!(
+                "[mcp_servers.wechat-workbench]\nurl = \"{url}\"\nhttp_headers = {{ Authorization = {} }}\n",
+                serde_json::Value::String(authorization)
+            ),
+            Self::Claude | Self::Other => format!(
+                "{:#}",
+                serde_json::json!({
+                    "mcpServers": { "wechat-workbench": {
+                        "type": "http", "url": url, "headers": { "Authorization": authorization }
+                    } }
+                })
+            ),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn mcp_copy_config(
+    db: State<'_, Workspace>,
+    mcp: State<'_, McpServer>,
+    client: McpClient,
+) -> Result<()> {
+    let state = mcp.0.lock().await;
+    let running = state
+        .running
+        .as_ref()
+        .filter(|running| !running.server.is_finished())
+        .ok_or_else(|| AppError::invalid("请先启用 MCP 服务"))?;
+    let token = secrets::entry(&db, CREDENTIAL)?
+        .get_password()
+        .map_err(secrets::error)?;
+    clipboard::clipboard_write(client.configuration(running.config.port, &token))
 }
 
 #[cfg(test)]
@@ -360,6 +418,28 @@ mod tests {
     use axum::{body::Body, http};
     use rmcp::ServerHandler;
     use tower::ServiceExt;
+
+    #[test]
+    fn client_configurations_embed_the_running_endpoint_and_current_credential() {
+        let address = "http://127.0.0.1:18711/mcp";
+        let header = "Bearer test-key";
+        assert_eq!(
+            McpClient::Codex.configuration(18711, "test-key"),
+            format!(
+                "[mcp_servers.wechat-workbench]\nurl = \"{address}\"\nhttp_headers = {{ Authorization = \"{header}\" }}\n"
+            )
+        );
+        for client in [McpClient::Claude, McpClient::Other] {
+            let config: serde_json::Value =
+                serde_json::from_str(&client.configuration(18711, "test-key")).unwrap();
+            assert_eq!(
+                config["mcpServers"]["wechat-workbench"],
+                serde_json::json!({
+                    "type": "http", "url": address, "headers": {"Authorization": header}
+                })
+            );
+        }
+    }
 
     #[tokio::test]
     async fn transport_validates_bearer_origin_host_and_request_size() {

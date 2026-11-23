@@ -1,8 +1,7 @@
 pub mod collections;
 pub mod publication;
 mod search;
-#[cfg(test)]
-pub(crate) use search::WorkspaceSearch;
+pub(crate) use search::{MatchPage, WorkspaceSearch};
 pub(crate) mod sync;
 pub mod taxonomy;
 pub mod trash;

@@ -7,6 +7,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [安装、开发与配置](./getting-started.md) | 本地运行、构建检查、macOS 打包、数据库备份及 MCP / AI 接入 |
+| [MCP 技术访问罗盘](./mcp-access-compass.md) | Agent 接入说明、内容能力现状、知识库产品参考、工具设计与分阶段验收 |
 | [中文搜索与相关性排序技术方案](./chinese-search-relevance-technical-design.md) | jieba 词级索引、BM25、字面查询兼容、索引迁移、原文定位及检索质量验收 |
 | [MVP 技术方案](./mvp-technical-design.md) | 产品边界、技术架构、Plainly 复用、数据模型、微信公众号导入导出、图片、备份、MCP、AI、测试与开源合规 |
 | [实施计划与验收](./implementation-plan.md) | 分阶段执行任务、任务依赖、验收条件、测试样本及交付顺序 |

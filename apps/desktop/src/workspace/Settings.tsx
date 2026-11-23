@@ -1,8 +1,9 @@
 import { useSettingsButtonFeedback } from "./settings-button-feedback";
+import { mcpConfigHints } from "./mcp-connection";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
 import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
-import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpConfig, type McpStatus } from "../desktop";
+import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpClient, type McpConfig, type McpStatus } from "../desktop";
 import { Tool } from "../ui";
 import type { ViewMode } from "./Document";
 import type { DocumentOpenMode } from "./preferences";
@@ -20,7 +21,7 @@ const groups = [
   ] },
   { label: "服务", items: [
     { id: "model", label: "AI 代理", icon: Sparkles, keywords: "默认 AI 目标 本地代理 本地模型 自定义模型 Codex Claude Code Ollama LM Studio 供应商 接口地址 模型名 API 密钥 超时 摘要 标题 改写 OpenAI" },
-    { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Codex Claude" },
+    { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Agent 客户端 复制配置 Codex Claude" },
   ] },
   { label: "存储", items: [
     { id: "sync", label: "同步", icon: RefreshCw, keywords: "多设备 自托管 服务地址 Cloudflare Docker VPS 设备名称 连接方式 认领密钥 接入密钥 恢复密钥 重装 合并 SETUP_SECRET" },
@@ -478,7 +479,9 @@ export function ViewShortcutSetting({ value, hintId, onChange, id = "view-shortc
 export function McpSettings({ status, loadError, onStatus }: { status?: McpStatus; loadError: string; onStatus(status: McpStatus): void }) {
   const [port, setPort] = useState<string>();
   const [permission, setPermission] = useState<McpConfig["permission"]>();
-  const [busy, setBusy] = useState<"save" | "stop" | "address" | "token" | "reset" | null>(null);
+  const [client, setClient] = useState<McpClient>("codex");
+  const [busy, setBusy] = useState<McpClient | "enable" | "save" | "stop" | "address" | "reset" | null>(null);
+  const advanced = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState("");
   const buttons = useSettingsButtonFeedback();
 
@@ -490,7 +493,7 @@ export function McpSettings({ status, loadError, onStatus }: { status?: McpStatu
     catch (failure) {
       buttons.finish(kind, false);
       setError(errorMessage(failure));
-      if (kind === "save" || kind === "stop") {
+      if (kind === "enable" || kind === "save" || kind === "stop") {
         try { onStatus(await desktop.mcpStatus()); }
         catch (refreshError) { setError(`${errorMessage(failure)}。无法读取服务状态：${errorMessage(refreshError)}`); }
       }
@@ -501,56 +504,81 @@ export function McpSettings({ status, loadError, onStatus }: { status?: McpStatu
   const address = status?.running ? `http://127.0.0.1:${status.config.port}/mcp` : "";
   const portValue = port ?? String(status?.config.port ?? "");
   const permissionValue = permission ?? status?.config.permission ?? "read";
-  const apply = () => perform("save", async () => {
+  const savingConfig = busy === "enable" || busy === "save";
+  const apply = () => perform(status?.running ? "save" : "enable", async () => {
     const current = await desktop.saveMcp({ port: Number(portValue), permission: permissionValue, enabled: true });
     onStatus(current);
+    setPort(undefined);
+    setPermission(undefined);
   });
   const failure = error || loadError || status?.error;
+  const lastRead = status?.lastRead;
   return <form className="settings-card mcp-settings" onSubmit={event => { event.preventDefault(); void apply(); }}>
-    <SettingRow label="运行状态" hint="显示本机 MCP 服务是否可供客户端连接。">
-      {hintId => <span className="settings-state" data-running={status?.running} role="status" aria-describedby={hintId}>
+    <div className="setting-row">
+      <span className="settings-state" data-running={status?.running} role="status">
         {!status ? "正在读取设置…" : status.running ? `运行中，${status.config.permission === "read" ? "只读" : "读写"}` : "已停止"}
-      </span>}
-    </SettingRow>
-    <SettingRow id="mcp-port" label="端口" hint="客户端通过此端口连接 MCP 服务。">
-      {hintId => <TextField.Root id="mcp-port" aria-describedby={hintId} type="number" min="1" max="65535" required
-        disabled={!status} value={portValue} onChange={event => setPort(event.target.value)} />}
-    </SettingRow>
-    <SettingRow id="mcp-permission" label="令牌权限" hint="只读权限允许客户端查阅工作区内容。"
-      warning="选择读写后，客户端可以通过 MCP 修改工作区内容。">
-      {hintId => <Select.Root value={permissionValue} disabled={!status} onValueChange={value => setPermission(value as McpConfig["permission"])}>
-        <Select.Trigger id="mcp-permission" aria-describedby={hintId} />
-        <Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
-      </Select.Root>}
-    </SettingRow>
-    <SettingRow id="mcp-address" label="本机地址" hint="将此地址填入 MCP 客户端的连接配置。">
-      {hintId => <div className="mcp-address">
-        <TextField.Root id="mcp-address" aria-describedby={hintId} readOnly value={address} disabled={!status?.running} />
-        <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "address"}
-          onClick={() => void perform("address", async () => { await desktop.copyText(address); })} {...buttons.props("address", !status?.running || busy !== null)}>{buttons.label("address", "复制地址", "复制成功", "复制失败")}</Button>
-      </div>}
-    </SettingRow>
-    <SettingRow label="访问令牌" hint="用于验证连接到 MCP 的客户端。"
-      warning="重置后，使用旧令牌的客户端需要更新配置。">
-      {hintId => <div className="button-strip setting-actions">
-        <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "token"}
-          onClick={() => void perform("token", async () => { await desktop.mcpToken(false); })} {...buttons.props("token", !status || busy !== null)}>{buttons.label("token", "复制令牌", "复制成功", "复制失败")}</Button>
-        <Button type="button" aria-describedby={hintId} variant="ghost" color="gray" loading={busy === "reset"}
-          onClick={() => void perform("reset", async () => { await desktop.mcpToken(true); })} {...buttons.props("reset", !status || status.running || busy !== null)}>{buttons.label("reset", "重置令牌", "已重置", "重置失败")}</Button>
-      </div>}
-    </SettingRow>
-    <div className="settings-footer mcp-footer">
-      <div className="mcp-feedback" tabIndex={failure ? 0 : -1}>
-        {failure && <span role="alert" className="inline-error">{failure}</span>}
+      </span>
+      {(!status?.running || buttons.status("enable")) &&
+        <Button type="submit" loading={busy === "enable"} {...buttons.props("enable", !status || busy !== null)}>
+          {buttons.label("enable", "启用 MCP", "已启用", "启用失败")}
+        </Button>}
+    </div>
+    {status?.running && <>
+      <SettingRow id="mcp-client" label="客户端">
+        {() => <Select.Root value={client} disabled={busy !== null} onValueChange={value => setClient(value as McpClient)}>
+          <Select.Trigger id="mcp-client" />
+          <Select.Content><Select.Item value="codex">Codex CLI</Select.Item><Select.Item value="claude">Claude Code</Select.Item><Select.Item value="other">其他客户端</Select.Item></Select.Content>
+        </Select.Root>}
+      </SettingRow>
+      <SettingRow label="客户端配置" hint={mcpConfigHints[client]}>
+        {hintId => <Button type="button" aria-describedby={hintId} loading={busy === client} onClick={() => void perform(client, () => desktop.copyMcpConfig(client))}
+          {...buttons.props(client, busy !== null)}>{buttons.label(client, client === "codex" ? "复制 Codex 配置" : "复制客户端配置", "复制成功", "复制失败")}</Button>}
+      </SettingRow>
+      {lastRead && <SettingRow label="最近成功访问">
+        {() => <span className="mcp-recent">{lastRead.client}　{new Date(lastRead.at).toLocaleString()}</span>}
+      </SettingRow>}
+    </>}
+    <details ref={advanced} className="mcp-advanced">
+      <summary>高级设置</summary>
+      <SettingRow id="mcp-port" label="端口" hint="客户端通过此端口连接 MCP 服务。">
+        {hintId => <TextField.Root id="mcp-port" aria-describedby={hintId} type="number" min="1" max="65535" required
+          disabled={!status || savingConfig} value={portValue} onInvalid={() => { if (advanced.current) advanced.current.open = true; }}
+          onChange={event => setPort(event.target.value)} />}
+      </SettingRow>
+      <SettingRow id="mcp-permission" label="令牌权限" hint="只读权限允许客户端查阅工作区内容。"
+        warning="选择读写后，客户端可以通过 MCP 修改工作区内容。">
+        {hintId => <Select.Root value={permissionValue} disabled={!status || savingConfig} onValueChange={value => setPermission(value as McpConfig["permission"])}>
+          <Select.Trigger id="mcp-permission" aria-describedby={hintId} />
+          <Select.Content><Select.Item value="read">只读</Select.Item><Select.Item value="write">读写</Select.Item></Select.Content>
+        </Select.Root>}
+      </SettingRow>
+      <SettingRow id="mcp-address" label="本机地址" hint="将此地址填入 MCP 客户端的连接配置。">
+        {hintId => <div className="mcp-address">
+          <TextField.Root id="mcp-address" aria-describedby={hintId} readOnly value={address} disabled={!status?.running} />
+          <Button type="button" aria-describedby={hintId} variant="soft" color="gray" loading={busy === "address"}
+            onClick={() => void perform("address", async () => { await desktop.copyText(address); })} {...buttons.props("address", !status?.running || busy !== null)}>{buttons.label("address", "复制地址", "复制成功", "复制失败")}</Button>
+        </div>}
+      </SettingRow>
+      <SettingRow label="访问令牌"
+        warning="重置后，使用旧令牌的客户端需要更新配置。">
+        {hintId => <div className="button-strip setting-actions">
+          <Button type="button" aria-describedby={hintId} variant="ghost" color="gray" loading={busy === "reset"}
+            onClick={() => void perform("reset", () => desktop.resetMcpToken())} {...buttons.props("reset", !status || status.running || busy !== null)}>{buttons.label("reset", "重置令牌", "已重置", "重置失败")}</Button>
+        </div>}
+      </SettingRow>
+      <div className="settings-footer mcp-footer">
+        <Button type="button" variant="soft" color="gray" data-available={Boolean(status?.config.enabled || buttons.status("stop"))}
+          loading={busy === "stop"}
+          onClick={() => void perform("stop", async () => {
+            if (status) onStatus(await desktop.saveMcp({ ...status.config, enabled: false }));
+          })} {...buttons.props("stop", !status?.config.enabled || busy !== null)}>{buttons.label("stop", "停止 MCP", "已停止", "停止失败")}</Button>
+        {status?.running && <Button type="submit" className="mcp-submit" loading={busy === "save"} {...buttons.props("save", busy !== null)}>
+          {buttons.label("save", "保存设置", "已保存", "保存失败")}
+        </Button>}
       </div>
-      <Button type="button" variant="soft" color="gray" data-available={Boolean(status?.config.enabled)}
-        loading={busy === "stop"}
-        onClick={() => void perform("stop", async () => {
-          if (status) onStatus(await desktop.saveMcp({ ...status.config, enabled: false }));
-        })} {...buttons.props("stop", !status?.config.enabled || busy !== null)}>{buttons.label("stop", "停止 MCP", "已停止", "停止失败")}</Button>
-      <Button type="submit" className="mcp-submit" loading={busy === "save"}  {...buttons.props("save", !status || busy !== null)}>
-        {buttons.label("save", status?.running ? "保存设置" : "启用 MCP", "已保存", "保存失败")}
-      </Button>
+    </details>
+    <div className="mcp-feedback" tabIndex={failure ? 0 : -1}>
+      {failure && <span role="alert" className="inline-error">{failure}</span>}
     </div>
   </form>;
 }

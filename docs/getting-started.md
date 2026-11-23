@@ -56,35 +56,13 @@ APPLE_SIGNING_IDENTITY=- pnpm build --bundles app,dmg
 
 ## 本机 MCP
 
-打开「设置」→「MCP 服务」，启用服务并复制令牌。默认地址为 `http://127.0.0.1:17321/mcp`，默认权限为只读。需要新建、修改内容或导入文章时，在设置里选择读写并保存。
+1. 打开工作台的「设置」→「MCP 服务」，点「启用 MCP」。初次启用为只读。使用期间保持工作台运行。
+2. 选 Codex，点「复制 Codex 配置」。打开个人 `~/.codex/config.toml`（Windows 为 `%USERPROFILE%\.codex\config.toml`，自定义 `CODEX_HOME` 时在该目录下），将复制的服务段保存到文件中。已有 `[mcp_servers.wechat-workbench]` 时，更新其中的 `url` 和 `http_headers.Authorization`，删除旧的 `bearer_token_env_var`，保留其他服务和设置。配置含有效令牌，只保存在本机个人配置文件中。
+3. 完全退出 Codex，按平时的方式重新打开。请 Agent「用 wechat-workbench 的 list_entries 读取最近三条，告诉我标题和类型」。空列表也表示连接成功，工作台会显示最近成功访问的客户端和时间。以后正常重启即可复用这条连接。
 
-Windows PowerShell 中从剪贴板加载刚复制的令牌，然后为 [Codex CLI](https://github.com/openai/codex/blob/main/codex-rs/cli/src/mcp_cmd.rs) 添加服务。从包含该环境变量的终端启动客户端。
+Claude Code 用户选择「Claude Code」并点「复制客户端配置」，将 JSON 中的 `wechat-workbench` 服务合并进个人 `~/.claude.json` 顶层的 `mcpServers`。如果此前在项目的 `.mcp.json` 或项目本地配置注册过同名服务，请移除旧的同名项，以便个人配置生效。重启 Claude Code 后可用 `/mcp` 查看状态。其他客户端将 JSON 中的地址和 `Authorization` 请求头填入个人 Streamable HTTP 连接设置。[Codex MCP 配置](https://developers.openai.com/codex/mcp/) / [Claude Code MCP 配置](https://code.claude.com/docs/en/mcp#choose-the-right-scope)
 
-```powershell
-$env:WECHAT_WORKBENCH_MCP_TOKEN = (Get-Clipboard).Trim()
-codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
-```
-
-macOS 终端可用 `pbpaste` 读取刚复制的令牌。
-
-```sh
-export WECHAT_WORKBENCH_MCP_TOKEN="$(pbpaste)"
-codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
-```
-
-[Claude Code](https://code.claude.com/docs/en/mcp) 可在项目的 `.mcp.json` 使用同一个环境变量。从设置改过端口时同步替换示例地址。
-
-```json
-{
-  "mcpServers": {
-    "wechat-workbench": {
-      "type": "http",
-      "url": "http://127.0.0.1:17321/mcp",
-      "headers": { "Authorization": "Bearer ${WECHAT_WORKBENCH_MCP_TOKEN}" }
-    }
-  }
-}
-```
+需要写入时，在工作台「高级设置」选择读写并保存，再让客户端重连。更换端口或重置令牌后，重新复制并更新已接入客户端的配置。服务仅监听本机，默认地址为 `http://127.0.0.1:17321/mcp`。
 
 ## AI 助手
 

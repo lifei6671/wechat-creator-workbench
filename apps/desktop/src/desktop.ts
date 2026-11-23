@@ -42,7 +42,8 @@ export type LinkImportResult = { kind: "wechat"; job: WechatImportJob } | {
   kind: "article"; article: { entryId: string; existing: boolean; deleted: boolean; unavailableImages: number };
 };
 export interface McpConfig { enabled: boolean; port: number; permission: "read" | "write" }
-export interface McpStatus { config: McpConfig; running: boolean; error: string | null }
+export type McpClient = "codex" | "claude" | "other";
+export interface McpStatus { config: McpConfig; running: boolean; error: string | null; lastRead?: { client: string; at: number } | null }
 export interface SyncBinding { url: string; instanceId: string; epoch: string; deviceId: string; paused: boolean; pauseReason?: string | null }
 export interface SyncActivity {
   hasLocalContent: boolean;
@@ -232,7 +233,8 @@ export const desktop = {
     invoke<SyncApplied>("sync_resolve", { entityType, entityId, choice, remoteRevision, localGeneration }),
   onMcpStatusChanged: (callback: () => void) => listen("mcp-status-changed", callback),
   saveMcp: (config: McpConfig) => invoke<McpStatus>("mcp_save", { config }),
-  mcpToken: (rotate: boolean) => invoke<void>("mcp_token", { rotate }),
+  copyMcpConfig: (client: McpClient) => invoke<void>("mcp_copy_config", { client }),
+  resetMcpToken: () => invoke<void>("mcp_reset_token"),
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
   aiSettings: () => invoke<AiSettings>("ai_settings"),
   aiAgentVersions: () => invoke<[AiAgent, string | null][]>("ai_agent_versions"),
