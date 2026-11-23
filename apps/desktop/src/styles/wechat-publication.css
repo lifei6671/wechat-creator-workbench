@@ -29,7 +29,9 @@
 .wechat-recommendation-row { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) 28px; align-items: center; gap: 5px; min-height: 52px; padding: 7px 0; border-bottom: var(--hairline); }
 .wechat-recommendation-row > span { overflow-wrap: anywhere; line-height: 1.65; padding: 0 3px; }
 .wechat-recommendation-row:hover { background: var(--gray-2); }
-.wechat-recommendation-row[data-drag-target]::before { position: absolute; content: ""; inset: 0 0 auto; height: 0.5px; background: var(--accent-9); }
+.wechat-recommendation-slot[data-dragging] { background: var(--gray-3); }
+.wechat-recommendation-row[data-dragging] { z-index: 5; pointer-events: none; background: var(--app-bg); box-shadow: var(--shadow-3); }
+.wechat-recommendation-row[data-dragging] .wechat-drag-handle { cursor: grabbing; }
 .wechat-drag-handle { padding: 0; width: 18px; min-height: 28px; justify-content: center; color: var(--gray-9); cursor: grab; touch-action: none; }
 .wechat-row-more { opacity: 0; }
 .wechat-recommendation-row:is(:hover, :focus-within) .wechat-row-more { opacity: 1; }

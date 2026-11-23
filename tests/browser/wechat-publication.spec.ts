@@ -1,5 +1,74 @@
 import { expect, test } from "@playwright/test";
 
+test("lifts the original recommendation row and previews its insertion before saving", async ({ page }, testInfo) => {
+  await page.goto("/tests/wechat-publication.html");
+  await expect(page.locator(".wechat-publishing-footer button")).toBeEnabled();
+  const rows = page.locator(".wechat-recommendation-row");
+  await expect(rows).toHaveCount(5);
+  const first = (await rows.first().getByRole("button", { name: /拖动排序/ }).boundingBox())!;
+  const source = (await rows.first().elementHandle())!;
+  const original = (await rows.first().boundingBox())!;
+  const third = (await rows.nth(2).boundingBox())!;
+  await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(third.x + 40, third.y + third.height - 4);
+  const ghost = page.locator(".wechat-recommendation-row[data-dragging]");
+  await expect(ghost).toHaveText("向量检索实践 1");
+  expect(await source.evaluate(element => element.hasAttribute("data-dragging"))).toBe(true);
+  expect(JSON.parse(await page.getByTestId("saved").textContent() || "{}").wechatPublication.recommendations.mode).toBe("auto");
+  const before = (await ghost.boundingBox())!;
+  const offsetX = first.x + first.width / 2 - original.x;
+  const offsetY = first.y + first.height / 2 - original.y;
+  expect(Math.abs(before.x - (third.x + 40 - offsetX))).toBeLessThanOrEqual(1);
+  expect(Math.abs(before.y - (third.y + third.height - 4 - offsetY))).toBeLessThanOrEqual(1);
+  expect(before.width).toBeCloseTo(original.width, 0);
+  expect(before.height).toBeCloseTo(original.height, 0);
+  await expect(rows.first()).toContainText("向量检索实践 2");
+  await expect(rows.nth(2)).toContainText("向量检索实践 1");
+  expect(await page.locator('.wechat-recommendation-slot[data-dragging]').evaluate(element => element.getBoundingClientRect().height)).toBeCloseTo(original.height, 0);
+  await page.mouse.move(third.x + 60, third.y + third.height - 2);
+  const after = (await ghost.boundingBox())!;
+  expect(after.x - before.x).toBeCloseTo(20, 0);
+  expect(after.y - before.y).toBeCloseTo(2, 0);
+  await expect(rows.first()).toContainText("向量检索实践 2");
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: "output/wechat-recommendation-drag.png" });
+  await page.mouse.up();
+  await expect(ghost).toHaveCount(0);
+  await expect(rows.nth(2)).toContainText("向量检索实践 1");
+  await expect.poll(async () => JSON.parse(await page.getByTestId("saved").textContent() || "{}").wechatPublication.recommendations.items.map((item: { entryId: string }) => item.entryId))
+    .toEqual(["past-1", "past-2", "past-0", "past-3", "past-4"]);
+
+  const moved = (await rows.nth(2).getByRole("button", { name: /拖动排序/ }).boundingBox())!;
+  const top = (await rows.first().boundingBox())!;
+  await page.mouse.move(moved.x + moved.width / 2, moved.y + moved.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(top.x + 40, top.y + 3);
+  await expect(rows.first()).toContainText("向量检索实践 1");
+  await page.mouse.up();
+  await expect(rows.first()).toContainText("向量检索实践 1");
+});
+
+test("cancels a recommendation drag without persisting and clears capture feedback", async ({ page }) => {
+  await page.goto("/tests/wechat-publication.html");
+  const rows = page.locator(".wechat-recommendation-row");
+  await expect(rows).toHaveCount(5);
+  const handle = (await rows.first().getByRole("button", { name: /拖动排序/ }).boundingBox())!;
+  const target = (await rows.nth(2).boundingBox())!;
+  for (const cancel of ["escape", "pointercancel", "lostpointercapture", "outside"]) {
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(target.x + 40, target.y + 3);
+    await expect(page.locator(".wechat-recommendation-row[data-dragging]")).toBeVisible();
+    if (cancel === "escape") await page.keyboard.press("Escape");
+    else if (cancel === "outside") await page.mouse.move(40, 150);
+    else await page.getByRole("list", { name: "当前推荐文章" }).dispatchEvent(cancel);
+    await page.mouse.up();
+    await expect(page.locator(".wechat-recommendation-row[data-dragging]")).toHaveCount(0);
+    await expect(page.locator("[data-drag-target], [data-dragging]")).toHaveCount(0);
+    await expect(rows.first()).toContainText("向量检索实践 1");
+  }
+});
+
 test("switches sidebar tools directly and autosaves properties without a modal", async ({ page }, testInfo) => {
   await page.goto("/tests/wechat-publication.html?windows=1");
   await expect(page.locator(".wechat-recommendation-row")).toHaveCount(5);
@@ -109,6 +178,26 @@ test("spaces sidebar icons and keeps the shared toggle clear of Windows window c
   expect(header.x + header.width - bounds.x - bounds.width).toBeGreaterThanOrEqual(8);
   await toggle.hover();
   await expect(page.getByRole("tooltip")).toHaveText("隐藏右侧栏");
+});
+
+test("adds selected candidates using only the persisted recommendation fields", async ({ page }) => {
+  await page.goto("/tests/wechat-publication.html");
+  await expect(page.locator(".wechat-publishing-footer button")).toBeEnabled();
+  await page.getByRole("button", { name: "添加文章", exact: true }).click();
+  await page.getByRole("tab", { name: "全部文章", exact: true }).click();
+  await page.getByRole("checkbox", { name: "向量检索实践 6", exact: true }).check();
+  await page.getByRole("checkbox", { name: "向量检索实践 8", exact: true }).check();
+  await page.getByRole("button", { name: "添加 2 篇", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const saved = JSON.parse(await page.getByTestId("saved").textContent() || "{}");
+  expect(saved.wechatPublication.recommendations.items.slice(-2)).toEqual([
+    { entryId: "past-5", title: "向量检索实践 6", url: "https://mp.weixin.qq.com/s/past-5" },
+    { entryId: "past-7", title: "向量检索实践 8", url: "https://mp.weixin.qq.com/s/past-7" },
+  ]);
+  expect(saved.wechatPublication.recommendations.mode).toBe("manual");
+  expect(saved.contentMd).not.toContain("推荐阅读");
+  await page.getByTestId("backup-barrier").click();
+  await expect(page.getByTestId("barrier")).toHaveText("true");
 });
 
 test("retries a failed addition without appending the same article twice", async ({ page }) => {

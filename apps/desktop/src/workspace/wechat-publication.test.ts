@@ -34,6 +34,69 @@ it("does not request recommendations when the article closes during fingerprint 
   expect(commit).not.toHaveBeenCalled();
 });
 
+it("leaves dirty body edits to autosave instead of flushing them during a background refresh", async () => {
+  const session = publishing.session(queue);
+  await session.ensure();
+  commit.mockClear();
+  queue.edit({ contentMd: "还在输入的正文" });
+  await session.refresh();
+  expect(commit).not.toHaveBeenCalled();
+  expect(queue.isDirty()).toBe(true);
+  expect(desktop.wechatRecommendations).toHaveBeenCalledOnce();
+});
+
+it("abandons a background generation when typing resumes without saving its stale result", async () => {
+  const session = publishing.session(queue);
+  await session.ensure();
+  queue.edit({ contentMd: "已保存的上一段正文" });
+  await queue.flush();
+  commit.mockClear();
+  let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
+  vi.mocked(desktop.wechatRecommendations).mockReturnValueOnce(new Promise(done => { finish = done; }));
+  const refresh = session.refresh();
+  await vi.waitFor(() => expect(desktop.wechatRecommendations).toHaveBeenCalledTimes(2));
+  const input = session.input();
+  queue.edit({ contentMd: "继续输入的新正文" });
+  finish({ inputFingerprint: await recommendationFingerprint(input), items: [item("stale")] });
+  await refresh;
+  expect(commit).not.toHaveBeenCalled();
+  expect(queue.isDirty()).toBe(true);
+  expect(queue.capture().fields.wechatPublication?.recommendations.items).toEqual([item("auto")]);
+});
+
+it("leaves generated background recommendations and subsequent typing on the normal autosave schedule", async () => {
+  const session = publishing.session(queue);
+  await session.ensure();
+  queue.edit({ contentMd: "刚保存的正文" });
+  await queue.flush();
+  commit.mockClear();
+  await session.refresh();
+  expect(queue.capture().fields.wechatPublication?.recommendations.inputFingerprint).toBe(await recommendationFingerprint(session.input()));
+  queue.edit({ contentMd: "推荐生成后继续输入" });
+  expect(commit).not.toHaveBeenCalled();
+  expect(queue.isDirty()).toBe(true);
+  expect(queue.capture().fields.contentMd).toBe("推荐生成后继续输入");
+});
+
+it("waits for a background refresh then checks the latest draft before copying", async () => {
+  const session = publishing.session(queue);
+  await session.change(current => ({ ...current, recommendations: { ...current.recommendations, items: [item("manual")] } }), true);
+  const resolve = vi.mocked(desktop.resolveWechatRecommendations);
+  resolve.mockClear();
+  let finish!: (value: { items: WechatRecommendation[]; invalid: [] }) => void;
+  resolve.mockReturnValueOnce(new Promise(done => { finish = done; })).mockResolvedValueOnce({ items: [], invalid: [{ entryId: "manual", message: "文章已删除" }] });
+  const refresh = session.refresh();
+  await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+  queue.edit({ contentMd: "复制前刚刚输入的正文" });
+  const prepare = session.prepare();
+  const rejected = expect(prepare).rejects.toThrow("推荐文章已失效");
+  finish({ items: [item("manual")], invalid: [] });
+  await refresh;
+  await rejected;
+  expect(resolve).toHaveBeenLastCalledWith(expect.objectContaining({ contentMd: "复制前刚刚输入的正文" }), [item("manual")]);
+  expect(queue.isDirty()).toBe(false);
+});
+
 it("keeps a deliberately empty manual list through body edits and prepares without changing the body", async () => {
   const session = publishing.session(queue);
   await session.ensure();

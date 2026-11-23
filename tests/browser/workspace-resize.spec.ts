@@ -22,6 +22,35 @@ async function mockNativeWindow(page: Page, platform: string) {
   }, platform);
 }
 
+for (const platform of ["Win32", "MacIntel"]) test(`keeps publication controls while typing stable on ${platform}`, async ({ page }) => {
+  await mockNativeWindow(page, platform);
+  await page.goto("/tests/workspace-resize.html?edit=1");
+  await page.getByRole("button", { name: "公众号设置", exact: true }).click();
+  const copy = page.locator(".wechat-publishing-footer button");
+  await expect(copy).toBeEnabled();
+  await expect(page.getByRole("button", { name: "重新推荐", exact: true })).toBeEnabled();
+  const editor = page.locator(".document-editor:not([hidden]) .ProseMirror");
+  await editor.locator("p").first().click();
+  await editor.press("End");
+  const initial = await page.evaluate(() => {
+    const copy = document.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
+    let disabledChanges = 0;
+    const observer = new MutationObserver(records => { disabledChanges += records.filter(record => record.attributeName === "disabled").length; });
+    observer.observe(copy, { attributes: true, attributeFilter: ["disabled"] });
+    Object.assign(window, { typingFeedback: () => ({ disabledChanges, connected: copy.isConnected }) });
+    return { ...Reflect.get(window, "publicationTyping") };
+  });
+  await editor.pressSequentially("连续输入正文", { delay: 60 });
+  const result = await page.evaluate(() => ({ ...Reflect.get(window, "publicationTyping"), ...Reflect.get(window, "typingFeedback")() }));
+  expect(result.saves).toBe(initial.saves);
+  expect(result.recommendations).toBe(initial.recommendations);
+  expect(result.disabledChanges).toBe(0);
+  expect(result.connected).toBe(true);
+  await expect(page.locator("#tab-resize .unsaved-dot")).toHaveCount(1);
+  await expect(copy).toBeEnabled();
+  await expect.poll(async () => (await page.evaluate(() => Reflect.get(window, "publicationTyping"))).saves).toBeGreaterThan(initial.saves);
+});
+
 for (const platform of ["Win32", "MacIntel"]) test(`keeps the upper right sidebar divider draggable after editor scrolling on ${platform}`, async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -94,6 +123,7 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps title tabs and the rig
 for (const platform of ["Win32", "MacIntel"]) test(`keeps panel widths stable through diagonal window resize on ${platform}`, async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
+  page.on("console", message => { if (message.type() === "error" && message.text().includes("flushSync")) errors.push(message.text()); });
   await mockNativeWindow(page, platform);
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/tests/workspace-resize.html?priority=1");
@@ -163,11 +193,13 @@ for (const platform of ["Win32", "MacIntel"]) test(`collapses the right sidebar 
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(group).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
+    await expect.poll(async () => (await right.boundingBox())!.width).toBeCloseTo(expandedWidth, 0);
+    await separator.hover();
     const reopened = (await separator.boundingBox())!;
     const before = (await right.boundingBox())!.width;
     expect(before).toBeCloseTo(expandedWidth, 0);
-    await page.mouse.move(reopened.x + reopened.width / 2, reopened.y + reopened.height / 2);
     await page.mouse.down();
+    await expect(separator).toHaveAttribute("data-separator", "active");
     await page.mouse.move(reopened.x - 80, reopened.y + reopened.height / 2, { steps: 4 });
     await page.mouse.up();
     await expect.poll(async () => (await right.boundingBox())!.width).toBeGreaterThan(before + 60);

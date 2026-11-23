@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } from "react";
+import { useDeferredValue, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button, Checkbox, Dialog, DropdownMenu, Select, Spinner } from "@radix-ui/themes";
 import { ArrowDown, ArrowUp, Copy, GripVertical, MoreHorizontal, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
 import type { WechatCandidate, WechatRecommendation } from "../../../../packages/shared-types";
@@ -6,6 +6,7 @@ import { wechatThemes, wechatThemeId } from "../../../../packages/wechat-rendere
 import { ActionError, useButtonFeedback } from "../button-feedback";
 import { desktop, errorMessage } from "../desktop";
 import type { PublicationSession } from "./wechat-publication";
+import { usePointerDrag } from "./pointer-drag";
 
 function linkKey(value: string) {
   const url = new URL(value);
@@ -15,19 +16,20 @@ function linkKey(value: string) {
 export function WechatPublicationPanel({ session, locked, onClose, onCopy, publishing, copyFeedback, sourceRevision = 0, embedded = false }: {
   session: PublicationSession; locked: boolean; onClose(): void; onCopy(): void; publishing: boolean; copyFeedback?: ReturnType<typeof useButtonFeedback>; sourceRevision?: number; embedded?: boolean;
 }) {
-  const { fields, revision } = useSyncExternalStore(session.queue.subscribe, session.queue.snapshot);
+  const { fields, revision, savedRevision, saving, error: saveError } = useSyncExternalStore(session.queue.subscribe, session.queue.snapshot);
+  const idle = revision === savedRevision && !saving;
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
   const defaults = useSyncExternalStore(session.defaults.subscribe, session.defaults.snapshot);
   const [tab, setTab] = useState("article");
   const [picker, setPicker] = useState(false);
-  const [dragTarget, setDragTarget] = useState<string>();
-  const drag = useRef<{ id: string; y: number; moved: boolean }>(null);
   const feedback = useButtonFeedback();
   const config = fields.wechatPublication ?? session.config();
   const recommendations = config.recommendations;
+  const grab = useRef({ offsetX: 0, offsetY: 0, width: 0, height: 0 });
+  const drop = useRef<{ id: string | null; placement: string } | null>(null);
   const resolved = new Map(state.resolved.items.map(item => [item.entryId, item]));
   const invalid = new Map(state.resolved.invalid.map(item => [item.entryId, item.message]));
-  useEffect(() => { void session.ensure().catch(() => {}); }, [session, revision, defaults.value?.version, sourceRevision]);
+  useEffect(() => { if (idle) void session.refresh().catch(() => {}); }, [session, idle, savedRevision, defaults.value?.version, sourceRevision]);
 
   async function changeItems(items: WechatRecommendation[]) {
     await session.change(current => ({ ...current, recommendations: { ...current.recommendations, items } }), true);
@@ -39,17 +41,40 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
     [items[index], items[target]] = [items[target], items[index]];
     void changeItems(items);
   }
-  function pointerUp(event: PointerEvent<HTMLOListElement>) {
-    const moving = drag.current; drag.current = null; setDragTarget(undefined);
-    if (!moving?.moved) return;
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-recommendation]")?.dataset.recommendation;
-    if (!target || target === moving.id) return;
+  function reordered(moving: string, target: { id: string | null; placement: string }) {
     const items = [...recommendations.items];
-    const from = items.findIndex(item => item.entryId === moving.id), to = items.findIndex(item => item.entryId === target);
-    if (from < 0 || to < 0) return;
-    const [item] = items.splice(from, 1); items.splice(to, 0, item); void changeItems(items);
+    const from = items.findIndex(item => item.entryId === moving);
+    if (from < 0) return items;
+    const [item] = items.splice(from, 1);
+    const to = items.findIndex(item => item.entryId === target.id);
+    if (to < 0) return recommendations.items;
+    items.splice(to + (target.placement === "after" ? 1 : 0), 0, item);
+    return items;
   }
-  const failure = state.error || defaults.error || feedback.error() || copyFeedback?.error("copyWechat")
+  const drag = usePointerDrag(
+    element => {
+      const handle = element.closest<HTMLButtonElement>(".wechat-drag-handle");
+      const id = handle?.closest<HTMLElement>("[data-recommendation]")?.dataset.recommendation;
+      const item = !locked && handle && !handle.disabled && recommendations.items.find(item => item.entryId === id);
+      return item ? { id: item.entryId, title: resolved.get(item.entryId)?.title ?? item.title, ...grab.current } : null;
+    },
+    (event, item) => {
+      if (locked) return null;
+      const row = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-recommendation]");
+      if (!row || !event.currentTarget.contains(row)) return drop.current = null;
+      if (row.dataset.recommendation === item.id) return drop.current;
+      const bounds = row.getBoundingClientRect();
+      return drop.current = { id: row.dataset.recommendation!, placement: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after" };
+    },
+    (moving, target) => {
+      const items = reordered(moving.id, target);
+      if (items.every((item, index) => item.entryId === recommendations.items[index].entryId)) return;
+      void changeItems(items);
+    },
+  );
+  const visibleItems = drag.ghost && drag.hint ? reordered(drag.ghost.id, drag.hint) : recommendations.items;
+  const saveFailure = saveError ? errorMessage(saveError) : "";
+  const failure = [state.error, defaults.error, feedback.error(), copyFeedback?.error("copyWechat")].find(message => message && message !== saveFailure)
     || state.resolved.invalid.map(item => `${recommendations.items.find(row => row.entryId === item.entryId)?.title ?? "推荐文章"}：${item.message}`).join("；");
   return <aside className="wechat-publishing-panel" aria-label="公众号配置">
     {!embedded && <header className="wechat-publishing-header"><h2>公众号</h2><button type="button" className="plain-button chrome-icon" aria-label="关闭公众号侧栏"
@@ -82,14 +107,21 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
               onClick={() => void feedback.run("regenerate", async () => { if (!await session.regenerate()) throw new Error(session.snapshot().error); })}>
               {feedback.icon("regenerate", <RotateCcw size={13} />, 13)}{feedback.label("regenerate", "重新推荐", "已推荐")}</button>
           </div></div>
-          <ol className="wechat-recommendation-list" aria-label="当前推荐文章"
-            onPointerMove={event => { if (!drag.current || Math.abs(event.clientY - drag.current.y) < 5 && !drag.current.moved) return;
-              drag.current.moved = true; setDragTarget(document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-recommendation]")?.dataset.recommendation); }}
-            onPointerUp={pointerUp} onPointerCancel={() => { drag.current = null; setDragTarget(undefined); }}>
-            {recommendations.items.map((item, index) => <li key={item.entryId} data-recommendation={item.entryId} data-drag-target={dragTarget === item.entryId || undefined}
-              className="wechat-recommendation-row">
+          <ol className="wechat-recommendation-list" aria-label="当前推荐文章" {...drag.events}
+            onKeyDown={event => { if (event.key === "Escape") drag.events.onPointerCancel(); }}>
+            {visibleItems.map((item, index) => <li key={item.entryId} data-recommendation={item.entryId}
+              data-dragging={drag.ghost?.id === item.entryId || undefined} className="wechat-recommendation-slot"
+              style={drag.ghost?.id === item.entryId ? { height: drag.ghost.height } : undefined}>
+              <div className="wechat-recommendation-row" ref={drag.ghost?.id === item.entryId ? drag.ghostElement : undefined}
+                data-dragging={drag.ghost?.id === item.entryId || undefined}
+                style={drag.ghost?.id === item.entryId ? { position: "fixed", left: -drag.ghost.offsetX, top: -drag.ghost.offsetY,
+                  width: drag.ghost.width, height: drag.ghost.height, translate: `${drag.ghost.x}px ${drag.ghost.y}px` } : undefined}>
               <button type="button" className="plain-button wechat-drag-handle" aria-label={`拖动排序：${item.title}`} disabled={locked} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.focus(); drag.current = { id: item.entryId, y: event.clientY, moved: false }; event.currentTarget.closest("ol")!.setPointerCapture(event.pointerId); }}
+                onPointerDown={event => { if (event.button === 0) {
+                  event.preventDefault(); event.currentTarget.focus(); drop.current = null;
+                  const bounds = event.currentTarget.closest(".wechat-recommendation-row")!.getBoundingClientRect();
+                  grab.current = { offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top, width: bounds.width, height: bounds.height };
+                } }}
                 onKeyDown={event => { if (event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); move(index, event.key === "ArrowUp" ? -1 : 1); } }}><GripVertical size={14} /></button>
               <span className={invalid.has(item.entryId) ? "inline-error" : ""} title={invalid.get(item.entryId)}>{resolved.get(item.entryId)?.title ?? item.title}</span>
               <DropdownMenu.Root><DropdownMenu.Trigger><button type="button" className="plain-button chrome-icon wechat-row-more" aria-label={`推荐文章 ${index + 1} 操作`} disabled={locked}><MoreHorizontal size={15} /></button></DropdownMenu.Trigger>
@@ -97,6 +129,7 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
                   <DropdownMenu.Item disabled={index === recommendations.items.length - 1} onSelect={() => move(index, 1)}><ArrowDown size={14} />下移</DropdownMenu.Item>
                   <DropdownMenu.Separator /><DropdownMenu.Item color="red" onSelect={() => void changeItems(recommendations.items.filter(row => row.entryId !== item.entryId))}><Trash2 size={14} />移除推荐</DropdownMenu.Item>
                 </DropdownMenu.Content></DropdownMenu.Root>
+              </div>
             </li>)}
           </ol>
           {!state.loading && recommendations.items.length === 0 && <p className="wechat-empty">尚未添加推荐文章</p>}
@@ -109,8 +142,8 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
         {defaults.error && <Button size="1" variant="soft" {...feedback.props("reload", locked)} onClick={() => void feedback.run("reload", () => session.defaults.reload())}>重新加载</Button>}
       </section>}
     </div>
-    <footer className="wechat-publishing-footer"><ActionError error={failure} /><Button size="1" variant="solid" disabled={locked || publishing || state.loading || !state.ready || state.resolved.invalid.length > 0}
-      {...copyFeedback?.props("copyWechat", locked || publishing || state.loading || !state.ready || state.resolved.invalid.length > 0)} onClick={onCopy}>
+    <footer className="wechat-publishing-footer"><ActionError error={failure} /><Button size="1" variant="solid" disabled={locked || publishing || !state.ready || state.resolved.invalid.length > 0}
+      {...copyFeedback?.props("copyWechat", locked || publishing || !state.ready || state.resolved.invalid.length > 0)} onClick={onCopy}>
       {copyFeedback?.icon("copyWechat", <Copy size={15} />) ?? <Copy size={15} />}{copyFeedback?.label("copyWechat", "复制公众号格式", "已复制") ?? "复制公众号格式"}</Button></footer>
     {picker && <WechatArticlePicker session={session} selected={recommendations.items} onClose={() => setPicker(false)} onAdd={async items => {
       if (!await session.change(current => {
@@ -166,7 +199,7 @@ function WechatArticlePicker({ session, selected, onClose, onAdd }: { session: P
     <div className="wechat-picker-results" aria-busy={busy} onScroll={event => { const element = event.currentTarget; if (element.scrollHeight - element.scrollTop - element.clientHeight < 80) void loadMore(); }}>
       {busy ? <div className="wechat-picker-loading"><Spinner /></div> : items.map(item => <label className="wechat-picker-item" key={item.entryId}>
         <Checkbox disabled={alreadyAdded(item) || feedback.isLocked("add")} checked={alreadyAdded(item) || staged.has(item.entryId)} aria-label={item.title}
-          onCheckedChange={checked => setStaged(current => { const next = new Map(current); if (checked) next.set(item.entryId, item); else next.delete(item.entryId); return next; })} />
+          onCheckedChange={checked => setStaged(current => { const next = new Map(current); if (checked) next.set(item.entryId, { entryId: item.entryId, title: item.title, url: item.url }); else next.delete(item.entryId); return next; })} />
         <span className="wechat-picker-description"><span className="wechat-picker-title"><strong>{item.title}</strong>{alreadyAdded(item) && <span>已添加</span>}</span>
           {item.summary && <span className="wechat-picker-summary">{item.summary}</span>}<span className="wechat-picker-meta"><span>{item.tags.map(tag => <span className="wechat-picker-tag" key={tag}>{tag}</span>)}</span>
             {item.publishedAt !== null && <time>{new Date(item.publishedAt).toLocaleDateString("zh-CN")}</time>}</span></span>

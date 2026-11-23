@@ -2495,6 +2495,89 @@ it("previews a deleted article without generating or saving recommendations and 
   await vi.waitFor(() => expect(restore).toHaveBeenCalledWith("deleted-preview", 1, false));
 });
 
+it("reports one owned save error and can exit after retrying without losing the draft", async () => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["publication-save-error"], activeId: "publication-save-error" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), wechatPublication: { schemaVersion: 1, recommendations: {
+    enabled: true, mode: "manual", countOverride: null, inputFingerprint: null, items: [],
+  } } }));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  const save = vi.spyOn(desktop, "save").mockRejectedValueOnce(new Error("磁盘写入失败"))
+    .mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  let requestExit!: () => void;
+  vi.mocked(desktop.onExit).mockImplementation(async callback => { requestExit = callback; return () => {}; });
+  vi.spyOn(desktop, "beginExit").mockResolvedValue();
+  const finish = vi.spyOn(desktop, "finishExit").mockResolvedValue();
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("publication-save-error")).toBe(true));
+  flushSync(() => container.querySelector<HTMLButtonElement>('#ai-panel-trigger')!.click());
+  flushSync(() => container.querySelector<HTMLButtonElement>('#right-sidebar-wechat-button')!.click());
+  const copy = () => container.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
+  await vi.waitFor(() => expect(copy()?.disabled).toBe(false));
+  const queue = editorQueues.get("publication-save-error")!;
+  flushSync(() => queue.edit({ contentMd: "不能丢失的当前正文" }));
+  flushSync(() => copy().click());
+  await vi.waitFor(() => expect(container.querySelector(".save-error")?.textContent).toContain("磁盘写入失败"));
+  await vi.waitFor(() => expect(copy().getAttribute("aria-busy")).toBeNull());
+  expect([...container.querySelectorAll('[role="alert"]')].filter(element => element.textContent?.includes("磁盘写入失败"))).toHaveLength(1);
+  expect(container.querySelector(".status-action-feedback")?.textContent).not.toContain("磁盘写入失败");
+  expect(container.querySelector(".wechat-publishing-footer .action-error-slot")?.textContent).not.toContain("磁盘写入失败");
+  const resolve = vi.mocked(desktop.resolveWechatRecommendations);
+  resolve.mockClear();
+  let finishRefresh!: (value: { items: []; invalid: [] }) => void;
+  resolve.mockReturnValueOnce(new Promise(done => { finishRefresh = done; }));
+  const retry = [...container.querySelectorAll<HTMLButtonElement>(".save-error button")].find(button => button.textContent === "重试保存")!;
+  flushSync(() => retry.click());
+  await vi.waitFor(() => expect(queue.isDirty()).toBe(false));
+  await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
+  expect(container.textContent).not.toContain("磁盘写入失败");
+  expect(save).toHaveBeenLastCalledWith("publication-save-error", 1, expect.objectContaining({ contentMd: "不能丢失的当前正文" }), "auto");
+  flushSync(() => queue.edit({ contentMd: "重试成功后继续输入的正文" }));
+  await act(async () => { finishRefresh({ items: [], invalid: [] }); });
+  expect(container.textContent).not.toContain("磁盘写入失败");
+  flushSync(() => requestExit());
+  await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+  expect(save.mock.calls.at(-1)![2].contentMd).toBe("重试成功后继续输入的正文");
+});
+
+it.each(["edit", "preview"])("keeps publication controls stable while typing in %s mode and waits for autosave before background refresh", async view => {
+  localStorage.setItem("links-to-footnotes", "false");
+  localStorage.setItem("view", JSON.stringify(view));
+  saveDocumentTabs(workspaceId, { ids: ["typing-publication"], activeId: "typing-publication" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), wechatPublication: { schemaVersion: 1, recommendations: {
+    enabled: true, mode: "manual", countOverride: null, inputFingerprint: null, items: [],
+  } } }));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  const save = vi.spyOn(desktop, "save").mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("typing-publication")).toBe(true));
+  flushSync(() => container.querySelector<HTMLButtonElement>('#ai-panel-trigger')!.click());
+  flushSync(() => container.querySelector<HTMLButtonElement>('#right-sidebar-wechat-button')!.click());
+  const copy = () => container.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
+  await vi.waitFor(() => expect(copy()?.disabled).toBe(false));
+  await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>(".wechat-list-heading button")?.disabled).toBe(false));
+  const queue = editorQueues.get("typing-publication")!;
+  const resolve = vi.mocked(desktop.resolveWechatRecommendations);
+  save.mockClear(); resolve.mockClear();
+  vi.useFakeTimers();
+  for (const contentMd of ["正", "正文", "正文输入中"]) {
+    flushSync(() => queue.edit({ contentMd }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+    expect(save).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(copy().disabled).toBe(false);
+    expect(container.querySelector('#tab-typing-publication .unsaved-dot')).not.toBeNull();
+  }
+  let finish!: (value: { items: []; invalid: [] }) => void;
+  resolve.mockReturnValueOnce(new Promise(done => { finish = done; }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+  await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
+  expect(save).toHaveBeenCalledOnce();
+  expect(save.mock.calls[0][2].contentMd).toBe("正文输入中");
+  expect(copy().disabled).toBe(false);
+  await act(async () => { finish({ items: [], invalid: [] }); });
+});
+
 it("refreshes a previously invalid recommendation after a workspace change without reopening the sidebar", async () => {
   localStorage.setItem("links-to-footnotes", "false");
   saveDocumentTabs(workspaceId, { ids: ["reference-recovery"], activeId: "reference-recovery" });
