@@ -24,12 +24,14 @@ pnpm web:build
 
 开发构建默认公钥为空，关于页仍能离线查看版本和组件，检查更新按钮禁用。不会拿测试公钥或示例密钥冒充正式更新配置。
 
-## 正式发行准备
+## 发行准备
 
 1. 由维护者确定首发版本。以 `pnpm tauri signer generate -w <仓库外的私钥路径>` 生成并妥善备份长期使用的更新密钥；私钥与密码不提交到仓库。密钥丢失会影响已有安装的后续更新。
 2. 配置 Actions Secrets：`TAURI_SIGNING_PRIVATE_KEY`（私钥内容）、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（没有密码时留空）及 `TAURI_UPDATER_PUBLIC_KEY`（生成的公钥文件完整内容）。公钥内容本身可以公开，构建时写入应用；流水线使用同一公钥验证三个签名，私钥与公钥不匹配时不能发布。
-3. 在 `docs/releases/vX.Y.Z.md` 提交本次详细中文更新记录，基于实际发行差异写清新增行为、修复、同步服务端变化、兼容性及迁移。首发介绍已经交付的能力。文件缺失、过短或含 TODO / 待填写等占位内容时停止发行。
-4. 通过项目 CI 和评审后推送 `vX.Y.Z` 标签。只有这一动作才会触发 `.github/workflows/release.yml`；本次开发没有推送标签或发布。
+3. 在 `docs/releases/<标签>.md` 提交本次详细中文更新记录，基于实际发行差异写清新增行为、修复、同步服务端变化、兼容性及迁移。首发介绍已经交付的能力。文件缺失、过短或含 TODO / 待填写等占位内容时停止发行。
+4. 通过项目 CI 和评审后推送 `vX.Y.Z`（正式版）或 `vX.Y.Z-preview.N`（预览版，N 从 1 开始递增）标签，触发 `.github/workflows/release.yml`。例如首个预览版为 `v1.0.0-preview.1`，更新记录对应 `docs/releases/v1.0.0-preview.1.md`。
+
+预览版使用 GitHub Pre-release 标记，不设为最新正式版本，也不会由正式版自动更新入口推送；请从 Release 页面手动下载安装包。应用内更新仍只检查后续正式版本。
 
 Mac 使用 ad-hoc 签名，不需要 Apple 开发者账户或公证凭据，首次打开可能需要在系统“隐私与安全性”中允许。Windows 目前不做系统代码签名，Tauri 更新签名仍为必需项；两者不能混淆。
 

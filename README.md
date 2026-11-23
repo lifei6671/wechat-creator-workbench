@@ -80,7 +80,7 @@
 
 ## 开始使用
 
-项目仍在开发中，目前尚未发布正式安装包，可先按照[安装与配置指南](docs/getting-started.md)从源码运行。后续正式安装包将在 [Releases](https://github.com/lifei6671/wechat-creator-workbench/releases) 提供。
+项目仍在开发中，可从 [Releases](https://github.com/lifei6671/wechat-creator-workbench/releases) 下载预览版安装包，也可以按照[安装与配置指南](docs/getting-started.md)从源码运行。
 
 桌面客户端面向 Windows 和 macOS。自托管同步、图床、AI 和数据库备份均可按需配置；本地写作可以先独立使用。
 
