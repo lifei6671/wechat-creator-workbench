@@ -161,6 +161,7 @@ jobs:
           script: |
             const fs = require('fs');
             const tag = process.env.RELEASE_TAG;
+            const sourceCommit = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
             const {releaseOptions} = await import(require('node:url').pathToFileURL(process.env.GITHUB_WORKSPACE + '/scripts/release.mjs').href);
             const options = releaseOptions(tag);
             const body = fs.readFileSync('.generated/release-notes.md', 'utf8');
@@ -170,10 +171,10 @@ jobs:
               if (!release.draft) throw new Error('已公开的版本不能覆盖，请使用新版本标签。');
             } catch (error) {
               if (error.status !== 404) throw error;
-              release = (await github.rest.repos.createRelease({...context.repo, tag_name: tag,
+              release = (await github.rest.repos.createRelease({...context.repo, tag_name: tag, target_commitish: sourceCommit,
                 name: tag, body, draft: true, ...options})).data;
             }
-            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, name: tag, body, ...options});
+            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, tag_name: tag, target_commitish: sourceCommit, name: tag, body, ...options});
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, {...context.repo, release_id: release.id});
             for (const asset of assets) await github.rest.repos.deleteReleaseAsset({...context.repo, asset_id: asset.id});
             for (const name of fs.readdirSync('release-output')) {
@@ -185,4 +186,4 @@ jobs:
               if (!uploaded.some(asset => asset.name === name && asset.size === fs.statSync('release-output/' + name).size))
                 throw new Error('附件上传不完整：' + name);
             }
-            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, draft: false, ...options});
+            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, tag_name: tag, target_commitish: sourceCommit, draft: false, ...options});
