@@ -307,6 +307,7 @@ export function DesktopShell() {
   const writingChrome = useRef<HTMLElement>(null);
   const navigationElement = useRef<HTMLDivElement>(null);
   const layoutSuspended = useRef(false);
+  const layoutWidth = useRef(0);
   const manualLayout = useRef<{ side: "navigation" | "ai-sidebar"; width: number } | null>(null);
   const timelineLayoutReady = useRef(false);
   const directoryDrag = useRef<{ pointerId: number; startX: number; width: number; articleWidth: number; currentWidth: number }>(null);
@@ -314,7 +315,6 @@ export function DesktopShell() {
   const [initialAiWidth] = useState(() => useStoredInitial("ai-sidebar-width", 350));
   const explorerTree = useRef<ExplorerHandle>(null);
   const sidebarPanel = usePanelRef();
-  const aiSidebarPanel = usePanelRef();
   const workspacePanels = useGroupRef();
   const aiSidebarWidth = useRef(initialAiWidth);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -2014,6 +2014,7 @@ export function DesktopShell() {
   const showExplorer = explorer && !focusMode;
   const showTimelineDirectory = showExplorer && timelineMode && timelineDirectory === "shown";
   const restorePanelSizes = useEffectEvent((group: HTMLDivElement) => {
+    layoutWidth.current = group.clientWidth;
     const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showRightPanel));
     const navigationLimit = available - (showRightPanel ? minimumAiWidth : 0);
     const navigation = showExplorer ? Math.min(preferredNavigationWidth(), navigationLimit) : 0;
@@ -2028,15 +2029,13 @@ export function DesktopShell() {
   useLayoutEffect(() => {
     const group = sidebarGroup.current!;
     let frame = 0;
-    let width = group.clientWidth;
     const observer = new ResizeObserver(() => {
       // Windows can report its minimized taskbar size while the WebView is still visible.
       if (!hasWorkspaceSize(group)) {
         layoutSuspended.current = true;
-      } else if ((layoutSuspended.current || group.clientWidth !== width) && !frame) frame = requestAnimationFrame(() => {
+      } else if (layoutSuspended.current && !frame) frame = requestAnimationFrame(() => {
         frame = 0;
         if (!hasWorkspaceSize(group)) return;
-        width = group.clientWidth;
         restorePanelSizes(group);
         layoutSuspended.current = false;
       });
@@ -2120,7 +2119,7 @@ export function DesktopShell() {
     const clear = () => { delete group.dataset.aiSidebarMoving; };
     const timer = window.setTimeout(clear, 270);
     return () => { window.clearTimeout(timer); clear(); };
-  }, [showRightPanel, showExplorer, aiSidebarPanel, workspacePanels]);
+  }, [showRightPanel, showExplorer, workspacePanels]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
   const aiSelection = aiDefaultTarget && aiTarget.label
@@ -2271,6 +2270,12 @@ export function DesktopShell() {
         onKeyUpCapture={() => { manualLayout.current = null; }}
         onLayoutChange={layout => {
           const group = sidebarGroup.current;
+          // The group must record its new size before applying the workspace's pixel widths.
+          if (hasWorkspaceSize(group) && (layoutSuspended.current || layoutWidth.current !== group.clientWidth)) {
+            layoutSuspended.current = false;
+            restorePanelSizes(group);
+            return;
+          }
           if (manualLayout.current?.side === "navigation" && manualLayout.current.width === group?.clientWidth && timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group) && !group.dataset.timelineDirectoryMoving
             && !directoryDrag.current) fitTimelineDirectory(timelineNavigationWidth(layout));
         }}
@@ -2283,7 +2288,10 @@ export function DesktopShell() {
           const available = group.clientWidth - dividerWidth * (Number(showExplorer) + Number(showRightPanel));
           const moving = group.dataset.sidebarMoving || group.dataset.sidebarRestoring || group.dataset.aiSidebarMoving;
           if (manual.side === "ai-sidebar") {
-            if (showRightPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
+            // Keep the separator mounted until the resize gesture has finished.
+            if (showRightPanel && layout["ai-sidebar"] === 0) {
+              run(async () => { if (!await showSidebar(null)) restorePanelSizes(group); });
+            } else if (showRightPanel && !moving) rememberAiWidth(available * layout["ai-sidebar"] / 100);
             return;
           }
           if (!showExplorer || moving) return;
@@ -2434,6 +2442,7 @@ export function DesktopShell() {
                     locked={Boolean(exitMessage) || globalLock || locked.includes(session.entry.id)} clipboard={editorClipboard}
                     handle={handle => registerEditor(session.entry.id, handle)}
                     onImages={importImages} onError={showError} localizeImageLink={imageTarget?.autoUpload ? localizeImage : undefined}
+                    autoUploadImages={imageTarget?.autoUpload} assetRevision={assetsRevision}
                     onAddSelectionToChat={selection => addSelectionToChat(session, selection)}
                     canHost={src => canHostImage(imageTarget, src)} hostBusy={Boolean(imageUpload)}
                     uploadingSource={imageUpload?.sessionId === session.sessionId ? imageUpload.src : undefined}
@@ -2462,13 +2471,7 @@ export function DesktopShell() {
         {showRightPanel && <Separator className="divider ai-sidebar-divider"
           disableDoubleClick aria-label="调整右侧栏宽度" />}
         <Panel id="ai-sidebar" defaultSize="0px" minSize={minimumAiWidth} maxSize="50%" collapsible collapsedSize="0px"
-          panelRef={aiSidebarPanel} groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}
-          onResize={(size, _id, previous) => {
-            if (showRightPanel && previous?.inPixels && !size.inPixels && !layoutSuspended.current
-              && hasWorkspaceSize(sidebarGroup.current) && !sidebarGroup.current.dataset.aiSidebarMoving) {
-              run(async () => { if (!await showSidebar(null)) aiSidebarPanel.current!.resize(aiSidebarWidth.current); });
-            }
-          }}>
+          groupResizeBehavior="preserve-pixel-size" style={{ overflow: "hidden" }}>
           <aside className="right-sidebar" aria-label="右侧栏">
             {showRightPanel && <RightSidebarToolbar value={rightPanel!} working={sidebarWorking} onError={showError} disabled={{
               wechat: globalLock || !canShowWechat || reading || collectionMode,

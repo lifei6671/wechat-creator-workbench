@@ -900,6 +900,33 @@ async fn imported_markdown_queues_remote_and_local_images_and_preserves_unavaila
 }
 
 #[tokio::test]
+async fn automatic_link_import_returns_local_images_without_waiting_for_upload() {
+    let (_folder, db, mut assets) = setup();
+    image_profile(&db);
+    enable_auto_upload(&db);
+    let (origin, url) = image_origin(&mut assets).await;
+    let body = format!("![图片]({url})\n\n<img src=\"{url}\">");
+    let bytes = png();
+    let (imported, _) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            assets.import_link_images(&db, body, false)
+        ),
+        serve_image_response(&origin, "200 OK", "", &bytes),
+    );
+    let (markdown, unavailable) = imported.unwrap().unwrap();
+    assert_eq!(unavailable, 0);
+    let library = assets.library(&db, 0).unwrap();
+    assert_eq!(library.items.len(), 1);
+    assert_eq!(library.items[0].upload_status.as_deref(), Some("queued"));
+    assert!(library.items[0].public_url.is_none());
+    let local = format!("asset://{}", library.items[0].id);
+    assert!(markdown.contains(&format!("![图片]({local})")));
+    assert!(markdown.contains(&format!("<img src=\"{local}\">")));
+    assert_eq!(assets.read(&db, &local).await.unwrap(), bytes);
+}
+
+#[tokio::test]
 async fn link_import_downloads_images_only_when_enabled_and_preserves_unavailable_urls() {
     let (_folder, db, mut assets) = setup();
     image_profile(&db);

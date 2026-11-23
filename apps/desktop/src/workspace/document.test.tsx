@@ -2,6 +2,7 @@
 import { Theme } from "@radix-ui/themes";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import type { Entry } from "../../../../packages/shared-types";
@@ -11,6 +12,7 @@ import { DocumentEditor, DocumentTabs, DocumentToolbar, MarkdownPreview, type Do
 import { Outline } from "./Outline";
 import { LinkImportDialog } from "./Publishing";
 import { PropertiesDialog } from "./Dialogs";
+import { StatusBar } from "./StatusBar";
 
 const display = { limitWidth: true, lineNumbers: false, showTitle: true, convertLinks: false };
 const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -33,6 +35,91 @@ afterEach(() => {
   container.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+it("keeps saving busy through slow public validation, URL replacement and the final save", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const article = { ...entry("slow-image", "图片"), contentMd: "![图片](asset://imported)" };
+  let finishSave!: (result: { version: number }) => void;
+  const save = vi.fn<ConstructorParameters<typeof SaveQueue>[1]>(() => new Promise(resolve => { finishSave = resolve; }));
+  const queue = new SaveQueue(article, save, () => {});
+  let editor: MarkdownEditorHandle | null = null;
+  let finishCheck!: (url: string) => void;
+  const check = vi.spyOn(desktop, "publicImage").mockReturnValue(new Promise(resolve => { finishCheck = resolve; }));
+  vi.spyOn(desktop, "assetDetail").mockResolvedValue({
+    id: "imported", name: "图片.png", width: 2, height: 3, bytes: 100,
+    uploadStatus: null, uploadError: null, cleanupError: null, publicUrl: "https://images.example.test/imported.png",
+  });
+  vi.spyOn(desktop, "assetRead").mockRejectedValue(new Error("预览尚未载入"));
+  vi.spyOn(desktop, "imageUploadProgress").mockResolvedValue(null);
+  const noop = () => {};
+  flushSync(() => root.render(<Theme>
+    <DocumentEditor queue={queue} active locked={false} reading={false} display={display} onDisplayChange={noop}
+      handle={value => { editor = value; }} onImages={async () => ""} clipboard={{ read: async () => "", write: async () => {}, onError: noop }}
+      onImageZoom={noop} onError={noop} autoUploadImages assetRevision={0} />
+    <StatusBar queue={queue} actions={{ mode: "edit", setMode: noop, focusMode: false, onFocusMode: noop, reading: false, publishing: false, onCopyWechat: noop }}
+      trashActive={false} settingsOpen={false} mcpRunning={false} backupProgress={null} migrationProgress={null}
+      imageStorageEnabled assetRevision={0} imageUpload={null} syncBinding={null} syncActivity={null}
+      syncError="" onSync={noop} onMcp={noop} onPalette={noop} onTrash={noop} onSettings={noop} onError={noop} />
+  </Theme>));
+  await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());
+  vi.useFakeTimers();
+  const tick = async (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  const status = () => container.querySelector('.document-status > [role="status"]:not(.background-status)')!.textContent;
+  await tick(1500);
+  expect(queue.isDirty()).toBe(false);
+  expect(queue.isSaving()).toBe(false);
+  expect(status()).toBe("保存中…");
+  await act(async () => { finishCheck("https://images.example.test/imported.png"); await editor!.pendingEdits(); });
+  expect(queue.capture().fields.contentMd).toContain("https://images.example.test/imported.png");
+  await tick(5000);
+  expect(save).toHaveBeenCalledOnce();
+  expect(status()).toBe("保存中…");
+  await act(async () => finishSave({ version: 2 }));
+  await tick(999);
+  expect(status()).toBe("保存中…");
+  await tick(1);
+  expect(status()).toBe("已保存");
+  queue.dispose();
+});
+
+it("saves background image replacements through the live queue without losing edits or versions", async () => {
+  const article = { ...entry("background", "后台图片"), contentMd: "![图片](asset://imported)" };
+  const save = vi.fn<ConstructorParameters<typeof SaveQueue>[1]>(async (_id, version) => ({ version: version + 1 }));
+  const queue = new SaveQueue(article, save, () => {});
+  let handle: MarkdownEditorHandle | null = null;
+  let uploaded = false;
+  let finish!: (url: string) => void;
+  const publicImage = vi.spyOn(desktop, "publicImage").mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  vi.spyOn(desktop, "assetDetail").mockImplementation(async () => ({
+    id: "imported", name: "图片.png", width: 2, height: 3, bytes: 100,
+    uploadStatus: uploaded ? null : "queued", uploadError: null, cleanupError: null,
+    publicUrl: uploaded ? "https://images.example.test/imported.png" : null,
+  }));
+  vi.spyOn(desktop, "assetRead").mockRejectedValue(new Error("预览尚未载入"));
+  const onError = vi.fn();
+  const render = (assetRevision: number) => flushSync(() => root.render(<Theme><DocumentEditor queue={queue} active locked={false} reading={false}
+    display={display} onDisplayChange={() => {}} handle={value => { handle = value; }} onImages={async () => ""}
+    clipboard={{ read: async () => "", write: async () => {}, onError }} onImageZoom={() => {}} onError={onError}
+    autoUploadImages assetRevision={assetRevision} /></Theme>));
+  render(0);
+  await vi.waitFor(() => expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(false));
+  expect(publicImage).not.toHaveBeenCalled();
+  uploaded = true;
+  render(1);
+  await vi.waitFor(() => expect(publicImage).toHaveBeenCalledWith("asset://imported"));
+  handle!.insert("用户修改\n\n");
+  expect(await queue.flush()).toBe(true);
+  expect(save.mock.lastCall![1]).toBe(1);
+  finish("https://images.example.test/imported.png");
+  await handle!.pendingEdits();
+  expect(await queue.flush()).toBe(true);
+  expect(save.mock.lastCall![1]).toBe(2);
+  expect(save.mock.lastCall![2].contentMd).toContain("用户修改");
+  expect(save.mock.lastCall![2].contentMd).toContain("https://images.example.test/imported.png");
+  expect(queue.saveError()).toBeNull();
+  expect(onError).not.toHaveBeenCalled();
 });
 
 it("shows preview progress before rendering and gives each table a scroll region", async () => {

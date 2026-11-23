@@ -6,13 +6,17 @@ use tokio::io::AsyncReadExt;
 use url::Url;
 
 impl Assets {
+    pub(crate) fn automatic_upload_enabled(db: &Workspace) -> Result<bool> {
+        Ok(db.read_running(Profile::automatic)?.is_some())
+    }
+
     pub(crate) async fn import_markdown_images(
         &self,
         db: &Workspace,
         markdown: &str,
         directory: &Path,
     ) -> Result<(String, usize)> {
-        let download_remote = db.read_running(Profile::automatic)?.is_some();
+        let download_remote = Self::automatic_upload_enabled(db)?;
         self.download_markdown_images(db, markdown, Some(directory), download_remote)
             .await
     }
@@ -23,7 +27,7 @@ impl Assets {
         markdown: String,
         download: bool,
     ) -> Result<(String, usize)> {
-        if !download {
+        if !download && !Self::automatic_upload_enabled(db)? {
             return Ok((markdown, 0));
         }
         self.download_markdown_images(db, &markdown, None, true)

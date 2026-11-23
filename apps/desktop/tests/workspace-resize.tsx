@@ -43,11 +43,16 @@ for (const event of ["onExit", "onHistory", "onHideRequested", "onSyncStatusChan
   desktop[event] = async () => () => {};
 }
 const priority = new URLSearchParams(location.search).has("priority");
+const collapsed = new URLSearchParams(location.search).has("collapsed");
+if (collapsed) {
+  article.title = "发现 5 个宝藏开源 AI 视频工具！写文案、自动剪辑、生成宣传片，连剪映都能交给 AI！";
+  second.title = "手写笔记、PDF批注和无限画布直接搬进笔记软件，学习效率翻倍";
+}
 if (priority) {
   localStorage.setItem("timeline-article-width", "480");
   localStorage.setItem("ai-sidebar-width", "420");
 }
-localStorage.setItem("view", JSON.stringify("preview"));
-saveWorkspaceLayout({ section: "timeline", explorerOverride: true, timelineDirectory: priority ? "manual" : "shown", focusMode: false, aiOpen: true });
+localStorage.setItem("view", JSON.stringify(new URLSearchParams(location.search).has("edit") ? "edit" : "preview"));
+saveWorkspaceLayout({ section: "timeline", explorerOverride: !collapsed, timelineDirectory: priority ? "manual" : "shown", focusMode: false, aiOpen: true });
 saveDocumentTabs("resize-fixture", { ids: [second.id, article.id], activeId: article.id });
 createRoot(document.getElementById("root")!, { onUncaughtError(error, info) { console.error(error, info.componentStack); } }).render(<TooltipProvider><DesktopShell /></TooltipProvider>);

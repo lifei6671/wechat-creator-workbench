@@ -2641,7 +2641,7 @@ it("inserts pasted images with their document, then resolves external and local 
   }
 });
 
-it.each(["paste", "insert"] as const)("replaces a new local image after automatic hosting through %s while keeping paste undoable", async method => {
+it.each(["paste", "insert", "html", "embedded", "external"] as const)("replaces a new image after automatic hosting through %s while keeping paste undoable", async method => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   let handle: MarkdownEditorHandle | null = null;
@@ -2650,16 +2650,25 @@ it.each(["paste", "insert"] as const)("replaces a new local image after automati
   const resolveImage = vi.fn(() => hosted);
   const onError = vi.fn();
   const onChange = vi.fn();
-  const source = "![粘贴图片](asset://pasted)";
+  const imageUrl = method === "external" ? "https://external.example.test/image.png" : "asset://pasted";
+  const source = `![粘贴图片](${imageUrl})`;
+  const importImage = vi.fn(async () => "asset://pasted");
   try {
     flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="auto-hosted"
       value="" readOnly={false} localizeImageLink={resolveImage} onError={onError} onChange={onChange} onBlur={() => {}} />));
     await vi.waitFor(() => expect(handle).not.toBeNull());
-    if (method === "paste") handle!.clipboard("paste", { read: async () => source, write: vi.fn(), onError, localizeImage: resolveImage });
-    else handle!.insert(source);
-    await vi.waitFor(() => expect(resolveImage).toHaveBeenCalledExactlyOnceWith("asset://pasted"));
+    if (method === "insert") handle!.insert(source);
+    else handle!.clipboard("paste", {
+      read: async () => method === "html" || method === "embedded"
+        ? { html: `<p><img src="${method === "embedded" ? "data:image/png;base64,AAEC" : imageUrl}" alt="粘贴图片"></p>` }
+        : source,
+      write: vi.fn(), onError, localizeImage: resolveImage, importImage,
+    });
+    await vi.waitFor(() => expect(resolveImage).toHaveBeenCalledExactlyOnceWith(imageUrl));
+    expect(importImage).toHaveBeenCalledTimes(method === "embedded" ? 1 : 0);
     expect(container.querySelector(".rich-image")).not.toBeNull();
     expect(onChange.mock.lastCall![2]).toContain(source);
+    expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(false);
     finish("https://images.example.test/pasted.webp");
     await vi.waitFor(() => expect(onChange.mock.lastCall![2]).toContain("![粘贴图片](https://images.example.test/pasted.webp)"));
     handle!.command("undo");
@@ -2667,6 +2676,104 @@ it.each(["paste", "insert"] as const)("replaces a new local image after automati
     handle!.command("redo");
     expect(onChange.mock.lastCall![2]).toContain("https://images.example.test/pasted.webp");
     expect(onError).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it.each([false, true])("shows queued imported images and replaces them after background upload (reading=%s)", async readOnly => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  let finish!: (url: string) => void;
+  let uploaded = false;
+  const pending = new Promise<string>(resolve => { finish = resolve; });
+  const readImageUploadState = vi.fn(async () => uploaded ? { pending: false, publicUrl: "https://images.example.test/imported.png" } : { pending: true });
+  const resolveHostedImage = vi.fn(() => pending);
+  const processing = vi.fn();
+  const onChange = vi.fn(), onError = vi.fn();
+  const source = "正文\n\n![导入图片](asset://imported)\n\n`![示例](asset://imported)`";
+  const render = (revision: number) => flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="background-import"
+    value={source} readOnly={readOnly} uploadRevision={revision} readImageUploadState={readImageUploadState}
+    resolveHostedImage={resolveHostedImage} onImageProcessingChange={processing} onError={onError} onChange={onChange} onBlur={() => {}} />));
+  try {
+    render(0);
+    await vi.waitFor(() => expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(false));
+    expect(handle!.captureMarkdown().markdown).toContain("![导入图片](asset://imported)");
+    expect(resolveHostedImage).not.toHaveBeenCalled();
+    expect(processing).toHaveBeenLastCalledWith(true);
+    uploaded = true;
+    render(1);
+    await vi.waitFor(() => expect(resolveHostedImage).toHaveBeenCalledExactlyOnceWith("asset://imported"));
+    expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(false);
+    render(2);
+    await vi.waitFor(() => expect(readImageUploadState.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(resolveHostedImage).toHaveBeenCalledOnce();
+    expect(processing).toHaveBeenLastCalledWith(true);
+    finish("https://images.example.test/imported.png");
+    await handle!.pendingEdits();
+    expect(handle!.captureMarkdown().markdown).toContain("![导入图片](https://images.example.test/imported.png)");
+    expect(handle!.captureMarkdown().markdown).toContain("`![示例](asset://imported)`");
+    expect(onChange.mock.lastCall![2]).toContain("https://images.example.test/imported.png");
+    expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(true);
+    expect(processing).toHaveBeenLastCalledWith(false);
+    expect(onError).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it.each(["revision", "reenable"] as const)("retries public validation after transient failures through %s", async trigger => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const error = new Error("CDN 暂不可用");
+  const resolveHostedImage = vi.fn().mockRejectedValueOnce(error).mockRejectedValueOnce(error)
+    .mockResolvedValue("https://images.example.test/imported.png");
+  const readImageUploadState = vi.fn(async () => ({ pending: false, publicUrl: "https://images.example.test/imported.png" }));
+  const onError = vi.fn();
+  const render = (revision: number, enabled = true) => flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="retry-public"
+    value="![图](asset://imported)" readOnly={false} uploadRevision={revision} readImageUploadState={enabled ? readImageUploadState : undefined}
+    resolveHostedImage={resolveHostedImage} onError={onError} onChange={() => {}} onBlur={() => {}} />));
+  try {
+    render(0);
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(handle!.captureMarkdown().markdown).toContain("asset://imported");
+    if (trigger === "reenable") render(0, false);
+    render(trigger === "revision" ? 1 : 0);
+    await vi.waitFor(() => expect(resolveHostedImage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+    if (trigger === "reenable") render(0, false);
+    render(trigger === "revision" ? 2 : 0);
+    await vi.waitFor(() => expect(handle!.captureMarkdown().markdown).toContain("https://images.example.test/imported.png"));
+    expect(resolveHostedImage).toHaveBeenCalledTimes(3);
+    expect(onError).toHaveBeenCalledTimes(2);
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it.each(["removed", "failed"] as const)("keeps imported images safe when background upload is %s", async outcome => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  let finish!: (url: string) => void;
+  let fail!: (error: Error) => void;
+  const pending = new Promise<string>((resolve, reject) => { finish = resolve; fail = reject; });
+  const resolveHostedImage = vi.fn(() => pending);
+  const onChange = vi.fn(), onError = vi.fn();
+  try {
+    flushSync(() => root.render(<MarkdownEditor ref={value => { handle = value; }} entryId="background-safe"
+      value="![图](asset://imported)" readOnly={false} readImageUploadState={async () => ({ pending: false, publicUrl: "https://images.example.test/imported.png" })}
+      resolveHostedImage={resolveHostedImage} onError={onError} onChange={onChange} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(resolveHostedImage).toHaveBeenCalledOnce());
+    if (outcome === "removed") {
+      handle!.command("selectAll");
+      handle!.insert("用户修改");
+      finish("https://images.example.test/imported.png");
+      await handle!.pendingEdits();
+      expect(handle!.captureMarkdown().markdown).toBe("用户修改");
+    } else {
+      const error = new Error("公开图片校验失败");
+      fail(error);
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error));
+      expect(handle!.captureMarkdown().markdown).toContain("asset://imported");
+      expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(true);
+    }
   } finally { flushSync(() => root.unmount()); container.remove(); }
 });
 

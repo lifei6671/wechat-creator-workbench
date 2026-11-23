@@ -12,6 +12,7 @@ export interface SaveSnapshot {
   revision: number;
   savedRevision: number;
   saving: boolean;
+  processingImages: boolean;
   error: unknown;
 }
 
@@ -43,7 +44,7 @@ export class SaveQueue {
     const { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties, wechatPublication } = entry;
     this.state = {
       fields: { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties, wechatPublication },
-      version: entry.version, revision: 0, savedRevision: 0, saving: false, error: null,
+      version: entry.version, revision: 0, savedRevision: 0, saving: false, processingImages: false, error: null,
     };
   }
 
@@ -55,6 +56,10 @@ export class SaveQueue {
   snapshotFields = () => this.state.fields;
   isDirty = () => this.state.revision !== this.state.savedRevision;
   isSaving = () => this.state.saving;
+  isProcessingImages = () => this.state.processingImages;
+  setProcessingImages = (processingImages: boolean) => {
+    if (processingImages !== this.state.processingImages) this.update({ processingImages });
+  };
   saveError = () => this.state.error;
 
   bindContentProvider(read: () => MarkdownSnapshot) {

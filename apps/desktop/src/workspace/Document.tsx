@@ -5,7 +5,7 @@ import {
   ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
-import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { MarkdownEditor, type ClipboardIO, type ImageContext, type ImageUploadState, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { footnoteId } from "../../../../packages/markdown-core";
 import { renderWechat, wechatEditorStyles, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
 import type { ChatSelection } from "../ai/context";
@@ -341,7 +341,16 @@ function DocumentTab({ queue, feedback, active, tabbable, reading, locked, hasOt
   </ContextMenu.Root>;
 }
 
-export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, localizeImageLink, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat }: {
+async function readImageUploadState(url: string): Promise<ImageUploadState> {
+  const asset = await desktop.assetDetail(url.slice("asset://".length));
+  return {
+    pending: Boolean(asset?.uploadStatus && ["queued", "running", "retrying"].includes(asset.uploadStatus)),
+    publicUrl: asset?.publicUrl,
+    error: asset?.uploadError,
+  };
+}
+
+export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, localizeImageLink, autoUploadImages, assetRevision, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat }: {
   queue: SaveQueue;
   active: boolean;
   locked: boolean;
@@ -352,6 +361,8 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   handle(value: MarkdownEditorHandle | null): void;
   onImages(files: File[]): Promise<string>;
   localizeImageLink?(url: string): Promise<string>;
+  autoUploadImages?: boolean;
+  assetRevision?: number;
   onImageZoom(image: { src: string; alt: string }, trigger: HTMLButtonElement): void;
   onError(error: unknown): void;
   canHost?(src: string): boolean;
@@ -369,6 +380,10 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
       canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAddSelectionToChat={onAddSelectionToChat}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
+        uploadRevision={assetRevision}
+        readImageUploadState={autoUploadImages && !locked && queue.entry.deletedAt === null ? readImageUploadState : undefined}
+        resolveHostedImage={desktop.publicImage}
+        onImageProcessingChange={queue.setProcessingImages}
         githubRepo={fields.source?.url}
         title={display.showTitle && <div className="writing-title">
         {reading ? <h1>{fields.title || untitled}</h1> : <textarea aria-label="标题" rows={1}

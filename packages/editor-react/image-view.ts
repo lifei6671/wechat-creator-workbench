@@ -11,7 +11,7 @@ export interface ImageContext {
   feedbackTarget: HTMLElement;
   isCurrent(): boolean;
   isUploading(): boolean;
-  setUploading(uploading: boolean): void;
+  setUploading(uploading: boolean, background?: boolean): void;
   replaceSource(url: string): boolean;
   remove(): void;
 }
@@ -90,6 +90,8 @@ export function imageView(
   uploadStatus.setAttribute("role", "status");
   uploadStatus.setAttribute("aria-label", "正在上传到图床");
   uploadStatus.hidden = true;
+  let foregroundUploading = false;
+  let backgroundUploading = false;
   function currentPosition() {
     if (view.isDestroyed || !view.editable) return;
     const pos = getPos();
@@ -99,7 +101,11 @@ export function imageView(
     kind: "image", src: node.attrs.src, available: media.firstElementChild instanceof HTMLImageElement, feedbackTarget: frame,
     isCurrent: () => currentPosition() !== undefined,
     isUploading: () => !uploadStatus.hidden,
-    setUploading: uploading => { uploadStatus.hidden = !uploading; },
+    setUploading: (uploading, background = false) => {
+      if (background) backgroundUploading = uploading;
+      else foregroundUploading = uploading;
+      uploadStatus.hidden = !foregroundUploading && !backgroundUploading;
+    },
     replaceSource(url) {
       const pos = currentPosition();
       if (pos === undefined || url === node.attrs.src) return false;

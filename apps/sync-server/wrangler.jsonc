@@ -4,9 +4,32 @@
   "main": "src/cloudflare.ts",
   "compatibility_date": "2026-06-22",
   "d1_databases": [
-    { "binding": "DB", "database_name": "wechat-workbench-sync", "migrations_dir": "migrations" }
+    {
+      "binding": "DB",
+      "database_name": "wechat-workbench-sync",
+      "migrations_dir": "migrations"
+    }
   ],
   "r2_buckets": [
-    { "binding": "BLOBS", "bucket_name": "wechat-workbench-sync-blobs" }
-  ]
+    {
+      "binding": "BLOBS",
+      "bucket_name": "wechat-workbench-sync-blobs"
+    }
+  ],
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "issue_detection": {
+      "enabled": false
+    }
+  }
 }
