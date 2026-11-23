@@ -193,11 +193,13 @@ for (const platform of ["Win32", "MacIntel"]) test(`collapses the right sidebar 
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(group).not.toHaveAttribute('data-ai-sidebar-moving', 'true');
+    await expect.poll(async () => (await right.boundingBox())!.width).toBeCloseTo(expandedWidth, 0);
+    await separator.hover();
     const reopened = (await separator.boundingBox())!;
     const before = (await right.boundingBox())!.width;
     expect(before).toBeCloseTo(expandedWidth, 0);
-    await page.mouse.move(reopened.x + reopened.width / 2, reopened.y + reopened.height / 2);
     await page.mouse.down();
+    await expect(separator).toHaveAttribute("data-separator", "active");
     await page.mouse.move(reopened.x - 80, reopened.y + reopened.height / 2, { steps: 4 });
     await page.mouse.up();
     await expect.poll(async () => (await right.boundingBox())!.width).toBeGreaterThan(before + 60);
