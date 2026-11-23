@@ -188,8 +188,19 @@ fn verify_asset(path: &Path, hash: &str) -> Result<()> {
         )
     })?;
     let mut digest = Sha256::new();
-    io::copy(&mut file, &mut digest).map_err(file_error)?;
-    if format!("{:x}", digest.finalize()) != hash {
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = match file.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(file_error(error)),
+        };
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    if hex::encode(digest.finalize()) != hash {
         return Err(AppError::new("MIGRATION_ASSET", "迁移包中的素材校验失败"));
     }
     Ok(())
@@ -232,6 +243,29 @@ mod tests {
     use super::*;
     use crate::{assets::Assets, backup::restore::Files, db::Workspace};
     use std::io::Cursor;
+
+    #[test]
+    fn migrated_asset_hashes_keep_their_streaming_sha256_representation() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("large-asset");
+        let bytes: Vec<_> = (0..=255_u8).cycle().take(256 * 513).collect();
+        fs::write(&path, &bytes).unwrap();
+        verify_asset(
+            &path,
+            "91f86bc16210e6eab1715b5e77465cc1a906243e758bcecb884060dbe9a26fe3",
+        )
+        .unwrap();
+        fs::write(&path, &bytes[1..]).unwrap();
+        assert_eq!(
+            verify_asset(
+                &path,
+                "91f86bc16210e6eab1715b5e77465cc1a906243e758bcecb884060dbe9a26fe3"
+            )
+            .unwrap_err()
+            .code(),
+            "MIGRATION_ASSET"
+        );
+    }
 
     #[test]
     fn workspace_archive_restores_settings_and_original_assets_into_another_directory() {

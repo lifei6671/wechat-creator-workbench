@@ -255,7 +255,11 @@ async fn first_join_merges_two_populated_workspaces() {
 
     let mut archive =
         zip::ZipArchive::new(std::fs::File::open(merged.merge_archive.unwrap()).unwrap()).unwrap();
-    assert!(archive.file_names().any(|name| name.starts_with("assets/")));
+    let names = archive
+        .file_names()
+        .collect::<zip::result::ZipResult<Vec<_>>>()
+        .unwrap();
+    assert!(names.iter().any(|name| name.starts_with("assets/")));
     let snapshot_path = root.path().join("before-merge.db");
     std::io::copy(
         &mut archive.by_name("content.db").unwrap(),

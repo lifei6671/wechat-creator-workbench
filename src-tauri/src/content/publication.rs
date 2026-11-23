@@ -249,7 +249,7 @@ impl Input {
             self.published_at,
             self.count
         ]);
-        format!("{:x}", Sha256::digest(input.to_string().as_bytes()))
+        hex::encode(Sha256::digest(input.to_string().as_bytes()))
     }
 
     fn cutoff(&self) -> i64 {

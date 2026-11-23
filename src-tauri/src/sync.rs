@@ -346,7 +346,7 @@ fn generate_secret() -> Result<String> {
 
 fn credential(db: &Workspace, url: &str, instance: &str, epoch: &str) -> Result<keyring::Entry> {
     use sha2::{Digest, Sha256};
-    let origin = format!("{:x}", Sha256::digest(url.as_bytes()));
+    let origin = hex::encode(Sha256::digest(url.as_bytes()));
     secrets::entry(db, &format!("sync/{origin}/{instance}/{epoch}"))
 }
 

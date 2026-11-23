@@ -276,7 +276,7 @@ fn blob_route(hash: &str) -> Result<String> {
 }
 
 fn digest(data: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(data))
+    hex::encode(Sha256::digest(data))
 }
 
 fn protocol_error() -> AppError {

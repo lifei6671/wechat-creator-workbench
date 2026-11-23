@@ -368,7 +368,7 @@ async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
         .write_to(&mut encoded, ImageFormat::WebP)
         .unwrap();
     let hosted = encoded.into_inner();
-    let checksum = format!("{:x}", Sha256::digest(&hosted));
+    let checksum = hex::encode(Sha256::digest(&hosted));
     let id = media.import(&db, "原图.png", &original).unwrap();
     let file = db.read(|conn| by_id(conn, &id)).unwrap();
     let original_name = db.read(|conn| media.export_name(conn, &file)).unwrap();
@@ -559,6 +559,18 @@ async fn configured_public_images_keep_their_url_and_are_not_stored_locally() {
     assert!(!public_ip("2001:db8::1".parse().unwrap()));
     assert!(!public_ip("3fff:abc::1".parse().unwrap()));
     assert!(public_ip("8.8.8.8".parse().unwrap()));
+}
+
+#[test]
+fn derived_source_keys_keep_their_persisted_sha256_representation() {
+    assert_eq!(
+        references::source_key("math", " \r\nx^2 + 中文\r\n "),
+        "c604f8cc3195006a5df4268c344a761ec21eb9230aafe2a791c3cee32788ede2"
+    );
+    assert_eq!(
+        references::source_key("mermaid", "graph TD\r\nA-->B"),
+        "04e891a800e9a098348bc43b4374600f3ed210dd619eee9dded8c13a39f30c37"
+    );
 }
 
 #[test]
@@ -1120,7 +1132,7 @@ async fn library_thumbnail_is_small_and_keeps_original_bytes() {
         assets.read(&db, &format!("asset://{id}")).await.unwrap(),
         original
     );
-    let hash = format!("{:x}", Sha256::digest(&original));
+    let hash = hex::encode(Sha256::digest(&original));
     assert_eq!(
         std::fs::read(cache.join(format!("v1-160-{hash}.png"))).unwrap(),
         preview

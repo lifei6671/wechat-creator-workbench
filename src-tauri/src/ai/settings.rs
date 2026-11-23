@@ -144,11 +144,11 @@ impl ModelConfig {
 
 impl Model {
     pub fn credential(&self, db: &Workspace) -> Result<keyring::Entry> {
-        let endpoint = Sha256::digest(self.config.endpoint.as_bytes());
+        let endpoint = hex::encode(Sha256::digest(self.config.endpoint.as_bytes()));
         let purpose = if self.id == LEGACY_MODEL_ID {
-            format!("ai-{endpoint:x}")
+            format!("ai-{endpoint}")
         } else {
-            format!("ai-{}-{endpoint:x}", self.id)
+            format!("ai-{}-{endpoint}", self.id)
         };
         crate::secrets::entry(db, &purpose)
     }

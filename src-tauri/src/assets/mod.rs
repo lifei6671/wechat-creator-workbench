@@ -326,7 +326,7 @@ impl Assets {
             ImageOrigin::Derived(key) => ("derived", Some(key), None, false),
         };
         let (format, width, height) = image_header(bytes)?;
-        let hash = format!("{:x}", Sha256::digest(bytes));
+        let hash = hex::encode(Sha256::digest(bytes));
         let relative = format!(
             "{}/{}/{}.{}",
             &hash[..2],
@@ -496,7 +496,7 @@ impl Assets {
             if let Some(path) = cached_path
                 && file
                     .hash
-                    .is_some_and(|hash| hash == format!("{:x}", Sha256::digest(&bytes)))
+                    .is_some_and(|hash| hash == hex::encode(Sha256::digest(&bytes)))
                 && let Err(error) = save_thumbnail(&path, &thumbnail)
             {
                 eprintln!("Could not cache the asset thumbnail: {error}");
@@ -633,7 +633,7 @@ impl Assets {
             result => result?,
         };
         image_header(&bytes)?;
-        if format!("{:x}", Sha256::digest(&bytes)) != location.content_hash {
+        if hex::encode(Sha256::digest(&bytes)) != location.content_hash {
             return Err(AppError::new("ASSET_CHANGED", "图床图片与素材记录不一致"));
         }
         Ok(bytes)
@@ -791,7 +791,7 @@ impl Assets {
             .await
             .map_err(|error| AppError::new("IMAGE_FORMAT", error.to_string()))??;
         let key = name_for_format(&upload.key, format);
-        let content_hash = format!("{:x}", Sha256::digest(&bytes));
+        let content_hash = hex::encode(Sha256::digest(&bytes));
         let store = upload.profile.provider()?;
         if self.uploads_stopped.is_cancelled() {
             return Err(AppError::new(

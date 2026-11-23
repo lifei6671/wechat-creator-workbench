@@ -514,31 +514,28 @@ fn parse(html: &str, origin: &Url) -> Result<Article> {
         .to_string();
     let rewritten = rewrite_str(
         &clean,
-        RewriteStrSettings {
-            element_content_handlers: vec![element!("img", |image| {
-                let url = image
-                    .get_attribute("data-src")
-                    .filter(|src| !src.trim().is_empty())
-                    .or_else(|| image.get_attribute("src"))
-                    .filter(|src| !src.trim().is_empty());
-                let Some(url) = url
-                    .and_then(|src| {
-                        origin
-                            .join(html_escape::decode_html_entities(&src).trim())
-                            .ok()
-                    })
-                    .filter(|url| matches!(url.scheme(), "http" | "https"))
-                else {
-                    image.remove();
-                    return Ok(());
-                };
-                let asset = images.entry(url.to_string()).or_insert_with(id);
-                image.remove_attribute("data-src");
-                image.set_attribute("src", &format!("asset://{asset}"))?;
-                Ok(())
-            })],
-            ..RewriteStrSettings::default()
-        },
+        RewriteStrSettings::default().append_element_content_handler(element!("img", |image| {
+            let url = image
+                .get_attribute("data-src")
+                .filter(|src| !src.trim().is_empty())
+                .or_else(|| image.get_attribute("src"))
+                .filter(|src| !src.trim().is_empty());
+            let Some(url) = url
+                .and_then(|src| {
+                    origin
+                        .join(html_escape::decode_html_entities(&src).trim())
+                        .ok()
+                })
+                .filter(|url| matches!(url.scheme(), "http" | "https"))
+            else {
+                image.remove();
+                return Ok(());
+            };
+            let asset = images.entry(url.to_string()).or_insert_with(id);
+            image.remove_attribute("data-src");
+            image.set_attribute("src", &format!("asset://{asset}"))?;
+            Ok(())
+        })),
     )
     .map_err(|e| AppError::new("WECHAT_HTML", e.to_string()))?;
     let markdown =

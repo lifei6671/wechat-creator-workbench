@@ -22,7 +22,7 @@ pub(crate) struct PreviewKey {
 }
 
 fn digest(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 
 fn cache_root(app: &AppHandle) -> Result<PathBuf> {
