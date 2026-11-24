@@ -115,6 +115,43 @@ it("keeps escaped inline fences unchanged during initial document layout", async
   } finally { m.dispose(); }
 });
 
+it.each([false, true])("preserves escaped fences and the caret when editing elsewhere in their paragraph (composition=%s)", async composition => {
+  const source = "\\`\\``literal`\\`\\` 后文";
+  const m = await mount(source);
+  try {
+    const end = m.view.state.doc.firstChild!.nodeSize - 1;
+    m.view.dispatch(m.view.state.tr.setSelection(TextSelection.create(m.view.state.doc, end)));
+    if (composition) m.view.dom.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    m.view.dispatch(m.view.state.tr.insertText("新文字"));
+    if (composition) {
+      m.view.dom.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    expect(m.container.querySelector("pre")).toBeNull();
+    expect(m.handle.captureMarkdown().markdown).toBe(source + "新文字");
+    expect(m.view.state.selection.$from.parent.type.name).toBe("paragraph");
+    expect(m.view.state.selection.from).toBe(end + 3);
+  } finally { m.dispose(); }
+});
+
+it("only promotes the newly completed fence when an escaped fence shares its paragraph", async () => {
+  const m = await mount("\\`\\``literal`\\`\\` and `new code`");
+  try {
+    for (const opening of [true, false]) {
+      let position = 0;
+      m.view.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "new code") position = opening ? pos : pos + node.nodeSize;
+      });
+      m.view.dispatch(m.view.state.tr.setSelection(TextSelection.create(m.view.state.doc, position)));
+      m.view.someProp("handleTextInput", handler => handler(m.view, position, position, "``", () => m.view.state.tr.insertText("``")));
+    }
+    expect(m.container.querySelectorAll("pre")).toHaveLength(1);
+    expect(m.container.querySelector("pre > code")?.textContent).toBe("new code");
+    expect(m.container.querySelector("p > code")?.textContent).toBe("literal");
+    expect(m.container.querySelector("p")?.textContent).toBe("``literal`` and ");
+  } finally { m.dispose(); }
+});
+
 it("rescans only changed search blocks while preserving full counts and replacements", async () => {
   const m = await mount(Array.from({ length: 300 }, () => "第一处旧词，第二处旧词。").join("\n\n"));
   const find = vi.spyOn(SearchQuery.prototype, "findNext");

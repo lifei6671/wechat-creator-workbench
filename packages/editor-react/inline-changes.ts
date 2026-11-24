@@ -1,7 +1,7 @@
 import { isHistoryTransaction } from "@milkdown/kit/prose/history";
 import { Fragment, type Node as ProseNode } from "@milkdown/kit/prose/model";
 import { TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
-import { ReplaceStep } from "@milkdown/kit/prose/transform";
+import { Mapping, ReplaceStep } from "@milkdown/kit/prose/transform";
 import type { EditorView } from "@milkdown/kit/prose/view";
 
 const classified = new WeakMap<Transaction, number[] | null>();
@@ -29,7 +29,21 @@ export function insertCodeFence(view: EditorView, from: number, to: number, text
   return true;
 }
 
-export function promoteCodeFence(state: EditorState) {
+export function promoteCodeFence(state: EditorState, transactions: readonly Transaction[]) {
+  const mapping = new Mapping(transactions.flatMap(transaction => transaction.mapping.maps));
+  const ranges: { from: number; to: number }[] = [];
+  let mapIndex = 0;
+  for (const transaction of transactions) {
+    transaction.steps.forEach((step, index) => {
+      const after = transaction.docs[index + 1] ?? transaction.doc;
+      step.getMap().forEach((_from, _to, from, to) => {
+        if (from === to || !after.textBetween(from, to).includes("`")) return;
+        ranges.push({ from: mapping.slice(mapIndex + 1).map(from, 1), to: mapping.slice(mapIndex + 1).map(to, -1) });
+      });
+      mapIndex++;
+    });
+  }
+  if (!ranges.length) return null;
   const point = state.selection.$from;
   const block = point.parent;
   if (block.type.name !== "paragraph") return null;
@@ -39,6 +53,9 @@ export function promoteCodeFence(state: EditorState) {
     const leading = block.maybeChild(index - 1)?.text?.match(/`+$/)?.[0].length ?? 0;
     const trailing = block.maybeChild(index + 1)?.text?.match(/^`+/)?.[0].length ?? 0;
     if (leading !== 2 || trailing !== 2) return;
+    const start = point.start() + offset - leading;
+    const end = point.start() + offset + node.nodeSize + trailing;
+    if (!ranges.some(({ from, to }) => from < to && (from < start + leading && to > start || from < end && to > end - trailing))) return;
     const before = block.content.cut(0, offset - leading);
     const after = block.content.cut(offset + node.nodeSize + trailing);
     const content = Fragment.fromArray([

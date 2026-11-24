@@ -49,6 +49,94 @@ it("caches author options across focus and reloads only after a source revision 
   expect(publishing.defaults.snapshot().authorOptions).toEqual(["李飞"]);
 });
 
+it("saves a pending author draft when another selected author is removed", async () => {
+  await publishing.defaults.load();
+  const save = vi.spyOn(desktop, "saveWechatPublicationDefaults").mockImplementation(async (version, count, authors) => ({
+    schemaVersion: 1, recommendationCount: count, recommendationAuthors: authors, version: version + 1, updatedAt: 1,
+  }));
+  publishing.defaults.editAuthors(["Alice"]);
+  await publishing.defaults.flush();
+  publishing.defaults.editAuthorDraft("Bob");
+  publishing.defaults.editAuthors([]);
+  expect(publishing.defaults.snapshot().authorDraft).toBe("Bob");
+  expect(await publishing.defaults.flush()).toBe(true);
+  expect(save).toHaveBeenLastCalledWith(1, 5, ["Bob"]);
+  expect(publishing.defaults.snapshot().authors).toEqual(["Bob"]);
+  expect(publishing.session(queue).input().authors).toEqual(["Bob"]);
+});
+
+it.each([
+  ["unconfigured", "title"], ["unconfigured", "contentMd"],
+  ["auto", "title"], ["auto", "contentMd"],
+  ["manual", "title"], ["manual", "contentMd"],
+] as const)("finishes an explicit generation using the latest %s article's %s", async (mode, field) => {
+  const session = publishing.session(queue);
+  if (mode !== "unconfigured") {
+    await session.change(current => ({ ...current, recommendations: { ...current.recommendations, items: [item("previous")] } }), mode === "manual");
+  }
+  let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
+  const generate = vi.mocked(desktop.wechatRecommendations);
+  generate.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const pending = session.regenerate();
+  await vi.waitFor(() => expect(generate).toHaveBeenCalledOnce());
+  queue.edit({ [field]: "请求期间的新输入" });
+  const latest = session.input();
+  finish({ inputFingerprint: "stale", items: [item("stale")] });
+  expect(await pending).toBe(true);
+  expect(generate).toHaveBeenCalledTimes(2);
+  expect(generate).toHaveBeenLastCalledWith(latest);
+  expect(session.snapshot().resolved.items).toEqual([item("auto")]);
+  expect(queue.capture().fields.wechatPublication?.recommendations).toMatchObject({
+    mode: "auto", inputFingerprint: await recommendationFingerprint(latest), items: [item("auto")],
+  });
+  expect(queue.isDirty()).toBe(false);
+});
+
+it("does not report a recommendation success when the latest generation fails", async () => {
+  const session = publishing.session(queue);
+  let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
+  const generate = vi.mocked(desktop.wechatRecommendations);
+  generate.mockReturnValueOnce(new Promise(resolve => { finish = resolve; })).mockRejectedValueOnce(new Error("推荐请求失败"));
+  const pending = session.regenerate();
+  await vi.waitFor(() => expect(generate).toHaveBeenCalledOnce());
+  queue.edit({ title: "新标题" });
+  finish({ inputFingerprint: "stale", items: [item("stale")] });
+  expect(await pending).toBe(false);
+  expect(session.snapshot().error).toBe("推荐请求失败");
+  expect(queue.capture().fields.wechatPublication).toBeUndefined();
+});
+
+it("keeps the explicit generation intent while the generated list is being resolved", async () => {
+  const session = publishing.session(queue);
+  let finish!: (value: { items: WechatRecommendation[]; invalid: [] }) => void;
+  const resolve = vi.mocked(desktop.resolveWechatRecommendations);
+  resolve.mockReturnValueOnce(new Promise(done => { finish = done; }));
+  const pending = session.regenerate();
+  await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+  queue.edit({ contentMd: "解析期间的新正文" });
+  finish({ items: [item("auto")], invalid: [] });
+  expect(await pending).toBe(true);
+  expect(desktop.wechatRecommendations).toHaveBeenCalledTimes(2);
+  expect(desktop.wechatRecommendations).toHaveBeenLastCalledWith(expect.objectContaining({ contentMd: "解析期间的新正文" }));
+  expect(queue.capture().fields.wechatPublication?.recommendations.inputFingerprint).toBe(await recommendationFingerprint(session.input()));
+});
+
+it("cancels active regeneration after a manual list edit even when the article also changes", async () => {
+  const session = publishing.session(queue);
+  let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
+  const generate = vi.mocked(desktop.wechatRecommendations);
+  generate.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const pending = session.regenerate();
+  await vi.waitFor(() => expect(generate).toHaveBeenCalledOnce());
+  queue.edit({ contentMd: "新正文" });
+  const changed = session.change(current => ({ ...current, recommendations: { ...current.recommendations, items: [item("manual")] } }), true);
+  finish({ inputFingerprint: "stale", items: [item("stale")] });
+  expect(await pending).toBe(false);
+  expect(await changed).toBe(true);
+  expect(generate).toHaveBeenCalledOnce();
+  expect(session.snapshot().resolved.items).toEqual([item("manual")]);
+});
+
 it.each([false, true])("ignores an older author request after the latest revision loads, failure=%s", async failure => {
   let finish!: (authors: string[]) => void;
   let reject!: (error: Error) => void;

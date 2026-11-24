@@ -44,6 +44,21 @@ test("suggests multiple exact authors on focus and saves the focused draft befor
   await expect(page.getByTestId("generated-authors")).toHaveText(JSON.stringify(["李飞", "张明", "王林", "Alice", "alice", "新作者"]));
 });
 
+test("keeps the pending author when a selected author is removed", async ({ page }) => {
+  await page.goto("/tests/wechat-publication.html?empty=1");
+  await page.getByRole("tab", { name: "默认设置", exact: true }).click();
+  const authors = page.getByRole("combobox", { name: "推荐作者", exact: true });
+  await expect(authors).toBeEnabled();
+  await authors.fill("Alice");
+  await authors.press("Enter");
+  await expect.poll(async () => JSON.parse(await page.getByTestId("defaults").textContent() || "{}").recommendationAuthors).toEqual(["Alice"]);
+  await authors.fill("Bob");
+  await page.getByRole("button", { name: "移除作者 Alice", exact: true }).click();
+  await expect.poll(async () => JSON.parse(await page.getByTestId("defaults").textContent() || "{}").recommendationAuthors).toEqual(["Bob"]);
+  await expect(page.getByRole("button", { name: "移除作者 Bob", exact: true })).toBeVisible();
+  await expect(authors).toHaveValue("");
+});
+
 test("lifts the original recommendation row and previews its insertion before saving", async ({ page }, testInfo) => {
   await page.goto("/tests/wechat-publication.html");
   await expect(page.locator(".wechat-publishing-footer button")).toBeEnabled();

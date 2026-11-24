@@ -41,7 +41,7 @@ export class PublicationDefaults {
   hasPendingEdits = () => this.dirty || this.state.saving;
   private update(change: Partial<typeof this.state>) { this.state = { ...this.state, ...change }; for (const listener of this.listeners) listener(); }
   edit(value: string) { this.dirty = true; this.revision++; this.update({ draft: value }); }
-  editAuthors(authors: string[]) { this.dirty = true; this.revision++; this.update({ authors, authorDraft: "" }); }
+  editAuthors(authors: string[]) { this.dirty = true; this.revision++; this.update({ authors }); }
   editAuthorDraft(authorDraft: string) {
     if (authorDraft === this.state.authorDraft) return;
     this.dirty = true; this.revision++; this.update({ authorDraft });
@@ -209,6 +209,8 @@ export class PublicationSession {
   }
 
   private async resolve(force: boolean, background: boolean): Promise<WechatResolvedRecommendations> {
+    const revision = this.manualRevision;
+    const requested = force;
     const paused = () => background && (this.queue.isDirty() || this.queue.isSaving());
     this.update({ loading: true });
     try {
@@ -222,11 +224,12 @@ export class PublicationSession {
         const inputKey = JSON.stringify(input);
         let original = this.queue.snapshot().fields.wechatPublication;
         let config = original ?? emptyPublication();
+        force &&= this.manualRevision === revision;
         if (force) {
           const generated = await desktop.wechatRecommendations(input);
           if (this.disposed) throw new Error("文章已关闭");
           if (paused()) return this.state.resolved;
-          if (JSON.stringify(this.input()) !== inputKey || this.queue.snapshot().fields.wechatPublication !== original) { force = false; this.refreshRequested = true; continue; }
+          if (JSON.stringify(this.input()) !== inputKey || this.queue.snapshot().fields.wechatPublication !== original) { force = this.manualRevision === revision; this.refreshRequested = true; continue; }
           config = { ...config, recommendations: { ...config.recommendations, mode: "auto", inputFingerprint: generated.inputFingerprint, items: generated.items } };
           this.queue.edit({ wechatPublication: config });
           if (!await this.queue.flush({ retry: true })) throw this.queue.saveError();
@@ -237,7 +240,10 @@ export class PublicationSession {
           ? await desktop.resolveWechatRecommendations(input, config.recommendations.items) : { items: [], invalid: [] };
         if (this.disposed) throw new Error("文章已关闭");
         if (paused()) return this.state.resolved;
-        if (JSON.stringify(this.input()) !== inputKey || this.queue.snapshot().fields.wechatPublication !== original) { this.refreshRequested = true; continue; }
+        if (JSON.stringify(this.input()) !== inputKey || this.queue.snapshot().fields.wechatPublication !== original) {
+          force = requested && this.manualRevision === revision && JSON.stringify(this.input()) !== inputKey;
+          this.refreshRequested = true; continue;
+        }
         this.update({ resolved, ready: true, error: "" });
       } while (this.refreshRequested);
       return this.state.resolved;

@@ -606,6 +606,7 @@ export function MarkdownEditor(props: Props) {
     const edits = new Set<Promise<void>>();
     const compositionWaiters = new Set<() => void>();
     let compositionTimer: ReturnType<typeof setTimeout> | undefined;
+    let fenceComposition: Transaction[] = [];
     function resumeCompositionEdits() {
       for (const resume of compositionWaiters) resume();
       compositionWaiters.clear();
@@ -757,7 +758,9 @@ export function MarkdownEditor(props: Props) {
               compositionTimer = setTimeout(() => {
                 resumeCompositionEdits();
                 if (!isWritable(view) || view.composing) return;
-                const tr = promoteCodeFence(view.state);
+                const changes = fenceComposition;
+                fenceComposition = [];
+                const tr = promoteCodeFence(view.state, changes);
                 if (tr) view.dispatch(tr);
               }, 0);
               return false;
@@ -897,9 +900,14 @@ export function MarkdownEditor(props: Props) {
         appendTransaction(transactions, _old, state) {
           const transaction = transactions.at(-1);
           if (!transaction || isHistoryTransaction(transaction)) return null;
-          if (transaction.docChanged && !transaction.getMeta(documentLayout) && !ctx.get(editorViewCtx).composing) {
-            const fence = promoteCodeFence(state);
-            if (fence) return fence;
+          if (transaction.docChanged && !transaction.getMeta(documentLayout)) {
+            const changes = [...fenceComposition, ...transactions];
+            fenceComposition = [];
+            if (ctx.get(editorViewCtx).composing) fenceComposition = changes;
+            else {
+              const fence = promoteCodeFence(state, changes);
+              if (fence) return fence;
+            }
           }
           return repairInlineStrong(transaction, state, source => ctx.get(parserCtx)(source));
         },
