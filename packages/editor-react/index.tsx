@@ -3,7 +3,7 @@ import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx
 import { history } from "@milkdown/kit/plugin/history";
 import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
 import { gfm, tableSchema } from "@milkdown/kit/preset/gfm";
-import { closeHistory } from "@milkdown/kit/prose/history";
+import { closeHistory, isHistoryTransaction } from "@milkdown/kit/prose/history";
 import { DOMParser, DOMSerializer, Fragment, Slice, type Node as ProseNode } from "@milkdown/kit/prose/model";
 import { AllSelection, NodeSelection, Plugin, PluginKey, Selection, TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { cellAround, CellSelection, isInTable } from "@milkdown/kit/prose/tables";
@@ -28,7 +28,7 @@ import "@milkdown/kit/prose/view/style/prosemirror.css";
 import "@milkdown/kit/prose/tables/style/tables.css";
 import "@milkdown/kit/prose/gapcursor/style/gapcursor.css";
 import "./editor.css";
-import { inlineChangedBlocks, repairInlineStrong } from "./inline-changes";
+import { inlineChangedBlocks, insertCodeFence, promoteCodeFence, repairInlineStrong } from "./inline-changes";
 import type { WorkspaceSearchHit } from "../shared-types";
 import { locateSearchHit } from "./search-location";
 
@@ -606,6 +606,7 @@ export function MarkdownEditor(props: Props) {
     const edits = new Set<Promise<void>>();
     const compositionWaiters = new Set<() => void>();
     let compositionTimer: ReturnType<typeof setTimeout> | undefined;
+    let fenceComposition: Transaction[] = [];
     function resumeCompositionEdits() {
       for (const resume of compositionWaiters) resume();
       compositionWaiters.clear();
@@ -746,14 +747,22 @@ export function MarkdownEditor(props: Props) {
         ctx.update(editorViewOptionsCtx, options => ({
           ...options,
           editable: () => !latest.current.readOnly,
+          handleTextInput: (view, from, to, text) => isWritable(view) && insertCodeFence(view, from, to, text),
           attributes: () => ({
             "aria-label": "正文", role: "textbox", "aria-multiline": "true", "aria-readonly": String(latest.current.readOnly),
           }),
           handleDOMEvents: {
-            compositionend: () => {
+            compositionend: view => {
               // Let ProseMirror flush the final composition mutations before using mapped ranges.
               clearTimeout(compositionTimer);
-              compositionTimer = setTimeout(resumeCompositionEdits, 0);
+              compositionTimer = setTimeout(() => {
+                resumeCompositionEdits();
+                if (!isWritable(view) || view.composing) return;
+                const changes = fenceComposition;
+                fenceComposition = [];
+                const tr = promoteCodeFence(view.state, changes);
+                if (tr) view.dispatch(tr);
+              }, 0);
               return false;
             },
             blur: () => { latest.current.onBlur(); return false; },
@@ -890,7 +899,17 @@ export function MarkdownEditor(props: Props) {
       .use($prose(ctx => new Plugin({
         appendTransaction(transactions, _old, state) {
           const transaction = transactions.at(-1);
-          return transaction ? repairInlineStrong(transaction, state, source => ctx.get(parserCtx)(source)) : null;
+          if (!transaction || isHistoryTransaction(transaction)) return null;
+          if (transaction.docChanged && !transaction.getMeta(documentLayout)) {
+            const changes = [...fenceComposition, ...transactions];
+            fenceComposition = [];
+            if (ctx.get(editorViewCtx).composing) fenceComposition = changes;
+            else {
+              const fence = promoteCodeFence(state, changes);
+              if (fence) return fence;
+            }
+          }
+          return repairInlineStrong(transaction, state, source => ctx.get(parserCtx)(source));
         },
       })))
       .use($prose(() => new Plugin<DecorationSet>({

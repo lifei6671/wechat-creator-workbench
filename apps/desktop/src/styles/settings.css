@@ -195,6 +195,7 @@
 .sync-advanced > summary:focus-visible { outline: 0.5px solid var(--gray-a9); outline-offset: -0.5px; border-radius: 4px; }
 .settings-feedback { margin: 0; padding: 12px 0; }
 .settings-feedback + .settings-feedback { padding-top: 0; }
+.mcp-settings .setting-control:has(> .rt-Button) { flex-shrink: 0; }
 .mcp-address {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%;
 }
@@ -204,8 +205,11 @@
 .mcp-feedback { flex: 1 1 90px; min-width: 0; font-size: var(--small-font); block-size: 36px; overflow: auto; align-content: center; }
 .mcp-footer [data-available="false"] { visibility: hidden; }
 .mcp-submit { min-width: 86px; }
+.mcp-advanced { border-top: 0.5px solid var(--sand-6); }
+.mcp-advanced > summary { padding-block: 10px; color: var(--sand-11); cursor: pointer; }
+.mcp-recent { overflow-wrap: anywhere; text-align: end; color: var(--sand-11); }
 :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton) {
-  transition: background-color 250ms ease-out, color 250ms ease-out, opacity 250ms ease-out;
+  transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton) { transition: none; }
@@ -288,7 +292,7 @@
   }
 }
 
-.settings-dialog .plain-button { transition: background-color 250ms ease-out, color 250ms ease-out; }
+.settings-dialog .plain-button { transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease); }
 @media (prefers-reduced-motion: reduce) {
   .settings-dialog .plain-button { transition: none; }
 }

@@ -34,6 +34,7 @@ export interface WechatPublication {
 export interface WechatPublicationDefaults {
   schemaVersion: 1;
   recommendationCount: number;
+  recommendationAuthors: string[];
   version: number;
   updatedAt: number;
 }
@@ -47,6 +48,7 @@ export interface WechatRecommendationInput {
   status: EntryStatus;
   publishedAt: number | null;
   count: number;
+  authors: string[];
 }
 export interface WechatCandidate extends WechatRecommendation {
   summary: string;
@@ -129,9 +131,12 @@ export interface WorkspaceSearchHit extends WorkspaceSearchSnippet {
   before: string | null;
   after: string | null;
 }
-export interface WorkspaceSearchMatches { version: number; items: WorkspaceSearchHit[]; total: number; nextOffset: number | null }
+export interface WorkspaceSearchMatches { version: number; indexGeneration?: string; items: WorkspaceSearchHit[]; total: number; nextOffset: number | null }
 export interface WorkspaceSearchInfo {
   total: number;
+  indexing?: boolean;
+  indexGeneration?: string;
+  error?: string;
   clauses: {
     field: "text" | "content" | "file" | "path" | "tag" | "line" | "section" | "status" | "summary" | "source" | "unknownProperty";
     terms: string[];

@@ -2,7 +2,7 @@ import { cloneElement, useEffect, useLayoutEffect, useRef, useState, type HTMLAt
 import { Theme } from "@radix-ui/themes";
 import {
   arrow, autoUpdate, flip, FloatingArrow, FloatingDelayGroup, FloatingPortal, offset, shift, useDelayGroup, useDismiss,
-  useFloating, useFocus, useHover, useInteractions, useMergeRefs, useRole,
+  useFloating, useFocus, useHover, useInteractions, useMergeRefs, useRole, useTransitionStyles,
 } from "@floating-ui/react";
 import "./tooltip.css";
 
@@ -32,11 +32,13 @@ type TooltipProps = {
   content: string;
   anchor?: never;
   onDismiss?: never;
-} | { anchor: TooltipAnchor; onDismiss: () => void; children?: never; content?: never };
+} | { anchor: TooltipAnchor | null; onDismiss: () => void; children?: never; content?: never };
 
 export function Tooltip({ children, content, anchor, onDismiss }: TooltipProps) {
   const [opened, setOpen] = useState(false);
   const open = Boolean(anchor) || opened;
+  const displayedContent = useRef(anchor?.content ?? content);
+  if (open) displayedContent.current = anchor?.content ?? content;
   const arrowRef = useRef<SVGSVGElement>(null);
   const pointerX = useRef<number | null>(null);
   const { context, refs, floatingStyles, isPositioned, placement } = useFloating({
@@ -72,13 +74,19 @@ export function Tooltip({ children, content, anchor, onDismiss }: TooltipProps) 
   const role = useRole(context, { role: "tooltip" });
   const { getReferenceProps, getFloatingProps } = useInteractions([hover, point, focus, dismiss, role]);
   const trigger = useMergeRefs([setReference, children?.props.ref]);
+  const { isMounted, styles } = useTransitionStyles(context, {
+    duration: { open: 180, close: 120 },
+    initial: { opacity: 0 },
+    common: { transitionTimingFunction: "var(--motion-ease)" },
+  });
 
   return <>
     {children && cloneElement(children, { ...getReferenceProps(children.props), ref: trigger })}
-    {open && <FloatingPortal><Theme asChild>
+    {isMounted && <FloatingPortal><Theme asChild>
       <div {...getFloatingProps()} ref={refs.setFloating} className="workspace-tooltip" data-placement={placement}
-        style={{ ...floatingStyles, visibility: isPositioned ? undefined : "hidden" }}>
-        {anchor?.content ?? content}
+        aria-hidden={!open || undefined}
+        style={{ ...floatingStyles, ...styles, visibility: open && !isPositioned ? "hidden" : undefined }}>
+        {displayedContent.current}
         <FloatingArrow ref={arrowRef} context={context} width={10} height={arrowHeight} fill="var(--tooltip-bg)" />
       </div>
     </Theme></FloatingPortal>}
@@ -135,5 +143,5 @@ export function DomTooltips({ root }: { root: RefObject<HTMLElement | null> }) {
     };
   }, [root]);
 
-  return anchor ? <Tooltip anchor={anchor} onDismiss={() => setAnchor(null)} /> : null;
+  return <Tooltip anchor={anchor} onDismiss={() => setAnchor(null)} />;
 }

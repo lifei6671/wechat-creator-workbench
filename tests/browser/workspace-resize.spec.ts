@@ -14,6 +14,10 @@ async function mockNativeWindow(page: Page, platform: string) {
           if (command === "plugin:window|is_maximized") return false;
           if (command === "plugin:event|listen") return 1;
           if (command === "plugin:event|unlisten") return;
+          if (command === "empty_trash") {
+            Reflect.set(window, "motionConfirmCalls", (Reflect.get(window, "motionConfirmCalls") ?? 0) + 1);
+            return [];
+          }
           throw new Error(`Unexpected native call: ${command}`);
         },
       },
@@ -22,13 +26,172 @@ async function mockNativeWindow(page: Page, platform: string) {
   }, platform);
 }
 
+for (const platform of ["Win32", "MacIntel"]) test(`retains every sidebar icon frame at normal and maximized widths on ${platform}`, async ({ page }) => {
+  await mockNativeWindow(page, platform);
+  await page.goto("/tests/workspace-resize.html?edit=1");
+  async function checkFrames() {
+    const icons = page.locator(".sidebar-toggle-icon:visible");
+    expect(await icons.count()).toBeGreaterThan(0);
+    const frames = await icons.evaluateAll(elements => elements.map(element => {
+      const frame = element.querySelector<SVGRectElement>('rect:not(.sidebar-toggle-fill)')!;
+      return { opacity: getComputedStyle(frame).opacity, stroke: getComputedStyle(frame).stroke,
+        width: frame.getAttribute("width"), height: frame.getAttribute("height"),
+        iconWidth: element.getBoundingClientRect().width, iconHeight: element.getBoundingClientRect().height };
+    }));
+    for (const frame of frames) {
+      expect(frame.opacity).toBe("1");
+      expect(frame.stroke).not.toBe("none");
+      expect(frame.width).toBe("18"); expect(frame.height).toBe("18");
+      expect(frame.iconWidth).toBe(18); expect(frame.iconHeight).toBe(18);
+    }
+    await expect.poll(() => icons.evaluateAll(elements => elements.every(element =>
+      getComputedStyle(element.querySelector('.sidebar-toggle-fill')!).opacity === (element.getAttribute("data-expanded") === "true" ? "1" : "0")))).toBe(true);
+  }
+  for (const [width, height] of [[1360, 840], [1920, 1080]]) {
+    await page.setViewportSize({ width, height });
+    await checkFrames();
+    await page.locator("#ai-panel-trigger").click(); await checkFrames();
+    await page.locator("#ai-panel-trigger").click(); await checkFrames();
+    if (await page.locator("#hide-timeline-directory").isVisible()) {
+      await page.locator("#hide-timeline-directory").click(); await checkFrames();
+      await page.locator("#show-timeline-directory").click(); await checkFrames();
+    }
+    await page.locator("#hide-sidebar").click(); await checkFrames();
+    await page.locator("#show-sidebar").click(); await checkFrames();
+  }
+});
+
+for (const motion of ["no-preference", "reduce"] as const) test(`dismisses settings through its exit and restores focus with ${motion} motion`, async ({ page }) => {
+  await mockNativeWindow(page, "Win32");
+  await page.emulateMedia({ reducedMotion: motion });
+  await page.goto("/tests/workspace-resize.html?edit=1");
+  const trigger = page.getByRole("button", { name: "设置", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => dialog.evaluate(element => getComputedStyle(element).opacity)).toBe("1");
+  const partial = await dialog.evaluate(async element => {
+    element.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click();
+    await Promise.resolve();
+    const animations = element.getAnimations();
+    for (const animation of animations) animation.pause();
+    await Promise.all(animations.map(animation => animation.ready));
+    for (const animation of animations) animation.currentTime = Number(animation.effect!.getTiming().duration) / 2;
+    const opacity = Number(getComputedStyle(element).opacity);
+    const intermediate = element.isConnected && opacity > 0 && opacity < 1;
+    for (const animation of animations) animation.finish();
+    return intermediate;
+  });
+  expect(partial).toBe(motion === "no-preference");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+});
+
+test("keeps a new settings dialog when a nonmodal command palette finishes closing", async ({ page }) => {
+  await mockNativeWindow(page, "Win32");
+  await page.goto("/tests/workspace-resize.html?edit=1");
+  await page.getByRole("button", { name: "命令面板", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "查找命令或笔记" })).toBeVisible();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  await expect(settings).toBeVisible();
+  await expect.poll(() => settings.evaluate(element => getComputedStyle(element).opacity)).toBe("1");
+  await expect(page.locator(".command-palette")).toHaveCount(0);
+  await expect(settings.getByRole("button", { name: "关闭设置" })).toBeEnabled();
+});
+
+test("does not activate a cancelled destructive action during its exit", async ({ page }) => {
+  await mockNativeWindow(page, "Win32");
+  await page.goto("/tests/workspace-resize.html?edit=1");
+  await page.getByRole("button", { name: "回收站", exact: true }).click();
+  await page.locator("#empty-trash").click();
+  const dialog = page.getByRole("dialog", { name: "清空回收站", exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "清空回收站", exact: true }).focus();
+  await page.keyboard.press("Escape");
+  expect(await page.evaluate(() => {
+    const closing = document.querySelector<HTMLElement>('.rt-DialogContent[data-state="closed"]');
+    return !closing || closing.inert;
+  })).toBe(true);
+  await page.keyboard.press("Enter");
+  await expect(page.locator('.rt-DialogContent[data-state="closed"]')).toHaveCount(0);
+  expect(await page.evaluate(() => Reflect.get(window, "motionConfirmCalls") ?? 0)).toBe(0);
+});
+
+for (const region of ["right", "directory"] as const) test(`takes over a partially opened ${region} at its rendered boundary`, async ({ page }) => {
+  await mockNativeWindow(page, "Win32");
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.clock.install();
+  await page.goto(`/tests/workspace-resize.html?edit=1${region === "right" ? "&priority=1" : ""}`);
+  const group = page.locator("#workspace-panels");
+  await expect.poll(() => page.locator("#ai-sidebar").evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(region === "right" ? 420 : 350);
+  await expect(group).not.toHaveAttribute("data-ai-sidebar-moving", "true");
+  if (region === "right") {
+    await page.locator("#ai-panel-trigger").click();
+    await expect.poll(() => page.locator("#ai-sidebar").evaluate(element => element.getBoundingClientRect().width)).toBe(0);
+  } else {
+    await page.locator("#hide-timeline-directory").click();
+    await expect(group).not.toHaveAttribute("data-timeline-directory-moving", "true");
+  }
+  // CSS animation time and JS timers are independent: hold cleanup timers too.
+  await page.clock.pauseAt(new Date(Date.now() + 60_000));
+  await group.evaluate(element => { (element as HTMLElement).style.setProperty("--motion-layout", "60s"); });
+  await page.locator(region === "right" ? "#ai-panel-trigger" : "#show-timeline-directory").evaluate((element: HTMLElement) => element.click());
+  await expect.poll(() => group.locator(":scope > [data-panel]").evaluateAll(panels => panels.some(panel => panel.getAnimations().length > 0))).toBe(true);
+  await page.evaluate(async () => {
+    // Hold a legal intermediate width while moving the real pointer onto its boundary.
+    const animations = [...document.querySelectorAll("#workspace-panels > [data-panel], #timeline-directory")].flatMap(element => element.getAnimations());
+    for (const animation of animations) animation.pause();
+    await Promise.all(animations.map(animation => animation.ready));
+    for (const animation of animations) animation.currentTime = Number(animation.effect!.getTiming().duration) * .8;
+  });
+  const separator = region === "right" ? page.getByRole("separator", { name: "调整右侧栏宽度", exact: true }) : page.locator("#resize-timeline-directory");
+  await separator.evaluate((element: HTMLElement) => { element.dataset.motionSeparator = "true"; });
+  await page.evaluate(() => {
+    const boundary = () => document.querySelector('[data-motion-separator="true"]')!.getBoundingClientRect().x;
+    document.addEventListener("pointerdown", () => Reflect.set(window, "motionBoundaryBefore", boundary()), { capture: true, once: true });
+    window.addEventListener("pointerdown", () => Reflect.set(window, "motionBoundaryAfter", boundary()), { once: true });
+  });
+  const bounds = (await separator.boundingBox())!;
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 150);
+  await page.mouse.down();
+  try {
+    expect(await page.evaluate(() => Math.abs(Reflect.get(window, "motionBoundaryAfter") - Reflect.get(window, "motionBoundaryBefore")))).toBeLessThan(1);
+    await expect(group).toHaveAttribute("data-resizing", "true");
+    await page.mouse.move(bounds.x + (region === "right" ? -20 : 20), bounds.y + 150);
+  } finally { await page.mouse.up(); }
+});
+
+for (const platform of ["Win32", "MacIntel"]) test(`keeps every panel directly attached to a live resize gesture on ${platform}`, async ({ page }) => {
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/tests/workspace-resize.html?priority=1&edit=1");
+  const group = page.locator("#workspace-panels");
+  await expect.poll(() => page.locator("#ai-sidebar").evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(420);
+  await expect(group).not.toHaveAttribute("data-ai-sidebar-moving", "true");
+  const separator = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
+  const bounds = (await separator.boundingBox())!;
+  const before = (await page.locator("#ai-sidebar").boundingBox())!.width;
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 150);
+  await page.mouse.down();
+  try {
+    await expect(group).toHaveAttribute("data-resizing", "true");
+    expect(await group.locator(":scope > [data-panel]").evaluateAll(panels => panels.every(panel => getComputedStyle(panel).transitionDuration === "0s"))).toBe(true);
+    await page.mouse.move(bounds.x - 60, bounds.y + 150, { steps: 4 });
+    // Read the rendered width immediately: a lagging transition cannot satisfy this.
+    expect((await page.locator("#ai-sidebar").boundingBox())!.width - before).toBeGreaterThan(58);
+  } finally { await page.mouse.up(); }
+  await expect(group).not.toHaveAttribute("data-resizing", "true");
+});
+
 for (const platform of ["Win32", "MacIntel"]) test(`keeps publication controls while typing stable on ${platform}`, async ({ page }) => {
   await mockNativeWindow(page, platform);
   await page.goto("/tests/workspace-resize.html?edit=1");
   await page.getByRole("button", { name: "公众号设置", exact: true }).click();
   const copy = page.locator(".wechat-publishing-footer button");
   await expect(copy).toBeEnabled();
-  await expect(page.getByRole("button", { name: "重新推荐", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "自动推荐", exact: true })).toBeEnabled();
   const editor = page.locator(".document-editor:not([hidden]) .ProseMirror");
   await editor.locator("p").first().click();
   await editor.press("End");
@@ -128,7 +291,11 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps panel widths stable th
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/tests/workspace-resize.html?priority=1");
   const right = page.locator('#ai-sidebar[data-panel]');
+  const group = page.locator("#workspace-panels");
+  await expect(group).not.toHaveAttribute("data-sidebar-restoring", "true");
+  await expect(group).not.toHaveAttribute("data-ai-sidebar-moving", "true");
   await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
+  await expect.poll(() => page.locator('#navigation[data-panel]').evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(480);
   await page.evaluate(() => {
     const group = document.querySelector<HTMLElement>('#workspace-panels')!;
     const navigation = document.querySelector<HTMLElement>('#navigation[data-panel]')!;
@@ -255,6 +422,7 @@ for (const appearance of ["light", "dark"]) test(`highlights Windows minimize an
   for (const name of ["最小化", "最大化"]) {
     const button = controls.getByRole("button", { name, exact: true });
     await button.hover();
+    await expect.poll(() => button.evaluate(element => element.getAnimations().filter(animation => animation.playState === "running").length)).toBe(0);
     const colors = await button.evaluate(element => {
       const probe = document.createElement("span");
       probe.style.color = "var(--sand-4)";

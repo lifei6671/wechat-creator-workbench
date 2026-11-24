@@ -14,6 +14,7 @@ mod graphics;
 mod link_import;
 mod mcp;
 mod secrets;
+mod search_index;
 mod sync;
 mod updater;
 mod wechat_import;
@@ -39,7 +40,7 @@ use content::trash::{empty_trash, trash_retention};
 use db::Workspace;
 use graphics::gpu_acceleration;
 use link_import::{import_clipping, import_link};
-use mcp::{McpServer, mcp_save, mcp_status, mcp_token};
+use mcp::{McpServer, mcp_copy_config, mcp_reset_token, mcp_save, mcp_status};
 use sync::contents::{
     sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
     sync_resolve, sync_run,
@@ -182,6 +183,10 @@ fn main() {
             Assets::spawn(app.handle().clone());
             sync::scheduler::spawn(app.handle().clone());
             content::trash::spawn(app.handle().clone());
+            let index_events = app.handle().clone();
+            app.state::<Workspace>().start_search_index(move || {
+                let _ = index_events.emit("workspace-changed", ());
+            })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -194,6 +199,7 @@ fn main() {
             entries,
             get_entry,
             wechat_publication_defaults,
+            wechat_recommendation_authors,
             save_wechat_publication_defaults,
             wechat_recommendations,
             wechat_recommendation_candidates,
@@ -266,7 +272,8 @@ fn main() {
             wechat_graphics,
             mcp_status,
             mcp_save,
-            mcp_token,
+            mcp_copy_config,
+            mcp_reset_token,
             sync_status,
             sync_default_device_name,
             sync_connect,

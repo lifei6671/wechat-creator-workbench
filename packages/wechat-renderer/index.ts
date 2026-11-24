@@ -326,6 +326,17 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
         anchor.replaceWith(span);
       }
     }
+    // WeChat turns bare text after a list item's inline element into a block.
+    // A styled span survives its HTML cleanup and keeps the text on the same line.
+    for (const item of template.content.querySelectorAll("li")) {
+      for (const child of Array.from(item.childNodes)) {
+        if (child.nodeType !== Node.TEXT_NODE || !child.textContent?.trim()) continue;
+        const span = document.createElement("span");
+        span.style.display = "inline";
+        child.replaceWith(span);
+        span.append(child);
+      }
+    }
     if (gzhDesign) wrapGzhLeaves(template.content);
     for (const node of template.content.querySelectorAll("*")) {
       node.removeAttribute("class");

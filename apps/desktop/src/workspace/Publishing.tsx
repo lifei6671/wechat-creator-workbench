@@ -7,8 +7,9 @@ import { ActionError, useButtonFeedback } from "../button-feedback";
 import { renderWechat, type ImageResult, type RenderInput, type RenderedWechat } from "../../../../packages/wechat-renderer";
 
 export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose(): void }) {
-  return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
-    <Dialog.Content className="image-viewer" aria-describedby={undefined}>
+  const [dialogOpen, setDialogOpen] = useState(true);
+  return <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}>
+    <Dialog.Content className="image-viewer" aria-describedby={undefined} inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
       <Dialog.Title className="image-viewer-title">{alt || "图片预览"}</Dialog.Title>
       <Tooltip content="关闭图片预览"><Dialog.Close><button type="button" className="plain-button chrome-icon image-viewer-close" aria-label="关闭图片预览">
         <X size={18} strokeWidth={1.65} />
@@ -76,6 +77,7 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
 }) {
   const [url, setUrl] = useState("");
   const [job, setJob] = useState<WechatImportJob | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const buttons = useButtonFeedback();
@@ -116,8 +118,8 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
     catch (failure) { setError(errorMessage(failure)); buttons.finish("open", false); }
     finally { setBusy(false); }
   }
-  return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
-    <Dialog.Content maxWidth="520px" aria-describedby={undefined}>
+  return <Dialog.Root open={dialogOpen} onOpenChange={open => { if (!open && !busy) setDialogOpen(false); }}>
+    <Dialog.Content maxWidth="520px" aria-describedby={undefined} inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
       <Dialog.Title>导入链接</Dialog.Title>
       <form className="dialog-form" onSubmit={submit}>
         <label>网页链接<TextField.Root type="url" required value={url} onChange={event => setUrl(event.target.value)}
@@ -147,6 +149,7 @@ export function LinkImportDialog({ categoryId, downloadImages, onClose, track, o
 
 export function PublishImagesDialog({ images, onClose }: { images: RenderedWechat["images"]; onClose(): void }) {
   const buttons = useButtonFeedback();
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   async function useImage(index: number, action: "copy" | "save") {
     const key = `${index}:${action}`;
@@ -157,8 +160,8 @@ export function PublishImagesDialog({ images, onClose }: { images: RenderedWecha
     }
     finally { setBusy(false); }
   }
-  return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
-    <Dialog.Content maxWidth="520px">
+  return <Dialog.Root open={dialogOpen} onOpenChange={open => { if (!open && !busy) setDialogOpen(false); }}>
+    <Dialog.Content maxWidth="520px" inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
       <Dialog.Title>逐张处理图片</Dialog.Title>
       <Dialog.Description>正文样式已复制。粘贴到公众号后台后，按标记顺序插入图片。</Dialog.Description>
       <div className="wechat-job-list">

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import { Button, ContextMenu, DropdownMenu, HoverCard, Select, Spinner } from "@radix-ui/themes";
 import {
-  ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
+  ArchiveRestore, ArrowDown, ArrowDownNarrowWide, ArrowUp, CalendarDays, ChevronDown, ChevronsDownUp, ChevronsUpDown, Copy, Crosshair, FileDown, FilePenLine, FileUp, Files, FileText,
   FolderOpen, FolderPlus, History, Link, PencilLine, Pin, PinOff, Plus, SquareArrowOutUpRight, Tag, Tags, Trash2,
 } from "lucide-react";
 import type { CanvasCardColor, Category, CategoryIcon, CategoryPlacement, Collection, EntryFilter, EntryPage, EntryRow, EntrySortOrder, Library, TimelineSelection, WorkspaceSearchHit, WorkspaceSearchMatches } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import { commandKey, dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
+import { useReducedMotion } from "../../../../packages/ui-react/motion";
 import { folderIcons } from "./folder-icons";
 import { colorValue } from "./ColorChoices";
 import { MoveEntryMenu } from "./MoveEntryMenu";
@@ -158,6 +159,28 @@ const entryDate = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
 });
 
+function FolderBranch({ open, id, label, keepMounted, children }: {
+  open: boolean; id: string; label: string; keepMounted: boolean; children: ReactNode;
+}) {
+  const [retained, setRetained] = useState(open);
+  const reducedMotion = useReducedMotion();
+  useEffect(() => {
+    if (keepMounted) return;
+    if (open) { setRetained(true); return; }
+    if (!retained) return;
+    const timer = setTimeout(() => setRetained(false), reducedMotion ? 0 : 250);
+    return () => clearTimeout(timer);
+  }, [open, retained, keepMounted, reducedMotion]);
+  return <div className="tree-section-content folder-branch" data-collapsed={!open}
+    onTransitionEnd={event => {
+      if (event.target === event.currentTarget && event.propertyName === "grid-template-rows" && !open && !keepMounted) setRetained(false);
+    }}>
+    <ul className="folder-children" id={`folder-${id}`} data-tree-container={id} aria-label={label} inert={!open}>
+      {(keepMounted || open || retained) && children}
+    </ul>
+  </div>;
+}
+
 export function TreeSection({ id, title, collapsed, onToggle, onExpanded, pinned, icon, children }: {
   id: string; title: string; collapsed: boolean; onToggle(): void; onExpanded?(): void;
   pinned?: boolean; icon?: ReactNode; children: ReactNode;
@@ -304,19 +327,17 @@ export function Explorer(props: ExplorerProps) {
     return siblings.map((category, index) => {
       const open = expanded.includes(category.id);
       const [Icon] = folderIcons[category.icon];
-      const Chevron = open ? ChevronDown : ChevronRight;
       const hasChildren = isTimeline && categories.some(child => child.parentId === category.id);
       const childrenId = `folder-${category.id}`;
       const drop = drag.hint?.id === category.id ? drag.hint.placement : undefined;
-      const children = (isTimeline ? hasChildren || editing?.parent === category.id : open)
-        ? <ul className="folder-children" id={childrenId} data-tree-container={category.id} aria-label={category.name}
-          inert={isTimeline && !open}>
+      const children = (!isTimeline || hasChildren || editing?.parent === category.id)
+        ? <FolderBranch open={open} id={category.id} label={category.name} keepMounted={isTimeline}>
           {branch(category.id)}
           {!isTimeline && <FolderEntries key={sort} categoryId={category.id} revision={revision} limit={limit} markLoading={markLoading} actions={rowActions} drag={drag}
             pinnedIds={pinnedIds} sort={sort === "manual" ? undefined : sort}
             locate={props.activeFolder === category.id ? locateInFolders : null} />}
           {editing && !editing.target && editing.parent === category.id && <li>{folderEditor(editing)}</li>}
-        </ul> : null;
+        </FolderBranch> : null;
       return <li key={category.id} className="tree-folder" data-placement={drop}>
         {editing?.target?.id === category.id ? folderEditor(editing) : <div className="folder-row"
           data-tree-kind="folder" data-tree-id={category.id} data-tree-title={category.name}
@@ -333,12 +354,12 @@ export function Explorer(props: ExplorerProps) {
               <button type="button" id={`folder-row-${category.id}`} className="plain-button folder-select"
                 aria-expanded={isTimeline ? undefined : open}
                 aria-current={isTimeline && selection?.kind === "folder" && selection.id === category.id ? "true" : undefined}
-                aria-controls={!isTimeline && open ? childrenId : undefined}
+                aria-controls={!isTimeline ? childrenId : undefined}
                 onClick={() => {
                   if (isTimeline) props.onTimelineSelect?.({ kind: "folder", id: category.id });
                   else props.onFolder(category.id);
                 }}>
-                {!isTimeline && <Chevron size={12} className="folder-chevron" />}
+                {!isTimeline && <ChevronDown size={12} className="folder-chevron" />}
                 <span className="folder-icon folder-icon-badge" aria-hidden="true" style={{ backgroundColor: colorValue(category.iconColor) }}>{loadingFolders.includes(category.id)
                   ? <Spinner size="1" />
                   : open && category.icon === "folder" ? <FolderOpen size={14} /> : <Icon size={14} />}</span>
@@ -361,7 +382,7 @@ export function Explorer(props: ExplorerProps) {
             </ContextMenu.Content>
           </ContextMenu.Root>
         </div>}
-        {isTimeline && children ? <div className="tree-section-content" data-collapsed={!open}>{children}</div> : children}
+        {children}
       </li>;
     });
   }
@@ -406,7 +427,10 @@ export function Explorer(props: ExplorerProps) {
           persist(searchDisplayKey, value);
         }} />
       {query.trim() && <div className="workspace-search-summary">
-        <span aria-live="polite">{page ? `${page.search?.total ?? page.items.length} 篇笔记` : ""}</span>
+        <span aria-live="polite" aria-busy={page?.search?.indexing || undefined}
+          className={page?.search?.error ? "inline-error" : undefined} title={page?.search?.error}
+          role={page?.search?.error ? "alert" : undefined}>{page?.search?.error
+            || (page?.search?.indexing ? "正在载入…" : page ? `${page.search?.total ?? page.items.length} 篇笔记` : "")}</span>
         <Select.Root size="1" value={props.searchSort ?? "name"}
           onValueChange={value => props.onSearchSort?.(value as NonNullable<EntryFilter["sort"]>)}>
           <Select.Trigger aria-label="搜索结果排序" variant="ghost" />
@@ -485,7 +509,7 @@ export function Explorer(props: ExplorerProps) {
           : !page ? <li className="explorer-empty">正在载入…</li>
             : !page.items.length ? <li className="explorer-empty">{isSearch ? "没有匹配的内容" : section === "imports" ? "暂无导入文章" : "回收站为空"}</li>
               : page.items.map(row => isSearch && row.searchMatches && props.onSearchHit
-                ? <SearchNote key={JSON.stringify([row.id, row.searchMatches.version, query, props.caseSensitive, searchDisplay.collapse])}
+                ? <SearchNote key={JSON.stringify([row.id, row.searchMatches.version, row.searchMatches.indexGeneration, query, props.caseSensitive, searchDisplay.collapse])}
                   row={row} matches={row.searchMatches} actions={rowActions}
                   search={{ text: query, caseSensitive: props.caseSensitive }} selected={props.selectedSearchHit}
                   collapsed={searchDisplay.collapse} showContext={searchDisplay.context} onOpenHit={props.onSearchHit} onRefresh={props.onRetry} />
@@ -617,8 +641,8 @@ function SearchNote({ row, matches, actions, search, selected, collapsed, showCo
       const request = await desktop.entries({ deleted: false, offset: 0,
         workspaceSearch: { ...search, matchPage: { entryId: row.id, offset: next } } });
       const page = request.items[0]?.searchMatches;
-      if (!page || page.version !== matches.version) {
-        setError("笔记已更新，正在刷新结果");
+      if (!page || page.version !== matches.version || page.indexGeneration !== matches.indexGeneration) {
+        setError("搜索结果已更新，正在刷新");
         onRefresh();
         return;
       }

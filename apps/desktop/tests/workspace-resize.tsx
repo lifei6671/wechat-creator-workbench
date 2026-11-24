@@ -12,7 +12,7 @@ import { saveDocumentTabs, saveWorkspaceLayout } from "../src/workspace/preferen
 import { recommendationFingerprint } from "../src/workspace/wechat-publication";
 
 const article: Entry = { id: "resize", title: "窗口缩放中的文章", kind: "article", contentMd: ["## 正文", "保留正文和侧栏内容。", "### 子节",
-  ...Array.from({ length: 24 }, (_, index) => `段落 ${index + 1}：用于滚动定位并检查当前章节跟随。`), "## 第二节", "第二节正文。"].join("\n\n"), status: "draft", categoryId: null,
+  ...Array.from({ length: new URLSearchParams(location.search).has("long") ? 1000 : 24 }, (_, index) => `段落 ${index + 1}：用于滚动定位并检查当前章节跟随。`), "## 第二节", "第二节正文。"].join("\n\n"), status: "draft", categoryId: null,
   createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null, tags: [], summary: "文章摘要", source: null, publishedAt: null, publishedUrl: "", version: 1, links: [] };
 const second = { ...article, id: "second", title: "另一篇用于检查标签布局的文章" };
 const thread = { id: "resize-thread", title: "当前对话", archived: false, updatedAt: 1 };
@@ -38,7 +38,7 @@ desktop.aiThread = async () => thread;
 desktop.aiMessages = async () => [];
 desktop.aiUpdateThread = async () => {};
 desktop.wechatGraphics = async () => [];
-desktop.wechatPublicationDefaults = async () => ({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 });
+desktop.wechatPublicationDefaults = async () => ({ schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 });
 desktop.wechatRecommendations = async input => { publicationTyping.recommendations++; return { inputFingerprint: await recommendationFingerprint(input), items: [] }; };
 desktop.resolveWechatRecommendations = async (_input, items) => ({ items, invalid: [] });
 for (const event of ["onExit", "onHistory", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onTrashEmptied", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {

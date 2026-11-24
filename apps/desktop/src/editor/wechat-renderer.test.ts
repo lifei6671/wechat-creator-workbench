@@ -6,6 +6,63 @@ import fixture from "../../../../fixtures/wechat-format.json?raw";
 
 const gzhThemes = wechatThemes.filter(theme => theme.id.startsWith("gzh-"));
 
+it.each(wechatThemes)("keeps list labels and descriptions inline for WeChat in $label", async theme => {
+  const markdown = [
+    "- **影视播放：** TVBox、影视仓、Kodi、FongMi 影视、OK 影视等。",
+    "- **家庭K歌：** 麦动、家庭 KTV 等。",
+    "- 普通文字 **加粗** 后续文字",
+    "- [微信文章](https://mp.weixin.qq.com/s/example) 与 **说明** 结尾",
+    "  1. **嵌套：** 保持同行",
+    "  2. 纯文本条目",
+  ].join("\n");
+  const outputs: string[] = [];
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const result = await renderWechat({ markdown, output, themeId: theme.id, revision: 1 },
+      { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+    try {
+      const template = document.createElement("template");
+      template.innerHTML = result.html;
+      const items = template.content.querySelectorAll("li");
+      expect(items).toHaveLength(6);
+      expect(items[0].textContent).toBe("影视播放： TVBox、影视仓、Kodi、FongMi 影视、OK 影视等。");
+      expect(items[1].textContent).toBe("家庭K歌： 麦动、家庭 KTV 等。");
+      expect(items[2].textContent).toBe("普通文字 加粗 后续文字");
+      expect(items[0].querySelector("p, br, section")).toBeNull();
+      expect(items[4].textContent).toBe("嵌套： 保持同行");
+      expect(items[5].textContent).toBe("纯文本条目");
+      expect(items[3].querySelector("ol > li")).toBe(items[4]);
+      expect(items[3].querySelector("a")?.getAttribute("href")).toBe("https://mp.weixin.qq.com/s/example");
+      for (const [item, description] of [[items[0], " TVBox、影视仓、Kodi、FongMi 影视、OK 影视等。"],
+        [items[1], " 麦动、家庭 KTV 等。"], [items[4], " 保持同行"]] as const) {
+        const span = item.lastChild as HTMLElement;
+        expect(span.tagName).toBe("SPAN");
+        expect(span.style.display).toBe("inline");
+        expect(span.textContent).toBe(description);
+      }
+      expect(result.html).not.toContain("nowrap");
+      outputs.push(result.html);
+    } finally { result.dispose(); }
+  }
+  expect(new Set(outputs).size).toBe(1);
+});
+
+it("preserves explicit list breaks, paragraphs and task markers", async () => {
+  const markdown = "- **标签：** 首行  \n  手动换行\n\n  第二段\n\n- [x] **完成：** 任务说明";
+  const result = await renderWechat({ markdown, output: "clipboard", themeId: "plainly-tech", revision: 1 },
+    { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+  try {
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    const items = template.content.querySelectorAll("li");
+    expect(items).toHaveLength(2);
+    expect(items[0].querySelectorAll("p")).toHaveLength(2);
+    expect(items[0].querySelector("p")?.innerHTML).toContain("<br>");
+    expect(items[0].querySelectorAll("p")[1].textContent).toBe("第二段");
+    expect(items[1].textContent).toContain("☑ 完成： 任务说明");
+    expect(items[1].querySelector("strong")?.textContent).toBe("完成：");
+  } finally { result.dispose(); }
+});
+
 it.each(wechatThemes)("appends safe recommendations only to WeChat outputs in $label", async theme => {
   const markdown = "正文保持原样";
   const recommendations = [{ entryId: "past", title: '<img src=x onerror=alert(1)> 往期文章', url: "https://mp.weixin.qq.com/s?__biz=abc&mid=123&idx=1&sn=full#wechat_redirect" }];

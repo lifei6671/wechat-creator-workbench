@@ -56,7 +56,7 @@ impl ImageCache {
     ) -> Result<Vec<u8>> {
         let mut address = address.clone();
         address.set_fragment(None);
-        let key = format!("{:x}", Sha256::digest(address.as_str()));
+        let key = hex::encode(Sha256::digest(address.as_str()));
         let request_lock = self.request_lock(&key).lock_owned().await;
         let mut request = Request::get(address.as_str())
             .body(())

@@ -19,6 +19,10 @@ pnpm dev
 
 正文和素材记录保存在系统应用数据目录下的 `workspace/content.db`，图片文件保存在 `workspace/assets/`。通过「导入链接」可导入公众号文章，写作区可选择主题、复制公众号富文本或导出排版 HTML。没有图床时，复制正文后可按助手中的编号逐张复制或保存图片。
 
+右下角字数后显示当前文章的状态，无状态时隐藏。公众号侧栏中的推荐阅读需要点击「自动推荐」生成，打开侧栏、编辑正文和复制都不会自动推荐。默认设置支持作者多选，精确匹配任一选中作者；留空时不过滤作者。输入框聚焦后显示候选，也可输入作者后按回车添加。
+
+启用图床自动上传时，因退出而中断的图片上传会在下次启动后自动继续，完成后文章中的本地图片链接会更新为公开链接。网络或图床配置错误仍需处理后手动重试。
+
 Obsidian Web Clipper 中选择「复制到剪贴板」后，在工作区空白处或文章正文按 `Ctrl+V`（macOS 为 `Command+V`），会将带有 `title` 和 `source` 属性的剪藏收录到当前文件夹，并在新标签页打开。作者、原文发布日期、剪藏日期、摘要和标签会保存为文章属性，重复来源打开已有文章。远程图片遵循粘贴图片下载设置；Obsidian 本地附件只有文件名时保留引用并提示缺少文件。使用纯文本粘贴可保留完整原文，不触发导入。
 
 在「设置 → 同步」展开「查看冲突内容」，可对照文章或白板冲突项的本地与云端版本，并选择保留本地、采用云端或另存副本。白板按白板信息、卡片、连线分别处理冲突；另存副本会完整复制本地白板的卡片、布局和连线，保留已有文章及图片引用，再为原冲突项选择云端版本。同组冲突需全部处理后才能应用。云端已删除的白板项不能在原 ID 上恢复，可另存副本以保留本地内容；本地已删除的项没有可另存的副本。
@@ -56,35 +60,13 @@ APPLE_SIGNING_IDENTITY=- pnpm build --bundles app,dmg
 
 ## 本机 MCP
 
-打开「设置」→「MCP 服务」，启用服务并复制令牌。默认地址为 `http://127.0.0.1:17321/mcp`，默认权限为只读。需要新建、修改内容或导入文章时，在设置里选择读写并保存。
+1. 打开工作台的「设置」→「MCP 服务」，点「启用 MCP」。初次启用为只读。使用期间保持工作台运行。
+2. 选 Codex，点「复制 Codex 配置」。打开个人 `~/.codex/config.toml`（Windows 为 `%USERPROFILE%\.codex\config.toml`，自定义 `CODEX_HOME` 时在该目录下），将复制的服务段保存到文件中。已有 `[mcp_servers.wechat-workbench]` 时，更新其中的 `url` 和 `http_headers.Authorization`，删除旧的 `bearer_token_env_var`，保留其他服务和设置。配置含有效令牌，只保存在本机个人配置文件中。
+3. 完全退出 Codex，按平时的方式重新打开。请 Agent「用 wechat-workbench 的 list_entries 读取最近三条，告诉我标题和类型」。空列表也表示连接成功，工作台会显示最近成功访问的客户端和时间。以后正常重启即可复用这条连接。
 
-Windows PowerShell 中从剪贴板加载刚复制的令牌，然后为 [Codex CLI](https://github.com/openai/codex/blob/main/codex-rs/cli/src/mcp_cmd.rs) 添加服务。从包含该环境变量的终端启动客户端。
+Claude Code 用户选择「Claude Code」并点「复制客户端配置」，将 JSON 中的 `wechat-workbench` 服务合并进个人 `~/.claude.json` 顶层的 `mcpServers`。如果此前在项目的 `.mcp.json` 或项目本地配置注册过同名服务，请移除旧的同名项，以便个人配置生效。重启 Claude Code 后可用 `/mcp` 查看状态。其他客户端将 JSON 中的地址和 `Authorization` 请求头填入个人 Streamable HTTP 连接设置。[Codex MCP 配置](https://developers.openai.com/codex/mcp/) / [Claude Code MCP 配置](https://code.claude.com/docs/en/mcp#choose-the-right-scope)
 
-```powershell
-$env:WECHAT_WORKBENCH_MCP_TOKEN = (Get-Clipboard).Trim()
-codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
-```
-
-macOS 终端可用 `pbpaste` 读取刚复制的令牌。
-
-```sh
-export WECHAT_WORKBENCH_MCP_TOKEN="$(pbpaste)"
-codex mcp add wechat-workbench --url http://127.0.0.1:17321/mcp --bearer-token-env-var WECHAT_WORKBENCH_MCP_TOKEN
-```
-
-[Claude Code](https://code.claude.com/docs/en/mcp) 可在项目的 `.mcp.json` 使用同一个环境变量。从设置改过端口时同步替换示例地址。
-
-```json
-{
-  "mcpServers": {
-    "wechat-workbench": {
-      "type": "http",
-      "url": "http://127.0.0.1:17321/mcp",
-      "headers": { "Authorization": "Bearer ${WECHAT_WORKBENCH_MCP_TOKEN}" }
-    }
-  }
-}
-```
+需要写入时，在工作台「高级设置」选择读写并保存，再让客户端重连。更换端口或重置令牌后，重新复制并更新已接入客户端的配置。服务仅监听本机，默认地址为 `http://127.0.0.1:17321/mcp`。
 
 ## AI 助手
 

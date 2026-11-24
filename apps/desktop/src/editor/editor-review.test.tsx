@@ -47,6 +47,111 @@ function click(container: HTMLElement, label: string) {
   flushSync(() => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click());
 }
 
+it.each([
+  { closingFirst: false, surrounding: false }, { closingFirst: true, surrounding: false },
+  { closingFirst: false, surrounding: true }, { closingFirst: true, surrounding: true },
+])("promotes inline code when two backticks are added to each side ($closingFirst, $surrounding)", async ({ closingFirst, surrounding }) => {
+  const m = await mount(surrounding ? "前文\n\n**说明** `const value = 1;` 后文\n\n末段" : "`const value = 1;`");
+  try {
+    for (const opening of closingFirst ? [false, true] : [true, false]) {
+      for (let index = 0; index < 2; index++) {
+        let from = 0, to = 0;
+        m.view.state.doc.descendants((node, pos) => {
+          if (node.isText && node.marks.some(mark => mark.type.name === "inlineCode")) {
+            from = pos;
+            to = pos + node.nodeSize;
+          }
+        });
+        const position = opening ? from : to;
+        m.view.dispatch(m.view.state.tr.setSelection(TextSelection.create(m.view.state.doc, position)));
+        const handled = m.view.someProp("handleTextInput", handler => handler(m.view, position, position, "`",
+          () => m.view.state.tr.insertText("`")));
+        if (!handled) m.view.dispatch(m.view.state.tr.insertText("`"));
+        if (index === 0) expect(m.container.querySelector("pre")).toBeNull();
+      }
+    }
+    expect(m.container.querySelector("pre > code")?.textContent).toBe("const value = 1;");
+    expect(m.handle.captureMarkdown().markdown).toBe(surrounding
+      ? "前文\n\n**说明** \n\n```\nconst value = 1;\n```\n\n&#x20;后文\n\n末段" : "```\nconst value = 1;\n```");
+    expect(m.view.state.selection.$from.parent.type.name).toBe("code_block");
+    m.handle.command("undo");
+    expect(m.container.querySelector("pre")).toBeNull();
+    expect(m.container.querySelector("p code")?.textContent).toBe("const value = 1;");
+  } finally { m.dispose(); }
+});
+
+it.each([false, true])("promotes the screenshot's fenced inline code after a DOM edit (composition=%s)", async composition => {
+  const command = "npm i -g @el4cteo/fast-anything";
+  const m = await mount("`" + command + "`");
+  try {
+    const code = m.container.querySelector("p > code")!;
+    if (composition) m.view.dom.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    const leading = document.createTextNode("``");
+    const trailing = document.createTextNode("``");
+    code.before(leading);
+    code.after(trailing);
+    document.getSelection()!.collapse(trailing, 2);
+    document.dispatchEvent(new Event("selectionchange"));
+    if (composition) {
+      await vi.waitFor(() => expect(m.view.state.doc.textContent).toBe("``" + command + "``"));
+      expect(m.container.querySelector("pre")).toBeNull();
+      m.view.dom.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    }
+    await vi.waitFor(() => expect(m.container.querySelector("pre > code")?.textContent).toBe(command));
+    expect(m.handle.captureMarkdown().markdown).toBe("```\n" + command + "\n```");
+    m.handle.command("undo");
+    expect(m.container.querySelector("pre")).toBeNull();
+    expect(m.container.querySelector("p > code")?.textContent).toBe(command);
+  } finally { m.dispose(); }
+});
+
+it("keeps escaped inline fences unchanged during initial document layout", async () => {
+  const source = "\\`\\``npm i -g @el4cteo/fast-anything`\\`\\`\n\n```\nlast block\n```";
+  const m = await mount(source);
+  try {
+    expect(m.container.querySelectorAll("pre")).toHaveLength(1);
+    expect(m.container.querySelector("p > code")?.textContent).toBe("npm i -g @el4cteo/fast-anything");
+    expect(m.handle.captureMarkdown().markdown).toBe(source);
+  } finally { m.dispose(); }
+});
+
+it.each([false, true])("preserves escaped fences and the caret when editing elsewhere in their paragraph (composition=%s)", async composition => {
+  const source = "\\`\\``literal`\\`\\` 后文";
+  const m = await mount(source);
+  try {
+    const end = m.view.state.doc.firstChild!.nodeSize - 1;
+    m.view.dispatch(m.view.state.tr.setSelection(TextSelection.create(m.view.state.doc, end)));
+    if (composition) m.view.dom.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    m.view.dispatch(m.view.state.tr.insertText("新文字"));
+    if (composition) {
+      m.view.dom.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    expect(m.container.querySelector("pre")).toBeNull();
+    expect(m.handle.captureMarkdown().markdown).toBe(source + "新文字");
+    expect(m.view.state.selection.$from.parent.type.name).toBe("paragraph");
+    expect(m.view.state.selection.from).toBe(end + 3);
+  } finally { m.dispose(); }
+});
+
+it("only promotes the newly completed fence when an escaped fence shares its paragraph", async () => {
+  const m = await mount("\\`\\``literal`\\`\\` and `new code`");
+  try {
+    for (const opening of [true, false]) {
+      let position = 0;
+      m.view.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "new code") position = opening ? pos : pos + node.nodeSize;
+      });
+      m.view.dispatch(m.view.state.tr.setSelection(TextSelection.create(m.view.state.doc, position)));
+      m.view.someProp("handleTextInput", handler => handler(m.view, position, position, "``", () => m.view.state.tr.insertText("``")));
+    }
+    expect(m.container.querySelectorAll("pre")).toHaveLength(1);
+    expect(m.container.querySelector("pre > code")?.textContent).toBe("new code");
+    expect(m.container.querySelector("p > code")?.textContent).toBe("literal");
+    expect(m.container.querySelector("p")?.textContent).toBe("``literal`` and ");
+  } finally { m.dispose(); }
+});
+
 it("rescans only changed search blocks while preserving full counts and replacements", async () => {
   const m = await mount(Array.from({ length: 300 }, () => "第一处旧词，第二处旧词。").join("\n\n"));
   const find = vi.spyOn(SearchQuery.prototype, "findNext");

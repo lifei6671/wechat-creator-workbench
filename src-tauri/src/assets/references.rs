@@ -6,10 +6,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, ops::Range};
 
 pub fn source_key(kind: &str, source: &str) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(format!("{kind}\0{}", source.trim().replace("\r\n", "\n")).as_bytes())
-    )
+    hex::encode(Sha256::digest(
+        format!("{kind}\0{}", source.trim().replace("\r\n", "\n")).as_bytes(),
+    ))
 }
 
 #[derive(serde::Serialize)]
@@ -189,32 +188,29 @@ pub fn html_images(markdown: &str, parts: &[Range<usize>]) -> Result<Vec<HtmlIma
         result
     };
     let mut writer = HtmlRewriter::new(
-        Settings {
-            element_content_handlers: vec![element!("img[src]", |element| {
-                let attributes = element.attributes();
-                if let Some(src) = attributes
+        Settings::default().append_element_content_handler(element!("img[src]", |element| {
+            let attributes = element.attributes();
+            if let Some(src) = attributes
+                .iter()
+                .find(|attribute| attribute.name() == "src")
+                && let Some(location) = src.value_source_location()
+                && !location.bytes().is_empty()
+            {
+                let mut locations = vec![spans(location.bytes())];
+                if let Some(srcset) = attributes
                     .iter()
-                    .find(|attribute| attribute.name() == "src")
-                    && let Some(location) = src.value_source_location()
-                    && !location.bytes().is_empty()
+                    .find(|attribute| attribute.name() == "srcset")
+                    .and_then(|attribute| attribute.value_source_location())
                 {
-                    let mut locations = vec![spans(location.bytes())];
-                    if let Some(srcset) = attributes
-                        .iter()
-                        .find(|attribute| attribute.name() == "srcset")
-                        .and_then(|attribute| attribute.value_source_location())
-                    {
-                        locations.push(spans(srcset.bytes()));
-                    }
-                    images.push(HtmlImage {
-                        url: canonical_url(&html_escape::decode_html_entities(&src.value())),
-                        attributes: locations,
-                    });
+                    locations.push(spans(srcset.bytes()));
                 }
-                Ok(())
-            })],
-            ..Settings::default()
-        },
+                images.push(HtmlImage {
+                    url: canonical_url(&html_escape::decode_html_entities(&src.value())),
+                    attributes: locations,
+                });
+            }
+            Ok(())
+        })),
         |_: &[u8]| {},
     );
     writer

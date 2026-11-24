@@ -689,10 +689,12 @@ it("keeps settings open on backdrop clicks and allows explicit dismissal", async
     backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(close).not.toHaveBeenCalled();
 
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(close).toHaveBeenCalledTimes(1);
-    document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click();
-    expect(close).toHaveBeenCalledTimes(2);
+    flushSync(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(document.querySelector('[aria-label="关闭设置"]')).toBeNull();
+    flushSync(() => root.render(<SettingsDialog key="reopened" initialPage="appearance" onClose={close} renderPage={() => null} />));
+    flushSync(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click());
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(2));
   } finally {
     flushSync(() => root.unmount());
     container.remove();
@@ -866,11 +868,61 @@ it("keeps only core connected actions visible and refreshes devices without a re
 });
 
 
+it("copies private MCP configuration for the selected client and reports successful reads", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
+  const copyConfig = vi.spyOn(desktop, "copyMcpConfig").mockResolvedValue(undefined);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const config = { enabled: false, port: 18711, permission: "read" as const };
+  const render = (running: boolean, lastRead: { client: string; at: number } | null = null) =>
+    act(async () => root.render(<Theme><McpSettings status={{ config: { ...config, enabled: running }, running, error: null, lastRead }}
+      loadError="" onStatus={() => {}} /></Theme>));
+  const button = (text: string) => [...container.querySelectorAll("button")].find(item => item.textContent === text);
+  try {
+    await render(false);
+    expect(button("启用 MCP")).toBeDefined();
+    expect(button("复制 Codex 配置")).toBeUndefined();
+    expect(container.querySelector("details")?.open).toBe(false);
+    await render(true);
+    const configButton = button("复制 Codex 配置")!;
+    const description = document.getElementById(configButton.getAttribute("aria-describedby")!);
+    expect(configButton.closest(".setting-row")?.querySelector(".setting-copy > span")?.textContent).toBe("客户端配置");
+    expect(description?.classList.contains("setting-hint")).toBe(true);
+    expect(description?.textContent).toContain("含令牌，仅粘贴到个人配置");
+    expect(container.textContent).not.toContain("最近成功访问");
+    const port = container.querySelector<HTMLInputElement>("#mcp-port")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(port, "18888");
+      port.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("复制 Codex 配置")!.click());
+    expect(copyConfig.mock.lastCall).toEqual(["codex"]);
+    expect(container.textContent).toContain("~/.codex/config.toml");
+    const select = container.querySelector<HTMLButtonElement>("#mcp-client")!;
+    for (const [label, client, hint] of [["Claude Code", "claude", "~/.claude.json"], ["其他客户端", "other", "请求头"]]) {
+      await act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent === label)!;
+      await act(async () => option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      expect(container.textContent).toContain(hint);
+      await act(async () => button("复制客户端配置")!.click());
+      expect(copyConfig.mock.lastCall).toEqual([client]);
+    }
+    expect(copy).not.toHaveBeenCalled();
+    await render(true, { client: "Codex CLI", at: 1795422016000 });
+    expect(container.querySelector(".mcp-recent")?.textContent).toContain("Codex CLI");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
 it("reports MCP results only on the buttons and keeps failure reasons visible after their result expires", async () => {
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const copy = vi.spyOn(desktop, "copyText").mockResolvedValue(undefined);
-  vi.spyOn(desktop, "mcpToken").mockResolvedValue(undefined);
+  vi.spyOn(desktop, "copyMcpConfig").mockResolvedValue(undefined);
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   try {
@@ -892,9 +944,9 @@ it("reports MCP results only on the buttons and keeps failure reasons visible af
     await act(async () => { vi.advanceTimersByTime(1000); });
     expect(button.textContent).toBe("复制地址");
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("剪贴板不可用");
-    const token = [...container.querySelectorAll("button")].find(button => button.textContent === "复制令牌")!;
-    await act(async () => token.click());
-    expect(token.textContent).toBe("复制成功");
+    const config = [...container.querySelectorAll("button")].find(button => button.textContent === "复制 Codex 配置")!;
+    await act(async () => config.click());
+    expect(config.textContent).toBe("复制成功");
     expect(container.querySelector('[role="alert"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());

@@ -45,6 +45,7 @@ import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 import { WechatPublishing, type PublicationSession } from "./wechat-publication";
 import { WechatPublicationPanel } from "./WechatPublicationPanel";
 import { RightSidebarToolbar, type RightSidebarMode } from "./RightSidebar";
+import { useReducedMotion } from "../../../../packages/ui-react/motion";
 import "../styles/right-sidebar.css";
 import "../styles/wechat-publication.css";
 import "./collection-canvas.css";
@@ -58,7 +59,7 @@ const minimumNavigationWidth = 337;
 const minimumAiWidth = 300;
 const dividerWidth = 1;
 const dividerHitTarget = { fine: 16, coarse: 24 };
-const directoryTransitionMs = 200;
+const directoryTransitionMs = 250;
 
 function hasWorkspaceSize(group: HTMLDivElement | null): group is HTMLDivElement {
   return Boolean(group?.clientWidth && group.clientHeight);
@@ -91,6 +92,9 @@ function useMedia(query: string) {
 }
 
 export function DesktopShell() {
+  const reducedMotion = useReducedMotion();
+  const navigationInitialized = useRef(false);
+  const rightSidebarInitialized = useRef(false);
   const [initialLayout] = useState(readWorkspaceLayout);
   const [section, setSection] = useState<Section>(initialLayout.section);
   const [library, setLibrary] = useState<Library | null>(null);
@@ -153,7 +157,7 @@ export function DesktopShell() {
   const [expandedFolders, setExpandedFolders] = useState(() => useStoredInitial<string[]>("expanded-folders", []));
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
-  const [searchSort, setSearchSort] = useState(() => useStoredInitial<NonNullable<EntryFilter["sort"]>>("workspace-search-sort", "name"));
+  const [searchSort, setSearchSort] = useState(() => useStoredInitial<NonNullable<EntryFilter["sort"]>>("workspace-search-sort", "relevance"));
   const [searchJump, setSearchJump] = useState<{ entryId: string; hit: WorkspaceSearchHit; version: number; showContext: boolean }>();
   const [selectedSearchHit, setSelectedSearchHit] = useState<{ entryId: string; start: number }>();
   const searchIntent = useRef(0);
@@ -173,7 +177,9 @@ export function DesktopShell() {
   const activeId = tabSelection?.id ?? null;
   const [readingIds, setReadingIds] = useState<string[]>([]);
   const [documentOptions, setDocumentOptions] = useState(() => new Map<string, DocumentOptions>());
-  const [modal, setModal] = useState<Modal | null>(null);
+  const [modal, setModal] = useState<(Modal & { instance: number }) | null>(null);
+  const modalSequence = useRef(0);
+  const modalOwner = useRef<Modal | null>(null);
   const settingsPage = useRef<SettingsPage>("appearance");
   const syncSettingsBusy = useRef(false);
   const wakeAutomaticSync = useRef<(() => void) | undefined>(undefined);
@@ -322,7 +328,7 @@ export function DesktopShell() {
   const refresh = () => setRefreshCount(count => count + 1);
   function linkImported(unavailableImages = 0) {
     refresh();
-    if (unavailableImages) setNotice({ type: "info", text: `已导入文章，${unavailableImages} 张图片未能下载，已保留原链接。` });
+    if (unavailableImages) setNotice({ type: "warning", text: `已导入文章，${unavailableImages} 张图片未能下载，已保留原链接。` });
   }
   const syncing = useRef(false);
   const [automaticSyncError, setAutomaticSyncError] = useState("");
@@ -636,7 +642,13 @@ export function DesktopShell() {
     if (offset == null) return;
     const epoch = filterEpoch.current;
     void desktop.entries({ ...filter, offset }).then(result => {
+      if (epoch === filterEpoch.current && section === "search"
+        && page?.search?.indexGeneration !== result.search?.indexGeneration) {
+        setRefreshCount(count => count + 1);
+        return;
+      }
       if (epoch === filterEpoch.current) setPage(previous => previous?.nextOffset === offset
+        && (section !== "search" || previous.search?.indexGeneration === result.search?.indexGeneration)
         ? { ...result, items: [...previous.items, ...result.items] } : previous);
     }, error => { if (epoch === filterEpoch.current) setListError(errorMessage(error)); });
   }
@@ -1078,6 +1090,34 @@ export function DesktopShell() {
     if (sidebarGroup.current) delete sidebarGroup.current.dataset.timelineDirectoryMoving;
   }
 
+  function interruptPanelMotion(group: HTMLDivElement) {
+    const directoryMoving = Boolean(group.dataset.timelineDirectoryMoving);
+    if (!group.dataset.sidebarMoving && !group.dataset.aiSidebarMoving && !directoryMoving) return;
+    const panels = [...group.querySelectorAll<HTMLElement>(":scope > [data-panel]")];
+    const widths = panels.map(panel => panel.getBoundingClientRect().width);
+    const available = widths.reduce((total, width) => total + width, 0);
+    const directory = directoryMoving && directoryMode.current === "shown"
+      ? group.querySelector<HTMLElement>("#timeline-directory")!.getBoundingClientRect().width : 0;
+    // Closed regions finish collapsing; the writing area takes the released space.
+    if (!showExplorer) widths[panels.findIndex(panel => panel.id === "navigation")] = 0;
+    if (!showRightPanel) widths[panels.findIndex(panel => panel.id === "ai-sidebar")] = 0;
+    const writing = panels.findIndex(panel => panel.id === "writing");
+    widths[writing] = available - widths.reduce((total, width, index) => total + (index === writing ? 0 : width), 0);
+    // Commit the rendered layout before the resize library captures its drag origin.
+    flushSync(() => {
+      if (directory >= minimumDirectoryWidth) {
+        preferredDirectoryWidth.current = Math.round(directory);
+        setDirectoryWidth(preferredDirectoryWidth.current);
+      }
+      workspacePanels.current!.setLayout(Object.fromEntries(panels.map((panel, index) => [panel.id, widths[index] / available * 100])));
+    });
+    if (directoryMoving) {
+      timelineWidth.current = Math.round(timelineNavigationWidth() - (directoryMode.current === "shown" ? preferredDirectoryWidth.current + dividerWidth : 0));
+      persist("timeline-article-width", timelineWidth.current);
+      if (directory >= minimumDirectoryWidth) persist("timeline-directory-width", preferredDirectoryWidth.current);
+    }
+  }
+
   function toggleTimelineDirectory(restoreFocus: boolean) {
     const hidden = directoryMode.current !== "shown";
     const total = Math.round(timelineNavigationWidth());
@@ -1086,7 +1126,7 @@ export function DesktopShell() {
     if (hidden && sidebarGroup.current!.clientWidth) {
       directory = Math.min(directory, Math.floor(maxWidth - minimumTimelineWidth - dividerWidth));
       if (directory < minimumDirectoryWidth) {
-        setNotice({ type: "info", text: "窗口宽度不足，无法展开目录栏" });
+        setNotice({ type: "warning", text: "窗口宽度不足，无法展开目录栏" });
         return;
       }
       if (directory !== preferredDirectoryWidth.current) {
@@ -1100,11 +1140,11 @@ export function DesktopShell() {
     const width = hidden && maxWidth > 0 ? Math.min(article, maxWidth - directorySpace) : article;
     const group = sidebarGroup.current!;
     stopDirectoryTransition();
-    group.dataset.timelineDirectoryMoving = "true";
+    if (!reducedMotion) group.dataset.timelineDirectoryMoving = "true";
     directoryTransition.current = window.setTimeout(() => {
       stopDirectoryTransition();
       if (timelineLayoutReady.current && !layoutSuspended.current && hasWorkspaceSize(group)) rememberTimelineWidth(timelineNavigationWidth());
-    }, directoryTransitionMs + 20);
+    }, reducedMotion ? 0 : directoryTransitionMs + 20);
     changeDirectoryMode(hidden ? "shown" : "manual");
     timelineWidth.current = width;
     persist("timeline-article-width", width);
@@ -1284,7 +1324,7 @@ export function DesktopShell() {
       const details: string[] = [];
       if (!result.existing && result.unavailableImages) details.push(`${result.unavailableImages} 张图片未能下载，已保留原链接`);
       if (!result.existing && unavailableAttachments.length) details.push(`${unavailableAttachments.length} 个本地附件缺少文件，已保留引用`);
-      if (details.length) setNotice({ type: "info", text: `已导入剪藏文章，${details.join("；")}` });
+      if (details.length) setNotice({ type: "warning", text: `已导入剪藏文章，${details.join("；")}` });
     });
     return true;
   }
@@ -1472,12 +1512,16 @@ export function DesktopShell() {
   }
 
   function showModal(value: Modal, trigger?: HTMLElement | null) {
+    const shown = { ...value, instance: ++modalSequence.current };
+    modalOwner.current = shown;
     if (value.type === "settings") settingsPage.current = value.page;
     focusOrigin.current = trigger ?? (document.activeElement as HTMLElement | null);
-    setModal(value);
+    setModal(shown);
   }
 
-  function closeModal() {
+  function closeModal(expected?: Modal) {
+    if (expected && modalOwner.current !== expected) return;
+    modalOwner.current = null;
     setModal(null);
     setConfirmRestore(false);
     const origin = focusOrigin.current;
@@ -1986,7 +2030,7 @@ export function DesktopShell() {
     });
     const backupChanged = desktop.onBackupProgress(stage => setBackupWorking(current => current ? backupProgress[stage] : current));
     void desktop.restoreNotice().then(value => {
-      if (value) setNotice({ type: value.failed ? "error" : "info", text: value.message });
+      if (value) setNotice({ type: value.failed ? "error" : "success", text: value.message });
     }, showError);
     for (const subscription of [listener, historyRequested, hideRequested, workspaceChanged, trashEmptied, assetsChanged, backupChanged]) void subscription.catch(showError);
     window.addEventListener("keydown", workspaceShortcut, true);
@@ -2083,9 +2127,10 @@ export function DesktopShell() {
     let resize = 0;
     let settled = 0;
     group.dataset.sidebarRestoring = "true";
-    const animate = showExplorer === panel.isCollapsed();
-    if (animate) group.dataset.sidebarMoving = "true";
-    const timer = animate ? window.setTimeout(() => { delete group.dataset.sidebarMoving; }, 220) : 0;
+    const animate = navigationInitialized.current && showExplorer === panel.isCollapsed();
+    navigationInitialized.current = true;
+    if (animate && !reducedMotion) group.dataset.sidebarMoving = "true";
+    const timer = animate && !reducedMotion ? window.setTimeout(() => { delete group.dataset.sidebarMoving; }, 300) : 0;
     const clear = () => {
       delete group.dataset.sidebarRestoring;
       delete group.dataset.sidebarMoving;
@@ -2113,16 +2158,17 @@ export function DesktopShell() {
       cancelAnimationFrame(settled);
       clear();
     };
-  }, [showExplorer, timelineMode, sidebarPanel]);
+  }, [showExplorer, timelineMode, sidebarPanel, reducedMotion]);
   useLayoutEffect(() => {
     const group = sidebarGroup.current!;
     if (!hasWorkspaceSize(group)) return;
-    group.dataset.aiSidebarMoving = "true";
+    if (rightSidebarInitialized.current && !reducedMotion) group.dataset.aiSidebarMoving = "true";
+    rightSidebarInitialized.current = true;
     restorePanelSizes(group);
     const clear = () => { delete group.dataset.aiSidebarMoving; };
-    const timer = window.setTimeout(clear, 270);
+    const timer = window.setTimeout(clear, reducedMotion ? 0 : 270);
     return () => { window.clearTimeout(timer); clear(); };
-  }, [showRightPanel, showExplorer, workspacePanels]);
+  }, [showRightPanel, showExplorer, workspacePanels, reducedMotion]);
   const aiDefaultTarget = aiSettings?.preferences.defaultTarget;
   const aiTarget = aiSettings ? aiAvailability(aiSettings) : { hint: aiSettingsError || "正在读取 AI 设置…" };
   const aiSelection = aiDefaultTarget && aiTarget.label
@@ -2258,23 +2304,42 @@ export function DesktopShell() {
       <Group id="workspace-panels" className="workspace-panels" orientation="horizontal" elementRef={sidebarGroup} groupRef={workspacePanels}
         resizeTargetMinimumSize={dividerHitTarget}
         onPointerDownCapture={event => {
-          const separator = document.activeElement;
+          const separator = (event.target as Element).closest('[role="separator"]');
+          if (separator) {
+            interruptPanelMotion(event.currentTarget);
+            event.currentTarget.dataset.resizing = "true";
+            delete event.currentTarget.dataset.sidebarMoving;
+            delete event.currentTarget.dataset.aiSidebarMoving;
+            stopDirectoryTransition();
+          }
           if (separator?.parentElement === event.currentTarget && separator.hasAttribute("data-separator")) manualLayout.current = {
             side: separator.classList.contains("ai-sidebar-divider") ? "ai-sidebar" : "navigation", width: event.currentTarget.clientWidth,
           };
         }}
-        onPointerUpCapture={() => { manualLayout.current = null; }}
+        onPointerUpCapture={event => { manualLayout.current = null; delete event.currentTarget.dataset.resizing; }}
+        onPointerCancelCapture={event => { manualLayout.current = null; delete event.currentTarget.dataset.resizing; }}
+        onLostPointerCapture={event => { delete event.currentTarget.dataset.resizing; }}
         onKeyDownCapture={event => {
           const separator = event.target as HTMLElement;
+          if (separator.getAttribute("role") === "separator" && event.key.startsWith("Arrow")) {
+            interruptPanelMotion(event.currentTarget);
+            event.currentTarget.dataset.resizing = "true";
+            delete event.currentTarget.dataset.sidebarMoving;
+            delete event.currentTarget.dataset.aiSidebarMoving;
+            stopDirectoryTransition();
+          }
           if (separator.parentElement === event.currentTarget && separator.hasAttribute("data-separator")) manualLayout.current = {
             side: separator.classList.contains("ai-sidebar-divider") ? "ai-sidebar" : "navigation", width: event.currentTarget.clientWidth,
           };
         }}
-        onKeyUpCapture={() => { manualLayout.current = null; }}
+        onKeyUpCapture={event => { manualLayout.current = null; delete event.currentTarget.dataset.resizing; }}
         onLayoutChange={layout => {
           const group = sidebarGroup.current;
           // Wait for the group to record its size, then commit every panel before paint.
           if (hasWorkspaceSize(group) && (layoutSuspended.current || layoutWidth.current !== group.clientWidth)) {
+            delete group.dataset.sidebarMoving;
+            delete group.dataset.aiSidebarMoving;
+            stopDirectoryTransition();
             layoutSuspended.current = false;
             if (layoutWidth.current) flushSync(() => restorePanelSizes(group));
             else restorePanelSizes(group);
@@ -2330,9 +2395,10 @@ export function DesktopShell() {
                   stopDirectoryTransition();
                   event.currentTarget.focus({ preventScroll: true });
                   event.currentTarget.setPointerCapture(event.pointerId);
+                  const width = document.getElementById("timeline-directory")!.getBoundingClientRect().width;
                   directoryDrag.current = {
-                    pointerId: event.pointerId, startX: event.clientX, width: directoryWidth, currentWidth: directoryWidth,
-                    articleWidth: Math.round(timelineNavigationWidth()) - directoryWidth - dividerWidth,
+                    pointerId: event.pointerId, startX: event.clientX, width, currentWidth: width,
+                    articleWidth: Math.round(timelineNavigationWidth()) - width - dividerWidth,
                   };
                 }}
                 onPointerMove={event => {
@@ -2542,7 +2608,7 @@ export function DesktopShell() {
         <SettingsDialog initialPage={modal.page} onPageChange={page => {
           if (settingsPage.current !== page) { settingsPage.current = page; wakeAutomaticSync.current?.(); }
         }}
-          status={backupWorking ?? undefined} toast={notice?.type === "error" ? toast : undefined} onClose={closeModal} renderPage={page => {
+          status={backupWorking ?? undefined} toast={notice?.type === "error" ? toast : undefined} key={modal!.instance} onClose={() => closeModal(modal!)} renderPage={page => {
           if (page === "about") return <AboutPage onInstall={() => finishWorkspace(undefined, true)} />;
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
@@ -2590,24 +2656,24 @@ export function DesktopShell() {
           onConfirm={() => finishWorkspace(preparedBackup.ticket)} />}
       </>}
       {modal?.type === "linkImport" && <LinkImportDialog categoryId={modal.categoryId} downloadImages={downloadPastedImages}
-        track={trackAssetTask} onClose={closeModal} onImported={linkImported} onOpen={id => {
+        track={trackAssetTask} key={modal!.instance} onClose={() => closeModal(modal!)} onImported={linkImported} onOpen={id => {
         if (exit.current) return;
         closeModal();
         if (section !== "imports" && section !== "timeline") navigate("folders");
         run(() => open(id));
       }} />}
       {modal?.type === "deleteCollection" && <Confirm title="删除专题" text={`将删除「${modal.collection.title}」中的卡片和连线。引用的文章会保留。`}
-        action="删除专题" onClose={closeModal} onConfirm={() => deleteCollection(modal.collection)} />}
+        action="删除专题" key={modal!.instance} onClose={() => closeModal(modal!)} onConfirm={() => deleteCollection(modal.collection)} />}
       {modal?.type === "emptyTrash" && <Confirm title="清空回收站" text="将永久删除回收站中的全部内容及其历史版本，无法恢复。"
-        action="清空回收站" onClose={closeModal} onConfirm={clearTrash} />}
-      {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} onClose={closeModal} />}
-      {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} onClose={closeModal} />}
-      {modal?.type === "palette" && <CommandPalette actions={commands} onClose={closeModal} onOpen={id => run(() => open(id))} />}
-      {modal?.type === "revisions" && <RevisionsDialog id={modal.id} onClose={closeModal} onCopy={copy} />}
+        action="清空回收站" key={modal!.instance} onClose={() => closeModal(modal!)} onConfirm={clearTrash} />}
+      {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} key={modal!.instance} onClose={() => closeModal(modal!)} />}
+      {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} key={modal!.instance} onClose={() => closeModal(modal!)} />}
+      {modal?.type === "palette" && <CommandPalette actions={commands} key={modal!.instance} onClose={() => closeModal(modal!)} onOpen={id => run(() => open(id))} />}
+      {modal?.type === "revisions" && <RevisionsDialog id={modal.id} key={modal!.instance} onClose={() => closeModal(modal!)} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <DeleteCategoryDialog target={modal.target}
-        onClose={closeModal} onConfirm={trashContents => deleteCategory(modal.target, trashContents)} />}
+        key={modal!.instance} onClose={() => closeModal(modal!)} onConfirm={trashContents => deleteCategory(modal.target, trashContents)} />}
       {modal?.type === "reload" && queue && <Confirm title="重新加载内容" text="重新加载将丢弃这篇内容尚未保存的修改。"
-        action="重新加载" onClose={closeModal} onConfirm={async () => {
+        action="重新加载" key={modal!.instance} onClose={() => closeModal(modal!)} onConfirm={async () => {
           const entry = await desktop.entry(queue.entry.id);
           wechatPublishing.release(queue);
           queue.dispose();

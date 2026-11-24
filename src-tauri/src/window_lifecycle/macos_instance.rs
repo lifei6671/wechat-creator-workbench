@@ -22,7 +22,7 @@ pub fn macos_instance() -> TauriPlugin<Wry> {
                 .open(data.join("instance-startup.lock"))?;
             // Serialize the socket check and bind before initializing the workbench.
             startup_lock.lock()?;
-            let digest = format!("{:x}", Sha256::digest(data.as_os_str().as_encoded_bytes()));
+            let digest = hex::encode(Sha256::digest(data.as_os_str().as_encoded_bytes()));
             // Use the same profile identity for Finder and command-line launches.
             let socket = Path::new("/tmp").join(format!("workbench-{}.sock", &digest[..24]));
             match UnixStream::connect(&socket) {

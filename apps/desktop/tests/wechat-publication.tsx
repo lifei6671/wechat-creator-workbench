@@ -17,18 +17,22 @@ import { WechatPublicationPanel } from "../src/workspace/WechatPublicationPanel"
 import { RightSidebarToolbar, type RightSidebarMode } from "../src/workspace/RightSidebar";
 import { PropertiesPanel } from "../src/workspace/Dialogs";
 import { AiPanel } from "../src/workspace/AiPanel";
-import { recommendationFingerprint, WechatPublishing } from "../src/workspace/wechat-publication";
+import { emptyPublication, recommendationFingerprint, WechatPublishing } from "../src/workspace/wechat-publication";
 
 const candidates: WechatCandidate[] = Array.from({ length: 8 }, (_, index) => ({ entryId: `past-${index}`, title: `向量检索实践 ${index + 1}`,
   summary: "向量数据库与检索增强生成的实践经验", url: `https://mp.weixin.qq.com/s/past-${index}`, tags: ["向量检索"], publishedAt: 1 }));
-let defaults: WechatPublicationDefaults = { schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 };
+let defaults: WechatPublicationDefaults = { schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 };
 desktop.wechatPublicationDefaults = async () => defaults;
-desktop.saveWechatPublicationDefaults = async (version, count) => {
+let generationCalls = 0;
+let authorCalls = 0;
+let lastAuthors: string[] = [];
+desktop.wechatRecommendationAuthors = async () => { authorCalls++; return ["李飞", "张明", "王林", "Alice", "alice"]; };
+desktop.saveWechatPublicationDefaults = async (version, count, recommendationAuthors) => {
   if (version !== defaults.version) throw new Error("默认配置已更新");
-  return defaults = { ...defaults, recommendationCount: count, version: version + 1, updatedAt: Date.now() };
+  return defaults = { ...defaults, recommendationCount: count, recommendationAuthors, version: version + 1, updatedAt: Date.now() };
 };
-desktop.wechatRecommendations = async input => ({ inputFingerprint: await recommendationFingerprint(input),
-  items: candidates.slice(0, input.count).map(({ entryId, title, url }) => ({ entryId, title, url })) });
+desktop.wechatRecommendations = async input => { generationCalls++; lastAuthors = input.authors; return { inputFingerprint: await recommendationFingerprint(input),
+  items: candidates.slice(0, input.count).map(({ entryId, title, url }) => ({ entryId, title, url })) }; };
 desktop.wechatCandidates = async (_input, query, related) => ({ items: candidates.filter(item => item.title.includes(query)).slice(0, related ? 7 : 8), nextOffset: null });
 desktop.resolveWechatRecommendations = async (_input, items) => ({ items, invalid: [] });
 const thread = { id: "sidebar-fixture", title: "当前对话", archived: false, updatedAt: 1 };
@@ -39,6 +43,10 @@ desktop.aiUpdateThread = async () => {};
 desktop.aiDeleteThread = async () => { throw new Error("测试删除失败"); };
 const entry: Entry = { id: "current", kind: "article", title: "如何构建可靠的知识检索", contentMd: "## 从关键词到语义检索\n\n向量检索把问题与文档映射到同一空间。",
   status: "draft", categoryId: null, tags: ["向量检索"], summary: "", source: null, publishedAt: null, publishedUrl: "", createdAt: 1, updatedAt: 1, deletedAt: null, version: 1, links: [] };
+if (!new URLSearchParams(location.search).has("empty")) entry.wechatPublication = {
+  ...emptyPublication(), recommendations: { ...emptyPublication().recommendations, inputFingerprint: "a".repeat(64),
+    items: candidates.slice(0, 5).map(({ entryId, title, url }) => ({ entryId, title, url })) },
+};
 function Fixture() {
   const [failure] = useState(() => ({ once: new URLSearchParams(location.search).has("failure") }));
   const [publishing] = useState(() => new WechatPublishing());
@@ -52,6 +60,7 @@ function Fixture() {
     setSaved({ ...entry, ...fields, version: version + 1 }); return { version: version + 1 };
   }, () => {}));
   const [session] = useState(() => publishing.session(queue));
+  useSyncExternalStore(publishing.defaults.subscribe, publishing.defaults.snapshot);
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
   const { fields } = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const [html, setHtml] = useState("");
@@ -100,6 +109,8 @@ function Fixture() {
       </aside>}
     </div><output hidden data-testid="saved">{JSON.stringify(saved)}</output><output hidden data-testid="copied">{copied}</output>
     <output hidden data-testid="defaults">{JSON.stringify(defaults)}</output><output hidden data-testid="barrier">{String(barrier)}</output>
+    <output hidden data-testid="generation-calls">{generationCalls}</output><output hidden data-testid="author-calls">{authorCalls}</output>
+    <output hidden data-testid="generated-authors">{JSON.stringify(lastAuthors)}</output>
   </TooltipProvider></Theme>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);

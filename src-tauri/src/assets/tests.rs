@@ -368,7 +368,7 @@ async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
         .write_to(&mut encoded, ImageFormat::WebP)
         .unwrap();
     let hosted = encoded.into_inner();
-    let checksum = format!("{:x}", Sha256::digest(&hosted));
+    let checksum = hex::encode(Sha256::digest(&hosted));
     let id = media.import(&db, "原图.png", &original).unwrap();
     let file = db.read(|conn| by_id(conn, &id)).unwrap();
     let original_name = db.read(|conn| media.export_name(conn, &file)).unwrap();
@@ -559,6 +559,18 @@ async fn configured_public_images_keep_their_url_and_are_not_stored_locally() {
     assert!(!public_ip("2001:db8::1".parse().unwrap()));
     assert!(!public_ip("3fff:abc::1".parse().unwrap()));
     assert!(public_ip("8.8.8.8".parse().unwrap()));
+}
+
+#[test]
+fn derived_source_keys_keep_their_persisted_sha256_representation() {
+    assert_eq!(
+        references::source_key("math", " \r\nx^2 + 中文\r\n "),
+        "c604f8cc3195006a5df4268c344a761ec21eb9230aafe2a791c3cee32788ede2"
+    );
+    assert_eq!(
+        references::source_key("mermaid", "graph TD\r\nA-->B"),
+        "04e891a800e9a098348bc43b4374600f3ed210dd619eee9dded8c13a39f30c37"
+    );
 }
 
 #[test]
@@ -794,6 +806,141 @@ fn new_images_upload_only_automatically_when_the_active_profile_enables_it() {
         Ok(())
     })
     .unwrap();
+}
+
+#[tokio::test]
+async fn restart_resumes_interrupted_uploads_and_preserves_the_registered_object_key() {
+    let (directory, db, assets) = setup();
+    image_profile(&db);
+    let bytes = png();
+    let asset = assets.import(&db, "粘贴.png", &bytes).unwrap();
+    db.create_external(
+        crate::content::Kind::Article,
+        crate::content::EntryPatch {
+            content_md: Some(format!("![图片](asset://{asset})")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assets.upload(&db, &asset).unwrap();
+    let upload = claim(&db).unwrap().unwrap();
+    register_target(
+        &db,
+        &upload,
+        &upload.key,
+        upload.file.hash.as_deref().unwrap(),
+    )
+    .unwrap();
+    complete_upload(
+        &db,
+        &upload,
+        Err(AppError::new(
+            "UPLOAD_UNCERTAIN",
+            "退出前上传未结束，可手动重试",
+        )),
+    )
+    .unwrap();
+    assets.cleanup(&db).await.unwrap();
+    drop(assets);
+    drop(db);
+
+    let db = Workspace::open(&directory.path().join("content.db")).unwrap();
+    let resumed = Assets::new(directory.path().join("assets"), &db).unwrap();
+    let detail = resumed.detail(&db, &asset).unwrap().unwrap();
+    assert_eq!(detail.upload_status.as_deref(), Some("retrying"));
+    assert_eq!(detail.upload_error, None);
+    tokio::time::timeout(Duration::from_millis(50), resumed.ready.notified())
+        .await
+        .unwrap();
+    let retry = claim(&db).unwrap().unwrap();
+    assert_eq!(retry.job, upload.job);
+    assert_eq!(retry.key, upload.key);
+    assert!(retry.registered);
+    assert_eq!(resumed.read_file(&db, &retry.file).await.unwrap(), bytes);
+    complete_upload(&db, &retry, Ok(())).unwrap();
+    assert!(claim(&db).unwrap().is_none());
+    let detail = resumed.detail(&db, &asset).unwrap().unwrap();
+    assert_eq!(detail.upload_status, None);
+    assert!(detail.public_url.is_some());
+    assert_eq!(
+        db.read(|conn| Ok(conn.query_row(
+            "SELECT status FROM jobs WHERE id=?1",
+            [&retry.job],
+            |row| row.get::<_, String>(0)
+        )?))
+        .unwrap(),
+        "completed"
+    );
+}
+
+#[test]
+fn restart_requeues_only_pending_or_exit_interrupted_uploads_for_the_active_profile() {
+    for (status, error, retry) in [
+        ("queued", None, true),
+        ("running", None, true),
+        ("retrying", None, true),
+        (
+            "failed",
+            Some("UPLOAD_CANCELLED: 退出时取消上传，可手动重试"),
+            true,
+        ),
+        (
+            "failed",
+            Some("UPLOAD_UNCERTAIN: 退出前上传未结束，可手动重试"),
+            true,
+        ),
+        ("failed", Some("上传已中断，可手动重试"), true),
+        ("failed", Some("退出时已取消，可手动重试"), true),
+        ("failed", Some("S3_NETWORK: 连接失败"), false),
+        ("failed", Some("此图床已停用，可在当前图床上传"), false),
+        ("completed", None, false),
+    ] {
+        let (directory, db, assets) = setup();
+        image_profile(&db);
+        let asset = assets.import(&db, "粘贴.png", &png()).unwrap();
+        assets.upload(&db, &asset).unwrap();
+        db.write(|tx| {
+            tx.execute(
+                "UPDATE jobs SET status=?1,error=?2 WHERE kind='upload'",
+                params![status, error],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let resumed = Assets::new(directory.path().join("assets"), &db).unwrap();
+        let detail = resumed.detail(&db, &asset).unwrap().unwrap();
+        let expected = if retry {
+            Some("retrying")
+        } else if status == "completed" {
+            None
+        } else {
+            Some(status)
+        };
+        assert_eq!(detail.upload_status.as_deref(), expected);
+        assert_eq!(
+            detail.upload_error.as_deref(),
+            if retry { None } else { error }
+        );
+        assert_eq!(claim(&db).unwrap().is_some(), retry);
+    }
+    let (directory, db, assets) = setup();
+    image_profile(&db);
+    let asset = assets.import(&db, "旧图床.png", &png()).unwrap();
+    assets.upload(&db, &asset).unwrap();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE jobs SET status='failed',error='UPLOAD_CANCELLED: 退出时取消上传，可手动重试'",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM app_settings WHERE key='image_storage_profile'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    Assets::new(directory.path().join("assets"), &db).unwrap();
+    assert!(claim(&db).unwrap().is_none());
 }
 
 #[tokio::test]
@@ -1120,7 +1267,7 @@ async fn library_thumbnail_is_small_and_keeps_original_bytes() {
         assets.read(&db, &format!("asset://{id}")).await.unwrap(),
         original
     );
-    let hash = format!("{:x}", Sha256::digest(&original));
+    let hash = hex::encode(Sha256::digest(&original));
     assert_eq!(
         std::fs::read(cache.join(format!("v1-160-{hash}.png"))).unwrap(),
         preview

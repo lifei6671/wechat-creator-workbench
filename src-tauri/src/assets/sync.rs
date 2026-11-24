@@ -111,7 +111,7 @@ impl Assets {
             path: asset.relative()?,
         };
         let bytes = self.read_file(db, &file).await?;
-        if Some(format!("{:x}", Sha256::digest(&bytes))) != asset.sha256 {
+        if Some(hex::encode(Sha256::digest(&bytes))) != asset.sha256 {
             return Err(AppError::new(
                 "SYNC_ASSET",
                 "素材原图缺失或与同步快照不一致",

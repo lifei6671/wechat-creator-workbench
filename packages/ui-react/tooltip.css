@@ -1,3 +1,5 @@
+@import "./motion.css";
+
 .workspace-tooltip.radix-themes {
   --tooltip-bg: var(--gray-12);
   z-index: 10;
@@ -20,3 +22,8 @@
 
 .workspace-tooltip[data-placement="top"] > svg { translate: 0 -1px; }
 .workspace-tooltip[data-placement="bottom"] > svg { translate: 0 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-tooltip.radix-themes { opacity: 1 !important; }
+  .workspace-tooltip.radix-themes[aria-hidden="true"] { visibility: hidden !important; }
+}

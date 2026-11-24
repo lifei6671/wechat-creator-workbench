@@ -7,8 +7,8 @@ export { Tooltip } from "../../../packages/ui-react/Tooltip";
 
 export function SidebarToggleIcon({ expanded = false, side = "left" }: { expanded?: boolean; side?: "left" | "right" }) {
   const Panel = side === "left" ? PanelLeft : PanelRight;
-  return <Panel size={18} strokeWidth={1.8} aria-hidden="true">
-    {expanded && <rect x={side === "left" ? 5 : 16} y={5} width={3} height={14} rx={0.5} fill="currentColor" stroke="none" />}
+  return <Panel size={18} strokeWidth={1.8} aria-hidden="true" className="sidebar-toggle-icon" data-expanded={expanded}>
+    <rect className="sidebar-toggle-fill" x={side === "left" ? 5 : 16} y={5} width={3} height={14} rx={0.5} fill="currentColor" stroke="none" />
   </Panel>;
 }
 

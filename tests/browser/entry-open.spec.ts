@@ -1,5 +1,20 @@
 import { expect, test } from "@playwright/test";
 
+for (const platform of ["Win32", "MacIntel"]) {
+  test(`maps the primary click modifier for ${platform}`, async ({ page }) => {
+    await page.addInitScript(platform => Object.defineProperty(navigator, "platform", { get: () => platform }), platform);
+    await page.goto("/tests/entry-open.html?mode=current");
+    let count = 0;
+    for (const [id, title] of [["tree", "目录文章"], ["timeline", "时间流文章"]]) {
+      // This checks platform routing only; the tests below exercise native mouse semantics on the host OS.
+      await page.getByRole("button", { name: title, exact: true }).dispatchEvent("click", {
+        ctrlKey: platform === "Win32", metaKey: platform === "MacIntel",
+      });
+      await expect(page.getByTestId("opened")).toHaveText(JSON.stringify({ count: ++count, id, mode: "new-tab" }));
+    }
+  });
+}
+
 // Native mouse semantics cannot be emulated by overriding navigator.platform: macOS treats Control-click as a context menu.
 for (const mode of ["current", "new-tab"]) {
   test(`opens articles with the primary modifier on ${process.platform} with ${mode} preference`, async ({ page }) => {

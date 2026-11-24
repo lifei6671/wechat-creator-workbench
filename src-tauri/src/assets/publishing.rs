@@ -91,7 +91,7 @@ impl Assets {
         }).await.map_err(|_| AppError::new("S3_TIMEOUT","图片仍在上传，请稍后重试"))??;
         let bytes = self.read_public(&public).await?;
         use sha2::{Digest, Sha256};
-        if format!("{:x}", Sha256::digest(bytes)) != content_hash {
+        if hex::encode(Sha256::digest(bytes)) != content_hash {
             return Err(AppError::new("S3_PUBLIC", "公开地址返回的图片与素材不一致"));
         }
         db.read(|conn| Profile::active_for(conn, expected))?;

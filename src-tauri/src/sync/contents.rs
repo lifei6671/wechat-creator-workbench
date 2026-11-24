@@ -276,7 +276,7 @@ fn blob_route(hash: &str) -> Result<String> {
 }
 
 fn digest(data: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(data))
+    hex::encode(Sha256::digest(data))
 }
 
 fn protocol_error() -> AppError {
@@ -2668,7 +2668,7 @@ mod tests {
                 "items":[{"entryId":"second","title":"第二篇","url":"https://mp.weixin.qq.com/s/second"},
                 {"entryId":"first","title":"第一篇","url":"https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete"}]}});
             tx.execute("UPDATE entries SET wechat_publication=?1 WHERE id='restored-draft'", [publication.to_string()])?;
-            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":9,"updatedAt":1}))?;
+            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":9,"recommendationAuthors":["作者甲","Alice","alice"],"updatedAt":1}))?;
             Ok(())
         }).unwrap();
         exchange(&a, &a_assets, &sync).await.unwrap();
@@ -2677,6 +2677,7 @@ mod tests {
             .unwrap();
         exchange(&b, &b_assets, &sync).await.unwrap();
         apply_received(&b).unwrap();
+        assert_eq!(b.wechat_defaults().unwrap().config.recommendation_authors, ["作者甲", "Alice", "alice"]);
         first.key(&a).unwrap().delete_credential().unwrap();
         drop(a);
         // This file belongs exclusively to this isolated test installation.
@@ -2698,6 +2699,7 @@ mod tests {
         exchange(&reinstalled, &fresh_assets, &sync).await.unwrap();
         apply_received(&reinstalled).unwrap();
         assert_eq!(reinstalled.wechat_defaults().unwrap().config.recommendation_count, 9);
+        assert_eq!(reinstalled.wechat_defaults().unwrap().config.recommendation_authors, ["作者甲", "Alice", "alice"]);
         let publication = reinstalled.read(|conn| entries::snapshot(conn, "restored-draft")).unwrap().unwrap()["wechatPublication"].clone();
         assert_eq!(publication["recommendations"]["mode"], "manual");
         assert_eq!(publication["recommendations"]["countOverride"], 7);
@@ -2731,7 +2733,7 @@ mod tests {
             let mut empty = publication.clone();
             empty["recommendations"]["items"] = json!([]);
             tx.execute("UPDATE entries SET wechat_publication=?1 WHERE id='restored-draft'", [empty.to_string()])?;
-            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":3,"updatedAt":2}))?;
+            crate::content::publication::apply_defaults(tx, "default", &json!({"schemaVersion":1,"recommendationCount":3,"recommendationAuthors":["作者乙"],"updatedAt":2}))?;
             Ok(())
         })
         .unwrap();
@@ -2740,6 +2742,13 @@ mod tests {
         apply_received(&reinstalled).unwrap();
         assert_eq!(read(&reinstalled), "reply from B");
         assert_eq!(reinstalled.wechat_defaults().unwrap().config.recommendation_count, 3);
+        assert_eq!(reinstalled.wechat_defaults().unwrap().config.recommendation_authors, ["作者乙"]);
+        reinstalled.write(|tx| crate::content::publication::apply_defaults(tx, "default",
+            &json!({"schemaVersion":1,"recommendationCount":3,"recommendationAuthors":[],"updatedAt":3}))).unwrap();
+        exchange(&reinstalled, &fresh_assets, &sync).await.unwrap();
+        exchange(&b, &b_assets, &sync).await.unwrap();
+        apply_received(&b).unwrap();
+        assert!(b.wechat_defaults().unwrap().config.recommendation_authors.is_empty());
         let empty = reinstalled.read(|conn| entries::snapshot(conn, "restored-draft")).unwrap().unwrap()["wechatPublication"].clone();
         assert_eq!(empty["recommendations"]["mode"], "manual");
         assert_eq!(empty["recommendations"]["items"], json!([]));

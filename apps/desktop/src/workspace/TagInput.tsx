@@ -3,14 +3,16 @@ import { X } from "lucide-react";
 
 const normalize = (text: string) => text.trim().replace(/\s+/g, " ");
 
-export function addTag(tags: string[], text: string, history: string[]) {
-  const name = normalize(text);
-  const key = name.toLowerCase();
-  if (!name || tags.some(tag => tag.toLowerCase() === key)) return tags;
-  return [...tags, history.find(tag => tag.toLowerCase() === key) ?? name];
+export function addTag(tags: string[], text: string, history: string[], exactMatch = false) {
+  const name = exactMatch ? text.trim() : normalize(text);
+  const key = exactMatch ? name : name.toLowerCase();
+  const match = (tag: string) => (exactMatch ? tag : tag.toLowerCase()) === key;
+  if (!name || tags.some(match)) return tags;
+  return [...tags, history.find(match) ?? name];
 }
 
-export function TagInput({ tags, onTags, draft, onDraft, history, readOnly, id: inputId, label }: {
+export function TagInput({ tags, onTags, draft, onDraft, history, readOnly, id: inputId, label,
+  suggestOnEmpty = false, exactMatch = false, placeholder = "输入并按回车", itemLabel = "标签" }: {
   tags: string[];
   onTags(tags: string[]): void;
   draft: string;
@@ -19,28 +21,33 @@ export function TagInput({ tags, onTags, draft, onDraft, history, readOnly, id: 
   readOnly: boolean;
   id?: string;
   label: string;
+  suggestOnEmpty?: boolean;
+  exactMatch?: boolean;
+  placeholder?: string;
+  itemLabel?: string;
 }) {
   const generatedId = useId();
   const id = inputId ?? generatedId;
   const [active, setActive] = useState(-1);
   const [suggest, setSuggest] = useState(false);
-  const query = normalize(draft).toLowerCase();
-  const matches = suggest && query ? history.filter(tag => tag.toLowerCase().includes(query) && !tags.includes(tag)) : [];
+  const query = (exactMatch ? draft.trim() : normalize(draft)).toLowerCase();
+  const matches = !readOnly && suggest && (query || suggestOnEmpty)
+    ? history.filter(tag => tag.toLowerCase().includes(query) && !tags.includes(tag)).slice(0, suggestOnEmpty ? 50 : undefined) : [];
 
   function commit(text: string) {
-    onTags(addTag(tags, text, history));
+    onTags(addTag(tags, text, history, exactMatch));
     onDraft("");
     setActive(-1);
-    setSuggest(false);
+    setSuggest(suggestOnEmpty);
   }
 
   return <div className="tag-picker">
     <div className="tag-field">
       {tags.map(tag => <span className="tag-chip" key={tag}>
         <span>{tag}</span>
-        {!readOnly && <button type="button" aria-label={`移除标签 ${tag}`} onClick={() => onTags(tags.filter(value => value !== tag))}><X size={12} /></button>}
+        {!readOnly && <button type="button" aria-label={`移除${itemLabel} ${tag}`} onClick={() => onTags(tags.filter(value => value !== tag))}><X size={12} /></button>}
       </span>)}
-      {!readOnly && <input id={id} aria-label={label} value={draft} placeholder="输入并按回车" autoComplete="off"
+      {!readOnly && <input id={id} aria-label={label} value={draft} placeholder={placeholder} autoComplete="off"
         role="combobox" aria-expanded={matches.length > 0} aria-autocomplete="list"
         aria-controls={matches.length ? `${id}-suggestions` : undefined}
         aria-activedescendant={matches[active] ? `${id}-${active}` : undefined}
@@ -63,7 +70,7 @@ export function TagInput({ tags, onTags, draft, onDraft, history, readOnly, id: 
           }
         }} />}
     </div>
-    {matches.length > 0 && <ul className="tag-suggestions" id={`${id}-suggestions`} role="listbox" aria-label="历史标签">
+    {matches.length > 0 && <ul className="tag-suggestions" id={`${id}-suggestions`} role="listbox" aria-label={suggestOnEmpty ? `${itemLabel}候选` : "历史标签"}>
       {matches.map((tag, index) => <li role="option" id={`${id}-${index}`} key={tag} aria-selected={index === active}
         onMouseDown={event => event.preventDefault()} onClick={() => commit(tag)}>{tag}</li>)}
     </ul>}

@@ -52,7 +52,7 @@ impl Target {
         let scope = format!("{}\0{}\0{}", self.endpoint, self.bucket, self.prefix);
         secrets::entry(
             db,
-            &format!("backup-{:x}", Sha256::digest(scope.as_bytes())),
+            &format!("backup-{}", hex::encode(Sha256::digest(scope.as_bytes()))),
         )
     }
 }

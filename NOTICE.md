@@ -18,6 +18,7 @@
 | [markdown-it](https://github.com/markdown-it/markdown-it) | MIT | 基础 Markdown 渲染 |
 | [DOMPurify](https://github.com/cure53/DOMPurify) | MPL-2.0 或 Apache-2.0 | 预览 HTML 允许列表净化 |
 | [rusqlite](https://github.com/rusqlite/rusqlite) / [SQLite](https://sqlite.org/copyright.html) | MIT / 公有领域 | 本地事务、外键和 FTS5 全文索引 |
+| [jieba-rs](https://github.com/messense/jieba-rs) | MIT | 本地中文分词及词级搜索索引 |
 
 P2 复用 [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust) 执行 S3 对象请求，使用 [keyring](https://github.com/hwchen/keyring-rs) 访问系统凭据库，使用 [image](https://github.com/image-rs/image) 校验图片头和尺寸，使用 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) 和 [lol-html](https://github.com/cloudflare/lol-html) 解析正文图像引用，使用 [zip](https://github.com/zip-rs/zip2) 生成带图归档。
 

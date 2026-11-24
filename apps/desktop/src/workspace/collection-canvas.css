@@ -18,7 +18,7 @@
   --xy-edge-label-background-color: var(--gray-1);
   --xy-connectionline-stroke: var(--accent-9);
 }
-.collection-flow .react-flow__edge-path { transition: stroke-width 150ms ease-out; }
+.collection-flow .react-flow__edge-path { transition: stroke-width var(--motion-fast) var(--motion-ease); }
 .collection-flow .react-flow__edge:hover .react-flow__edge-path { stroke-width: 3px; }
 @media (prefers-reduced-motion: reduce) {
   .collection-flow .react-flow__edge-path { transition: none; }
@@ -34,7 +34,7 @@
   min-height: 0;
   border: 0;
   opacity: 0;
-  transition: opacity 140ms ease-out;
+  transition: opacity var(--motion-fast) var(--motion-ease);
 }
 .collection-card > .react-flow__handle-left { left: calc(0px - var(--card-border-width)); }
 .collection-card > .react-flow__handle-right { right: calc(0px - var(--card-border-width)); }
@@ -180,7 +180,7 @@
 .collection-web-preview { position: relative; flex: 1; min-height: 0; margin: 1px; overflow: hidden; }
 .collection-web-viewport { position: absolute; inset: 0; }
 .collection-web-image { position: absolute; top: 0; left: 0; width: 100%; height: auto; pointer-events: none; user-select: none; }
-.collection-web-image[data-fading] { animation: collection-web-fade-in 150ms ease-out both; }
+.collection-web-image[data-fading] { animation: collection-web-fade-in var(--motion-enter) var(--motion-ease) both; }
 @keyframes collection-web-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .collection-web-image[data-fading] { animation-duration: 1ms; }

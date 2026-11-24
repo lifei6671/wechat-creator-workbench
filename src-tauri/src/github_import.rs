@@ -259,19 +259,15 @@ fn prepare_markdown(
     let converter = htmd::HtmlToMarkdown::builder()
         .add_handler(
             vec!["img"],
-            |_: &dyn htmd::element_handler::Handlers, image: htmd::Element| {
-                let attribute = |name| {
-                    image
-                        .attrs
-                        .iter()
-                        .find(|attr| attr.name.local.as_ref() == name)
-                        .map(|attr| attr.value.as_ref())
-                };
-                let url = Url::parse(attribute("src")?).ok()?;
+            |_: &dyn htmd::element_handler::Handlers, image: &htmd::Element| {
+                let url = Url::parse(&image.node.attr("src")?).ok()?;
                 if !matches!(url.scheme(), "http" | "https" | "asset") {
                     return None;
                 }
-                let alt = attribute("alt")
+                let alt = image
+                    .node
+                    .attr("alt")
+                    .as_deref()
                     .unwrap_or_default()
                     .split_whitespace()
                     .collect::<Vec<_>>()
@@ -279,7 +275,7 @@ fn prepare_markdown(
                     .replace('\\', "\\\\")
                     .replace('[', "\\[")
                     .replace(']', "\\]");
-                let title = attribute("title").map_or(String::new(), |title| {
+                let title = image.node.attr("title").map_or(String::new(), |title| {
                     format!(
                         " \"{}\"",
                         title
@@ -324,39 +320,35 @@ fn prepare_markdown(
         let mut has_disclosure = false;
         let rewritten = rewrite_str(
             &fragment,
-            RewriteStrSettings {
-                element_content_handlers: vec![
-                    element!("details", |_| {
-                        has_disclosure = true;
-                        Ok(())
-                    }),
-                    element!("img[src], a[href]", |element| {
-                        let image = element.tag_name() == "img";
-                        let (attribute, base, root) = if image {
-                            ("src", raw, &raw_root)
-                        } else {
-                            ("href", html, &html_root)
-                        };
-                        let source = element.get_attribute(attribute).unwrap();
-                        let destination = html_escape::decode_html_entities(&source);
-                        let destination = destination.trim();
-                        if image {
-                            has_image = true;
-                        }
-                        if !destination.is_empty()
-                            && !destination.starts_with('#')
-                            && let Some(url) = resolve_relative(destination, base, root)
-                        {
-                            element.set_attribute(
-                                attribute,
-                                &html_escape::encode_double_quoted_attribute(url.as_str()),
-                            )?;
-                        }
-                        Ok(())
-                    }),
-                ],
-                ..RewriteStrSettings::default()
-            },
+            RewriteStrSettings::default()
+                .append_element_content_handler(element!("details", |_| {
+                    has_disclosure = true;
+                    Ok(())
+                }))
+                .append_element_content_handler(element!("img[src], a[href]", |element| {
+                    let image = element.tag_name() == "img";
+                    let (attribute, base, root) = if image {
+                        ("src", raw, &raw_root)
+                    } else {
+                        ("href", html, &html_root)
+                    };
+                    let source = element.get_attribute(attribute).unwrap();
+                    let destination = html_escape::decode_html_entities(&source);
+                    let destination = destination.trim();
+                    if image {
+                        has_image = true;
+                    }
+                    if !destination.is_empty()
+                        && !destination.starts_with('#')
+                        && let Some(url) = resolve_relative(destination, base, root)
+                    {
+                        element.set_attribute(
+                            attribute,
+                            &html_escape::encode_double_quoted_attribute(url.as_str()),
+                        )?;
+                    }
+                    Ok(())
+                })),
         )
         .map_err(readme_conversion_error)?;
         if has_image && !has_disclosure {
