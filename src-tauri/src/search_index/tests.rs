@@ -369,6 +369,9 @@ fn upgrading_an_old_workspace_defers_backfill_until_the_worker_starts() {
         tx.execute_batch("DROP TRIGGER entries_words_insert; DROP TRIGGER entries_words_update;
             DROP TRIGGER entries_words_delete; DROP TABLE entries_words_fts;
             DROP TABLE entries_words_alt_fts; DROP TABLE search_index_dirty; DROP TABLE search_index_state;
+            DROP TRIGGER wechat_author_entry_insert; DROP TRIGGER wechat_author_entry_update;
+            DROP TRIGGER wechat_author_source_update; DROP TABLE wechat_author_entries;
+            DROP TABLE wechat_author_options;
             PRAGMA user_version=30;")?;
         Ok(())
     }).unwrap();

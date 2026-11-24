@@ -291,7 +291,11 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps panel widths stable th
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/tests/workspace-resize.html?priority=1");
   const right = page.locator('#ai-sidebar[data-panel]');
+  const group = page.locator("#workspace-panels");
+  await expect(group).not.toHaveAttribute("data-sidebar-restoring", "true");
+  await expect(group).not.toHaveAttribute("data-ai-sidebar-moving", "true");
   await expect.poll(async () => Math.round((await right.boundingBox())!.width)).toBe(420);
+  await expect.poll(() => page.locator('#navigation[data-panel]').evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(480);
   await page.evaluate(() => {
     const group = document.querySelector<HTMLElement>('#workspace-panels')!;
     const navigation = document.querySelector<HTMLElement>('#navigation[data-panel]')!;
