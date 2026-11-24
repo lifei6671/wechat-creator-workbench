@@ -6,6 +6,26 @@ import fixture from "../../../../fixtures/wechat-format.json?raw";
 
 const gzhThemes = wechatThemes.filter(theme => theme.id.startsWith("gzh-"));
 
+it.each(wechatThemes)("wraps URL text without changing prose, code or link targets in $label", async theme => {
+  const url = "https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md";
+  const markdown = `官方遥测文档：${url}[^1]\n\n英文 Adversarial Distillation Research。\n\n\`${url}\`\n\n\`\`\`text\n${url}\n\`\`\`\n\n[^1]: ${url}`;
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const result = await renderWechat({ markdown, themeId: theme.id, revision: 1, output }, { image: vi.fn(), sources: vi.fn(), derive: vi.fn() });
+    try {
+      const template = document.createElement("template"); template.innerHTML = result.html;
+      const urls = [...template.content.querySelectorAll<HTMLElement>('span[style*="word-break"]')];
+      expect(urls).toHaveLength(2);
+      expect(urls.map(span => span.textContent)).toEqual([url, url]);
+      expect(urls.every(span => span.style.wordBreak === "break-all" && span.style.overflowWrap === "anywhere")).toBe(true);
+      expect(template.content.querySelector('code span[style*="word-break"]')).toBeNull();
+      expect(template.content.textContent).toContain("英文 Adversarial Distillation Research。");
+      expect(template.content.querySelector("code")?.textContent).toBe(url);
+      expect(template.content.querySelector("pre code")?.textContent?.trim()).toBe(url);
+      expect(result.text).toContain(`官方遥测文档：${url}`);
+    } finally { result.dispose(); }
+  }
+});
+
 it.each(wechatThemes)("keeps list labels and descriptions inline for WeChat in $label", async theme => {
   const markdown = [
     "- **影视播放：** TVBox、影视仓、Kodi、FongMi 影视、OK 影视等。",

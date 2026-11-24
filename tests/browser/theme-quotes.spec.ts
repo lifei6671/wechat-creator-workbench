@@ -12,6 +12,45 @@ const themes = [
   { id: "gzh-olive-journal", top: 0, bottom: 24, end: 0 },
 ];
 
+for (const theme of themes) test(`${theme.id}: long URLs continue after Chinese labels and reference numbers`, async ({ page }) => {
+  await page.goto(`/tests/theme-quotes.html?theme=${theme.id}&urls=1`);
+  await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
+  for (const width of [300, 380, 620]) {
+    const metrics = await page.locator("[data-output]").evaluateAll((hosts, width) => hosts.map(host => {
+      const article = host.shadowRoot!.querySelector<HTMLElement>("section")!;
+      article.style.width = `${width}px`;
+      article.style.boxSizing = "border-box";
+      const firstRect = (node: Node, start = 0) => {
+        if (node.nodeType !== Node.TEXT_NODE) node = document.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode()!;
+        const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + 1);
+        return range.getBoundingClientRect();
+      };
+      const paragraph = article.querySelector("p")!;
+      const label = paragraph.firstChild!;
+      const url = paragraph.querySelector<HTMLElement>('span[style*="word-break"]')!;
+      const number = article.querySelector('li > span')!;
+      const reference = number.parentElement!.querySelector<HTMLElement>('span[style*="word-break"]')!;
+      const english = document.createTreeWalker([...article.querySelectorAll("p")].find(p => p.textContent!.startsWith("English"))!, NodeFilter.SHOW_TEXT).nextNode()!;
+      const word = document.createRange(), from = english.textContent!.indexOf("Distillation");
+      word.setStart(english, from); word.setEnd(english, from + "Distillation".length);
+      return { output: (host as HTMLElement).dataset.output,
+        labelGap: Math.abs(firstRect(label).top - firstRect(url.firstChild!).top),
+        referenceGap: Math.abs(firstRect(number.firstChild!).top - firstRect(reference.firstChild!).top),
+        overflow: article.scrollWidth - article.clientWidth,
+        wordLines: new Set([...word.getClientRects()].map(r => Math.round(r.top))).size,
+        codeWrapped: article.querySelectorAll('code span[style*="word-break"]').length };
+    }), width);
+    for (const metric of metrics) {
+      const context = `${theme.id} ${metric.output} width=${width}`;
+      expect(metric.labelGap, context).toBeLessThan(1);
+      expect(metric.referenceGap, context).toBeLessThan(1);
+      expect(metric.overflow, context).toBeLessThanOrEqual(1);
+      expect(metric.wordLines, context).toBe(1);
+      expect(metric.codeWrapped, context).toBe(0);
+    }
+  }
+});
+
 for (const theme of themes) for (const newline of ["lf", "crlf"]) {
   test(`${theme.id} ${newline}: single/multiple quote paragraphs and all callouts`, async ({ page }) => {
     const errors: string[] = [];

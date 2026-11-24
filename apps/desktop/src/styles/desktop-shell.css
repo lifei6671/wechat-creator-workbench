@@ -282,7 +282,7 @@
 .workbench-chrome { width: 100%; padding-inline-start: 8px; border-bottom: 0; }
 .workbench-chrome > .ai-panel-trigger { margin-inline-start: auto; }
 [data-windows-titlebar] .workbench-chrome {
-  padding-inline-end: max(0px, calc(var(--window-controls-width) - var(--chrome-trailing-space, 0px)));
+  padding-inline-end: clamp(0px, calc(var(--window-controls-width) - var(--chrome-trailing-space, 0px)), var(--window-controls-width));
 }
 .restore-sidebar { margin-right: 4px; }
 .tab-strip { --tab-inset: 4px; width: max-content; }
