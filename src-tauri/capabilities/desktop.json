@@ -116,6 +116,7 @@
     "allow-list-entry-collections",
     "allow-save-entry",
     "allow-wechat-publication-defaults",
+    "allow-wechat-recommendation-authors",
     "allow-save-wechat-publication-defaults",
     "allow-wechat-recommendations",
     "allow-wechat-recommendation-candidates",

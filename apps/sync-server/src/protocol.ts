@@ -90,7 +90,10 @@ function mutation(value: unknown) {
     if (payload.schemaVersion !== 1 || !Number.isInteger(payload.recommendationCount)
         || Number(payload.recommendationCount) < 1 || Number(payload.recommendationCount) > 0xffffffff) invalid("invalid_publication_defaults");
     integer(payload.updatedAt);
-    if (Object.keys(payload).some(key => !["schemaVersion", "recommendationCount", "updatedAt"].includes(key))) invalid("invalid_publication_defaults");
+    if (payload.recommendationAuthors !== undefined && (!Array.isArray(payload.recommendationAuthors)
+        || payload.recommendationAuthors.some(author => typeof author !== "string" || !author.trim() || author !== author.trim())
+        || new Set(payload.recommendationAuthors).size !== payload.recommendationAuthors.length)) invalid("invalid_publication_defaults");
+    if (Object.keys(payload).some(key => !["schemaVersion", "recommendationCount", "recommendationAuthors", "updatedAt"].includes(key))) invalid("invalid_publication_defaults");
   }
   if (payload && type === "category") {
     text(payload.name, 256);

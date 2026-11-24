@@ -1,5 +1,49 @@
 import { expect, test } from "@playwright/test";
 
+test("waits for an explicit recommendation request and copies an empty list without generating", async ({ page }) => {
+  await page.goto("/tests/wechat-publication.html?empty=1");
+  await expect(page.getByRole("button", { name: "自动推荐", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "复制公众号格式", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("generation-calls")).toHaveText("0");
+  await expect(page.locator(".wechat-recommendation-row")).toHaveCount(0);
+  await page.getByRole("button", { name: "复制公众号格式", exact: true }).click();
+  await expect(page.getByTestId("copied")).toHaveText("[]");
+  await expect(page.getByTestId("generation-calls")).toHaveText("0");
+  await page.getByRole("button", { name: "自动推荐", exact: true }).click();
+  await expect(page.locator(".wechat-recommendation-row")).toHaveCount(5);
+  await expect(page.getByTestId("generation-calls")).toHaveText("1");
+});
+
+test("suggests multiple exact authors on focus and saves the focused draft before backup", async ({ page }, testInfo) => {
+  await page.goto("/tests/wechat-publication.html?empty=1");
+  await page.getByRole("tab", { name: "默认设置", exact: true }).click();
+  const authors = page.getByRole("combobox", { name: "推荐作者", exact: true });
+  await authors.focus();
+  await expect(page.getByRole("option", { name: "李飞", exact: true })).toBeVisible();
+  await expect(page.getByTestId("author-calls")).toHaveText("1");
+  await page.getByRole("option", { name: "李飞", exact: true }).click();
+  await page.getByRole("option", { name: "张明", exact: true }).click();
+  await authors.fill("王");
+  await expect(page.getByRole("option", { name: "王林", exact: true })).toBeVisible();
+  await expect(page.getByTestId("author-calls")).toHaveText("1");
+  await authors.press("ArrowDown");
+  await authors.press("Enter");
+  await expect.poll(async () => JSON.parse(await page.getByTestId("defaults").textContent() || "{}").recommendationAuthors).toEqual(["李飞", "张明", "王林"]);
+  await authors.fill("Alice");
+  await authors.press("Enter");
+  await authors.fill("alice");
+  await authors.press("Enter");
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: "output/publication-authors-implemented.png" });
+  await authors.fill("新作者");
+  await page.getByTestId("backup-barrier").dispatchEvent("click");
+  await expect(page.getByTestId("barrier")).toHaveText("true");
+  await expect.poll(async () => JSON.parse(await page.getByTestId("defaults").textContent() || "{}").recommendationAuthors).toEqual(["李飞", "张明", "王林", "Alice", "alice", "新作者"]);
+  await page.getByRole("tab", { name: "当前文章", exact: true }).click();
+  await expect(page.getByTestId("generation-calls")).toHaveText("0");
+  await page.getByRole("button", { name: "自动推荐", exact: true }).click();
+  await expect(page.getByTestId("generated-authors")).toHaveText(JSON.stringify(["李飞", "张明", "王林", "Alice", "alice", "新作者"]));
+});
+
 test("lifts the original recommendation row and previews its insertion before saving", async ({ page }, testInfo) => {
   await page.goto("/tests/wechat-publication.html");
   await expect(page.locator(".wechat-publishing-footer button")).toBeEnabled();
@@ -239,7 +283,7 @@ test("edits, reorders, adds beyond five, keeps manual empty, and restores genera
   await page.getByLabel("生成数量", { exact: true }).fill("2");
   await page.getByLabel("生成数量", { exact: true }).press("Tab");
   await expect(rows).toHaveCount(0);
-  await page.getByRole("button", { name: "重新推荐", exact: true }).click();
+  await page.getByRole("button", { name: "自动推荐", exact: true }).click();
   await expect(rows).toHaveCount(2);
   await page.getByRole("button", { name: "撤销", exact: true }).click();
   await expect(rows).toHaveCount(0);

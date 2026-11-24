@@ -34,6 +34,7 @@ export interface WechatPublication {
 export interface WechatPublicationDefaults {
   schemaVersion: 1;
   recommendationCount: number;
+  recommendationAuthors: string[];
   version: number;
   updatedAt: number;
 }
@@ -47,6 +48,7 @@ export interface WechatRecommendationInput {
   status: EntryStatus;
   publishedAt: number | null;
   count: number;
+  authors: string[];
 }
 export interface WechatCandidate extends WechatRecommendation {
   summary: string;

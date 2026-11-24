@@ -50,6 +50,28 @@ async function render() {
 async function tick(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 const status = () => container.querySelector('.document-status > [role="status"]:not(.background-status)')!;
 
+it("shows the current article status after the word count and updates with article edits", async () => {
+  await render();
+  const text = () => [...container.querySelectorAll(".document-status > span")].map(node => node.textContent);
+  expect(text().at(-2)).toMatch(/^\d+ 字$/);
+  expect(text().at(-1)).toBe("草稿");
+  await act(async () => queue.edit({ status: "ready" }));
+  expect(text().at(-1)).toBe("待发布");
+  await act(async () => queue.edit({ status: "published" }));
+  expect(text().at(-1)).toBe("已发布");
+});
+
+it("hides publishing status for non-articles and missing status values", async () => {
+  queue.dispose();
+  queue = new SaveQueue({ ...entry, kind: "reference", status: "unread" }, commit, noop);
+  await render();
+  expect(container.querySelector(".document-status > span:last-child")?.textContent).toMatch(/ 字$/);
+  queue.dispose();
+  queue = new SaveQueue({ ...entry, status: undefined as unknown as Entry["status"] }, commit, noop);
+  await render();
+  expect(container.querySelector(".document-status > span:last-child")?.textContent).toMatch(/ 字$/);
+});
+
 it("keeps one saving state across image replacements and waits for the final real save", async () => {
   progress = { completed: 0, total: 4 };
   await render();

@@ -14,68 +14,102 @@ beforeEach(() => {
   publishing = new WechatPublishing();
   commit = vi.fn(async () => ({ version: 2, updatedAt: 1 }));
   queue = new SaveQueue(article, commit, () => {});
-  vi.spyOn(desktop, "wechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 });
+  vi.spyOn(desktop, "wechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 });
   vi.spyOn(desktop, "wechatRecommendations").mockImplementation(async input => ({ inputFingerprint: await recommendationFingerprint(input), items: [item("auto")] }));
   vi.spyOn(desktop, "resolveWechatRecommendations").mockImplementation(async (_input, items) => ({ items, invalid: [] }));
 });
 afterEach(() => { publishing.dispose(); queue.dispose(); vi.restoreAllMocks(); });
 
-it("does not request recommendations when the article closes during fingerprint calculation", async () => {
-  let finish!: (hash: ArrayBuffer) => void;
-  const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
-  const pending = publishing.session(queue).ensure();
-  const rejected = expect(pending).rejects.toThrow("文章已关闭");
-  await vi.waitFor(() => expect(digest).toHaveBeenCalledOnce());
-  publishing.dispose();
-  finish(new ArrayBuffer(32));
-  await rejected;
+it("saves multiple exact authors and a focused author draft before the save barrier", async () => {
+  await publishing.defaults.load();
+  const save = vi.spyOn(desktop, "saveWechatPublicationDefaults").mockImplementation(async (version, count, authors) => ({
+    schemaVersion: 1, recommendationCount: count, recommendationAuthors: authors, version: version + 1, updatedAt: 1,
+  }));
+  publishing.defaults.editAuthors(["Alice", "alice"]);
+  publishing.defaults.editAuthorDraft(" 王林 ");
+  expect(await publishing.flush()).toBe(true);
+  expect(save).toHaveBeenLastCalledWith(0, 5, ["Alice", "alice", "王林"]);
+  expect(publishing.session(queue).input().authors).toEqual(["Alice", "alice", "王林"]);
+  expect(publishing.defaults.snapshot().authorDraft).toBe("");
+  publishing.defaults.editAuthors([]);
+  await publishing.flush();
+  expect(publishing.session(queue).input().authors).toEqual([]);
+});
+
+it("caches author options across focus and reloads only after a source revision changes", async () => {
+  const fetch = vi.spyOn(desktop, "wechatRecommendationAuthors").mockResolvedValue(["李飞", "张明"]);
+  await publishing.defaults.loadAuthors(0);
+  publishing.defaults.editAuthorDraft("李");
+  await publishing.defaults.loadAuthors(0);
+  expect(fetch).toHaveBeenCalledOnce();
+  expect(publishing.defaults.snapshot().authorOptions).toEqual(["李飞", "张明"]);
+  fetch.mockResolvedValue(["李飞"]);
+  await publishing.defaults.loadAuthors(1);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(publishing.defaults.snapshot().authorOptions).toEqual(["李飞"]);
+});
+
+it.each([false, true])("ignores an older author request after the latest revision loads, failure=%s", async failure => {
+  let finish!: (authors: string[]) => void;
+  let reject!: (error: Error) => void;
+  const fetch = vi.spyOn(desktop, "wechatRecommendationAuthors")
+    .mockReturnValueOnce(new Promise((resolve, fail) => { finish = resolve; reject = fail; }))
+    .mockResolvedValueOnce(["新作者"]);
+  const older = publishing.defaults.loadAuthors(1);
+  await publishing.defaults.loadAuthors(2);
+  if (failure) reject(new Error("旧请求失败")); else finish(["旧作者"]);
+  await older;
+  expect(publishing.defaults.snapshot().authorOptions).toEqual(["新作者"]);
+  expect(publishing.defaults.snapshot().authorsError).toBe("");
+  await publishing.defaults.loadAuthors(2);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("does not generate on opening, refreshing, saving or copying an unconfigured article", async () => {
+  const session = publishing.session(queue);
+  await session.refresh();
+  expect(session.snapshot().ready).toBe(true);
+  expect(queue.capture().fields.wechatPublication).toBeUndefined();
+  expect(await session.prepare()).toEqual([]);
+  await session.change(current => ({ ...current, recommendations: { ...current.recommendations, enabled: false } }));
+  await session.change(current => ({ ...current, recommendations: { ...current.recommendations, enabled: true } }));
+  queue.edit({ contentMd: "继续输入" });
+  await session.refresh();
+  expect(queue.isDirty()).toBe(true);
   expect(desktop.wechatRecommendations).not.toHaveBeenCalled();
+});
+
+it("discards a requested generation when its article closes", async () => {
+  let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
+  vi.mocked(desktop.wechatRecommendations).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const pending = publishing.session(queue).ensure(true);
+  const rejected = expect(pending).rejects.toThrow("文章已关闭");
+  await vi.waitFor(() => expect(desktop.wechatRecommendations).toHaveBeenCalledOnce());
+  publishing.dispose();
+  finish({ inputFingerprint: "a".repeat(64), items: [item("stale")] });
+  await rejected;
   expect(desktop.resolveWechatRecommendations).not.toHaveBeenCalled();
   expect(commit).not.toHaveBeenCalled();
 });
 
-it("leaves dirty body edits to autosave instead of flushing them during a background refresh", async () => {
+it("preserves generated recommendations when the body or default count changes", async () => {
   const session = publishing.session(queue);
-  await session.ensure();
+  await session.ensure(true);
+  const previous = queue.capture().fields.wechatPublication;
+  queue.edit({ contentMd: "刚保存的新正文" });
+  await queue.flush();
   commit.mockClear();
-  queue.edit({ contentMd: "还在输入的正文" });
   await session.refresh();
-  expect(commit).not.toHaveBeenCalled();
-  expect(queue.isDirty()).toBe(true);
+  session.editCount("9");
+  await session.flush();
+  await session.refresh();
+  expect(queue.capture().fields.wechatPublication?.recommendations.items).toEqual(previous?.recommendations.items);
   expect(desktop.wechatRecommendations).toHaveBeenCalledOnce();
-});
-
-it("abandons a background generation when typing resumes without saving its stale result", async () => {
-  const session = publishing.session(queue);
-  await session.ensure();
-  queue.edit({ contentMd: "已保存的上一段正文" });
-  await queue.flush();
-  commit.mockClear();
-  let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
-  vi.mocked(desktop.wechatRecommendations).mockReturnValueOnce(new Promise(done => { finish = done; }));
-  const refresh = session.refresh();
-  await vi.waitFor(() => expect(desktop.wechatRecommendations).toHaveBeenCalledTimes(2));
-  const input = session.input();
-  queue.edit({ contentMd: "继续输入的新正文" });
-  finish({ inputFingerprint: await recommendationFingerprint(input), items: [item("stale")] });
-  await refresh;
-  expect(commit).not.toHaveBeenCalled();
-  expect(queue.isDirty()).toBe(true);
-  expect(queue.capture().fields.wechatPublication?.recommendations.items).toEqual([item("auto")]);
-});
-
-it("leaves generated background recommendations and subsequent typing on the normal autosave schedule", async () => {
-  const session = publishing.session(queue);
-  await session.ensure();
-  queue.edit({ contentMd: "刚保存的正文" });
-  await queue.flush();
+  queue.edit({ contentMd: "还在输入的正文" });
   commit.mockClear();
   await session.refresh();
-  expect(queue.capture().fields.wechatPublication?.recommendations.inputFingerprint).toBe(await recommendationFingerprint(session.input()));
-  queue.edit({ contentMd: "推荐生成后继续输入" });
   expect(commit).not.toHaveBeenCalled();
   expect(queue.isDirty()).toBe(true);
-  expect(queue.capture().fields.contentMd).toBe("推荐生成后继续输入");
 });
 
 it("waits for a background refresh then checks the latest draft before copying", async () => {
@@ -99,7 +133,7 @@ it("waits for a background refresh then checks the latest draft before copying",
 
 it("keeps a deliberately empty manual list through body edits and prepares without changing the body", async () => {
   const session = publishing.session(queue);
-  await session.ensure();
+  await session.ensure(true);
   await session.change(current => ({ ...current, recommendations: { ...current.recommendations, items: [] } }), true);
   queue.edit({ contentMd: "改后的正文" });
   expect(await session.prepare()).toEqual([]);
@@ -112,7 +146,7 @@ it("discards stale generation when a manual edit arrives and preserves more than
   const session = publishing.session(queue);
   let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
   vi.mocked(desktop.wechatRecommendations).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
-  const pending = session.ensure();
+  const pending = session.ensure(true);
   await vi.waitFor(() => expect(desktop.wechatRecommendations).toHaveBeenCalledOnce());
   const manual = Array.from({ length: 7 }, (_, index) => item(`manual-${index}`));
   const changed = session.change(() => ({ ...emptyPublication(), recommendations: { ...emptyPublication().recommendations, items: manual } }), true);
@@ -126,7 +160,7 @@ it("waits for pending generation and focused count edits before the backup barri
   const session = publishing.session(queue);
   let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
   vi.mocked(desktop.wechatRecommendations).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
-  const pending = session.ensure();
+  const pending = session.ensure(true);
   await vi.waitFor(() => expect(desktop.wechatRecommendations).toHaveBeenCalledOnce());
   let flushed = false;
   const barrier = publishing.flush().then(result => { flushed = true; return result; });
@@ -143,7 +177,7 @@ it("cancels a queued regenerate when a later manual change arrives", async () =>
   const session = publishing.session(queue);
   let finish!: (value: { inputFingerprint: string; items: WechatRecommendation[] }) => void;
   vi.mocked(desktop.wechatRecommendations).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
-  const pending = session.ensure();
+  const pending = session.ensure(true);
   await vi.waitFor(() => expect(desktop.wechatRecommendations).toHaveBeenCalledOnce());
   const regeneration = session.regenerate();
   await Promise.resolve(); await Promise.resolve();
@@ -178,13 +212,13 @@ it("regenerates with undo and refuses to publish a removed reference", async () 
 
 it("does not let an older refresh replace a freshly saved global default", async () => {
   await publishing.defaults.load();
-  let finish!: (value: { schemaVersion: 1; recommendationCount: number; version: number; updatedAt: number }) => void;
+  let finish!: (value: { schemaVersion: 1; recommendationCount: number; recommendationAuthors: string[]; version: number; updatedAt: number }) => void;
   vi.mocked(desktop.wechatPublicationDefaults).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
   const refresh = publishing.defaults.load(true);
-  vi.spyOn(desktop, "saveWechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 9, version: 1, updatedAt: 2 });
+  vi.spyOn(desktop, "saveWechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 9, recommendationAuthors: [], version: 1, updatedAt: 2 });
   publishing.defaults.edit("9");
   // Complete the older request while the focused edit is still pending.
-  finish({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 }); await refresh;
+  finish({ schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 }); await refresh;
   expect(await publishing.flush()).toBe(true);
   expect(publishing.defaults.snapshot().value?.recommendationCount).toBe(9);
   expect(publishing.defaults.snapshot().draft).toBe("9");

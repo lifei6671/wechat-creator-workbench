@@ -3,7 +3,7 @@ import { Spinner } from "@radix-ui/themes";
 import { CloudUpload, Copy, DatabaseBackup, Eye, Focus, ListFilter, PencilLine, Plug, Settings, Trash } from "lucide-react";
 import { desktop, type SyncActivity, type SyncBinding, type UploadProgress } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
-import { commandKey } from "../labels";
+import { commandKey, statusLabels } from "../labels";
 import { Tool, Tooltip } from "../ui";
 import type { DocumentActions } from "./Document";
 import { getSyncStatus, SyncStatus } from "./SyncStatus";
@@ -156,5 +156,6 @@ function DocumentStatus({ queue, reading, imageStorageEnabled, assetRevision, im
       {error ? "保存失败" : queue.entry.deletedAt !== null ? "已移入回收站" : saving || uploadingImages || processingImages || imageSavePending ? "保存中…" : dirty ? "未保存" : "已保存"}
     </span>
     <span>{count} 字</span>
+    {queue.entry.kind === "article" && fields.status && <span>{statusLabels[fields.status]}</span>}
   </div>;
 }

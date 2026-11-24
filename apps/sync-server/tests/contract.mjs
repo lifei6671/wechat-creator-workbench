@@ -271,11 +271,20 @@ export async function runContract(base, setupSecret) {
   assert.deepEqual(await ok(409, "sync/pull?cursor=99999", "GET", a), { error: "reset_required", reason: "cursor_ahead" });
   const peerKey = await ok(201, "recovery-key", "POST", b);
   const defaults = { entityType: "wechat_publication_defaults", entityId: "default", baseRevision: 0, operation: "upsert",
-    payload: { schemaVersion: 1, recommendationCount: 8, updatedAt: 1 } };
+    payload: { schemaVersion: 1, recommendationCount: 8, recommendationAuthors: ["作者甲", "Alice", "alice"], updatedAt: 1 } };
   assert.equal((await push(a, operation(defaults)))[0].status, "applied");
   assert.deepEqual((await ok(200, "sync/entities/wechat_publication_defaults/default", "GET", b)).payload, defaults.payload);
   assert.equal((await push(b, operation({ ...defaults, payload: { ...defaults.payload, recommendationCount: 3 } })))[0].status, "conflict");
   assert((await ok(200, "sync/bootstrap?afterType=entry&afterId=zzzzzz", "GET", b)).entities.some(item => item.entityType === "wechat_publication_defaults"));
+  const changedAuthors = { ...defaults, baseRevision: 1, payload: { ...defaults.payload, recommendationAuthors: ["作者乙"], updatedAt: 2 } };
+  assert.equal((await push(b, operation(changedAuthors)))[0].status, "applied");
+  assert.deepEqual((await ok(200, "sync/entities/wechat_publication_defaults/default", "GET", a)).payload, changedAuthors.payload);
+  const clearedAuthors = { ...defaults, baseRevision: 2, payload: { ...defaults.payload, recommendationAuthors: [], updatedAt: 3 } };
+  assert.equal((await push(a, operation(clearedAuthors)))[0].status, "applied");
+  assert.deepEqual((await ok(200, "sync/entities/wechat_publication_defaults/default", "GET", b)).payload, clearedAuthors.payload);
+  const legacyDefaults = { ...defaults, baseRevision: 3, payload: { schemaVersion: 1, recommendationCount: 5, updatedAt: 4 } };
+  assert.equal((await push(b, operation(legacyDefaults)))[0].status, "applied");
+  assert.deepEqual((await ok(200, "sync/entities/wechat_publication_defaults/default", "GET", a)).payload, legacyDefaults.payload);
   for (const invalid of [
     { ...defaults, entityId: "other" }, { ...defaults, operation: "delete" },
     { ...defaults, payload: { ...defaults.payload, recommendationCount: 0 } },

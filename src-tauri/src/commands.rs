@@ -43,6 +43,11 @@ pub async fn wechat_publication_defaults(state: State<'_, Workspace>) -> Result<
 }
 
 #[tauri::command]
+pub async fn wechat_recommendation_authors(state: State<'_, Workspace>) -> Result<Vec<String>> {
+    state.wechat_authors()
+}
+
+#[tauri::command]
 pub async fn save_wechat_publication_defaults(state: State<'_, Workspace>, expected_version: i64, config: crate::content::publication::DefaultsConfig) -> Result<crate::content::publication::Defaults> {
     state.save_wechat_defaults(expected_version, config)
 }

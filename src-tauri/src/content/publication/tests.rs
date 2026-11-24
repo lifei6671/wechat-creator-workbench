@@ -24,6 +24,106 @@ fn input() -> Input {
         status: "draft".into(),
         published_at: None,
         count: 5,
+        authors: vec![],
+    }
+}
+
+fn authored(db: &Workspace, author: &str, key: &str) -> crate::content::Entry {
+    let mut data = fields("向量数据库检索实践", "向量检索", &format!("https://mp.weixin.qq.com/s/{key}"), &[]);
+    data.source = Some(serde_json::from_value(json!({"url":format!("https://example.com/{key}"),
+        "author":author,"accountName":"","originalPublishedAt":null,"importedAt":null})).unwrap());
+    db.create_entry(Kind::Article, Some(data), None).unwrap()
+}
+
+#[test]
+fn exact_author_filters_accept_any_selected_author_and_do_not_invalidate_manual_items() {
+    let db = workspace();
+    let first = authored(&db, "Alice", "alice-capital");
+    authored(&db, "alice", "alice-lower");
+    authored(&db, "Alice Lin", "alice-long");
+    authored(&db, "", "anonymous");
+    let mut request = input();
+    assert_eq!(db.wechat_candidates(&request, "", false, 0).unwrap().items.len(), 4);
+    request.authors = vec!["Alice".into()];
+    let page = db.wechat_candidates(&request, "", false, 0).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].article.entry_id, first.row.id);
+    assert_eq!(db.wechat_recommend(&request).unwrap().items.len(), 1);
+    request.authors.push("alice".into());
+    assert_eq!(db.wechat_recommend(&request).unwrap().items.len(), 2);
+    let fingerprint = request.fingerprint();
+    request.authors = vec!["其他作者".into()];
+    assert_ne!(request.fingerprint(), fingerprint);
+    assert!(db.wechat_recommend(&request).unwrap().items.is_empty());
+    assert!(db.wechat_resolve(&request, &[page.items[0].article.clone()]).unwrap().invalid.is_empty());
+}
+
+#[test]
+fn materialized_author_options_follow_source_edits_trash_restore_sync_and_deletion() {
+    let db = workspace();
+    let first = authored(&db, "同名作者", "one");
+    let second = authored(&db, "同名作者", "two");
+    assert_eq!(db.wechat_authors().unwrap(), ["同名作者"]);
+    db.write(|tx| { tx.execute("UPDATE entries SET deleted_at=1 WHERE id=?1", [&first.row.id])?; Ok(()) }).unwrap();
+    assert_eq!(db.wechat_authors().unwrap(), ["同名作者"]);
+    db.write(|tx| { tx.execute("UPDATE entries SET status='draft' WHERE id=?1", [&second.row.id])?; Ok(()) }).unwrap();
+    assert!(db.wechat_authors().unwrap().is_empty());
+    db.write(|tx| { tx.execute("UPDATE entries SET deleted_at=NULL WHERE id=?1", [&first.row.id])?; Ok(()) }).unwrap();
+    assert_eq!(db.wechat_authors().unwrap(), ["同名作者"]);
+    // A legacy source without entry-local overrides follows changes to its shared source.
+    db.write(|tx| {
+        tx.execute("UPDATE entries SET source_details=NULL WHERE id=?1", [&first.row.id])?;
+        tx.execute("UPDATE sources SET author='新作者' WHERE id=(SELECT source_id FROM entries WHERE id=?1)", [&first.row.id])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(db.wechat_authors().unwrap(), ["新作者"]);
+    let snapshot = db.read(|conn| super::super::sync::snapshot(conn, &first.row.id)).unwrap().unwrap();
+    let target = workspace();
+    target.write(|tx| super::super::sync::apply(tx, &first.row.id, &snapshot, None)).unwrap();
+    assert_eq!(target.wechat_authors().unwrap(), ["新作者"]);
+    db.write(|tx| { tx.execute("DELETE FROM entries WHERE id=?1", [&first.row.id])?; Ok(()) }).unwrap();
+    assert!(db.wechat_authors().unwrap().is_empty());
+}
+
+#[test]
+fn author_index_migration_backfills_existing_articles_and_survives_reopening() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("content.db");
+    let db = Workspace::open(&path).unwrap();
+    authored(&db, "已有作者", "published-before-upgrade");
+    let draft = authored(&db, "草稿作者", "draft-before-upgrade");
+    db.write(|tx| {
+        tx.execute("UPDATE entries SET status='draft' WHERE id=?1", [&draft.row.id])?;
+        tx.execute_batch("DROP TRIGGER wechat_author_entry_insert;
+            DROP TRIGGER wechat_author_entry_update;
+            DROP TRIGGER wechat_author_source_update;
+            DROP TABLE wechat_author_entries;
+            DROP TABLE wechat_author_options;")?;
+        tx.pragma_update(None, "user_version", crate::db::SCHEMA_VERSION - 1)?;
+        Ok(())
+    }).unwrap();
+    drop(db);
+    let upgraded = Workspace::open(&path).unwrap();
+    assert_eq!(upgraded.wechat_authors().unwrap(), ["已有作者"]);
+    assert_eq!(upgraded.wechat_candidates(&input(), "", false, 0).unwrap().items.len(), 1);
+    drop(upgraded);
+    assert_eq!(Workspace::open(&path).unwrap().wechat_authors().unwrap(), ["已有作者"]);
+}
+
+#[test]
+fn author_defaults_roundtrip_and_legacy_defaults_remain_unfiltered() {
+    let db = workspace();
+    let config: DefaultsConfig = serde_json::from_value(json!({"schemaVersion":1,"recommendationCount":5})).unwrap();
+    assert!(config.recommendation_authors.is_empty());
+    let saved = db.save_wechat_defaults(0, DefaultsConfig { recommendation_authors: vec!["Alice".into(), "alice".into()], ..config }).unwrap();
+    assert_eq!(saved.config.recommendation_authors, ["Alice", "alice"]);
+    let snapshot = db.read(|conn| defaults_snapshot(conn, "default")).unwrap().unwrap();
+    let target = workspace();
+    target.write(|tx| apply_defaults(tx, "default", &snapshot)).unwrap();
+    assert_eq!(target.wechat_defaults().unwrap().config.recommendation_authors, ["Alice", "alice"]);
+    for authors in [json!([""]), json!([" Alice"]), json!(["Alice", "Alice"])] {
+        let config: DefaultsConfig = serde_json::from_value(json!({"schemaVersion":1,"recommendationCount":5,"recommendationAuthors":authors})).unwrap();
+        assert!(config.validate().is_err());
     }
 }
 
@@ -92,6 +192,7 @@ fn defaults_are_versioned_captured_and_replayed_without_creating_startup_records
             DefaultsConfig {
                 schema_version: 1,
                 recommendation_count: 8,
+                recommendation_authors: vec![],
             },
         )
         .unwrap();
@@ -101,7 +202,8 @@ fn defaults_are_versioned_captured_and_replayed_without_creating_startup_records
             0,
             DefaultsConfig {
                 schema_version: 1,
-                recommendation_count: 3
+                recommendation_count: 3,
+                recommendation_authors: vec![]
             }
         )
         .is_err()
@@ -129,7 +231,8 @@ fn defaults_are_versioned_captured_and_replayed_without_creating_startup_records
                 1,
                 DefaultsConfig {
                     schema_version: 1,
-                    recommendation_count: 0
+                    recommendation_count: 0,
+                    recommendation_authors: vec![]
                 }
             )
             .is_err()

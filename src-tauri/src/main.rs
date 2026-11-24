@@ -199,6 +199,7 @@ fn main() {
             entries,
             get_entry,
             wechat_publication_defaults,
+            wechat_recommendation_authors,
             save_wechat_publication_defaults,
             wechat_recommendations,
             wechat_recommendation_candidates,

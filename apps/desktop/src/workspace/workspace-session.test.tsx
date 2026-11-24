@@ -14,7 +14,7 @@ import { readDocumentTabs, saveDocumentTabs, saveWorkspaceLayout } from "./prefe
 import { SaveQueue } from "../editor/save-queue";
 import { commandKey } from "../labels";
 import * as markdown from "../../../../packages/markdown-core";
-import { recommendationFingerprint } from "./wechat-publication";
+import { emptyPublication, recommendationFingerprint } from "./wechat-publication";
 import * as publishing from "./Publishing";
 
 const { editorQueues, editorClipboards } = vi.hoisted(() => ({
@@ -59,7 +59,7 @@ let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
   editorQueues.clear();
-  vi.spyOn(desktop, "wechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 });
+  vi.spyOn(desktop, "wechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 });
   vi.spyOn(desktop, "wechatRecommendations").mockImplementation(async input => ({ inputFingerprint: await recommendationFingerprint(input), items: [] }));
   vi.spyOn(desktop, "resolveWechatRecommendations").mockImplementation(async (_input, items) => ({ items, invalid: [] }));
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -2558,7 +2558,7 @@ it("rejects a stale clipboard render after the recommendation list changes", asy
     [commandKey === "⌘" ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true })));
   await vi.waitFor(() => expect(render).toHaveBeenCalledOnce());
   const queue = editorQueues.get("copy-stale")!;
-  const current = queue.capture().fields.wechatPublication!;
+  const current = queue.capture().fields.wechatPublication ?? emptyPublication();
   flushSync(() => queue.edit({ wechatPublication: { ...current, recommendations: { ...current.recommendations, mode: "manual", enabled: false, items: [] } } }));
   const dispose = vi.fn();
   finish({ result: { html: "旧推荐", text: "旧推荐", revision: 1, themeId: "plainly-default", images: [], warnings: [], dispose }, hosting: false, exportImages: [] });
@@ -2649,7 +2649,7 @@ it.each(["edit", "preview"])("keeps publication controls stable while typing in 
   flushSync(() => container.querySelector<HTMLButtonElement>('#right-sidebar-wechat-button')!.click());
   const copy = () => container.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
   await vi.waitFor(() => expect(copy()?.disabled).toBe(false));
-  await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>(".wechat-list-heading button")?.disabled).toBe(false));
+  await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>(".wechat-recommendation-empty button")?.disabled).toBe(false));
   const queue = editorQueues.get("typing-publication")!;
   const resolve = vi.mocked(desktop.resolveWechatRecommendations);
   save.mockClear(); resolve.mockClear();

@@ -31,7 +31,7 @@ curl http://127.0.0.1:8787/v1/meta
 
 当前协议版本为 **2**。除 `GET /v1/meta` 外，所有 `/v1` 请求携带 `X-Sync-Protocol: 2`；缺失或版本不匹配返回 `426 unsupported_protocol`。推送正文的 `protocolVersion` 同样为 2。客户端与服务端需一起升级，已有设备令牌、实例 ID、同步世代、游标和数据继续保留。
 
-文章载荷中的 `wechatPublication` 保存推荐开关、自动或手动模式、数量覆盖、输入指纹和有序列表。共享默认数量使用独立实体 `wechat_publication_defaults/default`，载荷为 `{ "schemaVersion": 1, "recommendationCount": 5, "updatedAt": 0 }`，只接受版本化更新。同一文章或共享默认配置并发修改时保留冲突，不能将推荐列表合并为并集。推荐项只接受微信文章链接。
+文章载荷中的 `wechatPublication` 保存推荐开关、自动或手动模式、数量覆盖、输入指纹和有序列表。共享默认配置使用独立实体 `wechat_publication_defaults/default`，载荷为 `{ "schemaVersion": 1, "recommendationCount": 5, "recommendationAuthors": [], "updatedAt": 0 }`，只接受版本化更新。作者数组支持多选精确匹配，缺失或为空时不过滤作者。同一文章或共享默认配置并发修改时保留冲突，不能将推荐列表合并为并集。推荐项只接受微信文章链接。
 
 升级前备份原数据库及私有文件，部署协议 2 服务，再升级参与同步的桌面端。旧客户端在升级窗口内保留本地内容并停止同步。服务端本轮无需新增数据库迁移，不能以清库、重新认领或更换实例代替升级。
 
@@ -87,4 +87,4 @@ npm run recovery:cloudflare -- DEVICE_ID
 
 同步世代恢复流程见主仓库的 v1.1 设计。预留的增量保留水位支持过期游标检查，日志保留窗口需按实际写入量确定。
 
-`npm run test:native` 需要 Rust 工具链和系统凭据存储，自动创建独立回环 HTTP 服务和临时数据库，验证原生客户端双设备同步、重装恢复、人工推荐顺序、删空及共享默认数量。不会连接生产服务。R2 备份验收由桌面端 Rust 的隔离测试前缀完成。
+`npm run test:native` 需要 Rust 工具链和系统凭据存储，自动创建独立回环 HTTP 服务和临时数据库，验证原生客户端双设备同步、重装恢复、人工推荐顺序、删空、共享默认数量，以及作者多选条件的双向更新与清空。不会连接生产服务。R2 备份验收由桌面端 Rust 的隔离测试前缀完成。

@@ -33,6 +33,7 @@ fn main() {
             "list_entry_collections",
             "save_entry",
             "wechat_publication_defaults",
+            "wechat_recommendation_authors",
             "save_wechat_publication_defaults",
             "wechat_recommendations",
             "wechat_recommendation_candidates",

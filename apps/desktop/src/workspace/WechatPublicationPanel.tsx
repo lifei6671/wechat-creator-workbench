@@ -5,6 +5,7 @@ import type { WechatCandidate, WechatRecommendation } from "../../../../packages
 import { wechatThemes, wechatThemeId } from "../../../../packages/wechat-renderer";
 import { ActionError, useButtonFeedback } from "../button-feedback";
 import { desktop, errorMessage } from "../desktop";
+import { TagInput } from "./TagInput";
 import type { PublicationSession } from "./wechat-publication";
 import { usePointerDrag } from "./pointer-drag";
 
@@ -30,6 +31,7 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
   const resolved = new Map(state.resolved.items.map(item => [item.entryId, item]));
   const invalid = new Map(state.resolved.invalid.map(item => [item.entryId, item.message]));
   useEffect(() => { if (idle) void session.refresh().catch(() => {}); }, [session, idle, savedRevision, defaults.value?.version, sourceRevision]);
+  useEffect(() => { if (tab === "defaults") void session.defaults.loadAuthors(sourceRevision); }, [session, tab, sourceRevision]);
 
   async function changeItems(items: WechatRecommendation[]) {
     await session.change(current => ({ ...current, recommendations: { ...current.recommendations, items } }), true);
@@ -74,7 +76,7 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
   );
   const visibleItems = drag.ghost && drag.hint ? reordered(drag.ghost.id, drag.hint) : recommendations.items;
   const saveFailure = saveError ? errorMessage(saveError) : "";
-  const failure = [state.error, defaults.error, feedback.error(), copyFeedback?.error("copyWechat")].find(message => message && message !== saveFailure)
+  const failure = [state.error, defaults.error, defaults.authorsError, feedback.error(), copyFeedback?.error("copyWechat")].find(message => message && message !== saveFailure)
     || state.resolved.invalid.map(item => `${recommendations.items.find(row => row.entryId === item.entryId)?.title ?? "推荐文章"}：${item.message}`).join("；");
   return <aside className="wechat-publishing-panel" aria-label="公众号配置">
     {!embedded && <header className="wechat-publishing-header"><h2>公众号</h2><button type="button" className="plain-button chrome-icon" aria-label="关闭公众号侧栏"
@@ -101,12 +103,12 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
               onChange={event => session.editCount(event.target.value)} onBlur={() => void session.flush()} /><span>篇</span>
           </div>{recommendations.countOverride === null ? <span className="muted-text">默认</span> : <button type="button" className="plain-button wechat-small-action" disabled={locked}
             onClick={() => void session.change(current => ({ ...current, recommendations: { ...current.recommendations, countOverride: null } }))}>使用默认</button>}</div>
-          <div className="wechat-list-heading"><span>{recommendations.mode === "auto" ? "自动推荐" : "手动调整"}</span><div>
+          {(recommendations.items.length > 0 || state.undo) && <div className="wechat-list-heading"><span>{recommendations.mode === "auto" ? "自动推荐" : "手动调整"}</span><div>
             {state.undo && <button type="button" className="plain-button wechat-small-action" disabled={locked} onClick={() => void session.undo()}>撤销</button>}
-            <button type="button" className="plain-button wechat-small-action" {...feedback.props("regenerate", locked || state.loading)}
+            {recommendations.items.length > 0 && <button type="button" className="plain-button wechat-small-action" {...feedback.props("regenerate", locked || state.loading)}
               onClick={() => void feedback.run("regenerate", async () => { if (!await session.regenerate()) throw new Error(session.snapshot().error); })}>
-              {feedback.icon("regenerate", <RotateCcw size={13} />, 13)}{feedback.label("regenerate", "重新推荐", "已推荐")}</button>
-          </div></div>
+              {feedback.icon("regenerate", <RotateCcw size={13} />, 13)}{feedback.label("regenerate", "重新推荐", "已推荐")}</button>}
+          </div></div>}
           <ol className="wechat-recommendation-list" aria-label="当前推荐文章" {...drag.events}
             onKeyDown={event => { if (event.key === "Escape") drag.events.onPointerCancel(); }}>
             {visibleItems.map((item, index) => <li key={item.entryId} data-recommendation={item.entryId}
@@ -132,13 +134,23 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
               </div>
             </li>)}
           </ol>
-          {!state.loading && recommendations.items.length === 0 && <p className="wechat-empty">尚未添加推荐文章</p>}
+          {recommendations.items.length === 0 && <div className="wechat-recommendation-empty"><p className="wechat-empty">尚未添加推荐文章</p>
+            <Button size="1" {...feedback.props("regenerate", locked || state.loading)}
+              onClick={() => void feedback.run("regenerate", async () => { if (!await session.regenerate()) throw new Error(session.snapshot().error); })}>
+              {feedback.icon("regenerate", <RotateCcw size={13} />, 13)}{feedback.label("regenerate", "自动推荐", "已推荐")}</Button></div>}
           <button type="button" className="plain-button wechat-add-articles" disabled={locked || state.loading} onClick={() => setPicker(true)}><Plus size={15} />添加文章</button>
         </section>
       </> : <section><h3>推荐阅读</h3><div className="wechat-setting-row wechat-default-count"><label htmlFor="wechat-default-count">默认生成数量</label>
         <div className="wechat-count-control"><input id="wechat-default-count" type="number" min="1" step="1" max="4294967295" disabled={locked || !defaults.value}
           value={defaults.draft} onChange={event => session.defaults.edit(event.target.value)} onBlur={() => void session.defaults.flush()} /><span>篇</span></div></div>
-        <p className="wechat-scope-note">用于未单独设置数量的文章。</p>
+        <div className="wechat-author-setting" onBlur={event => {
+          if (locked || event.currentTarget.contains(event.relatedTarget)) return;
+          void session.defaults.flush();
+        }}><label htmlFor="wechat-default-authors">作者</label>
+          <TagInput id="wechat-default-authors" label="推荐作者" itemLabel="作者" tags={defaults.authors} draft={defaults.authorDraft} onDraft={value => session.defaults.editAuthorDraft(value)}
+            history={defaults.authorOptions} readOnly={locked || !defaults.value} suggestOnEmpty exactMatch placeholder="选择或输入作者"
+            onTags={authors => { session.defaults.editAuthors(authors); void session.defaults.flush(); }} />
+        </div>
         {defaults.error && <Button size="1" variant="soft" {...feedback.props("reload", locked)} onClick={() => void feedback.run("reload", () => session.defaults.reload())}>重新加载</Button>}
       </section>}
     </div>

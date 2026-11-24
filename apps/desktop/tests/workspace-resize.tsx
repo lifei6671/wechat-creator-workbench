@@ -38,7 +38,7 @@ desktop.aiThread = async () => thread;
 desktop.aiMessages = async () => [];
 desktop.aiUpdateThread = async () => {};
 desktop.wechatGraphics = async () => [];
-desktop.wechatPublicationDefaults = async () => ({ schemaVersion: 1, recommendationCount: 5, version: 0, updatedAt: 0 });
+desktop.wechatPublicationDefaults = async () => ({ schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 });
 desktop.wechatRecommendations = async input => { publicationTyping.recommendations++; return { inputFingerprint: await recommendationFingerprint(input), items: [] }; };
 desktop.resolveWechatRecommendations = async (_input, items) => ({ items, invalid: [] });
 for (const event of ["onExit", "onHistory", "onHideRequested", "onSyncStatusChanged", "onWorkspaceChanged", "onTrashEmptied", "onAssetsChanged", "onBackupProgress", "onMcpStatusChanged"] as const) {

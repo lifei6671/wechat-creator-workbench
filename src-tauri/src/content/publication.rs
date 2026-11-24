@@ -121,12 +121,20 @@ pub fn article_url(value: &str) -> Option<String> {
 pub struct DefaultsConfig {
     pub schema_version: u32,
     pub recommendation_count: u32,
+    #[serde(default)]
+    pub recommendation_authors: Vec<String>,
 }
 
 impl DefaultsConfig {
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 || self.recommendation_count == 0 {
             return Err(AppError::invalid("默认推荐数量必须是大于 0 的整数"));
+        }
+        let mut authors = HashSet::new();
+        if self.recommendation_authors.iter().any(|author| {
+            author.trim().is_empty() || author != author.trim() || !authors.insert(author)
+        }) {
+            return Err(AppError::invalid("推荐作者不能为空或重复"));
         }
         Ok(())
     }
@@ -159,6 +167,7 @@ pub fn defaults(conn: &Connection) -> Result<Defaults> {
             config: DefaultsConfig {
                 schema_version: 1,
                 recommendation_count: 5,
+                recommendation_authors: vec![],
             },
             version: 0,
             updated_at: 0,
@@ -174,8 +183,13 @@ pub fn defaults_snapshot(conn: &Connection, id: &str) -> Result<Option<Value>> {
     if value.version == 0 {
         return Ok(None);
     }
-    Ok(Some(json!({ "schemaVersion": value.config.schema_version,
-        "recommendationCount": value.config.recommendation_count, "updatedAt": value.updated_at })))
+    let mut snapshot = json!({ "schemaVersion": value.config.schema_version,
+        "recommendationCount": value.config.recommendation_count,
+        "updatedAt": value.updated_at });
+    if !value.config.recommendation_authors.is_empty() {
+        snapshot["recommendationAuthors"] = json!(value.config.recommendation_authors);
+    }
+    Ok(Some(snapshot))
 }
 
 pub fn apply_defaults(conn: &Connection, id: &str, payload: &Value) -> Result<()> {
@@ -215,7 +229,8 @@ impl Workspace {
                 tx,
                 "default",
                 &json!({ "schemaVersion": config.schema_version,
-                "recommendationCount": config.recommendation_count, "updatedAt": now() }),
+                "recommendationCount": config.recommendation_count,
+                "recommendationAuthors": config.recommendation_authors, "updatedAt": now() }),
             )?;
             defaults(tx)
         })
@@ -234,6 +249,8 @@ pub struct Input {
     pub status: String,
     pub published_at: Option<i64>,
     pub count: u32,
+    #[serde(default)]
+    pub authors: Vec<String>,
 }
 
 impl Input {
@@ -247,7 +264,8 @@ impl Input {
             self.category_id,
             self.status,
             self.published_at,
-            self.count
+            self.count,
+            self.authors
         ]);
         hex::encode(Sha256::digest(input.to_string().as_bytes()))
     }
@@ -300,15 +318,18 @@ pub struct Resolved {
     pub invalid: Vec<InvalidItem>,
 }
 
-fn candidates(conn: &Connection, input: &Input) -> Result<Vec<Candidate>> {
+fn candidates(conn: &Connection, input: &Input, filter_authors: bool) -> Result<Vec<Candidate>> {
     if input.count == 0 {
         return Err(AppError::invalid("推荐数量必须大于 0"));
     }
     let mut query = conn.prepare("SELECT e.id,e.title,e.summary,e.category_id,e.published_at,e.published_url,e.publication_platforms,
         COALESCE((SELECT json_group_array(t.name) FROM tags t JOIN entry_tags r ON r.tag_id=t.id WHERE r.entry_id=e.id),'[]')
         FROM entries e WHERE e.kind='article' AND e.status='published' AND e.deleted_at IS NULL AND e.purged_at IS NULL
-        AND e.id<>?1 AND (e.published_at IS NULL OR e.published_at<=?2) ORDER BY e.published_at DESC,e.id")?;
-    let rows = query.query_map(params![input.entry_id, input.cutoff()], |row| {
+        AND e.id<>?1 AND (e.published_at IS NULL OR e.published_at<=?2)
+        AND (?3 OR e.id IN (SELECT entry_id FROM wechat_author_entries WHERE author IN (SELECT value FROM json_each(?4))))
+        ORDER BY e.published_at DESC,e.id")?;
+    let rows = query.query_map(params![input.entry_id, input.cutoff(), !filter_authors || input.authors.is_empty(),
+        serde_json::to_string(&input.authors).expect("authors serialize")], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -541,11 +562,18 @@ fn rank(conn: &Connection, input: &Input, pool: Vec<Candidate>) -> Result<Vec<Ca
 }
 
 impl Workspace {
+    pub fn wechat_authors(&self) -> Result<Vec<String>> {
+        self.read_running(|conn| {
+            let mut query = conn.prepare("SELECT author FROM wechat_author_options ORDER BY author")?;
+            Ok(query.query_map([], |row| row.get(0))?.collect::<std::result::Result<_, _>>()?)
+        })
+    }
+
     pub fn wechat_recommend(&self, input: &Input) -> Result<RecommendationResult> {
         self.read_running(|conn| {
             Ok(RecommendationResult {
                 input_fingerprint: input.fingerprint(),
-                items: rank(conn, input, candidates(conn, input)?)?
+                items: rank(conn, input, candidates(conn, input, true)?)?
                     .into_iter()
                     .take(input.count as usize)
                     .map(|candidate| candidate.article)
@@ -562,7 +590,7 @@ impl Workspace {
         offset: usize,
     ) -> Result<CandidatePage> {
         self.read_running(|conn| {
-            let mut pool = candidates(conn, input)?;
+            let mut pool = candidates(conn, input, true)?;
             if related {
                 pool = rank(conn, input, pool)?;
             }
@@ -600,7 +628,7 @@ impl Workspace {
 
     pub fn wechat_resolve(&self, input: &Input, items: &[Recommendation]) -> Result<Resolved> {
         self.read_running(|conn| {
-            let pool = candidates(conn, input)?
+            let pool = candidates(conn, input, false)?
                 .into_iter()
                 .map(|candidate| (candidate.article.entry_id.clone(), candidate.article))
                 .collect::<HashMap<_, _>>();

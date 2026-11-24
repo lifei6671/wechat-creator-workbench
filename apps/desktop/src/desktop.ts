@@ -134,8 +134,9 @@ export const desktop = {
   entries: (filter: EntryFilter) => invoke<EntryPage>("entries", { filter }),
   entry: (id: string) => invoke<Entry>("get_entry", { id }),
   wechatPublicationDefaults: () => invoke<WechatPublicationDefaults>("wechat_publication_defaults"),
-  saveWechatPublicationDefaults: (expectedVersion: number, recommendationCount: number) =>
-    invoke<WechatPublicationDefaults>("save_wechat_publication_defaults", { expectedVersion, config: { schemaVersion: 1, recommendationCount } }),
+  wechatRecommendationAuthors: () => invoke<string[]>("wechat_recommendation_authors"),
+  saveWechatPublicationDefaults: (expectedVersion: number, recommendationCount: number, recommendationAuthors: string[]) =>
+    invoke<WechatPublicationDefaults>("save_wechat_publication_defaults", { expectedVersion, config: { schemaVersion: 1, recommendationCount, recommendationAuthors } }),
   wechatRecommendations: (input: WechatRecommendationInput) => invoke<WechatRecommendationResult>("wechat_recommendations", { input }),
   wechatCandidates: (input: WechatRecommendationInput, query: string, related: boolean, offset = 0) =>
     invoke<WechatCandidatePage>("wechat_recommendation_candidates", { input, query, related, offset }),
