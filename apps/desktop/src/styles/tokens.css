@@ -1,3 +1,6 @@
+@import "../../../../packages/ui-react/motion.css";
+@import "./motion.css";
+
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 html { background: var(--workbench-bg); }
@@ -68,7 +71,7 @@ input:focus-visible, [data-separator]:focus-visible {
 .action-error-slot > .inline-error, .action-error-slot > .settings-feedback { margin: 0; padding: 0; font-size: var(--small-font); line-height: 18px; }
 .button-feedback-icon { display: inline-grid; place-items: center; flex: none; }
 .button-feedback-icon[data-state="pending"] { animation: button-feedback-spin 800ms linear infinite; }
-.button-feedback-icon:is([data-state="success"], [data-state="error"]) { animation: button-feedback-result 250ms ease-out; }
+.button-feedback-icon:is([data-state="success"], [data-state="error"]) { animation: button-feedback-result var(--motion-enter) var(--motion-ease); }
 .radix-themes button[data-feedback-state="success"] { background: var(--green-4); color: var(--green-11); opacity: 1; }
 .radix-themes button[data-feedback-state="error"] { background: var(--red-4); color: var(--red-11); opacity: 1; }
 @keyframes button-feedback-spin { to { transform: rotate(360deg); } }

@@ -266,7 +266,7 @@ textarea.rich-formula-source:focus { outline: none; border-color: var(--gray-a8)
 .rich-block-actions .chrome-icon:last-child:active { cursor: grabbing; }
 .rich-block-actions .chrome-icon svg { width: 20px; height: 20px; }
 @media (prefers-reduced-motion: no-preference) {
-  .rich-block-actions[data-show="true"][data-slide] { transition: top 150ms ease-out; }
+  .rich-block-actions[data-show="true"][data-slide] { transition: top var(--motion-fast) var(--motion-ease); }
 }
 .rich-block-drop-line { position: fixed; z-index: 4; height: 0.5px; background: var(--accent-9); pointer-events: none; }
 .rich-block-drag-preview {

@@ -50,6 +50,7 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   onClose(): void;
   onPageChange?(page: SettingsPage): void;
 }) {
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [page, setPage] = useState(initialPage);
   useLayoutEffect(() => { onPageChange?.(page); }, [page, onPageChange]);
   const [loaded, setLoaded] = useState<SettingsPage[]>([initialPage]);
@@ -128,8 +129,9 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
     setPage(current);
   }
 
-  return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
+  return <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}>
     <Dialog.Content className="settings-dialog" maxWidth="912px" aria-describedby={undefined}
+      inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}
       onPointerDownOutside={event => event.preventDefault()}
       onEscapeKeyDown={event => {
         if (event.target instanceof HTMLElement && event.target.closest('.shortcut-binding[data-recording="true"]')) event.preventDefault();

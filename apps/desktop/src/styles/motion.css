@@ -1,0 +1,91 @@
+/* Frequent input stays quick and never changes control geometry. */
+.radix-themes :is(.plain-button, .rt-Button, .rt-IconButton, .rt-SelectTrigger,
+  .folder-row, .tab, .outline-row, .ai-thread-name, .window-controls button,
+  .rich-slash-item, .tag-suggestions li, .rich-heading-fold) {
+  transition: background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
+}
+.radix-themes :is(.plain-button, .rt-Button, .rt-IconButton):active { transition-duration: var(--motion-press); }
+.radix-themes :is(.tab-close, .outline-grip, .timeline-pin, .ai-message-time, .ai-message-copy,
+  .rich-block-actions, .rich-block-grip, .rich-block-menu, .rich-image-controls, .rich-table-grip) { transition: opacity var(--motion-fast) var(--motion-ease); }
+.sidebar-toggle-fill { opacity: 0; transition: opacity var(--motion-fast) var(--motion-ease); }
+.sidebar-toggle-icon[data-expanded="true"] .sidebar-toggle-fill { opacity: 1; }
+.rich-heading-fold::before { transition: transform var(--motion-fast) var(--motion-ease); }
+.radix-themes .rt-SwitchThumb { transition: transform var(--motion-enter) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease); }
+.radix-themes .rt-SwitchRoot::before { transition-duration: var(--motion-enter); transition-timing-function: var(--motion-ease); }
+.radix-themes .rt-BaseCheckboxIndicator,
+.radix-themes .rt-BaseRadioRoot:checked::after,
+.radix-themes .rt-BaseRadioRoot[data-state="checked"]::after { animation: motion-fade-in var(--motion-fast) var(--motion-ease); }
+.radix-themes .settings-button-label[data-result] > span { animation: motion-fade-in var(--motion-enter) var(--motion-ease); }
+.collection-zoom, .radix-themes input[type="number"] { font-variant-numeric: tabular-nums; }
+.radix-themes .rt-ProgressIndicator { transition: transform var(--motion-fast) linear; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Transitions reverse from the current frame. Radix still owns focus and presence. */
+  .radix-themes.rt-PopperContent[data-state] {
+    --motion-y: 0px;
+    opacity: 1; transform: none; animation: none;
+    transition: opacity var(--motion-enter) var(--motion-ease), transform var(--motion-enter) var(--motion-ease);
+  }
+  .radix-themes.rt-PopperContent[data-side="top"] { --motion-y: 3px; }
+  .radix-themes.rt-PopperContent[data-side="bottom"] { --motion-y: -3px; }
+  .radix-themes.rt-PopperContent[data-state="closed"] {
+    opacity: 0; transform: translateY(var(--motion-y)) scale(.985); pointer-events: none;
+    transition-duration: var(--motion-fast);
+    animation: motion-presence-out var(--motion-fast) linear;
+  }
+  .radix-themes :is(.rt-DialogContent, .rt-AlertDialogContent)[data-state] {
+    opacity: 1; transform: none; animation: none;
+    transition: opacity var(--motion-enter) var(--motion-ease), transform var(--motion-enter) var(--motion-ease);
+  }
+  .radix-themes :is(.rt-DialogContent, .rt-AlertDialogContent)[data-state="closed"] {
+    opacity: 0; transform: translateY(4px) scale(.985); pointer-events: none;
+    transition-duration: var(--motion-fast);
+    animation: motion-presence-out var(--motion-fast) linear;
+  }
+  /* Fixed descendants must remain anchored to the viewport throughout the transition. */
+  .radix-themes .rt-DialogContent:is(.settings-dialog, .image-viewer)[data-state] { transform: none; }
+  .radix-themes .rt-DialogContent.properties-panel[data-state] {
+    opacity: 1; transform: translateX(0); transition: transform var(--motion-layout) var(--motion-ease);
+  }
+  .radix-themes .rt-DialogContent.properties-panel[data-state="closed"] {
+    transform: translateX(100%); transition-duration: var(--motion-enter);
+    animation: motion-presence-out var(--motion-enter) linear;
+  }
+  .radix-themes .rt-BaseDialogOverlay[data-state]::before {
+    opacity: 1; animation: none; transition: opacity var(--motion-enter) var(--motion-ease);
+  }
+  .radix-themes .rt-BaseDialogOverlay[data-state="closed"]::before { opacity: 0; }
+  .radix-themes .rt-BaseDialogOverlay[data-state="closed"] { animation: motion-presence-out var(--motion-enter) linear; }
+
+  @starting-style {
+    .radix-themes.rt-PopperContent[data-state="open"] { opacity: 0; transform: translateY(var(--motion-y)) scale(.985); }
+    .radix-themes :is(.rt-DialogContent, .rt-AlertDialogContent)[data-state="open"] { opacity: 0; transform: translateY(4px) scale(.985); }
+    .radix-themes .rt-DialogContent:is(.settings-dialog, .image-viewer)[data-state="open"] { transform: none; }
+    .radix-themes .rt-DialogContent.properties-panel[data-state="open"] { opacity: 1; transform: translateX(100%); }
+    .radix-themes .rt-BaseDialogOverlay[data-state="open"]::before { opacity: 0; }
+  }
+
+  .document-editor:not([hidden]), .workbench-empty,
+  .settings-pages:not([hidden]), .right-sidebar-content > [role="region"]:not([hidden]),
+  .explorer, .timeline-pane, .ai-thread-list, .ai-turns,
+  .rich-search, .rich-slash-menu:not([hidden]), .tag-suggestions {
+    animation: motion-fade-in var(--motion-fast) var(--motion-ease);
+  }
+  :is(.action-error-slot, .settings-feedback, .save-error) > [role="alert"],
+  .ai-proposal-status[data-status="applied"] { animation: motion-fade-in var(--motion-enter) var(--motion-ease); }
+  .rich-image-media img { animation: motion-fade-in var(--motion-enter) var(--motion-ease); }
+}
+
+/* A nonvisual exit animation lets Radix retain content until its transition ends. */
+@keyframes motion-presence-out { from { visibility: visible; } to { visibility: visible; } }
+
+/* A live gesture interrupts programmatic layout motion, including its siblings. */
+.workspace-panels[data-resizing] > [data-panel],
+.workspace-panels[data-resizing] #timeline-directory { transition: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .radix-themes .rt-BaseCheckboxIndicator,
+  .radix-themes .rt-BaseRadioRoot::after,
+  .radix-themes .settings-button-label[data-result] > span { animation: none; }
+}

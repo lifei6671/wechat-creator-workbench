@@ -2753,6 +2753,7 @@ it("records workspace shortcuts in settings and applies them without restarting"
   const close = document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!;
   flushSync(() => close.click());
   await vi.waitFor(() => expect(document.querySelector('[aria-label="关闭设置"]')).toBeNull());
+  await vi.waitFor(() => expect(container.querySelector('.status-bar [aria-label="设置"]')?.getAttribute("aria-expanded")).toBe("false"));
   flushSync(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "F8", code: "F8", bubbles: true, cancelable: true })));
   await vi.waitFor(() => expect(document.querySelector('input[aria-label="查找命令或笔记"]')).not.toBeNull());
 });

@@ -1,0 +1,24 @@
+/* Ease-out cubic, shared with the canvas's 1 - (1 - t)^3 interpolation. */
+:root {
+  --motion-ease: cubic-bezier(0.333333, 1, 0.666667, 1);
+  --motion-press: 60ms;
+  --motion-fast: 120ms;
+  --motion-enter: 180ms;
+  --motion-layout: 250ms;
+}
+
+@keyframes motion-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-press: 0ms; --motion-fast: 0ms; --motion-enter: 0ms; --motion-layout: 0ms; }
+  /* Includes library-owned transitions and their pseudo-elements in portals. */
+  .radix-themes, .radix-themes *, .radix-themes *::before, .radix-themes *::after {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .radix-themes :is(.rt-SpinnerLeaf, .rt-Skeleton),
+  .radix-themes :is(.rt-BaseDialogContent, .rt-BaseDialogOverlay, .rt-PopperContent),
+  .radix-themes .rt-BaseDialogOverlay::before { animation: none !important; }
+  .radix-themes .rt-ProgressIndicator[data-state="indeterminate"] { animation: none; transform: scaleX(.35); }
+  .radix-themes .rt-ProgressIndicator::after { animation: none; }
+}

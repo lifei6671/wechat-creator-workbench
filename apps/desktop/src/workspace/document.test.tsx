@@ -421,8 +421,10 @@ it("shows a tab insertion marker and scrolls overflow by arrow or wheel", async 
     expect(list.scrollBy).toHaveBeenCalledWith({ left: 182, behavior: "smooth" });
     list.dispatchEvent(new WheelEvent("wheel", { deltaY: 18, cancelable: true }));
     list.dispatchEvent(new WheelEvent("wheel", { deltaY: 12, cancelable: true }));
-    expect(list.scrollLeft).toBe(0);
-    await vi.waitFor(() => expect(list.scrollLeft).toBe(30));
+    expect(list.scrollLeft).toBe(30);
+    list.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_LINE, cancelable: true }));
+    expect(list.scrollLeft).toBe(30);
+    await vi.waitFor(() => expect(list.scrollLeft).toBe(54));
     list.scrollLeft = 132;
     flushSync(() => list.dispatchEvent(new Event("scroll")));
     expect(container.querySelector('[aria-label="向右滚动标签页"]')).toBeNull();

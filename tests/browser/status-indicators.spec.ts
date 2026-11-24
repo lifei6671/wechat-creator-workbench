@@ -1,5 +1,29 @@
 import { expect, test, type Locator } from "@playwright/test";
 
+test("keeps a positioned tooltip visible while it fades out", async ({ page }) => {
+  await page.goto("/tests/status-indicators.html");
+  await page.locator(".status-mcp").hover();
+  const tooltip = page.locator(".workspace-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect.poll(() => tooltip.evaluate(element => getComputedStyle(element).opacity)).toBe("1");
+  const samples = tooltip.evaluate(element => new Promise<{ opacity: number; visibility: string }[]>(resolve => {
+    const frames: { opacity: number; visibility: string }[] = [];
+    const started = performance.now();
+    function frame() {
+      if (!element.isConnected || performance.now() - started > 1000) { resolve(frames); return; }
+      const style = getComputedStyle(element);
+      frames.push({ opacity: Number(style.opacity), visibility: style.visibility });
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }));
+  await page.mouse.move(900, 50);
+  const frames = await samples;
+  expect(frames.some(frame => frame.opacity > 0 && frame.opacity < 1)).toBe(true);
+  expect(frames.every(frame => frame.visibility === "visible")).toBe(true);
+  await expect(tooltip).toHaveCount(0);
+});
+
 for (const appearance of ["light", "dark"]) for (const reducedMotion of ["reduce", "no-preference"] as const) {
   test(`status dots in ${appearance}, motion ${reducedMotion}`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion });
@@ -10,6 +34,7 @@ for (const appearance of ["light", "dark"]) for (const reducedMotion of ["reduce
       await expect(button).toHaveText("");
       const dot = button.locator(".status-dot");
       await expect(dot).toHaveAttribute("data-state", state);
+      await expect.poll(() => dot.evaluate(element => element.getAnimations().some(animation => animation instanceof CSSTransition && animation.playState === "running"))).toBe(false);
       const style = await dot.evaluate((el, state) => {
         const css = getComputedStyle(el);
         const probe = document.createElement("span");
@@ -27,7 +52,7 @@ for (const appearance of ["light", "dark"]) for (const reducedMotion of ["reduce
       expect(style.color).toBe(style.expectedColor);
       expect(style.width).toBe(6); expect(style.height).toBe(6); expect(style.buttonWidth).toBe(28);
       expect(style.contained).toBe(true); expect(style.upperRight).toBe(true);
-      expect(style.animation).toBe(reducedMotion === "reduce" || state === "unknown" ? "none" : "status-dot-breathe");
+      expect(style.animation).toBe(reducedMotion !== "reduce" && state === "busy" ? "status-dot-breathe" : "none");
       if (style.animation !== "none") expect(style.duration).toBe("2s");
     }
     for (const [scenario, state, label] of [
@@ -61,7 +86,7 @@ for (const appearance of ["light", "dark"]) for (const reducedMotion of ["reduce
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("clicked")).toHaveText("sync");
     const opacity = await sync.locator(".status-dot").evaluate(el => {
-      const animation = el.getAnimations()[0];
+      const animation = el.getAnimations().find(animation => animation instanceof CSSAnimation);
       if (!animation) return null;
       animation.pause();
       animation.currentTime = 0;
@@ -69,7 +94,7 @@ for (const appearance of ["light", "dark"]) for (const reducedMotion of ["reduce
       animation.currentTime = 1000;
       return [start, getComputedStyle(el).opacity];
     });
-    expect(opacity).toEqual(reducedMotion === "reduce" ? null : ["1", "0.5"]);
+    expect(opacity).toBeNull();
     await page.locator("html").evaluate(el => { el.style.zoom = "1.5"; });
     const scaled = await sync.locator(".status-dot").boundingBox();
     expect(scaled!.width).toBe(9); expect(scaled!.height).toBe(9);

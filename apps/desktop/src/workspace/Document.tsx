@@ -14,6 +14,7 @@ import { desktop, errorMessage } from "../desktop";
 import { isConflict, SaveQueue } from "../editor/save-queue";
 import { commandKey, untitled } from "../labels";
 import { Tool, Tooltip } from "../ui";
+import { useReducedMotion } from "../../../../packages/ui-react/motion";
 import type { useButtonFeedback } from "../button-feedback";
 import { loadLocalImage } from "./Publishing";
 import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./EditorContextMenu";
@@ -61,6 +62,7 @@ export function DocumentTabs({ sessions, replacement, feedback, activeId, readin
   const previousReplacement = useRef(replacement);
   const previousOrder = useRef(snapshots.map(tab => tab.key));
   const [closingTabs, setClosingTabs] = useState<{ key: string; title: string; index: number }[]>([]);
+  const reducedMotion = useReducedMotion();
   useLayoutEffect(() => {
     const keys = new Set(snapshots.map(tab => tab.key));
     const replaced = replacement !== previousReplacement.current && replacement && keys.has(replacement.to) ? replacement.from : undefined;
@@ -69,15 +71,15 @@ export function DocumentTabs({ sessions, replacement, feedback, activeId, readin
     previousTabs.current = snapshots;
     previousOrder.current = tabKeys;
     if ((removed.length || closingTabs.some(tab => keys.has(tab.key) || tab.key === replaced))
-      && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      && !reducedMotion) {
       setClosingTabs(current => [...current.filter(tab => !keys.has(tab.key) && tab.key !== replaced && !removed.some(item => item.key === tab.key)), ...removed]);
     }
   });
   useEffect(() => {
     if (!closingTabs.length) return;
-    const timer = setTimeout(() => setClosingTabs([]), 250);
+    const timer = setTimeout(() => setClosingTabs([]), reducedMotion ? 0 : 250);
     return () => clearTimeout(timer);
-  }, [closingTabs]);
+  }, [closingTabs, reducedMotion]);
   const [edges, setEdges] = useState({ overflow: false, left: false, right: false });
   const drag = usePointerDrag<{ id: string; title: string }, { id: string; placement: CategoryPlacement }>(element => {
     const tab = element.closest<HTMLElement>("[data-tab-id]");
@@ -152,18 +154,35 @@ export function DocumentTabs({ sessions, replacement, feedback, activeId, readin
       const unit = event.deltaMode === 1 ? 24 : event.deltaMode === 2 ? viewport.clientWidth : 1;
       if (!wheelFrame.current) position = target = viewport.scrollLeft;
       target = Math.max(0, Math.min(viewport.scrollWidth - viewport.clientWidth, target + delta * unit));
-      if (reducedMotion.matches) viewport.scrollLeft = target;
+      // Pixel deltas already contain trackpad inertia; applying inertia again adds lag.
+      if (reducedMotion.matches || event.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+        cancelAnimationFrame(wheelFrame.current);
+        wheelFrame.current = 0;
+        viewport.scrollLeft = position = target;
+      }
       else if (!wheelFrame.current) { lastTime = 0; wheelFrame.current = requestAnimationFrame(animate); }
     }
+    const stopMotion = () => {
+      if (!reducedMotion.matches) return;
+      if (!wheelFrame.current) {
+        viewport.scrollBy({ left: 0, behavior: "instant" });
+        return;
+      }
+      cancelAnimationFrame(wheelFrame.current);
+      wheelFrame.current = 0;
+      viewport.scrollLeft = position = target;
+    };
     const resize = new ResizeObserver(() => updateViewport(true));
     resize.observe(viewport);
     resize.observe(strip.current!);
     viewport.addEventListener("scroll", measure);
     viewport.addEventListener("wheel", wheel, { passive: false });
+    reducedMotion.addEventListener?.("change", stopMotion);
     return () => {
       resize.disconnect();
       viewport.removeEventListener("scroll", measure);
       viewport.removeEventListener("wheel", wheel);
+      reducedMotion.removeEventListener?.("change", stopMotion);
       cancelAnimationFrame(wheelFrame.current);
       wheelFrame.current = 0;
     };

@@ -174,6 +174,7 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
 }
 
 function WechatArticlePicker({ session, selected, onClose, onAdd }: { session: PublicationSession; selected: WechatRecommendation[]; onClose(): void; onAdd(items: WechatRecommendation[]): Promise<void> }) {
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [related, setRelated] = useState(true);
@@ -203,7 +204,8 @@ function WechatArticlePicker({ session, selected, onClose, onAdd }: { session: P
   const chosen = new Set(selected.map(item => item.entryId));
   const chosenLinks = new Set(selected.map(item => linkKey(item.url)));
   const alreadyAdded = (item: WechatRecommendation) => chosen.has(item.entryId) || chosenLinks.has(linkKey(item.url));
-  return <Dialog.Root open onOpenChange={open => { if (!open && !feedback.isLocked("add")) onClose(); }}><Dialog.Content className="wechat-article-picker" maxWidth="660px" aria-describedby={undefined}>
+  return <Dialog.Root open={dialogOpen} onOpenChange={open => { if (!open && !feedback.isLocked("add")) setDialogOpen(false); }}><Dialog.Content className="wechat-article-picker" maxWidth="660px" aria-describedby={undefined}
+    inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
     <header className="wechat-picker-header"><Dialog.Title>添加文章</Dialog.Title><Dialog.Close><button type="button" className="plain-button chrome-icon" aria-label="关闭文章选择器" disabled={feedback.isLocked("add")}><X size={16} /></button></Dialog.Close></header>
     <div className="wechat-picker-search"><Search size={15} /><input type="search" aria-label="搜索往期文章" placeholder="搜索标题、标签或摘要" value={query} onChange={event => setQuery(event.target.value)} autoFocus /></div>
     <div className="wechat-publishing-tabs" role="tablist" aria-label="文章范围">{[[true, "相关推荐"], [false, "全部文章"]].map(([value, label]) =>

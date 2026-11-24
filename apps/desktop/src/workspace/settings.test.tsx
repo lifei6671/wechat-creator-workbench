@@ -689,10 +689,12 @@ it("keeps settings open on backdrop clicks and allows explicit dismissal", async
     backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(close).not.toHaveBeenCalled();
 
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(close).toHaveBeenCalledTimes(1);
-    document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click();
-    expect(close).toHaveBeenCalledTimes(2);
+    flushSync(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(document.querySelector('[aria-label="关闭设置"]')).toBeNull();
+    flushSync(() => root.render(<SettingsDialog key="reopened" initialPage="appearance" onClose={close} renderPage={() => null} />));
+    flushSync(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click());
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(2));
   } finally {
     flushSync(() => root.unmount());
     container.remove();

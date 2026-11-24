@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { CircleAlert, CircleCheck, FolderOpen, Info, TriangleAlert, X } from "lucide-react";
 import { Tool } from "../ui";
+import { useReducedMotion } from "../../../../packages/ui-react/motion";
 
 export type Notice = { type: "error" | "info" | "success" | "warning"; text: string; path?: string };
 
@@ -9,6 +10,7 @@ export function WorkspaceToast({ notice, onDismiss, onReveal }: { notice: Notice
   const [focused, setFocused] = useState(false);
   const [leaving, setLeaving] = useState<Notice | null>(null);
   const exiting = notice === leaving;
+  const reducedMotion = useReducedMotion();
   const dismiss = useEffectEvent(() => onDismiss(notice));
 
   useEffect(() => {
@@ -19,9 +21,9 @@ export function WorkspaceToast({ notice, onDismiss, onReveal }: { notice: Notice
 
   useEffect(() => {
     if (!exiting) return;
-    const timer = window.setTimeout(() => dismiss(), 180);
+    const timer = window.setTimeout(() => dismiss(), reducedMotion ? 0 : 180);
     return () => window.clearTimeout(timer);
-  }, [notice, exiting]);
+  }, [notice, exiting, reducedMotion]);
 
   const Icon = { error: CircleAlert, info: Info, success: CircleCheck, warning: TriangleAlert }[notice.type];
   return <div className="workspace-toast" data-tone={notice.type} data-leaving={exiting || undefined}

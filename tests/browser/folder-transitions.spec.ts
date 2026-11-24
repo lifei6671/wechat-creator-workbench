@@ -58,3 +58,47 @@ for (const section of ["folders", "timeline"]) for (const motion of ["no-prefere
     await expect(page.locator("#folder-row-child-folder")).toBeVisible();
   });
 }
+
+test("reverses a menu exit from its current opacity and honours a live motion preference change", async ({ page }) => {
+  await page.goto("/tests/folder-colors.html?section=folders");
+  await page.locator("#folder-row-folder").click({ button: "right" });
+  const menu = page.getByRole("menu", { name: "文件夹操作" });
+  await expect(menu).toBeVisible();
+  const result = await menu.evaluate(async element => {
+    // Freeze at a partial entry, then close and reopen without waiting for an animation.
+    for (const animation of element.getAnimations()) {
+      animation.pause(); animation.currentTime = 60;
+    }
+    const before = Number(getComputedStyle(element).opacity);
+    element.setAttribute("data-state", "closed");
+    const closed = Number(getComputedStyle(element).opacity);
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const during = Number(getComputedStyle(element).opacity);
+    element.setAttribute("data-state", "open");
+    const reopened = Number(getComputedStyle(element).opacity);
+    return { before, closed, during, reopened };
+  });
+  expect(result.before).toBeGreaterThan(0);
+  expect(result.before).toBeLessThan(1);
+  expect(Math.abs(result.closed - result.before)).toBeLessThan(.01);
+  expect(result.during).toBeLessThanOrEqual(result.before + .01);
+  expect(Math.abs(result.reopened - result.during)).toBeLessThan(.01);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await menu.evaluate(element => element.getAnimations().length)).toBe(0);
+  expect(await menu.evaluate(element => getComputedStyle(element).opacity)).toBe("1");
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+});
+
+test("finishes a collapsing folder when reduced motion is enabled during the transition", async ({ page }) => {
+  await page.goto("/tests/folder-colors.html?section=folders");
+  const toggle = page.locator("#folder-row-folder");
+  await toggle.click();
+  await expect(page.locator("#folder-row-child-folder")).toBeVisible();
+  await toggle.click();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(page.locator("#folder-row-child-folder")).toHaveCount(0);
+  expect(await page.locator("#folder-folder").locator("..").evaluate(element => element.getAnimations().length)).toBe(0);
+  await toggle.click();
+  await expect(page.locator("#folder-row-child-folder")).toBeVisible();
+});

@@ -25,6 +25,7 @@ function CollectionForm({ title, submitLabel, ready = true, onClose, onSubmit, c
   onSubmit(): Promise<void>;
   children: ReactNode;
 }) {
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const buttons = useButtonFeedback();
   const [error, setError] = useState("");
@@ -42,8 +43,9 @@ function CollectionForm({ title, submitLabel, ready = true, onClose, onSubmit, c
       setBusy(false);
     }
   }
-  return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
-    <Dialog.Content maxWidth="440px" aria-describedby={undefined} onCloseAutoFocus={event => {
+  return <Dialog.Root open={dialogOpen} onOpenChange={open => { if (!open && !busy) setDialogOpen(false); }}>
+    <Dialog.Content maxWidth="440px" aria-describedby={undefined} inert={!dialogOpen} onCloseAutoFocus={event => {
+      if (!dialogOpen) onClose();
       if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) event.preventDefault();
     }}>
       <Dialog.Title>{title}</Dialog.Title>
@@ -63,6 +65,7 @@ export function CollectionPicker({ onChoose, onClose }: { onChoose(id: string): 
   const [query, setQuery] = useState("");
   const [page, setPage] = useState<EntryPage | null>(null);
   const [error, setError] = useState("");
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const [offset, setOffset] = useState(0);
   const buttons = useButtonFeedback();
@@ -84,8 +87,8 @@ export function CollectionPicker({ onChoose, onClose }: { onChoose(id: string): 
     try { await onChoose(id); onClose(); }
     catch (failure) { buttons.finish("choose", false); setError(errorMessage(failure)); setBusy(false); }
   }
-  return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose(); }}>
-    <Dialog.Content maxWidth="480px" aria-describedby={undefined}>
+  return <Dialog.Root open={dialogOpen} onOpenChange={open => { if (!open && !busy) setDialogOpen(false); }}>
+    <Dialog.Content maxWidth="480px" aria-describedby={undefined} inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
       <Dialog.Title>添加文章</Dialog.Title>
       <TextField.Root aria-label="搜索内容" placeholder="搜索内容" autoFocus value={query} onChange={event => {
         setQuery(event.target.value);

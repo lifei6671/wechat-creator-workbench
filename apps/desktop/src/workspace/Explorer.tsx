@@ -8,6 +8,7 @@ import type { CanvasCardColor, Category, CategoryIcon, CategoryPlacement, Collec
 import { desktop, errorMessage } from "../desktop";
 import { commandKey, dateLabel, rootFolderLabel, statusLabels, untitled } from "../labels";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
+import { useReducedMotion } from "../../../../packages/ui-react/motion";
 import { folderIcons } from "./folder-icons";
 import { colorValue } from "./ColorChoices";
 import { MoveEntryMenu } from "./MoveEntryMenu";
@@ -162,14 +163,18 @@ function FolderBranch({ open, id, label, keepMounted, children }: {
   open: boolean; id: string; label: string; keepMounted: boolean; children: ReactNode;
 }) {
   const [retained, setRetained] = useState(open);
+  const reducedMotion = useReducedMotion();
   useEffect(() => {
     if (keepMounted) return;
     if (open) { setRetained(true); return; }
     if (!retained) return;
-    const timer = setTimeout(() => setRetained(false), 250);
+    const timer = setTimeout(() => setRetained(false), reducedMotion ? 0 : 250);
     return () => clearTimeout(timer);
-  }, [open, retained, keepMounted]);
-  return <div className="tree-section-content folder-branch" data-collapsed={!open}>
+  }, [open, retained, keepMounted, reducedMotion]);
+  return <div className="tree-section-content folder-branch" data-collapsed={!open}
+    onTransitionEnd={event => {
+      if (event.target === event.currentTarget && event.propertyName === "grid-template-rows" && !open && !keepMounted) setRetained(false);
+    }}>
     <ul className="folder-children" id={`folder-${id}`} data-tree-container={id} aria-label={label} inert={!open}>
       {(keepMounted || open || retained) && children}
     </ul>

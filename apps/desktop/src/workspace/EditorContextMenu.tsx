@@ -266,8 +266,8 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
     </ContextMenu.Root>
     {[...imageFeedback.values()].map(actions => <ImageActionFeedback key={actions[0].key} actions={actions} buttons={buttons}
       portalRoot={area.current?.closest<HTMLElement>(".radix-themes") ?? document.body} />)}
-    {addLink && <Dialog.Root open onOpenChange={setAddLink}>
-      <Dialog.Content maxWidth="400px" aria-describedby={undefined} onCloseAutoFocus={event => {
+    <Dialog.Root open={addLink} onOpenChange={setAddLink}>
+      <Dialog.Content maxWidth="400px" aria-describedby={undefined} inert={!addLink} onCloseAutoFocus={event => {
         event.preventDefault();
         linkOrigin.current?.focus();
       }}>
@@ -281,6 +281,6 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
           </div>
         </form>
       </Dialog.Content>
-    </Dialog.Root>}
+    </Dialog.Root>
   </>;
 }

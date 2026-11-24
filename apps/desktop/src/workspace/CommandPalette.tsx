@@ -12,6 +12,7 @@ export function CommandPalette({ actions, onOpen, onClose }: {
   onOpen(id: string): void;
   onClose(): void;
 }) {
+  const [open, setOpen] = useState(true);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const [matches, setMatches] = useState<EntryRow[]>([]);
@@ -40,10 +41,10 @@ export function CommandPalette({ actions, onOpen, onClose }: {
     const command = options[index];
     if (command) { onClose(); command.run(); }
   }
-  return <Popover.Root open onOpenChange={open => { if (!open) onClose(); }}>
+  return <Popover.Root open={open} onOpenChange={setOpen}>
     <Popover.Anchor className="command-palette-anchor" aria-hidden="true" />
     <Popover.Content className="command-palette" aria-label="命令面板" align="center" maxWidth="calc(100vw - 32px)"
-      collisionPadding={16} onCloseAutoFocus={event => event.preventDefault()}>
+      collisionPadding={16} inert={!open} onCloseAutoFocus={event => { event.preventDefault(); if (!open) onClose(); }}>
       <div className="command-palette-field">
         <input role="combobox" aria-label="查找命令或笔记" aria-autocomplete="list" aria-expanded="true" aria-controls="command-results"
           aria-activedescendant={options[index] ? `command-${index}` : undefined} value={query} placeholder="查找命令或笔记"
@@ -59,7 +60,7 @@ export function CommandPalette({ actions, onOpen, onClose }: {
               list.current?.children[next]?.scrollIntoView({ block: "nearest" });
             }
           }} />
-        <button className="plain-button chrome-icon" type="button" aria-label="关闭命令面板" onClick={onClose}><X size={16} /></button>
+        <button className="plain-button chrome-icon" type="button" aria-label="关闭命令面板" onClick={() => setOpen(false)}><X size={16} /></button>
       </div>
       <div id="command-results" role="listbox" aria-label="命令和内容" className="command-results" ref={list}>
         {options.map((option, i) => <button type="button" key={"entryId" in option ? String(option.entryId) : option.name}

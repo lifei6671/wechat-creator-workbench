@@ -209,7 +209,7 @@
 .mcp-advanced > summary { padding-block: 10px; color: var(--sand-11); cursor: pointer; }
 .mcp-recent { overflow-wrap: anywhere; text-align: end; color: var(--sand-11); }
 :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton) {
-  transition: background-color 250ms ease-out, color 250ms ease-out, opacity 250ms ease-out;
+  transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.settings-card, .sync-confirm-dialog, body:has(.settings-dialog) .rt-DialogContent) :is(.rt-Button, .rt-IconButton) { transition: none; }
@@ -292,7 +292,7 @@
   }
 }
 
-.settings-dialog .plain-button { transition: background-color 250ms ease-out, color 250ms ease-out; }
+.settings-dialog .plain-button { transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease); }
 @media (prefers-reduced-motion: reduce) {
   .settings-dialog .plain-button { transition: none; }
 }

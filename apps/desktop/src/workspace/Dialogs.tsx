@@ -92,7 +92,7 @@ export function PropertiesDialog({ id, queue, onClose, flushRef, ...form }: Prop
   const entry = queue?.entry ?? loaded;
 
   return <Dialog.Root open={open} onOpenChange={next => { if (!next) void requestClose(); }}>
-    <Dialog.Content maxWidth="440px" className="properties-panel" aria-describedby={undefined}
+    <Dialog.Content maxWidth="440px" className="properties-panel" aria-describedby={undefined} inert={!open}
       onCloseAutoFocus={event => {
         if (open) return;
         event.preventDefault();
@@ -487,6 +487,7 @@ export function RevisionsDialog({ id, onClose, onCopy }: {
   onClose(): void;
   onCopy(text: string): Promise<void>;
 }) {
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [current, setCurrent] = useState(0);
   const [error, setError] = useState("");
@@ -495,7 +496,7 @@ export function RevisionsDialog({ id, onClose, onCopy }: {
     void desktop.revisions(id).then(setRevisions, error => setError(errorMessage(error)));
   }, [id]);
   const revision = revisions?.[current];
-  return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}><Dialog.Content maxWidth="580px" aria-describedby={undefined}>
+  return <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}><Dialog.Content maxWidth="580px" aria-describedby={undefined} inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
     <Dialog.Title>历史版本</Dialog.Title>
     {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="inline-error" role="alert">{error}</p> : null}</div>}
     {revisions === null && !error && <p>正在载入…</p>}
@@ -543,11 +544,12 @@ export function Confirm({ title, text, action, children, onClose, onConfirm }: {
   onClose(): void;
   onConfirm(): Promise<void>;
 }) {
+  const [dialogOpen, setDialogOpen] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const buttons = useButtonFeedback();
-  return <Dialog.Root open onOpenChange={open => { if (!open && !saving) onClose(); }}>
-    <Dialog.Content maxWidth="410px">
+  return <Dialog.Root open={dialogOpen} onOpenChange={open => { if (!open && !saving) setDialogOpen(false); }}>
+    <Dialog.Content maxWidth="410px" inert={!dialogOpen} onCloseAutoFocus={() => { if (!dialogOpen) onClose(); }}>
       <Dialog.Title>{title}</Dialog.Title>
       <Dialog.Description>{text}</Dialog.Description>
       {children?.(saving)}
