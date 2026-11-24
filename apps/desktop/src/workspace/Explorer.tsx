@@ -59,7 +59,7 @@ export function CreateMenu(actions: CreateActions) {
       event.preventDefault();
       create();
     }}>
-      <CreateItems Item={DropdownMenu.Item} {...actions} onCreateCollection={onCreateCollection && (() => {
+      <CreateItems Item={DropdownMenu.Item} {...actions} onCreate={() => { createAfterMenu.current = actions.onCreate; }} onCreateCollection={onCreateCollection && (() => {
         createAfterMenu.current = onCreateCollection;
       })} />
     </DropdownMenu.Content>
@@ -71,20 +71,20 @@ export function BlankAreaMenu({ children, label, actions }: {
   label: string;
   actions: (CreateActions & { onAddFolder?(): void }) | null;
 }) {
-  const addFolderAfterMenu = useRef<(() => void) | undefined>(undefined);
+  const createAfterMenu = useRef<(() => void) | undefined>(undefined);
   return <ContextMenu.Root>
     <ContextMenu.Trigger disabled={!actions}>{children}</ContextMenu.Trigger>
     {actions && <ContextMenu.Content size="1" aria-label={label} onCloseAutoFocus={event => {
-      const addFolder = addFolderAfterMenu.current;
-      if (!addFolder) return;
-      addFolderAfterMenu.current = undefined;
+      const create = createAfterMenu.current;
+      if (!create) return;
+      createAfterMenu.current = undefined;
       event.preventDefault();
-      addFolder();
+      create();
     }}>
-      <CreateItems Item={ContextMenu.Item} {...actions} />
+      <CreateItems Item={ContextMenu.Item} {...actions} onCreate={() => { createAfterMenu.current = actions.onCreate; }} />
       {actions.onAddFolder && <>
         <ContextMenu.Separator />
-        <ContextMenu.Item disabled={actions.disabled} onSelect={() => { addFolderAfterMenu.current = actions.onAddFolder; }}><FolderPlus size={15} />新建目录</ContextMenu.Item>
+        <ContextMenu.Item disabled={actions.disabled} onSelect={() => { createAfterMenu.current = actions.onAddFolder; }}><FolderPlus size={15} />新建目录</ContextMenu.Item>
       </>}
     </ContextMenu.Content>}
   </ContextMenu.Root>;
@@ -368,7 +368,7 @@ export function Explorer(props: ExplorerProps) {
               </button>
             </ContextMenu.Trigger>
             <ContextMenu.Content size="1" aria-label="文件夹操作" onCloseAutoFocus={finishMenu}>
-              <CreateItems Item={ContextMenu.Item} disabled={props.treeLocked} onCreate={() => props.onCreate(category.id)}
+              <CreateItems Item={ContextMenu.Item} disabled={props.treeLocked} onCreate={() => { editAfterMenu.current = () => props.onCreate(category.id); }}
                 onImportLink={() => props.onImportLink(category.id)} onImportMarkdown={() => props.onImportMarkdown(category.id)} />
               {!category.parentId && <ContextMenu.Item disabled={props.treeLocked} onSelect={() => { editAfterMenu.current = () => addFolder(category.id); }}><FolderPlus size={14} />新建子目录</ContextMenu.Item>}
               <ContextMenu.Item disabled={props.treeLocked} onSelect={() => {

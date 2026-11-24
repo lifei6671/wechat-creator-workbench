@@ -16,11 +16,17 @@ import previewCss from "../src/styles/preview.css?inline";
 const parameters = new URLSearchParams(location.search);
 const themeId = parameters.get("theme") ?? wechatThemes[0].id;
 const newline = parameters.get("newline") === "crlf" ? "\r\n" : "\n";
-const source = [
+const source = (parameters.has("urls") ? [
+  "官方遥测文档：https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md[^1]",
+  "English words stay complete: Adversarial Distillation Research Natural wrapping.",
+  "`https://example.test/inline-code`",
+  "```text\nhttps://example.test/code-block\n```",
+  "[^1]: https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md",
+] : [
   "> 单段引用",
   "> 引用第一段\n>\n> 引用中间段\n>\n> 引用末尾段",
   ...Object.keys(calloutLabels).map(kind => `> [!${kind.toUpperCase()}] 自定义标题\n> 提示第一段\n>\n> 提示中间段\n>\n> 提示末尾段`),
-].join("\n\n分隔段落\n\n").replaceAll("\n", newline);
+]).join(parameters.has("urls") ? "\n\n" : "\n\n分隔段落\n\n").replaceAll("\n", newline);
 const entry: Entry = { id: "quote-spacing", kind: "article", title: "引用段距", contentMd: source, status: "draft",
   categoryId: null, coverAssetId: null, themeId, tags: [], summary: "", source: null, publishedAt: null, publishedUrl: "",
   customProperties: [], version: 1, createdAt: 0, updatedAt: 0, deletedAt: null, links: [] };

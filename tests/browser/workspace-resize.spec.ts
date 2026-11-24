@@ -283,6 +283,82 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps title tabs and the rig
   }
 });
 
+for (const platform of ["Win32", "MacIntel"]) for (const entry of ["titlebar", "context", "folder"])
+  for (const delay of [0, 300]) test(`keeps new article focus and titlebar geometry from ${entry} with ${delay}ms creation on ${platform}`, async ({ page }) => {
+  await mockNativeWindow(page, platform);
+  await page.setViewportSize({ width: 1360, height: 840 });
+  await page.goto(`/tests/workspace-resize.html?priority=1&createDelay=${delay}${entry === "folder" ? "&folder=1" : ""}`);
+  await expect(page.locator("#tab-resize")).toBeVisible();
+  await page.getByRole("button", { name: "内容属性", exact: true }).click();
+  if (entry === "folder") await page.getByRole("button", { name: "内容目录", exact: true }).click();
+  await page.locator("#tab-second").focus();
+  if (entry === "titlebar") await page.getByRole("button", { name: "新建内容", exact: true }).click();
+  else if (entry === "folder") await page.getByRole("button", { name: "回归目录", exact: true }).click({ button: "right" });
+  else {
+    const area = page.locator(".timeline-content"), bounds = (await area.boundingBox())!;
+    await area.click({ button: "right", position: { x: 20, y: bounds.height - 20 } });
+  }
+  await page.getByRole("menuitem", { name: "新建笔记", exact: true }).click();
+  await expect(page.locator("#tab-created-1")).toBeVisible();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  // Wait through the focus-scope cleanup, without focusing the editor from the test.
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const editor = page.locator(".document-editor:not([hidden]) .ProseMirror");
+  await expect(editor).toBeFocused();
+  await editor.pressSequentially("新建后直接输入正文，焦点应留在当前文章。");
+  await expect(editor).toContainText("新建后直接输入正文");
+  const title = page.locator('.document-editor:not([hidden]) textarea[aria-label="标题"]');
+  await title.fill("新增文章的长标题：编辑后标签页与右侧栏按钮应保持正确位置");
+  await title.press("Enter");
+  await expect(editor).toBeFocused();
+  await page.keyboard.type("继续编辑正文。");
+  for (const width of [1360, 2560, 1000, 1360]) {
+    await page.setViewportSize({ width, height: 840 });
+    await expect.poll(() => page.evaluate(() => {
+      const writing = document.querySelector<HTMLElement>("#writing")!;
+      const header = writing.querySelector<HTMLElement>(".workbench-chrome")!;
+      const tabs = header.querySelector<HTMLElement>(".tabs")!;
+      const active = tabs.querySelector<HTMLElement>('[aria-selected="true"]')!;
+      const toggle = header.querySelector<HTMLElement>("#ai-panel-trigger")!;
+      const w = writing.getBoundingClientRect(), h = header.getBoundingClientRect(), t = tabs.getBoundingClientRect(), a = active.getBoundingClientRect(), b = toggle.getBoundingClientRect();
+      return [writing.scrollLeft, writing.firstElementChild!.scrollLeft, header.scrollLeft].every(left => left === 0)
+        && Math.abs(h.right - w.right) < 1 && Math.abs(h.left - w.left) < 1 && t.width >= Math.min(100, w.width - 155)
+        && Math.min(a.right, t.right, h.right, w.right) - Math.max(a.left, t.left, h.left, w.left) >= Math.min(80, t.width - 35)
+        && h.right - b.right >= 0 && h.right - b.right < 20;
+    })).toBe(true);
+  }
+});
+
+test("bounds Windows control space when the workspace temporarily has no width", async ({ page }) => {
+  await mockNativeWindow(page, "Win32");
+  await page.goto("/tests/workspace-resize.html?edit=1&collapsed=1");
+  await expect(page.locator("#tab-resize")).toBeVisible();
+  await page.locator("#ai-panel-trigger").click();
+  await expect(page.locator("#workspace-panels")).not.toHaveAttribute("data-ai-sidebar-moving", "true");
+  const padding = await page.locator("#workspace-panels").evaluate(async element => {
+    const group = element as HTMLElement;
+    const chrome = group.querySelector<HTMLElement>(".workbench-chrome")!;
+    const originalWidth = group.style.width;
+    group.style.width = "0px";
+    try {
+      const samples: number[] = [];
+      for (let frame = 0; frame < 12; frame++) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        samples.push(parseFloat(getComputedStyle(chrome).paddingInlineEnd));
+      }
+      return samples;
+    } finally { group.style.width = originalWidth; }
+  });
+  expect(Math.max(...padding)).toBeLessThanOrEqual(132);
+  await expect.poll(() => page.evaluate(() => {
+    const writing = document.querySelector("#writing")!.getBoundingClientRect();
+    const header = document.querySelector(".workbench-chrome")!.getBoundingClientRect();
+    const toggle = document.querySelector("#ai-panel-trigger")!.getBoundingClientRect();
+    const controls = document.querySelector(".window-controls")!.getBoundingClientRect();
+    return Math.abs(header.right - writing.right) < 1 && Math.abs(toggle.right - controls.left) < 5;
+  })).toBe(true);
+});
+
 for (const platform of ["Win32", "MacIntel"]) test(`keeps panel widths stable through diagonal window resize on ${platform}`, async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));

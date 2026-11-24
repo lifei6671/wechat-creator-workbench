@@ -18,9 +18,20 @@ const second = { ...article, id: "second", title: "另一篇用于检查标签�
 const thread = { id: "resize-thread", title: "当前对话", archived: false, updatedAt: 1 };
 const publicationTyping = { saves: 0, recommendations: 0 };
 Object.assign(window, { publicationTyping });
-desktop.library = async () => ({ workspaceId: "resize-fixture", categories: [], tags: [], tagSuggestions: [] });
-desktop.entries = async filter => ({ items: filter.pinned ? [] : [article, second], nextOffset: null });
-desktop.entry = async id => id === second.id ? second : article;
+desktop.library = async () => ({ workspaceId: "resize-fixture", categories: new URLSearchParams(location.search).has("folder")
+  ? [{ id: "creation-folder", parentId: null, name: "回归目录", sortOrder: 0, icon: "folder" }] : [], tags: [], tagSuggestions: [] });
+const createdEntries: Entry[] = [];
+desktop.entries = async filter => ({ items: filter.pinned ? [] : [...createdEntries, article, second], nextOffset: null });
+desktop.entry = async id => createdEntries.find(entry => entry.id === id) ?? (id === second.id ? second : article);
+
+let created = 0;
+desktop.create = async (kind, fields) => {
+  const delay = Number(new URLSearchParams(location.search).get("createDelay"));
+  if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+  const entry = { ...article, ...fields, id: `created-${++created}`, kind, title: fields?.title ?? "", contentMd: fields?.contentMd ?? "" };
+  createdEntries.unshift(entry);
+  return entry;
+};
 desktop.save = async (_id, version) => { publicationTyping.saves++; return { version: version + 1 }; };
 desktop.collections = async () => [];
 desktop.entryCollections = async () => [];

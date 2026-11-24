@@ -2105,14 +2105,16 @@ export function DesktopShell() {
     if (!windowsTitleBar) return;
     const group = sidebarGroup.current!;
     const chrome = writingChrome.current!;
+    const writing = chrome.closest<HTMLElement>("[data-panel]")!;
     const reserveControls = () => {
-      const space = group.getBoundingClientRect().right - chrome.getBoundingClientRect().right;
+      const space = Math.max(0, group.getBoundingClientRect().right - writing.getBoundingClientRect().right);
       chrome.style.setProperty("--chrome-trailing-space", `${space}px`);
     };
     reserveControls();
     const observer = new ResizeObserver(reserveControls);
     observer.observe(group, { box: "border-box" });
-    observer.observe(chrome, { box: "border-box" });
+    observer.observe(writing, { box: "border-box" });
+    observer.observe(navigationElement.current!, { box: "border-box" });
     return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {

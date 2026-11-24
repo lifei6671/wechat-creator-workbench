@@ -10,6 +10,8 @@ import { applyGzhDesign, gzhDesignThemes, wrapGzhLeaves } from "./themes/gzh-des
 import type { GraphicKind } from "./graphics";
 import type { WechatRecommendation } from "../shared-types";
 
+const urlMatcher = createMarkdownParser().linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+
 export const wechatThemes = [
   { id: "plainly-default", label: defaultTheme.name, styles: defaultTheme.styles },
   { id: "plainly-elegant", label: elegant.name, styles: elegant.styles },
@@ -215,6 +217,30 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
   const article = document.createElement("section");
   article.className = "plainly-article";
   article.append(body);
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (!node.parentElement!.closest("pre, code, svg, math")) textNodes.push(node);
+  }
+  for (const node of textNodes) {
+    const text = node.data;
+    const matches = urlMatcher.match(text);
+    if (!matches) continue;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of matches) {
+      fragment.append(text.slice(offset, match.index));
+      const span = document.createElement("span");
+      span.style.wordBreak = "break-all";
+      span.style.overflowWrap = "anywhere";
+      span.textContent = text.slice(match.index, match.lastIndex);
+      fragment.append(span);
+      offset = match.lastIndex;
+    }
+    fragment.append(text.slice(offset));
+    node.replaceWith(fragment);
+  }
   const recommendations = input.output === "html" ? [] : input.recommendations ?? [];
   if (recommendations.length) {
     const section = document.createElement("section");
