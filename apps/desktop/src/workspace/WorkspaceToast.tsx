@@ -1,8 +1,8 @@
 import { useEffect, useEffectEvent, useState } from "react";
-import { CircleAlert, CircleCheck, FolderOpen, X } from "lucide-react";
+import { CircleAlert, CircleCheck, FolderOpen, Info, TriangleAlert, X } from "lucide-react";
 import { Tool } from "../ui";
 
-export type Notice = { type: "error" | "info"; text: string; path?: string };
+export type Notice = { type: "error" | "info" | "success" | "warning"; text: string; path?: string };
 
 export function WorkspaceToast({ notice, onDismiss, onReveal }: { notice: Notice; onDismiss(notice: Notice): void; onReveal?(path: string): void }) {
   const [hovered, setHovered] = useState(false);
@@ -23,7 +23,7 @@ export function WorkspaceToast({ notice, onDismiss, onReveal }: { notice: Notice
     return () => window.clearTimeout(timer);
   }, [notice, exiting]);
 
-  const Icon = notice.type === "error" ? CircleAlert : CircleCheck;
+  const Icon = { error: CircleAlert, info: Info, success: CircleCheck, warning: TriangleAlert }[notice.type];
   return <div className="workspace-toast" data-tone={notice.type} data-leaving={exiting || undefined}
     onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
     onFocus={() => setFocused(true)} onBlur={event => {

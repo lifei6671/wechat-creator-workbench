@@ -214,13 +214,18 @@ impl Assets {
     pub fn new(root: PathBuf, db: &Workspace) -> Result<Self> {
         db.write(|tx| {
             tx.execute(
-                "UPDATE jobs SET status='failed', error='上传已中断，可手动重试', updated_at=?1
-                 WHERE kind='upload' AND status IN ('running','queued','retrying')",
+                "UPDATE jobs SET status='retrying', error=NULL, updated_at=?1
+                 WHERE kind='upload'
+                   AND storage_profile_id=(SELECT value FROM app_settings WHERE key='image_storage_profile')
+                   AND (status IN ('running','queued','retrying') OR (status='failed' AND (
+                       error GLOB 'UPLOAD_CANCELLED:*' OR error GLOB 'UPLOAD_UNCERTAIN:*'
+                       OR error IN ('上传已中断，可手动重试','退出时已取消，可手动重试')
+                   )))",
                 [now()],
             )?;
             Ok(())
         })?;
-        Ok(Self {
+        let assets = Self {
             root,
             ready: Notify::new(),
             activity: tokio::sync::watch::channel(()).0,
@@ -252,7 +257,9 @@ impl Assets {
                 .build()
                 .map_err(|error| AppError::new("IMAGE_NETWORK", error.to_string()))?,
             image_cache: None,
-        })
+        };
+        assets.kick();
+        Ok(assets)
     }
 
     pub fn with_image_cache(mut self, directory: &Path) -> Self {

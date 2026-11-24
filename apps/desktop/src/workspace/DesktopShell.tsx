@@ -322,7 +322,7 @@ export function DesktopShell() {
   const refresh = () => setRefreshCount(count => count + 1);
   function linkImported(unavailableImages = 0) {
     refresh();
-    if (unavailableImages) setNotice({ type: "info", text: `已导入文章，${unavailableImages} 张图片未能下载，已保留原链接。` });
+    if (unavailableImages) setNotice({ type: "warning", text: `已导入文章，${unavailableImages} 张图片未能下载，已保留原链接。` });
   }
   const syncing = useRef(false);
   const [automaticSyncError, setAutomaticSyncError] = useState("");
@@ -1092,7 +1092,7 @@ export function DesktopShell() {
     if (hidden && sidebarGroup.current!.clientWidth) {
       directory = Math.min(directory, Math.floor(maxWidth - minimumTimelineWidth - dividerWidth));
       if (directory < minimumDirectoryWidth) {
-        setNotice({ type: "info", text: "窗口宽度不足，无法展开目录栏" });
+        setNotice({ type: "warning", text: "窗口宽度不足，无法展开目录栏" });
         return;
       }
       if (directory !== preferredDirectoryWidth.current) {
@@ -1290,7 +1290,7 @@ export function DesktopShell() {
       const details: string[] = [];
       if (!result.existing && result.unavailableImages) details.push(`${result.unavailableImages} 张图片未能下载，已保留原链接`);
       if (!result.existing && unavailableAttachments.length) details.push(`${unavailableAttachments.length} 个本地附件缺少文件，已保留引用`);
-      if (details.length) setNotice({ type: "info", text: `已导入剪藏文章，${details.join("；")}` });
+      if (details.length) setNotice({ type: "warning", text: `已导入剪藏文章，${details.join("；")}` });
     });
     return true;
   }
@@ -1992,7 +1992,7 @@ export function DesktopShell() {
     });
     const backupChanged = desktop.onBackupProgress(stage => setBackupWorking(current => current ? backupProgress[stage] : current));
     void desktop.restoreNotice().then(value => {
-      if (value) setNotice({ type: value.failed ? "error" : "info", text: value.message });
+      if (value) setNotice({ type: value.failed ? "error" : "success", text: value.message });
     }, showError);
     for (const subscription of [listener, historyRequested, hideRequested, workspaceChanged, trashEmptied, assetsChanged, backupChanged]) void subscription.catch(showError);
     window.addEventListener("keydown", workspaceShortcut, true);

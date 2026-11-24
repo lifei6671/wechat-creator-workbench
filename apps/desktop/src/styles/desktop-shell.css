@@ -116,7 +116,7 @@
 .tree-section-title[aria-expanded="false"] .tree-section-chevron { transform: rotate(-90deg); }
 .tree-section-content {
   display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; opacity: 1;
-  transition: grid-template-rows 220ms ease-out, opacity 160ms ease-out;
+  transition: grid-template-rows 250ms ease-out, opacity 160ms ease-out;
 }
 .tree-section-content[data-collapsed="true"] { grid-template-rows: 0fr; opacity: 0; }
 .tree-section-content > ul { list-style: none; margin: 0; padding: 0; min-height: 0; overflow: clip; }
@@ -137,7 +137,11 @@
 .folder-select:hover { background: transparent; }
 .folder-select span, .entry-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-select svg, .entry-row > svg { color: var(--text-muted); stroke-width: 1.65; }
-.folder-select .folder-chevron { color: var(--gray-10); }
+.folder-select .folder-chevron { color: var(--gray-10); transition: transform 250ms ease-out; }
+.folder-select[aria-expanded="false"] .folder-chevron { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .folder-select .folder-chevron { transition: none; }
+}
 .folder-icon-badge {
   display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 6px;
   background-color: var(--gray-9); color: var(--white-a12);
@@ -933,18 +937,30 @@ button.outline-expand { cursor: pointer; }
   padding: 8px 12px; background: var(--sidebar-bg); overflow-wrap: anywhere;
 }
 .workspace-toast {
-  position: absolute; z-index: 3; inset: auto 12px 12px auto; display: flex; align-items: center; gap: 10px;
-  max-width: min(400px, calc(100% - 24px)); padding: 8px 8px 8px 11px;
-  border: var(--hairline); border-radius: 9px; background: var(--panel-bg); box-shadow: var(--shadow-3);
-  color: var(--text-main); font-size: var(--workspace-font); overflow-wrap: anywhere;
+  --toast-bg: var(--blue-2); --toast-border: var(--blue-7); --toast-text: var(--blue-11); --toast-hover: var(--blue-4);
+  position: fixed; z-index: 100; inset: calc(var(--chrome-height) + 12px) 12px auto auto;
+  display: flex; align-items: flex-start; gap: 10px;
+  max-width: min(440px, calc(100vw - 24px)); padding: 11px 12px 11px 16px;
+  border: 0.5px solid var(--toast-border); border-radius: 12px; background: var(--toast-bg); box-shadow: var(--shadow-2);
+  color: var(--toast-text); font-size: var(--workspace-font); overflow-wrap: anywhere;
   animation: workspace-toast-enter 180ms ease-out both;
 }
+.workspace-toast[data-tone="error"] {
+  --toast-bg: var(--red-2); --toast-border: var(--red-7); --toast-text: var(--red-11); --toast-hover: var(--red-4);
+}
+.workspace-toast[data-tone="success"] {
+  --toast-bg: var(--green-2); --toast-border: var(--green-7); --toast-text: var(--green-11); --toast-hover: var(--green-4);
+}
+.workspace-toast[data-tone="warning"] {
+  --toast-bg: var(--amber-2); --toast-border: var(--amber-7); --toast-text: var(--amber-11); --toast-hover: var(--amber-4);
+}
 .workspace-toast[data-leaving] { animation: workspace-toast-leave 180ms ease-out both; }
-.workspace-toast .toast-icon { flex: none; color: var(--green-11); }
-.workspace-toast[data-tone="error"] .toast-icon { color: var(--red-11); }
-.workspace-toast .toast-close { margin-inline-start: auto; }
-@keyframes workspace-toast-enter { from { opacity: 0; transform: translateY(4px); } }
-@keyframes workspace-toast-leave { to { opacity: 0; transform: translateY(4px); } }
+.workspace-toast > [role] { min-width: 0; line-height: 22px; }
+.workspace-toast .toast-icon { flex: none; color: inherit; margin-block-start: 3px; }
+.workspace-toast .toast-close { box-sizing: border-box; flex: none; align-self: flex-start; margin: -1px 0 0 auto; min-width: 24px; width: 24px; min-height: 24px; height: 24px; padding: 3px; color: inherit; }
+.workspace-toast .toast-close:hover { background: var(--toast-hover); }
+@keyframes workspace-toast-enter { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes workspace-toast-leave { to { opacity: 0; transform: translateY(-4px); } }
 @media (prefers-reduced-motion: reduce) { .workspace-toast:is([data-tone], [data-leaving]) { animation: none; } }
 .exit-banner { position: fixed; inset: 12px 12px auto auto; }
 .workbench-empty { flex: 1; display: grid; justify-content: center; justify-items: center; align-content: center; gap: 12px; padding: 16px; }
