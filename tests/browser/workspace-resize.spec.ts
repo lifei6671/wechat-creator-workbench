@@ -122,6 +122,7 @@ test("does not activate a cancelled destructive action during its exit", async (
 for (const region of ["right", "directory"] as const) test(`takes over a partially opened ${region} at its rendered boundary`, async ({ page }) => {
   await mockNativeWindow(page, "Win32");
   await page.setViewportSize({ width: 1600, height: 900 });
+  await page.clock.install();
   await page.goto(`/tests/workspace-resize.html?edit=1${region === "right" ? "&priority=1" : ""}`);
   const group = page.locator("#workspace-panels");
   await expect.poll(() => page.locator("#ai-sidebar").evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(region === "right" ? 420 : 350);
@@ -134,8 +135,7 @@ for (const region of ["right", "directory"] as const) test(`takes over a partial
     await expect(group).not.toHaveAttribute("data-timeline-directory-moving", "true");
   }
   // CSS animation time and JS timers are independent: hold cleanup timers too.
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  await page.clock.pauseAt(new Date(Date.now() + 60_000));
   await group.evaluate(element => { (element as HTMLElement).style.setProperty("--motion-layout", "60s"); });
   await page.locator(region === "right" ? "#ai-panel-trigger" : "#show-timeline-directory").evaluate((element: HTMLElement) => element.click());
   await expect.poll(() => group.locator(":scope > [data-panel]").evaluateAll(panels => panels.some(panel => panel.getAnimations().length > 0))).toBe(true);
