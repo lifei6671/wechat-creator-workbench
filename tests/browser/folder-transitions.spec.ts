@@ -65,10 +65,14 @@ test("reverses a menu exit from its current opacity and honours a live motion pr
   const menu = page.getByRole("menu", { name: "文件夹操作" });
   await expect(menu).toBeVisible();
   const result = await menu.evaluate(async element => {
-    // Freeze at a partial entry, then close and reopen without waiting for an animation.
-    for (const animation of element.getAnimations()) {
-      animation.pause(); animation.currentTime = 60;
-    }
+    // Start a fresh entry so protocol latency cannot consume its short duration.
+    element.setAttribute("data-state", "closed");
+    for (const animation of element.getAnimations()) animation.finish();
+    element.setAttribute("data-state", "open");
+    const animations = element.getAnimations();
+    for (const animation of animations) animation.pause();
+    await Promise.all(animations.map(animation => animation.ready));
+    for (const animation of animations) animation.currentTime = Number(animation.effect!.getTiming().duration) / 3;
     const before = Number(getComputedStyle(element).opacity);
     element.setAttribute("data-state", "closed");
     const closed = Number(getComputedStyle(element).opacity);

@@ -72,16 +72,15 @@ for (const motion of ["no-preference", "reduce"] as const) test(`dismisses setti
   await expect.poll(() => dialog.evaluate(element => getComputedStyle(element).opacity)).toBe("1");
   const partial = await dialog.evaluate(async element => {
     element.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click();
-    const samples: number[] = [];
-    await new Promise<void>(resolve => {
-      const frame = () => {
-        if (!element.isConnected) { resolve(); return; }
-        samples.push(Number(getComputedStyle(element).opacity));
-        requestAnimationFrame(frame);
-      };
-      requestAnimationFrame(frame);
-    });
-    return samples.some(opacity => opacity > 0 && opacity < 1);
+    await Promise.resolve();
+    const animations = element.getAnimations();
+    for (const animation of animations) animation.pause();
+    await Promise.all(animations.map(animation => animation.ready));
+    for (const animation of animations) animation.currentTime = Number(animation.effect!.getTiming().duration) / 2;
+    const opacity = Number(getComputedStyle(element).opacity);
+    const intermediate = element.isConnected && opacity > 0 && opacity < 1;
+    for (const animation of animations) animation.finish();
+    return intermediate;
   });
   expect(partial).toBe(motion === "no-preference");
   await expect(dialog).toHaveCount(0);
@@ -130,18 +129,22 @@ for (const region of ["right", "directory"] as const) test(`takes over a partial
   if (region === "right") {
     await page.locator("#ai-panel-trigger").click();
     await expect.poll(() => page.locator("#ai-sidebar").evaluate(element => element.getBoundingClientRect().width)).toBe(0);
-    await page.locator("#ai-panel-trigger").evaluate((element: HTMLElement) => element.click());
   } else {
     await page.locator("#hide-timeline-directory").click();
     await expect(group).not.toHaveAttribute("data-timeline-directory-moving", "true");
-    await page.locator("#show-timeline-directory").evaluate((element: HTMLElement) => element.click());
   }
+  // CSS animation time and JS timers are independent: hold cleanup timers too.
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
+  await group.evaluate(element => { (element as HTMLElement).style.setProperty("--motion-layout", "60s"); });
+  await page.locator(region === "right" ? "#ai-panel-trigger" : "#show-timeline-directory").evaluate((element: HTMLElement) => element.click());
   await expect.poll(() => group.locator(":scope > [data-panel]").evaluateAll(panels => panels.some(panel => panel.getAnimations().length > 0))).toBe(true);
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     // Hold a legal intermediate width while moving the real pointer onto its boundary.
-    for (const element of document.querySelectorAll("#workspace-panels > [data-panel], #timeline-directory")) {
-      for (const animation of element.getAnimations()) { animation.pause(); animation.currentTime = 200; }
-    }
+    const animations = [...document.querySelectorAll("#workspace-panels > [data-panel], #timeline-directory")].flatMap(element => element.getAnimations());
+    for (const animation of animations) animation.pause();
+    await Promise.all(animations.map(animation => animation.ready));
+    for (const animation of animations) animation.currentTime = Number(animation.effect!.getTiming().duration) * .8;
   });
   const separator = region === "right" ? page.getByRole("separator", { name: "调整右侧栏宽度", exact: true }) : page.locator("#resize-timeline-directory");
   await separator.evaluate((element: HTMLElement) => { element.dataset.motionSeparator = "true"; });
