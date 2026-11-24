@@ -1,9 +1,59 @@
 import { isHistoryTransaction } from "@milkdown/kit/prose/history";
-import type { Node as ProseNode } from "@milkdown/kit/prose/model";
-import type { EditorState, Transaction } from "@milkdown/kit/prose/state";
+import { Fragment, type Node as ProseNode } from "@milkdown/kit/prose/model";
+import { TextSelection, type EditorState, type Transaction } from "@milkdown/kit/prose/state";
 import { ReplaceStep } from "@milkdown/kit/prose/transform";
+import type { EditorView } from "@milkdown/kit/prose/view";
 
 const classified = new WeakMap<Transaction, number[] | null>();
+
+export function insertCodeFence(view: EditorView, from: number, to: number, text: string) {
+  if (from !== to || !/^`+$/.test(text) || view.composing) return false;
+  const { state } = view;
+  const point = state.doc.resolve(from);
+  const block = point.parent;
+  if (block.type.name !== "paragraph") return false;
+  let adjacent = false;
+  block.forEach((node, offset, index) => {
+    if (!node.isText || node.text!.includes("`") || !node.marks.some(mark => mark.type.name === "inlineCode")) return;
+    const leading = block.maybeChild(index - 1)?.text?.match(/`+$/)?.[0].length ?? 0;
+    const trailing = block.maybeChild(index + 1)?.text?.match(/^`+/)?.[0].length ?? 0;
+    const cursor = point.parentOffset;
+    const opening = cursor >= offset - leading && cursor <= offset;
+    if (opening || (cursor >= offset + node.nodeSize && cursor <= offset + node.nodeSize + trailing)) {
+      adjacent = true;
+    }
+  });
+  if (!adjacent) return false;
+  // Keep added fence characters literal instead of letting the inline-code rule consume them.
+  view.dispatch(state.tr.replaceWith(from, to, state.schema.text(text)).scrollIntoView());
+  return true;
+}
+
+export function promoteCodeFence(state: EditorState) {
+  const point = state.selection.$from;
+  const block = point.parent;
+  if (block.type.name !== "paragraph") return null;
+  let result: Transaction | null = null;
+  block.forEach((node, offset, index) => {
+    if (result || !node.isText || node.text!.includes("`") || !node.marks.some(mark => mark.type.name === "inlineCode")) return;
+    const leading = block.maybeChild(index - 1)?.text?.match(/`+$/)?.[0].length ?? 0;
+    const trailing = block.maybeChild(index + 1)?.text?.match(/^`+/)?.[0].length ?? 0;
+    if (leading !== 2 || trailing !== 2) return;
+    const before = block.content.cut(0, offset - leading);
+    const after = block.content.cut(offset + node.nodeSize + trailing);
+    const content = Fragment.fromArray([
+      ...(before.size ? [block.copy(before)] : []),
+      state.schema.nodes.code_block.create(null, state.schema.text(node.text!)),
+      ...(after.size ? [block.copy(after)] : []),
+    ]);
+    if (point.node(-1).canReplace(point.index(-1), point.index(-1) + 1, content)) {
+      const tr = state.tr.replaceWith(point.before(), point.after(), content);
+      const caret = point.before() + (before.size ? before.size + 2 : 0) + 1 + node.nodeSize;
+      result = tr.setSelection(TextSelection.create(tr.doc, caret)).scrollIntoView();
+    }
+  });
+  return result;
+}
 
 // Inline replacements keep the same top-level block indices and node types.
 export function inlineChangedBlocks(transaction: Transaction): number[] | null {
