@@ -767,7 +767,7 @@ async fn register(
             ],
         )?;
         if rebuild {
-            tx.execute_batch("DELETE FROM sync_bootstrap; UPDATE sync_progress SET bootstrap_cursor=NULL")?;
+            tx.execute_batch("DELETE FROM sync_bootstrap; UPDATE sync_progress SET bootstrap_cursor=NULL,bootstrap_failed_cursor=NULL,bootstrap_error=NULL")?;
         }
         Ok(())
     })?;

@@ -955,7 +955,7 @@ async fn download_baseline(db: &Workspace, remote: &Remote<'_>) -> Result<()> {
         cursor = page.next_cursor;
     }
     db.write(|tx| {
-        tx.execute("UPDATE sync_progress SET bootstrap_cursor=?1", [end])?;
+        tx.execute("UPDATE sync_progress SET bootstrap_cursor=?1,bootstrap_failed_cursor=NULL,bootstrap_error=NULL", [end])?;
         Ok(())
     })
 }
@@ -1016,6 +1016,13 @@ async fn download_changes(db: &Workspace, remote: &Remote<'_>, mut cursor: i64) 
 async fn exchange(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Result<()> {
     let remote = Remote::open(db, sync).await?;
     let (initialized, _, cursor, staged) = progress(db)?;
+    // Automatic scheduling waits for staged snapshots; manual retry can replace a failed one.
+    let failed = db.read(|conn| Ok(conn.query_row(
+        "SELECT bootstrap_failed_cursor IS NOT NULL FROM sync_progress", [], |row| row.get::<_, bool>(0),
+    )?))?;
+    if failed {
+        return download_baseline(db, &remote).await;
+    }
     // A completed snapshot must be applied before any further conditional writes.
     if staged.is_some() {
         return Ok(());
@@ -1272,6 +1279,16 @@ fn apply_received_with_backup(
     backups: Option<&crate::backup::Backups>,
 ) -> Result<Applied> {
     let result = db.write(|tx| apply_received_transaction(tx, backups));
+    if let Err(error) = &result
+        && !matches!(error.code(), "SYNC_PAUSED" | "SYNC_BACKUP" | "SYNC_HISTORY" | "EXIT_PENDING")
+    {
+        // The failed application transaction has rolled back. Retain its snapshot and queues.
+        db.write(|tx| {
+            tx.execute("UPDATE sync_progress SET bootstrap_failed_cursor=bootstrap_cursor,bootstrap_error=?1
+                WHERE bootstrap_cursor IS NOT NULL", [error.to_string()])?;
+            Ok(())
+        })?;
+    }
     if result
         .as_ref()
         .is_err_and(|error| error.code() == "SYNC_HISTORY")
@@ -1316,7 +1333,7 @@ fn apply_received_transaction(
         tx.execute("DELETE FROM sync_inbox WHERE cursor<=?1", [cursor])?;
         changed.network_ready = true;
         tx.execute(
-            "UPDATE sync_progress SET initialized=1,bootstrap_cursor=NULL,cursor=?1",
+            "UPDATE sync_progress SET initialized=1,bootstrap_cursor=NULL,bootstrap_failed_cursor=NULL,bootstrap_error=NULL,cursor=?1",
             [cursor],
         )?;
     }
@@ -1624,7 +1641,7 @@ fn replace_baseline(db: &Workspace, backups: &crate::backup::Backups) -> Result<
         changed.extend(apply_baseline(tx)?);
         tx.execute_batch("DELETE FROM sync_bootstrap; UPDATE sync_binding SET paused=0,pause_reason=NULL")?;
         tx.execute(
-            "UPDATE sync_progress SET capture=1,seeding=0,initialized=1,cursor=?1,bootstrap_cursor=NULL,active_batch=NULL",
+            "UPDATE sync_progress SET capture=1,seeding=0,initialized=1,cursor=?1,bootstrap_cursor=NULL,bootstrap_failed_cursor=NULL,bootstrap_error=NULL,active_batch=NULL",
             [cursor],
         )?;
         Ok(Rebuilt {recovery_archive:archive.to_string_lossy().into_owned(),changed})

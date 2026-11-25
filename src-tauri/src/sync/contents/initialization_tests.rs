@@ -257,3 +257,53 @@ async fn initialization_resumes_after_original_repair_and_keeps_other_devices_wa
         bytes
     );
 }
+
+
+#[tokio::test]
+#[ignore = "requires an isolated fresh service and a native system keyring"]
+async fn failed_legacy_baseline_refetches_after_versioned_admin_repair() {
+    use crate::sync::{ConnectWith, connect};
+    struct Credentials(Vec<keyring::Entry>);
+    impl Drop for Credentials {
+        fn drop(&mut self) {
+            for key in &self.0 { let _ = key.delete_credential(); }
+        }
+    }
+    let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
+    let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let writer = Workspace::open(&root.path().join("writer.sqlite")).unwrap();
+    let reader_path = root.path().join("reader.sqlite");
+    let reader = Workspace::open(&reader_path).unwrap();
+    let assets = Assets::new(root.path().join("assets"), &writer).unwrap();
+    let reader_assets = Assets::new(root.path().join("reader-assets"), &reader).unwrap();
+    let sync = SyncConnection::new().unwrap();
+    let mut credentials = Credentials(Vec::new());
+    let binding = connect(&writer, &sync, &url, "Admin", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&writer).unwrap());
+    writer.write(|tx| {
+        tx.execute_batch("INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at) VALUES('legacy','article','Legacy','draft','preserved remote body',1,1)")?;
+        Ok(())
+    }).unwrap();
+    run(&writer, &assets, &sync).await.unwrap();
+    reqwest::Client::new().post(format!("{url}__test/legacy-invalid")).send().await.unwrap().error_for_status().unwrap();
+    let binding = connect(&reader, &sync, &url, "Fresh reader", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&reader).unwrap());
+    run(&reader, &reader_assets, &sync).await.unwrap();
+    assert!(apply_received(&reader).is_err());
+    let failed_cursor = progress(&reader).unwrap().3.unwrap();
+    assert!(!progress(&reader).unwrap().0);
+    assert!(reader.read(|conn| entries::snapshot(conn, "legacy")).unwrap().is_none());
+    writer.write(|tx| { tx.execute("UPDATE entries SET title='Repaired' WHERE id='legacy'", [])?; Ok(()) }).unwrap();
+    run(&writer, &assets, &sync).await.unwrap();
+    drop(reader);
+    let reader = Workspace::open(&reader_path).unwrap();
+    run(&reader, &reader_assets, &sync).await.unwrap();
+    assert!(progress(&reader).unwrap().3.unwrap() > failed_cursor);
+    apply_received(&reader).unwrap();
+    assert!(progress(&reader).unwrap().0);
+    let restored = reader.read(|conn| entries::snapshot(conn, "legacy")).unwrap().unwrap();
+    assert_eq!(restored["title"], "Repaired");
+    assert_eq!(restored["contentMd"], "preserved remote body");
+    assert_eq!(reader.read(|conn| revision(conn, &Key { entity_type: Kind::Entry, entity_id: "legacy".into() })).unwrap(), (2, false));
+}

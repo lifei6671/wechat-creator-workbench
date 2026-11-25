@@ -89,3 +89,20 @@ Windows 隔离测试应用已正常退出，临时应用标识仅用于验证，
 当前修改尚未推送或触发本次 GitHub CI。批次 A 因 macOS 与远端 CI 验证缺口尚未宣告验收通过，批次 B 未开始。下一步需将当前提交送入 PR CI，并补充 macOS 实机烟雾验收；未验证平台只有维护者明确确认例外后才可解除相应门槛。现有备份 S3 集成及搜索基准的忽略项没有被伪报为通过。
 
 回退与部署：批次 A 不包含数据库迁移，可以回退相应代码提交；新增设置键及 IPC 字段不要求旧客户端迁移。服务端应先保留数据库和对象存储一致的恢复点，再部署向后兼容的校验/诊断，随后升级客户端。没有实际执行生产备份、升级或回退演练。
+
+
+## 下一阶段稳定性改造（2026-11-25）
+
+本轮起点：`45d9ea73f56d15d99d24b8f924f066792636381a`，分支 `dev/markdown-editing-and-animated-images`。开始时只有用户提供的未跟踪方案文档，不纳入本轮提交。以下记录补充上述批次 A 结果；本轮明确授权继续批次 B，原 macOS 验收缺口继续保留。
+
+### R-01 异常基线重新获取
+
+- 根因与调用链：`exchange` 遇到非空 `bootstrap_cursor` 直接返回；`apply_received_with_backup → apply_received_transaction → apply_baseline/reconcile/merge` 失败会回滚整个应用事务，旧暂存仍被视为正常待应用数据。
+- 方案：追加客户端迁移 `0034_sync_baseline_failure.sql`，在 `sync_progress` 保存失败游标及原始错误原因。应用失败后在独立事务记录；暂停、首次合并缺少备份、历史不一致及退出错误沿用既有恢复规则。自动调度仍等待完整基线应用；手动交换遇到失败标记时复用 `download_baseline` 重新下载。完整下载成功才清除失败标记，中途失败仍能重试。连接身份变化及显式采用基线同步清理标记。
+- 涉及文件：上述同步核心、`sync.rs` 重新连接、`db.rs` 迁移注册、`contents/contract_tests.rs`、`contents/initialization_tests.rs`、服务端隔离原生测试夹具。
+- 保留边界：下载只替换基线暂存，不清空正文、dirty、outbox 或冲突；仍使用原组级协调和原子应用事务。协议与服务端迁移不变。旧客户端不认识新增字段；回退不手工降低数据库版本，应使用迁移前快照与兼容客户端。
+- 回归：真实临时 Node/SQLite 服务注入历史非法条目状态，新客户端应用失败且没有部分写入；管理员正常条件 push 产生 revision 2；客户端重启后重新下载更高游标并成功初始化，正文和修订均核对。测试注入入口只存在于本地测试夹具，不进入服务端产品代码。
+- 复现结果：修复前端到端测试在“新游标必须大于失败游标”断言失败；修复后通过。现有失败基线回滚测试增加了失败游标及原因持久化断言。
+- 验证：`npm run test:native --prefix apps/sync-server -- failed_legacy_baseline_refetches_after_versioned_admin_repair` 通过（1 项）。`cargo test --manifest-path src-tauri/Cargo.toml --locked sync::contents`：44 通过、8 忽略（其中本项端到端用例已单独执行通过）；`cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings` 通过。独立复审 `CHILD_AGENT / FULL_SCOPE / Tier 3` 覆盖 8/8 文件，通过，无阻塞发现；额外检查了 UI 手动入口、自动调度、冻结队列协调及首次合并边界。
+- 部署：客户端启动自动追加本地迁移，无需修改服务端部署；修复云端实体后使用现有“立即同步”。没有新增界面元素或文案。
+- 平台边界：本项真实客户端测试在 Windows 执行；macOS、真实隔离云端在最终整体验证中另行记录，未由本地测试代替。

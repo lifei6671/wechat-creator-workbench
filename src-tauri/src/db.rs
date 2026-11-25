@@ -119,6 +119,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0031_word_search.sql"),
     include_str!("../migrations/0032_background_word_search.sql"),
     include_str!("../migrations/0033_wechat_author_options.sql"),
+    include_str!("../migrations/0034_sync_baseline_failure.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
