@@ -339,5 +339,8 @@ export async function runContract(base, setupSecret) {
   assert.deepEqual(await ok(200, "meta"), { ...meta, claimed: true, seedStatus: "ready", seedDeviceId: first.deviceId });
   assert.deepEqual(await ok(200, "sync/entities/entry/draft", "GET", recoveredHeaders), draftBeforeRecovery);
   assert.equal(digest(await ok(200, "blobs/" + hash, "GET", recoveredHeaders)), hash);
+  const diagnostics = await ok(200, "sync/diagnostics", "GET", recoveredHeaders);
+  assert.ok(diagnostics.checked > 0);
+  assert.deepEqual(diagnostics.issues, []);
   return { instanceId: meta.serverInstanceId, credentials: recoveredHeaders, retainedHash: hash, pageBytes: wide.bytes };
 }

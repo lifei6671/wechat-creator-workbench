@@ -119,3 +119,14 @@ Windows 隔离测试应用已正常退出，临时应用标识仅用于验证，
 - 复现：真实临时双客户端测试修复两个素材后，旧代码仍剩 4 项拒绝（引用条目、两个专题节点和连线），无法 finish。新代码通过；仅修复第一个素材时，来源条目和引用条目保持阻塞；全部修复后逐级上传、第二客户端读取关联、画布连线和实际图片，素材远端 revision 保持 1，无重复写入。
 - 其他回归：原子组部分依赖缺失、目录已删除、真实版本冲突、冻结出站操作、历史 blob 错误及 generation 保持；保留原有素材部分依赖测试。
 - 验证：专项真实双客户端用例通过；首轮 `cargo test --manifest-path src-tauri/Cargo.toml --locked sync::contents` 46 通过、9 忽略；最终组门槛专项 47 通过、9 忽略；独立复审发现并修复了历史中文 blob 记录无法重试和组内编辑修复仍卡住的两项恢复缺口，增加针对回归后 3 项通过，Clippy 重测通过。`CHILD_AGENT / FULL_SCOPE / Tier 3` 复评覆盖 7/7 文件通过，无遗留阻塞项。部署时客户端自动追加迁移；不降低 schema 版本回退，以迁移前快照和兼容客户端恢复。Windows 已执行，macOS 与真实云端留待最终验收。
+
+
+### R-03 同步附件实际对象诊断
+
+- 根因与调用链：`GET /v1/sync/diagnostics → diagnoseEntities` 过去只查 sync_blobs 索引；素材二进制不进入正文校验，因此文件/R2 对象删除后仍报告无问题。
+- 方案：BlobStore 增加只读 `head`，R2 适配器调用官方元数据 API，本地适配器调用 `stat`；诊断比较 payload 大小、索引大小与实际对象大小。继续使用原分页，每页最多 100 项；图片不调用 get，不下载正文外的图片数据。正文原有有界 UTF-8 流式检查保持原样，没有实施长正文重复读取优化。
+- 错误分类：原 `blob_missing` 保留为索引缺失；`blob_object_missing`、`blob_object_size_mismatch`、`blob_storage_unavailable` 分别表示对象缺失、实际大小不符、元数据存储暂时不可用；原 `blob_length_mismatch` 仍表示索引与实体声明不符。存储异常只转换为稳定错误码，不返回内部异常、正文、令牌或凭据。
+- 文件：`apps/sync-server/src/diagnostics.ts`、`storage.ts`、`adapters/local-files.ts`、`adapters/r2.ts`，新增 `tests/attachment-diagnostics.test.mjs`，扩展 HTTP 合约和本地 Workers 测试；管理员说明同步更新。无数据库迁移或同步写入协议变化。
+- 先红后绿：三个专项回归原均失败（对象缺失被报告为正常，存储失败页无问题），实现后全部通过。真实本地文件覆盖写入、删除和截断；R2 适配器测试确保只 head、从不 get，并检查暂时失败和脱敏。101 个实体覆盖分页和逐项错误，核对数据库实体/身份/回执没有变化。
+- `npm test --prefix apps/sync-server`：最终 50 通过、1 跳过。包含真实 Node HTTP/SQLite/文件合约，以及运行中的 Workers 本地 D1/R2：通过 wrangler 实际删除和以短文件替换 R2 对象后，HTTP 诊断分别返回对象缺失与大小不符。跳过项为真实云端，最终隔离环境另行执行。Wrangler 提示现有 observability.issue_detection 未识别，不影响测试结果。
+- 独立复审发现正文附件在元数据成功后 get/流读取失败会中断整页并记录原异常，补充两条先失败再通过的回归；`content-blobs.ts` 仅在 get/read/cancel 存储边界转换为脱敏 503 稳定错误，数据库与 UTF-8/长度错误保留。`CHILD_AGENT / FULL_SCOPE / Tier 3` 复评覆盖 10/10 文件通过，无遗留发现。部署无迁移，保留原生产数据库和对象存储恢复点后升级同步服务即可；诊断只读，不自动删除或覆盖对象。真实远端 R2 与 macOS 在最终验证中单列，未由适配器模拟代替。

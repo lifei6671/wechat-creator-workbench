@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -11,6 +11,13 @@ import type { BlobStore } from "../storage.js";
 export async function localFiles(directory: string): Promise<BlobStore> {
   await mkdir(directory, { recursive: true });
   return {
+    async head(hash) {
+      try { return { size: (await stat(join(directory, hash))).size }; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    },
     async put(hash, size, source) {
       const staged = join(directory, "." + randomUUID());
       const digest = createHash("sha256");

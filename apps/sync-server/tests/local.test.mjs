@@ -2,7 +2,7 @@ import { test } from "node:test";
 import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -266,8 +266,22 @@ test("Workers + local D1/R2 bindings", { timeout: 120_000 }, async (t) => {
     logLevel: "warn",
   });
   try {
-    const { pageBytes } = await runContract("http://127.0.0.1:" + worker.port, value);
+    const base = "http://127.0.0.1:" + worker.port;
+    const { pageBytes, credentials, retainedHash } = await runContract(base, value);
     t.diagnostic("UTF-8 pull response bytes: " + pageBytes);
+    const check = async error => {
+      const response = await fetch(base + "/v1/sync/diagnostics", { headers: { ...credentials, "X-Sync-Protocol": "2" } });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      assert.ok(result.issues.some(issue => issue.entityId === "private-image" && issue.error === error), JSON.stringify(result));
+    };
+    const object = "wechat-workbench-sync-blobs/" + retainedHash;
+    await run(process.execPath, ["node_modules/wrangler/bin/wrangler.js", "r2", "object", "delete", object, "--local", "--persist-to", directory]);
+    await check("blob_object_missing");
+    const broken = join(directory, "broken-image.bin");
+    await writeFile(broken, "short");
+    await run(process.execPath, ["node_modules/wrangler/bin/wrangler.js", "r2", "object", "put", object, "--file", broken, "--local", "--persist-to", directory]);
+    await check("blob_object_size_mismatch");
   } finally {
     await worker.stop();
   }
