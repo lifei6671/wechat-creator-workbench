@@ -1,7 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-for (const section of ["folders", "timeline"]) for (const motion of ["no-preference", "reduce"] as const) {
-  test(`${section}: expands and collapses folders with ${motion} motion`, async ({ page }) => {
+for (const section of ["folders", "timeline"]) for (const motion of ["no-preference", "reduce"] as const) for (const frameDelay of [0, 400]) {
+  test(`${section}: expands and collapses folders with ${motion} motion (late-frame=${frameDelay})`, async ({ page }) => {
+    if (frameDelay) await page.addInitScript(delay => {
+      const request = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = callback => request(time => { setTimeout(() => callback(time), delay); });
+    }, frameDelay);
     await page.emulateMedia({ reducedMotion: motion });
     await page.goto(`/tests/folder-colors.html?section=${section}`);
     const toggle = section === "folders" ? "#folder-row-folder" : '.timeline-folder-toggle[aria-controls="folder-folder"]';
@@ -13,18 +17,23 @@ for (const section of ["folders", "timeline"]) for (const motion of ["no-prefere
         const heights: number[] = [];
         const mounted: boolean[] = [];
         const animations: number[] = [];
+        // Commit the old layout before toggling so both engines create the transition.
+        branch.getBoundingClientRect();
         (document.querySelector(toggle) as HTMLButtonElement).click();
-        const started = performance.now();
-        await new Promise<void>(resolve => {
-          const frame = () => {
-            heights.push(branch.getBoundingClientRect().height);
-            mounted.push(Boolean(document.getElementById("folder-row-child-folder")));
-            animations.push(branch.getAnimations().length);
-            if (performance.now() - started < 350) requestAnimationFrame(frame);
-            else resolve();
-          };
-          requestAnimationFrame(frame);
-        });
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        const running = branch.getAnimations();
+        // Seek the actual CSS transitions inside this one browser evaluation.
+        // Delayed RAF or protocol delivery cannot consume the intermediate frame.
+        for (const animation of running) animation.pause();
+        for (const fraction of [0, .5]) {
+          for (const animation of running) animation.currentTime = Number(animation.effect!.getTiming().duration) * fraction;
+          heights.push(branch.getBoundingClientRect().height);
+          mounted.push(Boolean(document.getElementById("folder-row-child-folder")));
+          animations.push(running.length);
+        }
+        for (const animation of running) animation.play();
+        await new Promise<void>(resolve => setTimeout(resolve, 350));
+        heights.push(branch.getBoundingClientRect().height);
         return { heights, mounted, animations, transition: getComputedStyle(branch).transitionDuration };
       }, toggle);
       await expect(branch).toHaveAttribute("data-collapsed", String(!open));

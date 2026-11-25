@@ -1,0 +1,120 @@
+/* Shared by editable and read-only workbench articles. Publication styles live separately. */
+.document-editor {
+  --article-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --article-mono: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
+  --article-bg: var(--gray-1);
+  --article-text: var(--gray-12);
+  --article-heading: var(--gray-12);
+  --article-muted: var(--gray-11);
+  --article-border: var(--gray-6);
+  --article-surface: var(--gray-3);
+  --article-link: var(--indigo-11);
+  --article-selection: var(--indigo-a5);
+  --writing-font: var(--article-font);
+  --writing-gutter: clamp(24px, 3vw, 40px);
+  background: var(--article-bg);
+  color: var(--article-text);
+}
+.document-editor[data-limit-width="true"] { --writing-width: 800px; }
+.document-editor .editor-scroll { --editor-inset: max(var(--writing-gutter), calc((100% - var(--writing-width)) / 2)); }
+.document-editor .rich-editor .ProseMirror {
+  padding-block: 20px 48px;
+  color: var(--article-text);
+  font: 400 16px/1.8 var(--article-font);
+  letter-spacing: .01em;
+  text-align: start;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-break: strict;
+}
+.document-editor .rich-editor .ProseMirror[contenteditable="false"] { padding-inline: var(--editor-inset); }
+.document-editor:has(.ProseMirror[contenteditable="false"]) .writing-title { padding-inline: var(--editor-inset); }
+.document-editor .rich-editor ::selection { color: var(--article-text); background: var(--article-selection); }
+.document-editor .rich-editor p { margin: 0 0 18px; }
+.document-editor .rich-editor :is(h1, h2, h3, h4, h5, h6) {
+  padding: 0; border: 0; background: transparent; color: var(--article-heading);
+  line-height: 1.35; font-style: normal; text-align: start; overflow-wrap: anywhere;
+}
+.document-editor .rich-editor h1 { font-size: 32px; font-weight: 700; margin: 40px 0 20px; }
+.document-editor .rich-editor h2 { font-size: 25px; font-weight: 650; margin: 36px 0 16px; }
+.document-editor .rich-editor h3 { font-size: 21px; font-weight: 600; margin: 28px 0 12px; }
+.document-editor .rich-editor h4 { font-size: 18px; font-weight: 600; margin: 24px 0 10px; }
+.document-editor .rich-editor h5 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+.document-editor .rich-editor h6 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
+.document-editor .rich-editor .ProseMirror > :first-child { margin-block-start: 0; }
+.document-editor .writing-title { padding-block-start: 32px; }
+.document-editor .writing-title :is(h1, textarea) {
+  padding: 0; border: 0; color: var(--article-heading); font: 700 32px/1.35 var(--article-font);
+  letter-spacing: .01em;
+}
+.document-editor .rich-editor strong { font-weight: 650; }
+.document-editor .rich-editor a {
+  color: var(--article-link); text-decoration: underline; text-decoration-thickness: .5px;
+  text-underline-offset: 3px; overflow-wrap: anywhere;
+}
+.document-editor .rich-editor a:hover { text-decoration-thickness: 1px; }
+.document-editor .rich-editor a:focus-visible { outline: .5px solid var(--article-link); outline-offset: 3px; }
+.document-editor .rich-editor a.rich-link-footnoted,
+.document-editor .rich-editor a:has(.rich-link-footnoted) { color: inherit; text-decoration: none; }
+.document-editor .rich-editor :not(pre) > code {
+  font: .9em/1.65 var(--article-mono); padding: 2px 5px; border-radius: 4px;
+  background: var(--article-surface); overflow-wrap: anywhere;
+}
+.document-editor .rich-editor .rich-code-block { margin-block: 24px; border-radius: 6px; background: var(--article-surface); }
+.document-editor .rich-editor .rich-code-block pre {
+  padding: 16px; border-radius: inherit; background: transparent; white-space: pre; overflow-x: auto;
+  font: 14px/1.65 var(--article-mono); letter-spacing: normal; overflow-wrap: normal;
+}
+.document-editor .rich-editor .rich-code-block code { font: inherit; }
+.document-editor .rich-editor .rich-code-header { margin-block-start: -6px; }
+.document-editor .rich-editor .rich-code-language { font-family: var(--article-mono); }
+.document-editor .rich-editor blockquote {
+  margin: 20px 0; padding: 0 0 0 16px; border: 0; border-inline-start: 3px solid var(--article-border);
+  color: var(--article-text); background: transparent; font-style: normal;
+}
+.document-editor .rich-editor blockquote > :last-child { margin-block-end: 0; }
+.document-editor .rich-editor blockquote[data-callout] {
+  padding: 12px 16px; border-inline-start: .5px solid var(--callout-border); background: var(--callout-bg);
+}
+.document-editor .rich-editor .rich-callout-title strong { font-weight: 650; }
+.document-editor .rich-editor :is(ul, ol) { margin: 18px 0; padding-inline-start: 24px; }
+.document-editor .rich-editor li { margin-block: 7px; }
+.document-editor .rich-editor li > p { margin: 0; }
+.document-editor .rich-editor :is(ul, ol)[data-spread="true"] > li > p,
+.document-editor .rich-editor li[data-spread="true"] > p { margin-block: 10px; }
+.document-editor .rich-editor li > :is(ul, ol) { margin-block: 8px; }
+.document-editor .rich-editor hr { margin: 32px 0; border: 0; border-block-start: .5px solid var(--article-border); }
+.document-editor .rich-editor p[data-image-block] { margin-block: 24px; text-align: center; }
+.document-editor .rich-editor .rich-image { text-align: start; }
+.document-editor .rich-editor .rich-image-media img {
+  max-width: 100%; height: auto; border: .5px solid var(--article-border); border-radius: 6px;
+  /* A neutral light canvas keeps transparent technical diagrams legible in dark mode. */
+  background: var(--white-a12);
+}
+.document-editor .rich-editor .rich-image-frame { max-width: 100%; }
+.document-editor .rich-editor figure { margin: 24px 0; text-align: center; }
+.document-editor .rich-editor figure img { display: block; margin-inline: auto; height: auto; border-radius: 6px; background: var(--white-a12); }
+.document-editor .rich-editor :is(figcaption, .rich-image-caption) { margin-block-start: 8px; font: 400 13px/1.6 var(--article-font); color: var(--article-muted); }
+.document-editor .rich-editor .rich-table { margin-block: 24px; }
+.document-editor .rich-editor .rich-table-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+.document-editor .rich-editor .rich-table table { table-layout: auto; width: 100%; }
+.document-editor .rich-editor :is(th, td) {
+  min-width: 110px; padding: 10px 14px; border: 0; border-block-end: .5px solid var(--article-border);
+  font-size: 14px; line-height: 1.6; overflow-wrap: anywhere;
+}
+.document-editor .rich-editor :is(th, td) > p { margin: 0; }
+.document-editor .rich-editor th { font-weight: 600; background: var(--article-surface); }
+.document-editor .rich-editor tbody > tr:hover > td { background: var(--gray-2); }
+.document-editor .rich-editor .rich-mermaid {
+  margin-block: 24px; padding: 16px; overflow-x: auto; border-radius: 6px;
+  border-color: var(--article-border); background: var(--white-a12);
+}
+.document-editor .rich-editor .rich-mermaid > span { min-width: 0; max-width: 100%; }
+.document-editor .rich-editor .rich-mermaid img { height: auto; }
+.document-editor .rich-editor div.rich-formula { margin-block: 24px; }
+.document-editor .rich-editor div.rich-formula > .rich-graphic-preview { overflow-x: auto; }
+.document-editor .rich-editor .rich-link-notes { color: var(--article-muted); }
+.document-editor .rich-editor .rich-link-notes > h2 { font-size: 16px; margin: 28px 0 12px; }
+.document-editor .rich-editor dl[data-type="footnote_definition"] { font-size: 13px; }
+.document-editor .rich-editor dl[data-type="footnote_definition"] dd > :first-child { margin-block-start: 0; }
+.document-editor .rich-editor dl[data-type="footnote_definition"] dd > :last-child { margin-block-end: 0; }

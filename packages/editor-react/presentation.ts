@@ -92,6 +92,7 @@ function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumb
     const name = node.type.name;
     const list = name === "bullet_list" || name === "ordered_list";
     const attrs: Record<string, string> = {};
+    if (name === "paragraph" && node.childCount === 1 && node.firstChild!.type.name === "image") attrs["data-image-block"] = "";
     if (name === "blockquote" && !node.attrs.literalCallout && node.firstChild?.type.name === "paragraph") {
       const paragraph = node.firstChild;
       const first = paragraph.firstChild;
@@ -188,19 +189,24 @@ function syntaxAtCaret(state: EditorState, delimiterWidget: DelimiterWidget) {
   const decorations: Decoration[] = [];
   const block = $head.parent;
   const start = $head.start();
-  const add = (pos: number, text: string, side: number, task = false, source?: StrongDelimiter) => {
+  const add = (pos: number, text: string, side: number, task = false, source?: StrongDelimiter, closing = false) => {
     decorations.push(Decoration.widget(pos, view => {
-      if (source) return delimiterWidget(view, source);
+      if (source) {
+        const marker = delimiterWidget(view, source);
+        marker.dataset.markdownClosing = String(!source.opening);
+        return marker;
+      }
       const marker = document.createElement("span");
       marker.className = "rich-markdown-syntax";
       marker.dataset.markdown = text;
+      marker.dataset.markdownClosing = String(closing);
       // Generated text in these widgets can stall WebKit when it computes the visible text range.
       marker.textContent = text;
       if (task) marker.dataset.markdownTask = "";
       marker.setAttribute("aria-hidden", "true");
       return marker;
     }, { key: `syntax-${side}-${text}${source ? `-${source.from}-${source.to}` : ""}`, side, ignoreSelection: true, relaxedSide: !source,
-      stopEvent: event => Boolean(source && event.target instanceof HTMLInputElement) }));
+      stopEvent: event => Boolean(source && event.target instanceof HTMLInputElement && event.type !== "mousedown") }));
   };
   let quoteDepth = 0;
   let listItemDepth = 0;
@@ -261,7 +267,7 @@ function syntaxAtCaret(state: EditorState, delimiterWidget: DelimiterWidget) {
     // Keep adjacent closing markers before the next opening marker at the same document position.
     const closingSide = openings.has(to) ? -active.length - index - 1 : active.length - index;
     add(from, open, index - active.length, false, strong ? { mark, from, to, opening: true, token: open } : undefined);
-    add(to, close, closingSide, false, strong ? { mark, from, to, opening: false, token: close } : undefined);
+    add(to, close, closingSide, false, strong ? { mark, from, to, opening: false, token: close } : undefined, true);
   });
   return decorations;
 }

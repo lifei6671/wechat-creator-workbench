@@ -154,7 +154,8 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 .rich-image:is(.ProseMirror-selectednode, :focus-within):not(:has(.rich-image-source-editor:not([hidden]))) .rich-image-frame {
   border-radius: 8px; box-shadow: 0 0 0 2px var(--accent-a9), var(--shadow-3);
 }
-.rich-image-frame { position: relative; display: block; max-width: fit-content; }
+.rich-image-frame { position: relative; display: block; max-width: fit-content; align-self: center; }
+.rich-image-caption { align-self: stretch; margin-top: 8px; font-size: 13px; line-height: 1.6; color: var(--text-muted); text-align: center; overflow-wrap: anywhere; }
 .rich-image-upload:not([hidden]) {
   position: absolute; inset: 6px auto auto 6px; display: inline-flex; padding: 5px;
   border: var(--hairline); border-radius: 6px; background: var(--color-panel-solid); pointer-events: none;
@@ -208,8 +209,6 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 }
 .rich-image-source-editor textarea:focus { outline: none; }
 .rich-image-source-editor textarea::selection { background: var(--accent-a5); }
-.rich-image-source-editor .inline-error { font-size: var(--small-font); }
-.rich-image-source-editor .inline-error:empty { display: none; }
 .radix-themes.dark .rich-editor .rich-formula img { filter: invert(1); }
 .rich-editor span.rich-formula img { max-height: 1.75em; }
 .rich-editor div.rich-formula { margin: 12px 0; }

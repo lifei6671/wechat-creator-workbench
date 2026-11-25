@@ -51,6 +51,9 @@ export interface SyncActivity {
   pending: boolean;
   incoming: boolean;
   issues: number;
+  pendingCount?: number;
+  rejectedCount?: number;
+  blockingIssue?: { entityType: string; entityId: string; reason: string } | null;
   phase: "idle" | "connecting" | "downloading" | "merging" | "syncing" | "waiting_seed";
   error: { code: string; message: string } | null;
   lastExchangeAt: number | null;

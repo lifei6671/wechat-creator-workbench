@@ -2522,6 +2522,7 @@ export function DesktopShell() {
                     onImageZoom={(image, trigger) => showModal({ type: "imageViewer", ...image }, trigger)} />)}
                 </div>
                 {viewMode === "preview" && <div className="preview-stack"><ActivePreview key={queue.sessionId} queue={queue} projectLinks={projectLinks}
+                  locked={Boolean(exitMessage) || globalLock || locked.includes(queue.entry.id)}
                   publication={queue.entry.kind === "article" && queue.entry.deletedAt === null ? wechatPublishing.session(queue) : undefined} sourceRevision={refreshCount} /></div>}
                 {!collectionMode && workspaceNotice}
               </div>
@@ -2685,14 +2686,18 @@ export function DesktopShell() {
   </Theme>;
 }
 
-function ActivePreview({ queue, projectLinks, publication, sourceRevision }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null; publication?: PublicationSession; sourceRevision?: number }) {
+function ActivePreview({ queue, projectLinks, publication, sourceRevision, locked }: { queue: SaveQueue; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null; publication?: PublicationSession; sourceRevision?: number; locked: boolean }) {
   const materialized = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const { fields, revision } = useMemo(() => queue.capture(), [queue, materialized]);
-  return publication ? <PublicationPreview queue={queue} publication={publication} projectLinks={projectLinks} sourceRevision={sourceRevision} /> : <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
-    githubRepo={fields.source?.url} projectLinks={projectLinks} />;
+  const onThemeChange = locked || queue.entry.deletedAt !== null ? undefined : (themeId: string) => {
+    queue.edit({ themeId });
+    void (publication ? publication.flush() : queue.flush());
+  };
+  return publication ? <PublicationPreview queue={queue} publication={publication} projectLinks={projectLinks} sourceRevision={sourceRevision} onThemeChange={onThemeChange} /> : <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
+    githubRepo={fields.source?.url} projectLinks={projectLinks} onThemeChange={onThemeChange} />;
 }
 
-function PublicationPreview({ queue, publication, projectLinks, sourceRevision }: { queue: SaveQueue; publication: PublicationSession; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null; sourceRevision?: number }) {
+function PublicationPreview({ queue, publication, projectLinks, sourceRevision, onThemeChange }: { queue: SaveQueue; publication: PublicationSession; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null; sourceRevision?: number; onThemeChange?(themeId: string): void }) {
   const snapshot = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const state = useSyncExternalStore(publication.subscribe, publication.snapshot);
   const defaults = useSyncExternalStore(publication.defaults.subscribe, publication.defaults.snapshot);
@@ -2701,5 +2706,5 @@ function PublicationPreview({ queue, publication, projectLinks, sourceRevision }
   const { fields, revision } = queue.capture();
   const error = state.error || (state.resolved.invalid.length ? "推荐文章已失效，请在公众号侧栏修正或移除" : "");
   return <MarkdownPreview title={fields.title} markdown={fields.contentMd} themeId={fields.themeId} revision={revision}
-    githubRepo={fields.source?.url} projectLinks={projectLinks} recommendations={state.ready ? state.resolved.items : undefined} publicationError={error} />;
+    githubRepo={fields.source?.url} projectLinks={projectLinks} recommendations={state.ready ? state.resolved.items : undefined} publicationError={error} onThemeChange={onThemeChange} />;
 }

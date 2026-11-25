@@ -41,8 +41,8 @@ jobs:
       - run: pnpm web:build
       - run: npm test --prefix apps/sync-server
 
-  desktop:
-    name: Desktop (${{ matrix.os }})
+  native:
+    name: Native (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +64,31 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: pnpm install --frozen-lockfile
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - run: pnpm tauri build --debug --no-bundle
+
+  browser:
+    name: Browser (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm test:browser
         id: browser-tests
@@ -73,10 +98,22 @@ jobs:
           name: playwright-${{ matrix.os }}
           path: output/playwright/test-results
           retention-days: 7
-      - uses: taiki-e/install-action@v2
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    needs: [native, browser]
+    if: ${{ always() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v6
         with:
-          tool: cargo-about@0.9.3
-      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - run: pnpm tauri build --debug --no-bundle
+          node-version: 24
+      - run: node -e "if (process.env.NATIVE !== 'success' || process.env.BROWSER !== 'success') process.exit(1)"
+        env:
+          NATIVE: ${{ needs.native.result }}
+          BROWSER: ${{ needs.browser.result }}

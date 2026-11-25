@@ -645,128 +645,7 @@ button.outline-expand { cursor: pointer; }
 .ai-agent-menu-label { display: flex; align-items: center; gap: 7px; font-weight: 550; color: var(--sand-12); }
 .ai-composer-tools .ai-send { margin-inline-start: auto; flex: 0 0 27px; min-width: 27px; height: 27px; padding: 0; }
 .document-editor { display: flex; flex-direction: column; height: 100%; min-width: 0; --writing-width: 100%; }
-.document-editor[data-limit-width="true"] { --writing-width: 820px; }
-.document-editor[data-wechat-theme="plainly-default"] { --article-rule: var(--blue-8); --article-link: var(--blue-11); --article-quote: var(--blue-3); }
-.document-editor[data-wechat-theme="plainly-elegant"] {
-  --writing-font: "Songti SC", "Noto Serif SC", SimSun, Georgia, serif;
-  --article-rule: var(--bronze-8); --article-link: var(--bronze-11); --article-quote: var(--bronze-3);
-}
-.document-editor[data-wechat-theme="plainly-tech"] { --article-rule: var(--teal-8); --article-link: var(--teal-11); --article-quote: var(--teal-3); }
-.document-editor:is([data-wechat-theme="gzh-moyu-green"], [data-wechat-theme="gzh-moyu-ticket"]) { --article-rule: var(--green-8); --article-link: var(--green-11); --article-quote: var(--green-3); }
-.document-editor[data-wechat-theme="gzh-red-white"] { --article-rule: var(--red-8); --article-link: var(--red-11); --article-quote: var(--red-3); }
-.document-editor[data-wechat-theme="gzh-graphite-minimal"] { --article-rule: var(--gray-8); --article-link: var(--gray-11); --article-quote: var(--gray-3); }
-.document-editor[data-wechat-theme="gzh-zen-whitespace"] { --writing-font: "Songti SC", SimSun, Georgia, serif; --article-rule: var(--sage-8); --article-link: var(--sage-11); --article-quote: var(--sage-3); }
-.document-editor[data-wechat-theme="gzh-olive-journal"] { --article-rule: var(--olive-8); --article-link: var(--orange-11); --article-quote: var(--olive-3); }
-.document-editor[data-wechat-theme^="gzh-"] .rich-editor :is(p:not(td > p, th > p), li) strong { text-decoration: underline; text-decoration-color: var(--article-rule); text-underline-offset: 3px; }
-.document-editor .rich-editor [data-callout] .rich-callout-title strong { text-decoration: none; color: inherit; background: transparent; padding: 0; }
-.document-editor[data-wechat-theme="gzh-zen-whitespace"] .rich-editor .ProseMirror { line-height: 1.95; }
-.document-editor .rich-editor a { color: var(--article-link); }
-.document-editor .rich-editor blockquote:not([data-callout]) {
-  background: var(--article-blockquote-background); border-width: var(--article-blockquote-border-width);
-  border-style: var(--article-blockquote-border-style); border-color: var(--article-rule);
-  padding-inline: var(--article-blockquote-padding-inline); text-align: var(--article-blockquote-text-align);
-  font-style: var(--article-blockquote-font-style);
-}
-.document-editor .writing-title :is(h1, textarea) {
-  border-bottom: 0.5px solid var(--article-rule);
-  padding-block-end: 8px;
-}
-.document-editor[data-wechat-theme="plainly-elegant"] :is(.writing-title :is(h1, textarea), .rich-editor h1) { text-align: center; font-weight: 500; }
-.document-editor[data-wechat-theme="plainly-elegant"] .rich-editor .ProseMirror { line-height: 1.95; }
-.document-editor[data-wechat-theme="plainly-tech"] .rich-editor h2 { background: linear-gradient(to right, var(--teal-3), transparent); }
-.document-editor[data-wechat-theme="plainly-tech"] .rich-editor strong { background: var(--amber-a4); }
-.document-editor[data-wechat-theme] .rich-editor :is(h1, h2, h3, h4, h5, h6) {
-  margin-block: var(--heading-margin-block); padding-block: var(--heading-padding-block);
-  padding-inline: var(--heading-padding-inline);
-  border-width: var(--heading-border-width); border-style: var(--heading-border-style); border-color: var(--article-rule);
-  background-color: var(--heading-background);
-  text-align: var(--heading-text-align); font-style: var(--heading-font-style);
-}
-.document-editor .rich-editor h1 {
-  --heading-margin-block: var(--article-h1-margin-block); --heading-padding-block: var(--article-h1-padding-block);
-  --heading-padding-inline: var(--article-h1-padding-inline); --heading-border-width: var(--article-h1-border-width);
-  --heading-border-style: var(--article-h1-border-style); --heading-background: var(--article-h1-background);
-  --heading-text-align: var(--article-h1-text-align); --heading-font-style: var(--article-h1-font-style);
-}
-.document-editor .rich-editor h2 {
-  --heading-margin-block: var(--article-h2-margin-block); --heading-padding-block: var(--article-h2-padding-block);
-  --heading-padding-inline: var(--article-h2-padding-inline); --heading-border-width: var(--article-h2-border-width);
-  --heading-border-style: var(--article-h2-border-style); --heading-background: var(--article-h2-background);
-  --heading-text-align: var(--article-h2-text-align); --heading-font-style: var(--article-h2-font-style);
-}
-.document-editor .rich-editor h3 {
-  --heading-margin-block: var(--article-h3-margin-block); --heading-padding-block: var(--article-h3-padding-block);
-  --heading-padding-inline: var(--article-h3-padding-inline); --heading-border-width: var(--article-h3-border-width);
-  --heading-border-style: var(--article-h3-border-style); --heading-background: var(--article-h3-background);
-  --heading-text-align: var(--article-h3-text-align); --heading-font-style: var(--article-h3-font-style);
-}
-.document-editor .rich-editor h4 {
-  --heading-margin-block: var(--article-h4-margin-block); --heading-padding-block: var(--article-h4-padding-block);
-  --heading-padding-inline: var(--article-h4-padding-inline); --heading-border-width: var(--article-h4-border-width);
-  --heading-border-style: var(--article-h4-border-style); --heading-background: var(--article-h4-background);
-  --heading-text-align: var(--article-h4-text-align); --heading-font-style: var(--article-h4-font-style);
-}
-.document-editor .rich-editor h5 {
-  --heading-margin-block: var(--article-h5-margin-block); --heading-padding-block: var(--article-h5-padding-block);
-  --heading-padding-inline: var(--article-h5-padding-inline); --heading-border-width: var(--article-h5-border-width);
-  --heading-border-style: var(--article-h5-border-style); --heading-background: var(--article-h5-background);
-  --heading-text-align: var(--article-h5-text-align); --heading-font-style: var(--article-h5-font-style);
-}
-.document-editor .rich-editor h6 {
-  --heading-margin-block: var(--article-h6-margin-block); --heading-padding-block: var(--article-h6-padding-block);
-  --heading-padding-inline: var(--article-h6-padding-inline); --heading-border-width: var(--article-h6-border-width);
-  --heading-border-style: var(--article-h6-border-style); --heading-background: var(--article-h6-background);
-  --heading-text-align: var(--article-h6-text-align); --heading-font-style: var(--article-h6-font-style);
-}
-.document-editor[data-wechat-theme] .rich-editor .rich-link-notes > h2 {
-  margin: var(--article-reference-margin); padding: var(--article-reference-padding); border: 0;
-}
-.document-editor[data-wechat-theme] .rich-editor :where(:not(li, td, th, dd)) > p {
-  margin-block: var(--article-p-margin-block); padding-block: var(--article-p-padding-block);
-}
-.document-editor .rich-editor blockquote {
-  margin-block: var(--article-blockquote-margin-block); padding-block: var(--article-blockquote-padding-block);
-}
-.document-editor .rich-editor blockquote[data-callout] {
-  padding-block: var(--article-callout-padding-block); padding-inline: 12px; border: 0;
-  border-inline-start: 0.5px solid var(--callout-border); text-align: start; font-style: normal;
-}
-.document-editor[data-wechat-theme] .rich-editor blockquote > p { margin-block: var(--article-quote-paragraph-margin-block); }
-.document-editor .rich-editor blockquote > p:last-child { margin-block-end: var(--article-quote-paragraph-end); }
-.document-editor[data-wechat-theme] .rich-editor ul {
-  margin-block: var(--article-ul-margin-block); padding-inline: var(--article-ul-padding-inline);
-}
-.document-editor[data-wechat-theme] .rich-editor ol {
-  margin-block: var(--article-ol-margin-block); padding-inline: var(--article-ol-padding-inline);
-}
-.document-editor[data-wechat-theme] .rich-editor li { margin-block: var(--article-li-margin-block); }
-.document-editor[data-wechat-theme] .rich-editor :is(ul, ol)[data-spread="true"] > li > p,
-.document-editor[data-wechat-theme] .rich-editor li[data-spread="true"] > p { margin-block: var(--article-list-paragraph-margin-block); }
-.document-editor[data-wechat-theme] .rich-editor .rich-table { margin-block: var(--article-table-margin-block); }
-.document-editor[data-wechat-theme] .rich-editor th {
-  padding-block: var(--article-th-padding-block); padding-inline: var(--article-th-padding-inline);
-  border-width: var(--article-th-border-width); border-style: var(--article-th-border-style); border-color: var(--article-rule);
-  background: var(--article-th-background); color: var(--article-th-color); font-weight: var(--article-th-font-weight);
-}
-.document-editor[data-wechat-theme] .rich-editor td {
-  padding-block: var(--article-td-padding-block); padding-inline: var(--article-td-padding-inline);
-  border-width: var(--article-td-border-width); border-style: var(--article-td-border-style); border-color: var(--article-rule);
-  background: var(--article-td-background);
-}
-.document-editor[data-wechat-theme] .rich-editor :is(td, th) > p { margin: 0; padding: 0; }
-.document-editor[data-wechat-theme] .rich-editor .rich-code-block {
-  margin-block: var(--article-code-frame-margin-block); border-radius: var(--article-code-frame-border-radius);
-  border-width: var(--article-code-frame-border-width); border-style: var(--article-code-frame-border-style); border-color: var(--article-rule);
-  background: var(--article-code-frame-background);
-}
-.document-editor[data-wechat-theme] .rich-editor .rich-code-block pre { padding: var(--article-code-padding); background: transparent; border-radius: inherit; }
-.document-editor[data-wechat-theme^="gzh-"] .rich-editor .rich-code-block[data-language]:not([data-language=""]) .rich-code-header {
-  float: none; max-width: none; padding: var(--article-code-label-padding); border-bottom: var(--article-code-label-border);
-  margin-block: calc(-1 * var(--article-code-padding-top)) var(--article-code-padding-top);
-  margin-inline: calc(-1 * var(--article-code-padding-left)) calc(-1 * var(--article-code-padding-right));
-  white-space: normal; font: 12px/var(--article-code-label-line-height) ui-monospace, Consolas, Monaco, monospace;
-}
-.document-editor[data-wechat-theme^="gzh-"] .rich-editor .rich-code-header .rich-code-language { padding: 0; font: inherit; vertical-align: top; }
+
 .writing-title {
   flex: 0 0 auto; padding-block-start: 22px;
   padding-inline: var(--editor-start-inset) var(--editor-inset);
@@ -809,6 +688,11 @@ button.outline-expand { cursor: pointer; }
 }
 .preview-theme-label svg { flex: none; color: var(--gray-10); }
 .preview-theme-label > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-theme-label:not(:disabled) { cursor: pointer; }
+.preview-theme-label:not(:disabled):hover, .preview-theme-label[data-state="open"] { background: var(--gray-a4); color: var(--text-main); }
+.preview-theme-label:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.radix-themes.wechat-theme-menu { animation: none !important; transition: none !important; transform: none !important; }
+.radix-themes.wechat-theme-menu[data-state="open"] { opacity: 1 !important; }
 .preview-appearance {
   display: inline-flex; flex: none; gap: 2px; padding: 2px; border: 0.5px solid var(--gray-a5);
   border-radius: 999px; background: var(--gray-a3);

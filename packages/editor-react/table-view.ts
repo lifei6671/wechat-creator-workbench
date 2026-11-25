@@ -183,6 +183,9 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
   dom.className = "rich-table";
   const table = document.createElement("table");
   const contentDOM = table.createTBody();
+  const scroller = document.createElement("div");
+  scroller.className = "rich-table-scroll";
+  scroller.append(table);
   const controls = document.createElement("div");
   controls.className = "rich-table-controls";
   controls.contentEditable = "false";
@@ -192,7 +195,7 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
   preview.inert = true;
   preview.setAttribute("aria-hidden", "true");
   const previewBody = preview.appendChild(document.createElement("table")).createTBody();
-  dom.append(table, controls);
+  dom.append(scroller, controls);
   controls.append(preview);
   let drag: TableDrag | undefined;
 
@@ -285,6 +288,7 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
     rows.hide();
     columns.hide();
   }
+  scroller.onscroll = () => { resetDrag(); hideControls(); };
   function resetDrag() {
     if (!drag) return;
     const { grip, pointerId } = drag;
@@ -312,7 +316,7 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
     const cell = cellAt(event.target);
     if (!cell || !view.editable || drag || event.buttons) return;
     const row = cell.parentElement as HTMLTableRowElement;
-    const tableRect = table.getBoundingClientRect();
+    const tableRect = dom.getBoundingClientRect();
     const cellRect = cell.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
     const rowEdge = nearEdge(event.clientY, rowRect.top, rowRect.bottom);
@@ -370,7 +374,7 @@ export function tableView(ctx: Ctx, view: EditorView, getPos: () => number | und
       resetDrag();
       return;
     }
-    const bounds = table.getBoundingClientRect();
+    const bounds = dom.getBoundingClientRect();
     const { axis, from, startX, startY } = drag;
     if (preview.hidden) {
       if (Math.hypot(event.clientX - startX, event.clientY - startY) < 5) return;

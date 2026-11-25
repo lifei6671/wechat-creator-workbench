@@ -1,5 +1,5 @@
 use crate::{
-    assets::{Assets, MAX_BYTES, configured_image, remote_image_url, validate_dimensions},
+    assets::{Assets, MAX_BYTES, remote_image_url, validate_dimensions},
     db::{AppError, Result, Workspace},
 };
 use arboard::{Clipboard, Error};
@@ -83,7 +83,7 @@ fn clipboard_content(
         None
     };
     if let Some(Contents::Html { html, .. }) = &rich
-        && (!accept_images || prefer_rich_images(db, html)?)
+        && (!accept_images || prefer_rich_images(html))
     {
         return Ok(rich);
     }
@@ -96,10 +96,12 @@ fn clipboard_content(
     optional(clipboard.get_text()).map(|text| text.map(|text| Contents::Text { text }))
 }
 
-fn prefer_rich_images(db: &Workspace, html: &str) -> Result<bool> {
+fn prefer_rich_images(html: &str) -> bool {
     let fragment = Html::parse_fragment(html);
     let selector = Selector::parse("img[src], [data-workbench-src]").expect("valid image selector");
-    let mut images = fragment
+    // Browser bitmaps contain only one rendered frame. Keep the original image
+    // source, including extensionless URLs, so GIF/WebP animation reaches import.
+    fragment
         .select(&selector)
         .filter_map(|image| {
             let attrs = image.value();
@@ -107,24 +109,9 @@ fn prefer_rich_images(db: &Workspace, html: &str) -> Result<bool> {
                 .attr("src")
                 .or_else(|| attrs.attr("data-workbench-src"))
         })
-        .filter(|src| {
+        .any(|src| {
             src.starts_with("asset://") || embedded_image(src) || remote_image_url(src).is_ok()
-        });
-    let Some(first) = images.next() else {
-        return Ok(false);
-    };
-    if first.starts_with("asset://")
-        || embedded_image(first)
-        || images.next().is_some()
-        || fragment
-            .root_element()
-            .text()
-            .any(|text| !text.trim().is_empty())
-    {
-        return Ok(true);
-    }
-    let url = remote_image_url(first)?;
-    db.read(|conn| configured_image(conn, &url))
+        })
 }
 
 fn embedded_image(src: &str) -> bool {
@@ -266,27 +253,29 @@ mod tests {
     }
 
     #[test]
-    fn rich_clipboard_keeps_configured_image_urls_and_surrounding_content() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = Workspace::open(&directory.path().join("article.db")).unwrap();
-        db.write(|tx| {
-            tx.execute("INSERT INTO storage_profiles VALUES ('image-test','images','https://s3.example.org','auto','images','work','https://images.example.org','unused')", [])?;
-            tx.execute("INSERT INTO app_settings VALUES ('image_storage_profile','image-test')", [])?;
-            Ok(())
-        }).unwrap();
+    fn rich_clipboard_keeps_original_images_instead_of_browser_bitmaps() {
         let image = r#"<img src="https://images.example.org/work/cover.png" alt="封面">"#;
         let other = r#"<img src="https://images.example.org/other/cover.png">"#;
-        assert!(prefer_rich_images(&db, image).unwrap());
-        assert!(!prefer_rich_images(&db, other).unwrap());
-        assert!(prefer_rich_images(&db, &format!("<p>正文</p>{other}")).unwrap());
-        assert!(prefer_rich_images(&db, &format!("{other}{other}")).unwrap());
-        assert!(
-            prefer_rich_images(&db, r#"<p>正文<img src="data:image/png;base64,AAEC"></p>"#)
-                .unwrap()
-        );
-        assert!(
-            !prefer_rich_images(&db, r#"<p>正文<img src="file:///C:/clip/image.png"></p>"#)
-                .unwrap()
-        );
+        assert!(prefer_rich_images(image));
+        assert!(prefer_rich_images(other));
+        assert!(prefer_rich_images(&format!("<p>正文</p>{other}")));
+        assert!(prefer_rich_images(&format!("{other}{other}")));
+        assert!(prefer_rich_images(
+            r#"<p>正文<img src="data:image/png;base64,AAEC"></p>"#
+        ));
+        assert!(!prefer_rich_images(
+            r#"<p>正文<img src="file:///C:/clip/image.png"></p>"#
+        ));
+        for url in [
+            "https://raw.githubusercontent.com/kunkundi/crossdesk/mcp/docs/images/mcp-minesweeper.gif",
+            "https://example.com/animation.webp?download=1",
+            "https://example.com/image?id=animated",
+        ] {
+            assert!(
+                prefer_rich_images(&format!(r#"<img src="{url}">"#)),
+                "{url}"
+            );
+        }
+        assert!(!prefer_rich_images("<p>只有正文</p>"));
     }
 }

@@ -14,7 +14,7 @@
     "web:build": "node scripts/licenses.mjs && vite build",
     "test:release": "node --test scripts/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=2",
     "test:browser": "playwright test"
   },
   "dependencies": {

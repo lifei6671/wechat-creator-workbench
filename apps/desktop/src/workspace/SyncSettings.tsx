@@ -173,6 +173,9 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     {lastExchangeAt != null && <SettingRow label="最近检查">
       {() => <span className="muted-text">{new Date(lastExchangeAt).toLocaleString()}</span>}
     </SettingRow>}
+    {binding && activity?.pendingCount !== undefined && <SettingRow label={`待上传 ${activity.pendingCount} 项`}>
+      {() => <span className="muted-text">需处理 {activity.issues} 项</span>}
+    </SettingRow>}
     {binding && <SettingRow id="sync-bound-url" label="服务地址">
       {() => <TextField.Root id="sync-bound-url" readOnly value={binding.url} />}
     </SettingRow>}

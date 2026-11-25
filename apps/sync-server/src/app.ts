@@ -7,6 +7,8 @@ import {
 } from "./protocol.js";
 import { identity, query, type BlobStore, type Database, type Identity } from "./storage.js";
 import { apply, bootstrap, checkIdentity, checkPush, getEntity, lookupReceipt, pull, seed, type Client } from "./sync.js";
+import { validateContentBlobs } from "./content-blobs.js";
+import { diagnoseEntities } from "./diagnostics.js";
 
 type Variables = { device: DeviceAuthorization; client: Client; identity: Identity };
 type Route = Context<{ Variables: Variables }>;
@@ -29,7 +31,7 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     await next();
   });
   app.onError((error, c) => {
-    if (error instanceof SyncError) return c.json({ error: error.code, ...error.reason ? { reason: error.reason } : {} }, error.status);
+    if (error instanceof SyncError) return c.json({ error: error.code, ...error.reason ? { reason: error.reason } : {}, ...error.field ? { field: error.field } : {} }, error.status);
     console.error("Sync request failed", error);
     return c.json({ error: "internal_error" }, 500);
   });
@@ -122,9 +124,10 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
       let parsed: ReturnType<typeof operation>;
       try {
         parsed = operation(value);
+        await validateContentBlobs(db, blobs, parsed);
       } catch (error) {
-        if (!(error instanceof SyncError)) throw error;
-        results.push({ index, status: "rejected", reason: error.code });
+        if (!(error instanceof SyncError) || error.status >= 500) throw error;
+        results.push({ index, status: "rejected", reason: error.code, ...error.field ? { field: error.field } : {} });
         continue;
       }
       results.push({ index, ...await apply(db, c.get("client"), cursor, parsed) });
@@ -133,7 +136,7 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
   });
   app.post("/v1/sync/receipts/lookup", limitBody(MAX_PUSH_BYTES), async (c) => {
     const input = await json(c);
-    return c.json(await lookupReceipt(db, c.get("client"), id(input.originDeviceId), operation(input.operation)));
+    return c.json(await lookupReceipt(db, c.get("client"), id(input.originDeviceId), operation(input.operation, false)));
   });
   app.get("/v1/sync/bootstrap", async (c) => {
     const afterType = c.req.query("afterType");
@@ -144,6 +147,12 @@ export function createApp(db: Database, blobs: BlobStore, setupSecret: string | 
     return c.json(await bootstrap(db, c.get("client"),
       afterType === undefined ? "" : entityType(afterType),
       afterId === undefined ? "" : id(afterId), limit));
+  });
+  app.get("/v1/sync/diagnostics", async c => {
+    const afterType = c.req.query("afterType"), afterId = c.req.query("afterId");
+    if ((afterType === undefined) !== (afterId === undefined)) invalid("invalid_after_key");
+    return c.json(await diagnoseEntities(db, blobs, afterType === undefined ? "" : entityType(afterType),
+      afterId === undefined ? "" : id(afterId)));
   });
   app.get("/v1/sync/pull", async (c) => {
     const cursor = queryInteger(c.req.query("cursor"), 0);

@@ -6,6 +6,7 @@ import { createMarkdownParser, isWechatArticleLink, sanitizeRenderedMarkdown } f
 import { theme as defaultTheme } from "./themes/wechat-default";
 import { theme as elegant } from "./themes/wechat-elegant";
 import { theme as tech } from "./themes/wechat-tech";
+import { theme as morandi, applyMorandi, morandiOverrides } from "./themes/morandi";
 import { applyGzhDesign, gzhDesignThemes, wrapGzhLeaves } from "./themes/gzh-design";
 import type { GraphicKind } from "./graphics";
 import type { WechatRecommendation } from "../shared-types";
@@ -16,6 +17,7 @@ export const wechatThemes = [
   { id: "plainly-default", label: defaultTheme.name, styles: defaultTheme.styles },
   { id: "plainly-elegant", label: elegant.name, styles: elegant.styles },
   { id: "plainly-tech", label: tech.name, styles: tech.styles },
+  { id: "morandi", label: morandi.name, styles: morandi.styles },
   ...gzhDesignThemes,
 ] as const;
 
@@ -25,9 +27,9 @@ export function wechatThemeId(id?: string | null) {
 
 function wechatThemeCss(theme: typeof wechatThemes[number]) {
   const calloutPadding = theme.id === "plainly-tech" ? "4px 12px" : "8px 12px";
-  const styleRules = Object.entries(theme.styles).map(([selector, styles]) =>
-    `${selector.split(",").map(part => `[class="plainly-article"]${part.trim() === "container" ? "" : ` ${part.trim()}`}`).join(",")}{${styles}}`);
-  return styleRules.join("\n")
+  const rules = (styles: Record<string, string>) => Object.entries(styles).map(([selector, declarations]) =>
+    `${selector.split(",").map(part => `[class="plainly-article"]${part.trim() === "container" ? "" : ` ${part.trim()}`}`).join(",")}{${declarations}}`).join("\n");
+  const css = rules(theme.styles)
     + ".plainly-article mark{background-color:#fff7c2;color:inherit;}"
     + `.plainly-article blockquote.workbench-callout{padding:${calloutPadding};border:0;border-left:0.5px solid;font-style:normal;text-align:start;}`
     + ".plainly-article .workbench-callout .workbench-callout-title{padding:0;background:transparent !important;border-radius:0;font-weight:600;}.plainly-article .workbench-callout .workbench-callout-title strong{color:inherit !important;padding:0;background:transparent !important;}"
@@ -44,7 +46,12 @@ function wechatThemeCss(theme: typeof wechatThemes[number]) {
     + ".plainly-article .plainly-reference-number{display:inline-block;min-width:2.5em;color:#60646c;}"
     + ".plainly-article .footnotes-list a,.plainly-article .footnote-ref a{color:#60646c !important;border-bottom:0;text-decoration:none;}"
     + ".plainly-article table{width:100%;border-collapse:collapse;}.plainly-article .hljs-keyword,.plainly-article .hljs-title{color:#7047b8;}"
-    + ".plainly-article .hljs-string{color:#367848;}.plainly-article .hljs-number{color:#a04e24;}.plainly-article .hljs-comment{color:#626a70;}";
+    + ".plainly-article .hljs-string{color:#367848;}.plainly-article .hljs-number{color:#a04e24;}.plainly-article .hljs-comment{color:#626a70;}"
+    + ".plainly-article .plainly-image-with-caption{display:block;max-width:100%;text-align:center;}"
+    + ".plainly-article .plainly-image-with-caption img{margin-bottom:0 !important;}"
+    + ".plainly-article .plainly-image-figure{margin:20px 0;text-align:center;}.plainly-article .plainly-image-figure img{margin:0 auto !important;}"
+    + ".plainly-article .plainly-image-caption{display:block;margin:8px 0 0 !important;padding:0 !important;font-size:13px !important;font-weight:400 !important;line-height:1.6 !important;letter-spacing:normal;text-align:center !important;color:#646464 !important;background-color:transparent !important;overflow-wrap:anywhere;}";
+  return theme.id === "morandi" ? css + rules(morandiOverrides) : css;
 }
 
 const editorStyles = new Map<string, Readonly<Record<string, string>>>();
@@ -143,7 +150,7 @@ function checkWechatLinks(root: ParentNode) {
   }
 }
 
-export function parseWechat(markdown: string, sources: SourceFragment[], githubRepo?: string) {
+export function parseWechat(markdown: string, sources: SourceFragment[], githubRepo?: string, preserveFigures = false) {
   const parser = createMarkdownParser();
   const fragments: Omit<SourceFragment, "line">[] = [];
   const markerPrefix = `${crypto.randomUUID()}-`;
@@ -206,14 +213,14 @@ export function parseWechat(markdown: string, sources: SourceFragment[], githubR
     const fragment = token.info.trim().split(/\s+/)[0] === "mermaid" ? blockAt("mermaid", token.map?.[0]) : undefined;
     return fragment ? mark(fragment.kind, fragment.source) : fence(tokens, index, options, env, self);
   };
-  return { body: sanitizeRenderedMarkdown(parser.render(markdown), { githubRepo }), fragments, markerPrefix };
+  return { body: sanitizeRenderedMarkdown(parser.render(markdown), { githubRepo, preserveFigures }), fragments, markerPrefix };
 }
 
 export async function renderWechat(input: RenderInput, services: RenderServices): Promise<RenderedWechat> {
   const theme = wechatThemes.find(theme => theme.id === input.themeId) ?? wechatThemes[0];
   const sources = /\$|mermaid/.test(input.markdown) ? await services.sources(input.markdown) : [];
   services.signal?.throwIfAborted();
-  const { body, fragments, markerPrefix } = parseWechat(input.markdown, sources, input.githubRepo);
+  const { body, fragments, markerPrefix } = parseWechat(input.markdown, sources, input.githubRepo, true);
   const article = document.createElement("section");
   article.className = "plainly-article";
   article.append(body);
@@ -266,9 +273,10 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
   const images: RenderedWechat["images"] = [];
   const warnings: string[] = [];
   const blobUrls: string[] = [];
+  const captionImages: HTMLImageElement[] = [];
   const dispose = () => blobUrls.splice(0).forEach(url => URL.revokeObjectURL(url));
 
-  function insertImage(node: Element, image: ImageResult, alt: string, inline = false) {
+  function insertImage(node: Element, image: ImageResult, alt: string, inline = false, caption = false) {
     if (!image.src) {
       const label = document.createElement("span");
       label.textContent = `[图片 ${images.length}${alt ? `：${alt}` : ""}]`;
@@ -282,6 +290,7 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
     img.height = image.height;
     if (inline) img.className = "plainly-inline-math";
     node.replaceWith(img);
+    if (caption && alt.trim()) captionImages.push(img);
   }
 
   try {
@@ -307,7 +316,7 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
           const { imageUrl: url, imageAlt: alt = "" } = node.dataset;
           if (!url) throw new Error("图片地址无效");
           images.push({ url, alt });
-          insertImage(node, await services.image(url), alt);
+          insertImage(node, await services.image(url), alt, false, true);
         }
       } catch (error) {
         if (input.output !== "preview") throw error;
@@ -332,8 +341,39 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
         }
       }
     }
+    for (const figure of article.querySelectorAll("figure")) {
+      const section = document.createElement("section");
+      section.className = "plainly-image-figure";
+      for (const caption of figure.querySelectorAll("figcaption")) {
+        const paragraph = document.createElement("p");
+        paragraph.className = "plainly-image-caption";
+        paragraph.append(...caption.childNodes);
+        caption.replaceWith(paragraph);
+      }
+      section.append(...figure.childNodes);
+      figure.replaceWith(section);
+    }
+    for (const img of captionImages) {
+      const figure = img.closest(".plainly-image-figure");
+      const existing = figure?.querySelector(".plainly-image-caption");
+      if (existing) {
+        if (!existing.textContent?.trim()) existing.textContent = img.alt;
+        continue;
+      }
+      const caption = document.createElement(figure ? "p" : "span");
+      caption.className = "plainly-image-caption";
+      caption.textContent = img.alt;
+      if (!figure) {
+        const wrapper = document.createElement("span");
+        wrapper.className = "plainly-image-with-caption";
+        img.replaceWith(wrapper);
+        wrapper.append(img);
+      }
+      img.after(caption);
+    }
     const gzhDesign = "layout" in theme && theme.layout === "gzh-design";
     if (gzhDesign) applyGzhDesign(article);
+    if (theme.id === "morandi") applyMorandi(article);
     const template = document.createElement("template");
     template.innerHTML = juice.inlineContent(article.outerHTML, wechatThemeCss(theme), { removeStyleTags: true, preserveImportant: true });
     // Plainly's WeChat converter supplies an explicit width attribute for full-width tables.
@@ -376,7 +416,8 @@ export async function renderWechat(input: RenderInput, services: RenderServices)
     const recommended = plain.querySelector(".plainly-recommendations");
     if (recommended) recommended.textContent = "推荐阅读：\n\n" + recommendations.map(item => `${item.title}\n${item.url}`).join("\n\n");
     for (const img of plain.querySelectorAll("img")) {
-      img.replaceWith(document.createTextNode(img.alt || "[图片]"));
+      const caption = img.closest(".plainly-image-figure")?.querySelector(".plainly-image-caption") ?? img.nextElementSibling;
+      img.replaceWith(document.createTextNode(caption?.classList.contains("plainly-image-caption") && caption.textContent === img.alt ? "" : img.alt || "[图片]"));
     }
     const text = Array.from(plain.children, child => child.textContent?.trim() ?? "").filter(Boolean).join("\n\n");
     return { revision: input.revision, themeId: theme.id, html: template.innerHTML, text, images, warnings, dispose };

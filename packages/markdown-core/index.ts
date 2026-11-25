@@ -39,7 +39,7 @@ const tags = [
 ];
 const contentAttrs = ["href", "src", "alt", "title", "start", "open", "colspan", "rowspan"];
 const rendererAttrs = ["id", "data-line", "data-wechat-fragment", "class"];
-interface RenderOptions { githubRepo?: string; embedded?: boolean }
+interface RenderOptions { githubRepo?: string; embedded?: boolean; preserveFigures?: boolean }
 
 export const footnoteId = /^fn(?:ref)?\d+(?::\d+)?$/;
 
@@ -57,7 +57,7 @@ export function renderMarkdown(markdownText: string, options?: RenderOptions): D
   return sanitizeRenderedMarkdown(markdown.render(markdownText), options);
 }
 
-export function sanitizeRenderedMarkdown(html: string, { githubRepo, embedded }: RenderOptions = {}): DocumentFragment {
+export function sanitizeRenderedMarkdown(html: string, { githubRepo, embedded, preserveFigures }: RenderOptions = {}): DocumentFragment {
   // Older GitHub imports saved relative HTML URLs without the README path.
   const repo = githubRepo?.match(/^https:\/\/github\.com\/(?!\.\.?\/)([\w.-]+\/(?!\.\.?(?:\/|$))[\w.-]+)\/?$/i)?.[1];
   if (repo) {
@@ -77,7 +77,7 @@ export function sanitizeRenderedMarkdown(html: string, { githubRepo, embedded }:
     html = template.innerHTML;
   }
   const fragment = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: tags,
+    ALLOWED_TAGS: embedded || preserveFigures ? [...tags, "figure", "figcaption"] : tags,
     ALLOWED_ATTR: embedded ? contentAttrs : [...contentAttrs, ...rendererAttrs],
     ADD_URI_SAFE_ATTR: ["start", "open", "colspan", "rowspan", ...rendererAttrs],
     ALLOWED_URI_REGEXP: /^(?:https?:\/\/|mailto:|#|asset:\/\/)/i,

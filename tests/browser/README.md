@@ -14,7 +14,11 @@ pnpm test:browser
 
 使用 [Playwright Test](https://github.com/microsoft/playwright) 的 Chromium、WebKit 项目，固定工具版本并复用两个引擎的同一份断言。测试自动启动 1421 端口的 Vite，退出时关闭服务；测试结果及失败 trace 写入忽略目录 `output/playwright/test-results`。现有 Windows、macOS CI 桌面矩阵运行相同命令。
 
-`theme-quotes.spec.ts` 覆盖 9 套主题、LF/CRLF 原文、单段及三段引用、13 类三段提示块，比较实际 `DocumentEditor` 的编辑／阅读模式和预览、公众号复制、HTML 导出结果。断言普通段落、末尾段落的计算边距、实际段间距离，以及切换模式后原文不变。夹具位于 `apps/desktop/tests`，不参与生产入口。
+`morandi-theme.spec.ts` 挂载真实公众号预览和发布侧栏，验证莫兰迪的注册/选择、390px/1200px 明暗预览、正文及代码对比度、局部溢出、Mermaid、应用外观切换不重绘/不跳滚动位置，以及预览颜色不进入导出 HTML。另以 400 个附加段落对照既有技术主题，记录热渲染样本。样稿为 `fixtures/morandi-theme.md`，公众号真机人工检查见 `docs/morandi-theme-validation.md`。
+
+`theme-quotes.spec.ts` 覆盖 9 套发布主题、LF/CRLF 原文、单段及三段引用、13 类三段提示块，分别断言 `DocumentEditor` 编辑／阅读的共享段距，以及预览、公众号复制、HTML 导出各主题的原有段距，验证两套样式隔离且切换模式后原文不变。夹具位于 `apps/desktop/tests`，不参与生产入口。
+
+`article-typography.spec.ts` 使用 `fixtures/technology-article.md` 综合文章，覆盖 H1–H6、中英文、长 URL、图片、代码、宽表格、任务列表、引用、Mermaid 与数学公式。Chromium/WebKit 验证深浅外观、360px/1200px、编辑/阅读模式、WCAG AA 正文及链接对比度、图像原始尺寸与居中、局部滚动、表格滚动后的手柄和编辑、主题切换的选区及文档身份、撤销重做与长文输入。图片通过本地生成 PNG 注入现有素材读取入口；不替代真实图床、系统浏览器和公众号后台验收。
 
 引用样式必须在真实引擎中验证：当前 jsdom 对 `margin: 0 0 20px; margin-bottom: 0;` 的长短属性覆盖解析与浏览器不同，单元测试不能替代这组回归。跨平台测试不比较字体像素、整页高度或不同系统的字形。
 

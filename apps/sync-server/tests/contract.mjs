@@ -173,6 +173,15 @@ export async function runContract(base, setupSecret) {
   const longOperation = operation(long);
   assert.equal((await push(a, longOperation))[0].status, "applied");
   assert.equal((await lookup(b, first.deviceId, longOperation)).status, "applied");
+  const malformed = Buffer.from([0xc3, 0x28]), malformedHash = digest(malformed);
+  await ok(204, "blobs/" + malformedHash, "PUT", a, malformed);
+  const invalidText = entry("invalid-utf8", "");
+  delete invalidText.payload.contentMd;
+  Object.assign(invalidText.payload, { contentBlobHash: malformedHash, contentBlobSize: malformed.length });
+  const invalidTextOperation = operation(invalidText);
+  assert.equal((await push(a, invalidTextOperation))[0].reason, "invalid_content_utf8");
+  await ok(404, "sync/entities/entry/invalid-utf8", "GET", b);
+  assert.equal((await lookup(b, first.deviceId, invalidTextOperation)).status, "not_found");
   const largeLookupOperation = operation(entry("lookup-large", "a".repeat(6000)));
   assert.equal((await push(a, largeLookupOperation))[0].status, "applied");
   assert.equal((await lookup(b, first.deviceId, largeLookupOperation)).status, "applied");

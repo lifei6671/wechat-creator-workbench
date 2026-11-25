@@ -31,7 +31,7 @@ export function prepareImageContext(view: EditorView, event: MouseEvent): ImageC
 }
 
 export interface EditorImages {
-  resolveImage?(url: string, retry?: boolean): Promise<{ src: string; dispose(): void }>;
+  resolveImage?(url: string, retry?: boolean): Promise<{ src: string; width?: number; height?: number; dispose(): void }>;
   imageErrorMessage?(error: unknown): string;
   onImageZoom?(image: { src: string; alt: string }, trigger: HTMLButtonElement): void;
   onError?(error: unknown): void;
@@ -142,7 +142,11 @@ export function imageView(
   source.setAttribute("aria-expanded", "false");
   controls.append(zoom, source);
   frame.append(media, uploadStatus, controls);
-  dom.append(frame);
+  const caption = document.createElement("span");
+  caption.className = "rich-image-caption";
+  caption.textContent = alt;
+  caption.hidden = true;
+  dom.append(frame, caption);
 
   const sourcePanel = document.createElement("span");
   sourcePanel.className = "rich-image-source-editor";
@@ -151,10 +155,7 @@ export function imageView(
   field.setAttribute("aria-label", "图片 Markdown 源码");
   field.rows = 1;
   field.spellcheck = false;
-  const error = document.createElement("span");
-  error.className = "inline-error";
-  error.setAttribute("role", "alert");
-  sourcePanel.append(field, error);
+  sourcePanel.append(field);
   dom.prepend(sourcePanel);
 
   function closeSource() {
@@ -167,8 +168,6 @@ export function imageView(
     const schema = view.state.schema;
     if (sourcePanel.hidden) {
       field.value = serialize(schema.topNodeType.create(null, schema.nodes.paragraph.create(null, node))).trim();
-      error.textContent = "";
-      field.removeAttribute("aria-invalid");
     }
     sourcePanel.hidden = false;
     source.setAttribute("aria-expanded", "true");
@@ -182,22 +181,24 @@ export function imageView(
     const parsed = parse(field.value.trim());
     const paragraph = parsed.firstChild;
     const image = paragraph?.firstChild;
-    if (parsed.childCount !== 1 || paragraph?.type !== view.state.schema.nodes.paragraph
-      || paragraph.childCount !== 1 || image?.type !== node.type || !imagePattern.test(image.attrs.src)) {
-      error.textContent = "请输入一条使用 HTTP、HTTPS 或 asset:// 地址的 Markdown 图片语法";
-      field.setAttribute("aria-invalid", "true");
-      return;
-    }
     closeSource();
     const pos = getPos();
-    if (pos !== undefined && !node.sameMarkup(image.mark(node.marks))) {
-      view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, image.attrs));
+    if (pos !== undefined) {
+      if (parsed.childCount === 1 && paragraph?.type === view.state.schema.nodes.paragraph
+        && paragraph.childCount === 1 && image?.type === node.type && imagePattern.test(image.attrs.src)) {
+        if (!node.sameMarkup(image.mark(node.marks))) view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, image.attrs));
+      } else {
+        const text = field.value;
+        const tr = view.state.tr;
+        if (text) tr.replaceWith(pos, pos + node.nodeSize, view.state.schema.text(text, node.marks));
+        else tr.delete(pos, pos + node.nodeSize);
+        view.dispatch(tr);
+      }
     }
     if (!blur) view.focus();
   }
 
   field.onblur = () => finishSource(true);
-  field.oninput = () => { error.textContent = ""; field.removeAttribute("aria-invalid"); };
   sourcePanel.onkeydown = event => {
     event.stopPropagation();
     if (event.isComposing || event.keyCode === 229) return;
@@ -222,6 +223,7 @@ export function imageView(
       if (manual && retryButton.hasAttribute("aria-disabled")) return;
       window.clearTimeout(feedbackTimer);
       failedImages.delete(load);
+      caption.hidden = true;
       retryButton.setAttribute("aria-disabled", "true");
       retryButton.setAttribute("aria-busy", "true");
       retryButton.dataset.feedbackState = "pending";
@@ -237,9 +239,12 @@ export function imageView(
         const img = document.createElement("img");
         img.alt = alt;
         img.title = node.attrs.title ?? "";
+        if (image.width !== undefined) img.width = image.width;
+        if (image.height !== undefined) img.height = image.height;
         img.src = image.src;
         const restoreFocus = document.activeElement === retryButton;
         media.replaceChildren(img);
+        caption.hidden = !alt.trim();
         if (getOptions().onImageZoom) {
           zoom.disabled = false;
           zoom.onclick = () => getOptions().onImageZoom?.({ src: image.src, alt }, zoom);

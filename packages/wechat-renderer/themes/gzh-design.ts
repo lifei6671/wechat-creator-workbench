@@ -19,7 +19,7 @@ const palettes = [
 export const gzhDesignThemes = palettes.map(palette => {
   const { accent, ink, text, line, tint, gap, paragraph, font, chapter } = palette;
   const styles: Record<string, string> = {
-    container: `max-width:677px;margin:0 auto;padding:8px 16px 28px;box-sizing:border-box;color:${text};font-family:${sans};font-size:15px;line-height:1.9;letter-spacing:0.3px;overflow-wrap:break-word;`,
+    container: `width:100%;margin:0;padding:8px 0 28px;box-sizing:border-box;color:${text};font-family:${sans};font-size:15px;line-height:1.9;letter-spacing:0.3px;overflow-wrap:break-word;`,
     h1: `margin:24px 0;font-size:20px;font-weight:700;line-height:1.5;color:${ink};font-family:${font};`,
     h2: `margin:${gap}px 0 24px;padding:0 0 12px;border-bottom:0.5px solid ${line};font-size:20px;font-weight:700;line-height:1.5;color:${ink};font-family:${font};`,
     h3: `margin:28px 0 16px;font-size:15px;font-weight:700;color:${ink};line-height:1.9;font-family:${font};`,
