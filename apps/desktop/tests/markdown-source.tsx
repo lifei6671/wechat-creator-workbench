@@ -15,6 +15,7 @@ declare global { interface Window {
   setReading: (value: boolean) => void; completeUpload: () => void;
   startHostUpload: () => void; finishHostUpload: () => Promise<number>;
   selectionFrom: () => number;
+  pasteWithImages: () => void; finishLocalization: () => Promise<void>;
 } }
 window.markdown = () => editor!.captureMarkdown().markdown;
 window.selectionFrom = () => editor!.target().from;
@@ -22,6 +23,16 @@ window.pasteSource = async text => {
   editor!.clipboard("paste", { read: async () => text, write: async () => {}, onError: error => { throw error; } });
   await editor!.pendingEdits();
 };
+let finishLocalization: (url: string) => void;
+window.pasteWithImages = () => {
+  editor!.clipboard("paste", {
+    read: async () => ({ html: '<p><strong>正文</strong> <img alt="图片" src="https://example.com/original.png"></p>' }),
+    write: async () => {},
+    localizeImage: () => new Promise<string>(resolve => { finishLocalization = resolve; }),
+    onError: error => { throw error; },
+  });
+};
+window.finishLocalization = async () => { finishLocalization("asset://localized"); await editor!.pendingEdits(); };
 let uploaded = false;
 const readImageUploadState = async () => ({ pending: !uploaded, publicUrl: uploaded ? "https://example.com/uploaded.png" : undefined });
 const resolveHostedImage = async () => "https://example.com/uploaded.png";

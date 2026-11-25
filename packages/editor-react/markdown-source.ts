@@ -22,6 +22,7 @@ export const markdownSource = $nodeSchema("markdown_source", () => ({
 }));
 
 export const exitMarkdownSource = new PluginKey("exitMarkdownSource");
+const restoreMarkdownSource = new PluginKey("restoreMarkdownSource");
 
 type MarkdownSyntax = {
   type: string;
@@ -89,14 +90,9 @@ export function markdownSourceEditing(parse: (source: string) => ProseNode, seri
 
   function restore(view: EditorView) {
     if (!view.editable) return;
-    const tr = view.state.tr;
-    view.state.doc.forEach((node, pos) => {
-      if (node.type.name !== "markdown_source") return;
-      const parsed = content(node, view.state.doc);
-      tr.replaceWith(tr.mapping.map(pos), tr.mapping.map(pos + node.nodeSize),
-        parsed.size ? parsed : view.state.schema.nodes.paragraph.create());
-    });
-    if (tr.docChanged) view.dispatch(closeHistory(tr));
+    // Append the presentation change to the last edit, even after the history
+    // grouping delay. A non-history replacement would erase its undo mapping.
+    view.dispatch(view.state.tr.setMeta(restoreMarkdownSource, true));
   }
 
   function open(view: EditorView, position: number, token: string, after = false) {
@@ -146,7 +142,18 @@ export function markdownSourceEditing(parse: (source: string) => ProseNode, seri
   }
 
   function keydown(view: EditorView, event: KeyboardEvent) {
-    if (!view.editable || view.composing || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (!view.editable || view.composing || event.isComposing || event.keyCode === 229) return false;
+    const mod = /Mac/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
+    const blockFormat = mod && (event.altKey && (/^[0-8c]$/i.test(event.key) || /^(Digit[0-8]|KeyC)$/.test(event.code))
+      || event.shiftKey && event.key.toLowerCase() === "b");
+    if (blockFormat) {
+      let source = false;
+      view.state.doc.nodesBetween(view.state.selection.from, view.state.selection.to, node => {
+        source ||= node.type.name === "markdown_source";
+      });
+      if (source) return true;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return false;
     const { $from, empty } = view.state.selection;
     const source = $from.parent.type.name === "markdown_source";
     if (source && event.key === "Enter") {
@@ -177,10 +184,11 @@ export function markdownSourceEditing(parse: (source: string) => ProseNode, seri
   return new Plugin({
     appendTransaction(transactions, _old, state) {
       const exit = transactions.some(tr => tr.getMeta(exitMarkdownSource));
-      if (!exit && !transactions.some(tr => tr.selectionSet)) return null;
+      const restore = exit || transactions.some(tr => tr.getMeta(restoreMarkdownSource));
+      if (!restore && !transactions.some(tr => tr.selectionSet)) return null;
       const tr = state.tr;
       state.doc.forEach((node, pos) => {
-        if (node.type.name !== "markdown_source" || !exit && state.selection.from <= pos + node.nodeSize && state.selection.to > pos) return;
+        if (node.type.name !== "markdown_source" || !restore && state.selection.from <= pos + node.nodeSize && state.selection.to > pos) return;
         const parsed = content(node, state.doc);
         tr.replaceWith(tr.mapping.map(pos), tr.mapping.map(pos + node.nodeSize),
           parsed.size ? parsed : state.schema.nodes.paragraph.create());

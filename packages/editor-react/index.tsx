@@ -609,6 +609,8 @@ export function MarkdownEditor(props: Props) {
     const element = host.current!;
     const session = Symbol(entryId);
     const pending = new Map<symbol, Range>();
+    const localizedImages = new WeakMap<ProseNode, string>();
+    const localizingImages = new Set<{ node: ProseNode; src: string; range?: Range }>();
     const edits = new Set<Promise<void>>();
     const compositionWaiters = new Set<() => void>();
     let compositionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -699,6 +701,17 @@ export function MarkdownEditor(props: Props) {
       edits.add(edit);
     }
 
+    function applyLocalizedImages(view: EditorView) {
+      if (!isWritable(view)) return;
+      const tr = view.state.tr;
+      view.state.doc.descendants((node, pos) => {
+        const url = localizedImages.get(node);
+        if (!url) return;
+        tr.setNodeAttribute(pos, "src", url);
+      });
+      if (tr.docChanged) view.dispatch(tr.setMeta("addToHistory", false));
+    }
+
     function localizeImages(view: EditorView, images: PastedImage[], localize: (url: string) => Promise<string>,
       onError?: (error: unknown) => void, beforeLayout = view.state.doc) {
       if (!images.length || !isWritable(view)) return;
@@ -712,7 +725,9 @@ export function MarkdownEditor(props: Props) {
         });
       }
       const downloads = new Map<string, Promise<string>>();
-      for (const { from, to, src } of images) {
+      for (const { node, from, to, src } of images) {
+        const target = { node, src, range: { from, to } };
+        localizingImages.add(target);
         const frame = imageContext(view.nodeDOM(from));
         frame?.setUploading(true);
         const task = downloads.get(src) ?? localize(src).catch(error => {
@@ -720,13 +735,18 @@ export function MarkdownEditor(props: Props) {
           return src;
         });
         downloads.set(src, task);
-        track(view, { from, to }, () => task.finally(() => frame?.setUploading(false)), ({ from }, url) => {
-          if (url === src) return;
-          const current = view.state.doc.nodeAt(from);
-          if (current?.type.name === "image" && current.attrs.src === src) {
-            view.dispatch(view.state.tr.setNodeAttribute(from, "src", url).setMeta("addToHistory", false));
-          }
-        }, onError, { duringComposition: true });
+        // Source editing retains unchanged image identities while replacing
+        // their blocks. Keep completed downloads until those nodes reappear.
+        const edit = task.then(url => {
+          if (!isWritable(view) || url === src) return;
+          localizedImages.set(target.node, url);
+          applyLocalizedImages(view);
+        }).catch(error => { if (!disposed) onError?.(error); }).finally(() => {
+          frame?.setUploading(false);
+          localizingImages.delete(target);
+          edits.delete(edit);
+        });
+        edits.add(edit);
       }
     }
 
@@ -945,7 +965,10 @@ export function MarkdownEditor(props: Props) {
       })))
       .use(markdownSource)
       .use($prose(ctx => markdownSourceEditing(source => ctx.get(parserCtx)(source), doc => ctx.get(serializerCtx)(doc),
-        tr => tr.setMeta(documentLayout, true).setMeta("addToHistory", false), () => syncUploads.current?.(),
+        tr => tr.setMeta(documentLayout, true).setMeta("addToHistory", false), () => {
+          applyLocalizedImages(ctx.get(editorViewCtx));
+          syncUploads.current?.();
+        },
         source => ctx.get(remarkCtx).parse(source))))
       .use($prose(ctx => editorPresentation(() => latest.current, (state, source, value) => {
         const { schema, doc } = state;
@@ -993,6 +1016,18 @@ export function MarkdownEditor(props: Props) {
               const mapped = mapRange(range, tr);
               if (mapped) pending.set(id, mapped);
               else pending.delete(id);
+            }
+            for (const image of localizingImages) {
+              if (image.range) image.range = mapRange(image.range, tr);
+              // Source replacement temporarily removes the image; restoration
+              // reuses its identity so ordinary range tracking can resume.
+              if (!image.range) tr.doc.descendants((node, pos) => {
+                if (node === image.node) image.range = { from: pos, to: pos + node.nodeSize };
+              });
+              if (!image.range) continue;
+              const node = tr.doc.nodeAt(image.range.from);
+              if (node?.type.name === "image" && node.attrs.src === image.src) image.node = node;
+              else image.range = undefined;
             }
             return tr.getMeta(documentLayout) ? value : value + 1;
           },
@@ -1439,6 +1474,7 @@ export function MarkdownEditor(props: Props) {
       clearTimeout(compositionTimer);
       resumeCompositionEdits();
       pending.clear();
+      localizingImages.clear();
       pastes.clear();
       detachRef?.();
       if (viewRef.current) { viewRef.current = null; void editor.destroy(); }

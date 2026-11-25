@@ -1,5 +1,102 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("undoes the text edit once after restoring source on external blur", async ({ page }) => {
+  await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent('# **标题**\n\n后文'));
+  const editor = page.locator(".ProseMirror");
+  await editor.locator("h1 strong").click();
+  await editor.locator('[data-markdown="# "]').click();
+  await selectSource(page, "标题");
+  await page.keyboard.insertText("修改标题");
+  // Restoration must join the edit even after the history grouping delay.
+  await page.waitForTimeout(600);
+  await page.getByRole("button", { name: "外部控件" }).click();
+  await expect(editor.locator("h1 strong")).toHaveText("修改标题");
+  await editor.focus();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe('# **标题**\n\n后文');
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe('# **修改标题**\n\n后文');
+});
+
+for (const [platform, key] of [["Win32", "Control+Alt+0"], ["Win32", "Control+Alt+2"], ["Win32", "Control+Alt+c"],
+  ["Win32", "Control+Alt+7"], ["Win32", "Control+Alt+8"], ["Win32", "Control+Shift+b"], ["MacIntel", "Meta+Alt+2"]]) test(`protects source from block formatting shortcut ${key} (${platform})`, async ({ page }) => {
+  await page.addInitScript(platform => Object.defineProperty(navigator, "platform", { value: platform }), platform);
+  const markdown = '# **标题**\n\n后文';
+  await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent(markdown));
+  const editor = page.locator(".ProseMirror");
+  await editor.locator("h1 strong").click();
+  await editor.locator('[data-markdown="# "]').click();
+  await selectSource(page, "标题");
+  await page.keyboard.press(key);
+  await expect(editor.locator("[data-markdown-source]")).toHaveText("# **标题**");
+  await page.getByRole("button", { name: "外部控件" }).click();
+  await expect(editor.locator("h1 strong")).toHaveText("标题");
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe(markdown);
+});
+
+for (const restoreBeforeResult of [false, true]) test(`localizes a pasted image across source editing (restore first=${restoreBeforeResult})`, async ({ page }) => {
+  await page.goto('/tests/markdown-source.html?source=');
+  const editor = page.locator(".ProseMirror");
+  await editor.focus();
+  await page.evaluate(() => window.pasteWithImages());
+  await editor.locator("strong").click();
+  await editor.locator('.rich-strong-delimiter').first().click();
+  await selectSource(page, "正文");
+  await page.keyboard.insertText("修改正文");
+  if (restoreBeforeResult) await page.getByRole("button", { name: "外部控件" }).click();
+  await page.evaluate(() => window.finishLocalization());
+  if (!restoreBeforeResult) await page.getByRole("button", { name: "外部控件" }).click();
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe("**修改正文** ![图片](asset://localized)");
+});
+
+for (const replacement of ["https://example.com/changed.png", ""]) test(`ignores a localized result after changing its source image to ${JSON.stringify(replacement)}`, async ({ page }) => {
+  await page.goto('/tests/markdown-source.html?source=');
+  const editor = page.locator(".ProseMirror");
+  await editor.focus();
+  await page.evaluate(() => window.pasteWithImages());
+  await editor.locator("strong").click();
+  await editor.locator('.rich-strong-delimiter').first().click();
+  await selectSource(page, replacement ? "https://example.com/original.png" : "![图片](https://example.com/original.png)");
+  await page.keyboard.insertText(replacement);
+  await page.evaluate(() => window.finishLocalization());
+  await page.getByRole("button", { name: "外部控件" }).click();
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe(replacement ? `**正文** ![图片](${replacement})` : "**正文**");
+});
+
+test("syncs automatic hosting after a localization completed in source mode", async ({ page }) => {
+  await page.goto('/tests/markdown-source.html?upload&source=');
+  const editor = page.locator(".ProseMirror");
+  await editor.focus();
+  await page.evaluate(() => window.pasteWithImages());
+  await editor.locator("strong").click();
+  await editor.locator('.rich-strong-delimiter').first().click();
+  await page.evaluate(async () => { window.completeUpload(); await window.finishLocalization(); });
+  await page.getByRole("button", { name: "外部控件" }).click();
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe("**正文** ![图片](https://example.com/uploaded.png)");
+});
+
+for (const key of ["b", "i"]) for (const sourceAfterFormatting of [false, true]) test(`localizes an image after applying ${key} (source afterwards=${sourceAfterFormatting})`, async ({ page }) => {
+  await page.goto('/tests/markdown-source.html?source=');
+  const editor = page.locator(".ProseMirror");
+  await editor.focus();
+  await page.evaluate(() => window.pasteWithImages());
+  await expect(editor.locator(".rich-image")).toHaveCount(1);
+  await page.keyboard.press("ControlOrMeta+a");
+  // First remove the pasted strong mark, then apply it to the entire selection.
+  if (key === "b") await page.keyboard.press("ControlOrMeta+b");
+  await page.keyboard.press(`ControlOrMeta+${key}`);
+  if (sourceAfterFormatting) {
+    await editor.locator("strong").first().click({ position: { x: 3, y: 5 } });
+    await editor.locator(".rich-markdown-syntax").first().click();
+    await expect(editor.locator("[data-markdown-source]")).toHaveCount(1);
+  }
+  await page.evaluate(() => window.finishLocalization());
+  await page.getByRole("button", { name: "外部控件" }).click();
+  await expect.poll(() => page.evaluate(() => window.markdown())).toContain("![图片](asset://localized)");
+  await expect.poll(() => page.evaluate(() => window.markdown())).not.toContain("https://example.com/original.png");
+  await expect(editor.locator(key === "b" ? "strong" : "em").first()).toContainText("正文");
+});
+
 async function selectSource(page: Page, text: string) {
   await page.locator("[data-markdown-source]").evaluate((element, text) => {
     const from = element.textContent!.indexOf(text);
