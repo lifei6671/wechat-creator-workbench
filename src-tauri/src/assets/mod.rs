@@ -352,7 +352,12 @@ impl Assets {
                 params![hash, source, kind], |r| r.get::<_, String>(0),
             ).optional()?;
             let path = self.root.join(&relative);
-            if !path.is_file() {
+            let needs_write = match std::fs::read(&path) {
+                Ok(stored) => hex::encode(Sha256::digest(&stored)) != hash,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => return Err(local_error(error)),
+            };
+            if needs_write {
                 let parent = path.parent().expect("asset path has parent");
                 std::fs::create_dir_all(parent).map_err(local_error)?;
                 let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(local_error)?;

@@ -76,6 +76,22 @@ it("explains what to enter in every first-time sync setting", async () => {
   }
 });
 
+it("shows pending and blocked initialization counts using the existing sync action", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  vi.spyOn(desktop, "syncStatus").mockResolvedValue({ url: "https://sync.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false });
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  vi.mocked(desktop.syncActivity).mockResolvedValue({ hasLocalContent: true, initialized: false, pending: true, incoming: false,
+    issues: 1, pendingCount: 3, rejectedCount: 1, phase: "idle", error: { code: "SYNC_INITIALIZATION_BLOCKED", message: "素材 image-1 缺失" }, lastExchangeAt: 1 });
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
+    await vi.waitFor(() => expect(container.textContent).toContain("待上传 3 项"));
+    expect(container.textContent).toContain("需处理 1 项");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("image-1");
+    expect([...container.querySelectorAll("button")].filter(button => button.textContent === "立即同步")).toHaveLength(1);
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
 it("does not replace a device name edited before the computer name arrives", async () => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);

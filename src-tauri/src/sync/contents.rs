@@ -24,6 +24,8 @@ const MAX_GROUP: usize = 256;
 mod canvas_conflicts;
 #[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+mod initialization_tests;
 mod merge;
 #[cfg(test)]
 mod transport_tests;
@@ -642,6 +644,67 @@ fn reject_outbox(
     })
 }
 
+pub(super) async fn retry_repaired_assets(db: &Workspace, assets: &Assets) -> Result<()> {
+    let rejected = db.read(|conn| {
+        let mut query = conn.prepare(
+            "SELECT i.entity_id,i.generation,i.reason FROM sync_issues i JOIN sync_dirty d
+             ON (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation)
+             WHERE i.entity_type='asset' AND i.remote_json IS NULL AND
+               (i.reason LIKE 'SYNC_ASSET:%' OR i.reason LIKE 'ASSET_MISSING:%'
+                OR i.reason IN ('素材原图缺失或与同步快照不一致','找不到本地图片或可用的远端副本'))",
+        )?;
+        Ok(query.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })?;
+    for (id, generation, reason) in rejected {
+        let key = Key { entity_type: Kind::Asset, entity_id: id.clone() };
+        let Some(snapshot) = db.read(|conn| images::snapshot(conn, &id))? else { continue; };
+        if snapshot.sha256.is_none() { continue; }
+        match assets.sync_upload_bytes(&id, &snapshot, db).await {
+            Ok(_) => db.write(|tx| {
+                if !in_outbox(tx, &key)? {
+                    tx.execute(
+                        "DELETE FROM sync_issues WHERE entity_type='asset' AND entity_id=?1 AND generation=?2 AND reason=?3
+                         AND remote_json IS NULL AND EXISTS (SELECT 1 FROM sync_dirty WHERE entity_type='asset' AND entity_id=?1 AND generation=?2)",
+                        params![id,generation,reason],
+                    )?;
+                }
+                Ok(())
+            })?,
+            Err(error) if matches!(error.code(), "SYNC_ASSET" | "ASSET_MISSING") => {},
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn retry_asset_dependents(conn: &Connection, assets: &[&str]) -> Result<()> {
+    if assets.is_empty() { return Ok(()); }
+    let mut query = conn.prepare(
+        "SELECT i.entity_type,i.entity_id,i.generation FROM sync_issues i JOIN sync_dirty d
+         ON (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation)
+         WHERE i.entity_type IN ('entry','collection_node') AND i.reason='云端缺少关联素材' AND i.remote_json IS NULL",
+    )?;
+    let rejected = query.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (kind, id, generation) in rejected {
+        let key = Key { entity_type: serde_json::from_value(json!(kind)).map_err(invalid_response)?, entity_id: id };
+        let Some(snapshot) = local_snapshot(conn, &key)? else { continue; };
+        let mut refs: Vec<&str> = snapshot["assetIds"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        refs.extend([snapshot["coverAssetId"].as_str(), snapshot["assetId"].as_str()].into_iter().flatten());
+        if !refs.iter().any(|id| assets.contains(id)) { continue; }
+        let mut ready = true;
+        for id in refs {
+            ready &= revision(conn, &Key { entity_type: Kind::Asset, entity_id: id.into() })?.0 > 0;
+        }
+        if ready {
+            conn.execute("DELETE FROM sync_issues WHERE entity_type=?1 AND entity_id=?2 AND generation=?3",
+                params![key.entity_type.key(),key.entity_id,generation])?;
+        }
+    }
+    Ok(())
+}
+
 async fn push_one(
     db: &Workspace,
     assets: &Assets,
@@ -667,7 +730,7 @@ async fn push_one(
     let wire = match prepare_uploads(db, assets, remote, &operation).await {
         Ok(wire) => wire,
         Err(error) if matches!(error.code(), "SYNC_SIZE" | "SYNC_ASSET" | "ASSET_MISSING") => {
-            reject_outbox(db, &operation, &generations, &error.to_string())?;
+            reject_outbox(db, &operation, &generations, &format!("{}: {}", error.code(), error))?;
             return Ok(true);
         }
         Err(error) => return Err(error),
@@ -730,6 +793,9 @@ fn apply_outcome(
                     params![key.entity_type.key(), key.entity_id],
                 )?;
             }
+            let assets: Vec<&str> = operation.mutations.iter().filter(|mutation| mutation.key.entity_type == Kind::Asset)
+                .map(|mutation| mutation.key.entity_id.as_str()).collect();
+            retry_asset_dependents(tx, &assets)?;
         }
         "conflict" | "rejected" => {
             let reason = match result.reason.as_deref() {
@@ -744,7 +810,8 @@ fn apply_outcome(
                 Some("source_url_conflict") => "云端已有同一来源链接，请修改本地稿件的来源",
                 Some("derived_asset_conflict") => "云端已有同一派生图",
                 Some("revision_conflict") => "内容已在另一台设备修改",
-                _ => "同步提交被拒绝",
+                Some(reason) => reason,
+                None => "同步提交被拒绝",
             };
             for (mutation, generation) in operation.mutations.iter().zip(generations) {
                 issue(tx, &mutation.key, *generation, reason, None)?;
@@ -993,7 +1060,11 @@ async fn exchange(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Res
             )
         })?;
         if pending {
-            return Ok(());
+            let state = activity(db)?.ok_or_else(protocol_error)?;
+            let detail = state.blocking_issue.map(|issue| format!("{} {}：{}",issue.entity_type,issue.entity_id,issue.reason))
+                .unwrap_or_else(|| "请检查待处理记录".into());
+            return Err(AppError::new("SYNC_INITIALIZATION_BLOCKED", format!(
+                "云端初始化受阻，待上传 {} 项，已拒绝 {} 项。{detail}。修复后点击“立即同步”重试。", state.pending_count, state.rejected_count)));
         }
         remote.seed("finish").await?;
         db.write(|tx| {
@@ -1025,6 +1096,9 @@ async fn exchange(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Res
 /// Exchanges persisted data. The caller owns the shared synchronization gate.
 pub(super) async fn run(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Result<()> {
     let result = exchange(db, assets, sync).await;
+    if result.is_ok() && let Some(binding) = Binding::read(db)? {
+        db.set_setting("sync-last-success", &(binding.instance_id,binding.epoch,crate::db::now()))?;
+    }
     if let Err(error) = &result {
         let reason = match error.code() {
             "SYNC_HISTORY" => Some("history_inconsistent"),
@@ -1381,6 +1455,17 @@ pub struct SyncActivity {
     pub(super) pending: bool,
     pub(super) incoming: bool,
     pub(super) issues: i64,
+    pending_count: i64,
+    rejected_count: i64,
+    blocking_issue: Option<BlockingIssue>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockingIssue {
+    entity_type: String,
+    entity_id: String,
+    reason: String,
 }
 
 #[derive(Serialize)]
@@ -1411,10 +1496,16 @@ pub(super) fn activity(db: &Workspace) -> Result<Option<SyncActivity>> {
                        (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation)
                 )), bootstrap_cursor IS NOT NULL OR EXISTS(SELECT 1 FROM sync_inbox GROUP BY group_id
                     HAVING COUNT(*)=MAX(group_size)) OR EXISTS(SELECT 1 FROM sync_issues WHERE generation=0
-                        AND remote_json IS NOT NULL), (SELECT COUNT(*) FROM sync_issues)
+                        AND remote_json IS NOT NULL), (SELECT COUNT(*) FROM sync_issues),
+                (SELECT COUNT(*) FROM sync_dirty),
+                (SELECT COUNT(*) FROM sync_issues i JOIN sync_dirty d
+                 ON (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation))
              FROM sync_progress",
-            [], |row| Ok(SyncActivity {has_local_content:false,initialized:row.get(0)?,pending:row.get(1)?,incoming:row.get(2)?,issues:row.get(3)?}),
+            [], |row| Ok(SyncActivity {has_local_content:false,initialized:row.get(0)?,pending:row.get(1)?,incoming:row.get(2)?,issues:row.get(3)?,
+                pending_count:row.get(4)?,rejected_count:row.get(5)?,blocking_issue:None}),
         )?;
+        state.blocking_issue = conn.query_row("SELECT entity_type,entity_id,reason FROM sync_issues ORDER BY entity_type,entity_id LIMIT 1", [],
+            |row| Ok(BlockingIssue { entity_type:row.get(0)?,entity_id:row.get(1)?,reason:row.get(2)? })).optional()?;
         state.has_local_content = !empty_local(conn)?;
         Ok(Some(state))
     })
@@ -1425,9 +1516,16 @@ pub fn sync_activity(
     db: State<'_, Workspace>,
     sync: State<'_, SyncConnection>,
 ) -> Result<Option<ActivitySnapshot>> {
+    let mut runtime = super::scheduler::snapshot(&sync);
+    if runtime.last_exchange_at.is_none()
+        && let Some((instance, epoch, timestamp)) = db.setting::<(String,String,i64)>("sync-last-success")?
+        && Binding::read(&db)?.is_some_and(|binding| binding.instance_id == instance && binding.epoch == epoch)
+    {
+        runtime.last_exchange_at = Some(timestamp);
+    }
     Ok(activity(&db)?.map(|activity| ActivitySnapshot {
         activity,
-        runtime: super::scheduler::snapshot(&sync),
+        runtime,
     }))
 }
 
@@ -1601,7 +1699,7 @@ pub async fn sync_run(
     assets: State<'_, Assets>,
     sync: State<'_, SyncConnection>,
 ) -> Result<()> {
-    super::scheduler::run(&app, &db, &assets, &sync).await
+    super::scheduler::run(&app, &db, &assets, &sync, super::scheduler::RunSource::Manual).await
 }
 
 #[tauri::command]
@@ -1699,6 +1797,9 @@ fn conflicts(conn: &Connection) -> Result<Vec<Conflict>> {
             } else {
                 reason
             };
+            let reason = if remote.is_none() {
+                format!("{reason}（{} {}）", key.entity_type.key(), key.entity_id)
+            } else { reason };
             Ok(Conflict {
                 key,
                 reason,

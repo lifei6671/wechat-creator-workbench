@@ -10,6 +10,8 @@ import { createApp } from "../dist/app.js";
 import { openSqlite } from "../dist/adapters/sqlite.js";
 import { localFiles } from "../dist/adapters/local-files.js";
 
+const testName = process.argv[2] ?? "reinstall_with_same_connection_key_restores_and_continues_two_way_sync";
+if (!["reinstall_with_same_connection_key_restores_and_continues_two_way_sync", "initialization_resumes_after_original_repair_and_keeps_other_devices_waiting"].includes(testName)) throw new Error("Unknown native acceptance case");
 // A fresh service and keyring identities are exclusive to this native acceptance run.
 const directory = await mkdtemp(join(tmpdir(), "wechat-native-sync-"));
 const setup = randomBytes(32).toString("hex");
@@ -18,8 +20,8 @@ const app = createApp(db, await localFiles(join(directory, "blobs")), setup);
 const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
 try {
   if (!server.listening) await once(server, "listening");
-  const child = spawn("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml",
-    "reinstall_with_same_connection_key_restores_and_continues_two_way_sync", "--", "--ignored", "--nocapture"], {
+  const child = spawn("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked",
+    testName, "--", "--ignored", "--nocapture"], {
     cwd: fileURLToPath(new URL("../../../", import.meta.url)),
     env: { ...process.env, WCB_SYNC_TEST_URL: `http://127.0.0.1:${server.address().port}/`, WCB_SYNC_TEST_SETUP: setup },
     stdio: ["ignore", "inherit", "inherit"],

@@ -7,6 +7,19 @@ use tokio::{
 };
 
 #[tokio::test]
+async fn reimporting_the_verified_original_repairs_a_corrupt_shared_file() {
+    let (_root, db, assets) = setup();
+    let bytes = png();
+    let id = assets.import(&db, "original.png", &bytes).unwrap();
+    let file = db.read(|conn| by_id(conn, &id)).unwrap();
+    let path = assets.root.join(file.path.unwrap());
+    std::fs::write(&path, b"corrupt original").unwrap();
+    assert_eq!(assets.import_to_library(&db, "recovered.png", &bytes).unwrap(), id);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(assets.read_image(&db, &format!("asset://{id}"), false).await.unwrap(), bytes);
+}
+
+#[tokio::test]
 async fn topic_screenshots_are_hidden_and_retained_until_the_last_reference_is_removed() {
     let (folder, db, assets) = setup();
     let collection =

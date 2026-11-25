@@ -95,11 +95,14 @@ pub(super) fn finish(sync: &SyncConnection, app: &AppHandle, result: &Result<()>
     sync.changed(app);
 }
 
+pub(super) enum RunSource { Manual, Automatic }
+
 pub(super) async fn run(
     app: &AppHandle,
     db: &Workspace,
     assets: &Assets,
     sync: &SyncConnection,
+    source: RunSource,
 ) -> Result<()> {
     let lifetime = db.running_lifetime();
     let result = tokio::select! {
@@ -108,7 +111,10 @@ pub(super) async fn run(
         result = async {
             let _guard = sync.gate.lock().await;
             set_phase(sync, app, "syncing");
-            let result = contents::run(db, assets, sync).await;
+            let result = async {
+                if matches!(source, RunSource::Manual) { contents::retry_repaired_assets(db, assets).await?; }
+                contents::run(db, assets, sync).await
+            }.await;
             finish(sync, app, &result);
             result
         } => result,
@@ -220,7 +226,7 @@ pub(crate) fn spawn(app: AppHandle) {
                 if !schedule.due(Instant::now(), activity.pending, explicit_wake) {
                     return Ok(None);
                 };
-                let result = run(&app, &db, &app.state::<Assets>(), &sync).await;
+                let result = run(&app, &db, &app.state::<Assets>(), &sync, RunSource::Automatic).await;
                 Ok(Some(result))
             }
             .await;
