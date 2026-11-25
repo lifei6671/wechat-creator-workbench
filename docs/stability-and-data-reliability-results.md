@@ -106,3 +106,16 @@ Windows 隔离测试应用已正常退出，临时应用标识仅用于验证，
 - 验证：`npm run test:native --prefix apps/sync-server -- failed_legacy_baseline_refetches_after_versioned_admin_repair` 通过（1 项）。`cargo test --manifest-path src-tauri/Cargo.toml --locked sync::contents`：44 通过、8 忽略（其中本项端到端用例已单独执行通过）；`cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings` 通过。独立复审 `CHILD_AGENT / FULL_SCOPE / Tier 3` 覆盖 8/8 文件，通过，无阻塞发现；额外检查了 UI 手动入口、自动调度、冻结队列协调及首次合并边界。
 - 部署：客户端启动自动追加本地迁移，无需修改服务端部署；修复云端实体后使用现有“立即同步”。没有新增界面元素或文案。
 - 平台边界：本项真实客户端测试在 Windows 执行；macOS、真实隔离云端在最终整体验证中另行记录，未由本地测试代替。
+
+
+### R-02 多级同步依赖恢复
+
+- 根因：旧 `retry_asset_dependents` 只检查成功素材直接引用的条目/卡片，成功的来源条目、专题和卡片回执不会唤醒后续引用条目、专题节点与连线；局部恢复还可能提前放行存在其他缺失依赖的实体。
+- 调用链：`apply_outcome → dependencies::retry → retry_group → group_ready`；手动修复重试经 `retry_repaired_assets → retry_blocked`，仍复用 `stage_outbox/prepare_uploads`。成功回执只清理对应冻结代次的问题，不清理其他代次或真实云端冲突。
+- 方案：按既有业务引用关系定位受影响的当前阻塞项，再扩展到原子 batch；核对整组全部依赖，组内一起提交的实体作为 proposed 状态参与校验。只移除当前代次且没有 remote_json 的依赖问题，不变更正文、dirty generation、批次或冻结操作。`stage_outbox` 也会等待组内仍阻塞的其他成员。
+- 依赖语义对应服务端现有 SQL 视图：素材与来源条目要求远端实体存在；目录、专题及连线端点要求有效；目录父项为根目录、连线端点属于同一专题。`blob_missing` 显式重试走既有 HEAD/上传流程，每次手动触发最多重新入队一次，仍保留真实上传失败，不设置后台无界重试。
+- 迁移：追加 `0035_sync_issue_codes.sql`，为 sync_issues 增加可空稳定错误码和部分索引；历史中文及原始错误码继续兼容。界面继续展示原有 reason，无新增可见元素。没有修改服务端协议、模型或已发布迁移。恢复检查只在成功回执或手动重试时执行，查询当前阻塞项及其实际关联，不扫描全工作区正文。
+- 源码：`src-tauri/src/sync/contents.rs`、新增 `contents/dependencies.rs`、`db.rs` 及新迁移；回归在 `contents/initialization_tests.rs` 和原生服务夹具。
+- 复现：真实临时双客户端测试修复两个素材后，旧代码仍剩 4 项拒绝（引用条目、两个专题节点和连线），无法 finish。新代码通过；仅修复第一个素材时，来源条目和引用条目保持阻塞；全部修复后逐级上传、第二客户端读取关联、画布连线和实际图片，素材远端 revision 保持 1，无重复写入。
+- 其他回归：原子组部分依赖缺失、目录已删除、真实版本冲突、冻结出站操作、历史 blob 错误及 generation 保持；保留原有素材部分依赖测试。
+- 验证：专项真实双客户端用例通过；首轮 `cargo test --manifest-path src-tauri/Cargo.toml --locked sync::contents` 46 通过、9 忽略；最终组门槛专项 47 通过、9 忽略；独立复审发现并修复了历史中文 blob 记录无法重试和组内编辑修复仍卡住的两项恢复缺口，增加针对回归后 3 项通过，Clippy 重测通过。`CHILD_AGENT / FULL_SCOPE / Tier 3` 复评覆盖 7/7 文件通过，无遗留阻塞项。部署时客户端自动追加迁移；不降低 schema 版本回退，以迁移前快照和兼容客户端恢复。Windows 已执行，macOS 与真实云端留待最终验收。

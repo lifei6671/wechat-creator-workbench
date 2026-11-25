@@ -90,10 +90,10 @@ fn dependent_entries_only_retry_after_all_required_assets_are_acknowledged() {
             issue(tx, &key, generation(tx, &key)?.unwrap(), "云端缺少关联素材", None)?;
         }
         remember(tx, &Key { entity_type: Kind::Asset, entity_id: "a".into() }, 1, false)?;
-        retry_asset_dependents(tx, &["a"])?;
+        dependencies::retry(tx, &[Key { entity_type: Kind::Asset, entity_id: "a".into() }])?;
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM sync_issues", [], |row| row.get::<_,i64>(0))?, 2);
         remember(tx, &Key { entity_type: Kind::Asset, entity_id: "b".into() }, 1, false)?;
-        retry_asset_dependents(tx, &["b"])?;
+        dependencies::retry(tx, &[Key { entity_type: Kind::Asset, entity_id: "b".into() }])?;
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM sync_issues", [], |row| row.get::<_,i64>(0))?, 0);
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM sync_dirty WHERE entity_type='entry'", [], |row| row.get::<_,i64>(0))?, 2);
         assert_eq!(entries::snapshot(tx,"first")?.unwrap()["contentMd"], "keep first");
@@ -306,4 +306,97 @@ async fn failed_legacy_baseline_refetches_after_versioned_admin_repair() {
     assert_eq!(restored["title"], "Repaired");
     assert_eq!(restored["contentMd"], "preserved remote body");
     assert_eq!(reader.read(|conn| revision(conn, &Key { entity_type: Kind::Entry, entity_id: "legacy".into() })).unwrap(), (2, false));
+}
+
+
+#[tokio::test]
+#[ignore = "requires an isolated fresh service and a native system keyring"]
+async fn multilevel_dependencies_resume_only_after_all_assets_are_repaired() {
+    use crate::sync::{ConnectWith, connect};
+    struct Credentials(Vec<keyring::Entry>);
+    impl Drop for Credentials {
+        fn drop(&mut self) { for key in &self.0 { let _ = key.delete_credential(); } }
+    }
+    let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
+    let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let a = Workspace::open(&root.path().join("a.sqlite")).unwrap();
+    let b = Workspace::open(&root.path().join("b.sqlite")).unwrap();
+    let asset_root = root.path().join("assets-a");
+    let assets = Assets::new(asset_root.clone(), &a).unwrap();
+    let peer_assets = Assets::new(root.path().join("assets-b"), &b).unwrap();
+    let sync = SyncConnection::new().unwrap();
+    let mut credentials = Credentials(Vec::new());
+    let binding = connect(&a, &sync, &url, "Writer", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&a).unwrap());
+    let mut bytes = Vec::new();
+    for width in [2, 3] {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(width, 2).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        bytes.push(png.into_inner());
+    }
+    let first = assets.import(&a, "first.png", &bytes[0]).unwrap();
+    let second = assets.import(&a, "second.png", &bytes[1]).unwrap();
+    let paths = a.read(|conn| {
+        [first.as_str(), second.as_str()].into_iter().map(|id| {
+            Ok(asset_root.join(conn.query_row("SELECT relative_path FROM assets WHERE id=?1", [id], |row| row.get::<_, String>(0))?))
+        }).collect::<Result<Vec<_>>>()
+    }).unwrap();
+    for path in &paths { std::fs::remove_file(path).unwrap(); }
+    a.write(|tx| {
+        tx.execute_batch("INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at) VALUES
+            ('source','reference','Source','unread','',1,1),('reference','article','Reference','draft','linked body',1,1);
+            INSERT INTO entry_links VALUES('reference','source');
+            INSERT INTO collections(id,title,created_at,updated_at) VALUES('topic','Topic',1,1);
+            INSERT INTO collection_nodes(id,collection_id,kind,entry_id,created_at,updated_at) VALUES('source-node','topic','entry','source',1,1),('reference-node','topic','entry','reference',1,1);
+            INSERT INTO collection_edges VALUES('link','topic','source-node','reference-node','Link',1);")?;
+        let markdown = format!("![first](asset://{first}) ![second](asset://{second})");
+        tx.execute("UPDATE entries SET content_md=?1 WHERE id='source'", [&markdown])?;
+        crate::assets::references::sync_entry(tx, "source", &markdown)?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(run(&a, &assets, &sync).await.unwrap_err().code(), "SYNC_INITIALIZATION_BLOCKED");
+    let binding = connect(&b, &sync, &url, "Reader", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&b).unwrap());
+    assert_eq!(run(&b, &peer_assets, &sync).await.unwrap_err().code(), "SYNC_WAITING_SEED");
+    std::fs::write(&paths[0], &bytes[0]).unwrap();
+    retry_repaired_assets(&a, &assets).await.unwrap();
+    assert_eq!(run(&a, &assets, &sync).await.unwrap_err().code(), "SYNC_INITIALIZATION_BLOCKED");
+    a.read(|conn| {
+        for id in ["source", "reference"] {
+            assert_eq!(revision(conn, &Key { entity_type: Kind::Entry, entity_id: id.into() })?.0, 0);
+            assert!(conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_issues WHERE entity_type='entry' AND entity_id=?1)", [id], |row| row.get::<_, bool>(0))?);
+        }
+        Ok(())
+    }).unwrap();
+    std::fs::write(&paths[1], &bytes[1]).unwrap();
+    retry_repaired_assets(&a, &assets).await.unwrap();
+    run(&a, &assets, &sync).await.unwrap();
+    assert!(progress(&a).unwrap().0);
+    assert_eq!(activity(&a).unwrap().unwrap().pending_count, 0);
+    assert_eq!(activity(&a).unwrap().unwrap().issues, 0);
+    run(&b, &peer_assets, &sync).await.unwrap();
+    apply_received(&b).unwrap();
+    assert_eq!(b.read(|conn| entries::snapshot(conn, "reference")).unwrap().unwrap()["sourceEntryIds"], json!(["source"]));
+    assert_eq!(serde_json::to_value(b.collection_canvas("topic").unwrap()).unwrap()["edges"].as_array().unwrap().len(), 1);
+    for (id, original) in [(&first, &bytes[0]), (&second, &bytes[1])] {
+        assert_eq!(&peer_assets.read_image(&b, &format!("asset://{id}"), false).await.unwrap(), original);
+        assert_eq!(a.read(|conn| revision(conn, &Key { entity_type: Kind::Asset, entity_id: id.clone() })).unwrap().0, 1);
+    }
+}
+
+
+#[test]
+fn staging_does_not_retry_a_partly_blocked_atomic_group() {
+    let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+    db.write(|tx| {
+        tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d');
+            UPDATE sync_progress SET capture=1;
+            INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at) VALUES('a','article','A','draft','a',1,1),('b','article','B','draft','b',1,1);
+            UPDATE sync_dirty SET batch_id='atomic';")?;
+        let key = Key { entity_type: Kind::Entry, entity_id: "b".into() };
+        issue(tx, &key, generation(tx, &key)?.unwrap(), "revision_conflict", None)?;
+        Ok(())
+    }).unwrap();
+    assert!(stage_outbox(&db).unwrap().is_none());
 }

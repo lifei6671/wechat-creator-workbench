@@ -22,6 +22,7 @@ const MAX_ENTITY_BYTES: usize = 512 * 1024;
 const MAX_GROUP: usize = 256;
 
 mod canvas_conflicts;
+mod dependencies;
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
@@ -493,6 +494,9 @@ fn stage_outbox(db: &Workspace) -> Result<Option<(Operation, Vec<i64>)>> {
                 "SELECT d.entity_type,d.entity_id,d.batch_id FROM sync_dirty d
                  WHERE NOT EXISTS (SELECT 1 FROM sync_issues i WHERE
                     (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation))
+                 AND (d.batch_id IS NULL OR NOT EXISTS(SELECT 1 FROM sync_dirty sibling JOIN sync_issues i
+                     ON (i.entity_type,i.entity_id,i.generation)=(sibling.entity_type,sibling.entity_id,sibling.generation)
+                     WHERE sibling.batch_id=d.batch_id))
                  ORDER BY {DIRTY_ORDER} LIMIT 1"
             );
             let Some((kind,key,batch)) = tx.query_row(&sql, [], |row| Ok((
@@ -550,9 +554,9 @@ fn issue(
     remote: Option<&Entity>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO sync_issues VALUES (?1,?2,?3,?4,?5)
+        "INSERT INTO sync_issues (entity_type,entity_id,generation,reason,remote_json) VALUES (?1,?2,?3,?4,?5)
         ON CONFLICT(entity_type,entity_id) DO UPDATE SET generation=excluded.generation,
-          reason=excluded.reason,remote_json=COALESCE(excluded.remote_json,sync_issues.remote_json)",
+          code=NULL,reason=excluded.reason,remote_json=COALESCE(excluded.remote_json,sync_issues.remote_json)",
         params![key.entity_type.key(),key.entity_id,generation,reason,remote.map(encode).transpose()?],
     )?;
     Ok(())
@@ -675,35 +679,10 @@ pub(super) async fn retry_repaired_assets(db: &Workspace, assets: &Assets) -> Re
             Err(error) => return Err(error),
         }
     }
+    db.write(|tx| dependencies::retry_blocked(tx))?;
     Ok(())
 }
 
-fn retry_asset_dependents(conn: &Connection, assets: &[&str]) -> Result<()> {
-    if assets.is_empty() { return Ok(()); }
-    let mut query = conn.prepare(
-        "SELECT i.entity_type,i.entity_id,i.generation FROM sync_issues i JOIN sync_dirty d
-         ON (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation)
-         WHERE i.entity_type IN ('entry','collection_node') AND i.reason='云端缺少关联素材' AND i.remote_json IS NULL",
-    )?;
-    let rejected = query.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (kind, id, generation) in rejected {
-        let key = Key { entity_type: serde_json::from_value(json!(kind)).map_err(invalid_response)?, entity_id: id };
-        let Some(snapshot) = local_snapshot(conn, &key)? else { continue; };
-        let mut refs: Vec<&str> = snapshot["assetIds"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-        refs.extend([snapshot["coverAssetId"].as_str(), snapshot["assetId"].as_str()].into_iter().flatten());
-        if !refs.iter().any(|id| assets.contains(id)) { continue; }
-        let mut ready = true;
-        for id in refs {
-            ready &= revision(conn, &Key { entity_type: Kind::Asset, entity_id: id.into() })?.0 > 0;
-        }
-        if ready {
-            conn.execute("DELETE FROM sync_issues WHERE entity_type=?1 AND entity_id=?2 AND generation=?3",
-                params![key.entity_type.key(),key.entity_id,generation])?;
-        }
-    }
-    Ok(())
-}
 
 async fn push_one(
     db: &Workspace,
@@ -789,13 +768,12 @@ fn apply_outcome(
                     params![key.entity_type.key(), key.entity_id, generation],
                 )?;
                 tx.execute(
-                    "DELETE FROM sync_issues WHERE (entity_type,entity_id)=(?1,?2)",
-                    params![key.entity_type.key(), key.entity_id],
+                    "DELETE FROM sync_issues WHERE (entity_type,entity_id,generation)=(?1,?2,?3) AND remote_json IS NULL",
+                    params![key.entity_type.key(), key.entity_id, generation],
                 )?;
             }
-            let assets: Vec<&str> = operation.mutations.iter().filter(|mutation| mutation.key.entity_type == Kind::Asset)
-                .map(|mutation| mutation.key.entity_id.as_str()).collect();
-            retry_asset_dependents(tx, &assets)?;
+            let acknowledged: Vec<Key> = operation.mutations.iter().map(|mutation| mutation.key.clone()).collect();
+            dependencies::retry(tx, &acknowledged)?;
         }
         "conflict" | "rejected" => {
             let reason = match result.reason.as_deref() {
@@ -815,6 +793,8 @@ fn apply_outcome(
             };
             for (mutation, generation) in operation.mutations.iter().zip(generations) {
                 issue(tx, &mutation.key, *generation, reason, None)?;
+                tx.execute("UPDATE sync_issues SET code=?1 WHERE entity_type=?2 AND entity_id=?3 AND remote_json IS NULL",
+                    params![result.reason,mutation.key.entity_type.key(),mutation.key.entity_id])?;
             }
         }
         _ => return Err(protocol_error()),

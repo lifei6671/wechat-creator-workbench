@@ -11,6 +11,7 @@ import { openSqlite } from "../dist/adapters/sqlite.js";
 import { localFiles } from "../dist/adapters/local-files.js";
 
 const cases = [
+  "multilevel_dependencies_resume_only_after_all_assets_are_repaired",
   "failed_legacy_baseline_refetches_after_versioned_admin_repair",
   "claim_join_and_reconnect_using_real_service",
   "articles_and_private_images_between_workspaces",
