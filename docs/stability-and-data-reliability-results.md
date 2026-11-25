@@ -213,3 +213,15 @@ Rust其余3项忽略为既有S3真实服务集成及两项手动搜索基准，�
 最终构建使用 `output/stability/native-target-01a212aa`，缓存目录复用既有编译缓存，顶层exe单独输出；先构建隔离应用进行验收，再以正常配置重新构建，正常配置产物没有启动。验证日志、资源清单及截图保留于忽略的output目录，产品配置没有临时应用标识或测试入口。
 
 五项实现均已独立分区审查，并完成覆盖事务、幂等、错误恢复、历史兼容、同步代次/操作组和性能边界的组合复审。独立审查采用CHILD_AGENT / PARTITIONED_PLUS_INTEGRATION，覆盖64/64交付路径，无遗留P0/P1；Review gate=PASSED，Coverage=COMPLETE，代码状态与最终验证保持一致；用户已明确将macOS原生验收留待后续自行执行，本轮不宣称完整跨平台验收通过。ST-06、ST-07、ST-08未扩展到本轮。
+
+### 后续回归：编辑态主题与网页 GIF 粘贴
+
+- 编辑态主题根因：`26a4b3e` 统一正文样式时移除了 `DocumentEditor` 的主题绑定和投影样式，主题选择只影响导出。恢复 `fields.themeId → wechatEditorStyles → document-editor CSS variables` 调用链，复用既有渲染器投影及 Radix 色板；只改变外观，不重建编辑器或修改 Markdown。编辑、阅读和锁定状态共用此路径。
+- 代码涉及 `Document.tsx`、`styles/article.css`、`packages/wechat-renderer/index.ts`；回归涉及 `editor-spacing.test.tsx`、`document.test.tsx` 和 `tests/browser/article-typography.spec.ts`。无迁移、同步协议、依赖或产品配置变更。旧测试中“编辑态与排版主题独立”的断言按恢复主题行为更新，原正文不变、编辑器不重建、撤销、表格编辑及选择保持断言继续保留。
+- 先红后绿：新增编辑态装饰回归在旧实现的单测及 Chromium/WebKit 中均失败；恢复投影后通过。独立复审发现深色表头对比度不足，新增实际颜色对比测试先失败（3.68），随后将编辑投影表头改为继承文字颜色及 Radix 浅背景，链接使用对应色板 step 12；微信导出 HTML 样式不变。
+- 可见区域：标题/段落体现已有主题的字体和间距；引用/列表体现已有层次；代码块/表格体现已有背景及装饰；链接保留可辨识的颜色。上述元素用于在编辑时识别所选主题，没有新增控件、标签、提示或交互。
+- GIF 来源为 `https://github.com/webadderallorg/Recordly/blob/main/docs/media/feature2.gif`。Windows Edge 实际右键“复制图像”得到 HTML 剪贴板，其中图片地址带 `?raw=true`。隔离原生 WebView2 应用使用真实粘贴链路及本地 HTTP S3 测试存储，自动产生一次 PUT，并将正文图片地址替换为上传后的地址；7015332 字节、`image/gif`，SHA-256 为 `33f4a2e9dc1c5ad4e3f2f2d70e293bdfc5e7e2f75cb5279d2a9ddc73b6f4075b`，与原始 GIF 完全一致，未丢失动画数据。结果见 `output/stability/gif-native-result.json`。
+- 此次没有复现 GIF 未自动上传，因此没有修改粘贴或上传实现。另一次独立请求 GitHub 的 `?raw=true` 地址遇到 HTTP 503，直接 raw.githubusercontent.com 地址成功；这仅证明源站请求可能失败，不能确定为用户当次失败原因。没有增加未经验证的重试或地址改写。生产工作区仅只读核对素材/上传状态，故障与粘贴测试均使用隔离工作区和测试存储；临时原生应用及 HTTP 服务已退出，原浏览器标签和剪贴板状态已恢复。
+- 实际验证：`pnpm typecheck` 通过；`pnpm test` 最终 44 文件、627 项通过；主题专项单测 101 项通过；`pnpm exec playwright test tests/browser/article-typography.spec.ts --workers=2` 在 Chromium/WebKit 共 16 项通过；`pnpm tauri build --debug --no-bundle` 正常配置构建通过，其中实际执行 `pnpm web:build`。构建沿用任务专属 `CARGO_TARGET_DIR`，没有停止或覆盖用户正在运行的原应用。服务端及 Rust 业务代码未修改，相关既有全量结果见前表，本次没有重复执行。
+- 部署：使用正常配置新客户端构建即可，无数据库或服务端部署步骤。Windows 原生 GIF 链路已实测；macOS WKWebView 按用户要求留待其自行验收，WebKit 浏览器通过不代表 Mac 原生验收完成。
+- 独立复审：`CHILD_AGENT / FULL_SCOPE / Tier 2` 覆盖本次 7/7 路径，表头对比度 P2 已修复，未遗留发现或 P0/P1；Review gate=PASSED、Coverage=COMPLETE、Freshness=FRESH。复审确认主题切换不影响正文/编辑器状态，浅深色对比回归、原有效测试保护和 GIF 未复现的事实表述一致。

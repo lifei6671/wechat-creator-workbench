@@ -1,4 +1,4 @@
-import { useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { Button, ContextMenu, DropdownMenu, Spinner, Theme, ThemeContext } from "@radix-ui/themes";
 import {
   ArchiveRestore, BookOpen, ChevronDown, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
@@ -7,7 +7,7 @@ import {
 import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type ImageUploadState, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { footnoteId } from "../../../../packages/markdown-core";
-import { renderWechat, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
+import { renderWechat, wechatEditorStyles, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
 import "../styles/article.css";
 import type { ChatSelection } from "../ai/context";
 import previewCss from "../styles/preview.css?inline";
@@ -393,9 +393,10 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
 }) {
   const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const editor = useRef<MarkdownEditorHandle>(null);
+  const themeStyles = useMemo(() => wechatEditorStyles(fields.themeId), [fields.themeId]);
   const readOnly = reading || locked || queue.entry.deletedAt !== null;
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
-    hidden={!active}>
+    data-wechat-theme={wechatThemeId(fields.themeId)} style={themeStyles as CSSProperties} hidden={!active}>
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
       canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAddSelectionToChat={onAddSelectionToChat}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
