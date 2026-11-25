@@ -32,6 +32,7 @@ fn main() {
             "save_collection_viewport",
             "list_entry_collections",
             "save_entry",
+            "editor_recovery_put", "editor_recovery_list", "editor_recovery_get", "editor_recovery_discard", "editor_recovery_restore",
             "wechat_publication_defaults",
             "wechat_recommendation_authors",
             "save_wechat_publication_defaults",

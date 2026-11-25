@@ -130,3 +130,20 @@ Windows 隔离测试应用已正常退出，临时应用标识仅用于验证，
 - 先红后绿：三个专项回归原均失败（对象缺失被报告为正常，存储失败页无问题），实现后全部通过。真实本地文件覆盖写入、删除和截断；R2 适配器测试确保只 head、从不 get，并检查暂时失败和脱敏。101 个实体覆盖分页和逐项错误，核对数据库实体/身份/回执没有变化。
 - `npm test --prefix apps/sync-server`：最终 50 通过、1 跳过。包含真实 Node HTTP/SQLite/文件合约，以及运行中的 Workers 本地 D1/R2：通过 wrangler 实际删除和以短文件替换 R2 对象后，HTTP 诊断分别返回对象缺失与大小不符。跳过项为真实云端，最终隔离环境另行执行。Wrangler 提示现有 observability.issue_detection 未识别，不影响测试结果。
 - 独立复审发现正文附件在元数据成功后 get/流读取失败会中断整页并记录原异常，补充两条先失败再通过的回归；`content-blobs.ts` 仅在 get/read/cancel 存储边界转换为脱敏 503 稳定错误，数据库与 UTF-8/长度错误保留。`CHILD_AGENT / FULL_SCOPE / Tier 3` 复评覆盖 10/10 文件通过，无遗留发现。部署无迁移，保留原生产数据库和对象存储恢复点后升级同步服务即可；诊断只读，不自动删除或覆盖对象。真实远端 R2 与 macOS 在最终验证中单列，未由适配器模拟代替。
+
+
+### ST-03 编辑器异常退出恢复
+
+- 根因与调用链：原 SaveQueue 只有内存快照及正式保存防抖，连续编辑、保存失败和版本冲突后的内容无法跨进程恢复。现为 `Milkdown/source/AI → SaveQueue.capture → recoveryPut → Workspace.put_editor_recovery`，正式提交经 `save_entry_with_recovery → save_in_transaction → recovery::acknowledge`，启动经 `recoveryList → EditorRecovery → restore_editor_recovery`。
+- 迁移：追加 `0036_editor_recovery.sql`，本地表按 entry_id/session_id 隔离会话，保存完整可编辑字段、基础版本、本地修订及已确认水位；没有外键级联删除，不加入同步触发器或协议。与方案的单 entry 主键相比，独立会话行能同时保留属性、画布文章和新进程会话，旧会话请求无法覆盖新会话草稿。
+- 顺序保证：跨进程 UUID 与既有 AI 内存 numeric sessionId 各司其职。put 只接受更高本地修订；正式保存同事务确认对应 session/revision，新草稿仍保留，自己提交后提高基础版本；空字段行保留确认水位，阻止保存成功后晚到 put 复活已保存草稿。应用启动在 IPC/后台写入启动前清理已完成行和与正式字段完全相同的草稿；未处理稿保留，不自动覆盖。
+- 调度：独立 750ms 恢复定时器不因连续输入重置，也不因正式保存冲突停用；恢复和正式保存复用按本地修订缓存的 Markdown 序列化结果。保存失败立即再持久化快照；恢复失败进入原保存错误区域，不阻止后续正常正式提交。源码切换、AI 替换、属性和画布中的文章编辑接入同一队列。原正式保存 750ms 防抖/4秒最大调度维持原语义。
+- 恢复：启动显示已批准的最小比较窗口；仅基础版本相同且原文档未删除时允许恢复，最终事务仍检查版本。版本变化或原文档不存在时可另存草稿，原正式内容保持不变；另存和相应草稿确认也在同一事务。关闭保留记录，下次启动再发现。
+- 文件：`content/recovery.rs`、`content.rs`、`commands.rs`、`main.rs`、`db.rs`、`build.rs`、desktop capability、共享 IPC 类型；前端 `save-queue.ts`、`desktop.ts`、`DesktopShell.tsx`、`CollectionCanvas.tsx`、`Document.tsx`、`EditorRecovery.tsx` 及局部 CSS、相关测试/浏览器夹具。
+- 先红后绿：3个前端复现原均不调用恢复持久化；新增恢复后通过。Rust 5项覆盖乱序、晚到草稿、跨会话、旧保存/新草稿、正式保存冲突、恢复确认写入失败回滚和删除后重启另存。前端4项与原保存队列8项通过；UI2项通过，覆盖版本保护、真正请求结束和1秒反馈。Chromium/WebKit 新恢复窗口回归4项通过，包含标题/关闭按钮对齐、两栏比较和 pending spinner。
+- 原工作区122项回归中，初次11项仅因保存 IPC 新增第5参数失败，保留原断言并补会话/修订契约后121项通过、1项在并行构建负载下超时；同一超时用例单独重跑通过，没有增加超时或修改行为断言。最终全量在本轮总体验证记录中补充。专项 TypeScript 检查与 Clippy 已通过，最终增量仍须纳入整体验证。
+- 独立复审 `CHILD_AGENT / FULL_SCOPE / Tier 3`：发现并修复未编辑文档手动保存携带 revision0 导致事务回滚、恢复按钮缺少可见 pending 状态；新增针对回归先失败再通过。真实原生验收发现命令权限注册缺口并补全，复评及增量复核累计覆盖24/24文件通过；新增启动清理/旧丢弃回归同样通过。
+- 实际 Windows WebView2：使用独立应用标识 `io.github.lifei6671.wechat-creator-workbench.stability-01a212aa` 和全新工作区。连续输入时恢复稿在772ms落库，正式正文仍为空；强制结束测试进程后重启，真实窗口发现草稿并通过按钮恢复，正文及版本核对通过。1,060,000字节正文实测874ms落库，再注入独立正式更新后强退重启，覆盖按钮禁用，另存草稿完整保留长正文，正式正文保持更新结果。数据是本机两次观测，不是跨平台时延保证。
+- 原生构建：`pnpm tauri build --debug --no-bundle --config .../output/stability/recovery-config.json` 完成 web build 和 Rust 链接，但最终复制到 target/debug 默认 exe 因本机已有用户实例占用而失败，不能记作完整构建通过。测试复制本次已链接的 deps 新 exe 到任务独立路径运行，未终止或修改用户生产工作区。原生功能截图为头部对齐修复前版本，最终对齐由两引擎浏览器断言验证；截图/数值记录在忽略目录 `output/playwright/recovery-native-dialog.png`、`output/stability/recovery-smoke-result.json`。测试正常退出时 IPC 因窗口关闭而断开，内容验收已在退出前完成。
+- 可见元素清单：标题“恢复未保存内容”定位当前任务；草稿标题及恢复时间用于识别记录；“当前文档/恢复内容”两栏支持比较；“关闭”保留选择到下次启动；“放弃”移除所选稿；“另存草稿”在版本变化/删除后保留内容；“恢复到原文档”只在基础版本匹配时执行。按钮处理/结果状态及固定错误区域帮助判断操作结果。用户已于本轮明确批准此原型，无新增 Toast 或解释性文案。
+- 部署与恢复：客户端自动追加本地迁移，无服务端部署要求；数据库快照内的恢复稿只供人工选择。不得手工降低 schema；回退使用迁移前快照与兼容客户端。macOS 原生强退和 WKWebView 尚未验证，真实同步冲突仍由后端版本冲突回归覆盖，未伪称原生双设备强退验收。

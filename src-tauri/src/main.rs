@@ -36,6 +36,7 @@ use canvas_preview_cache::canvas_preview_cache_read;
 use canvas_webview::{canvas_webview, canvas_webview_page, canvas_webview_snapshot};
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
+use content::recovery::{editor_recovery_put, editor_recovery_list, editor_recovery_get, editor_recovery_discard, editor_recovery_restore};
 use content::trash::{empty_trash, trash_retention};
 use db::Workspace;
 use graphics::gpu_acceleration;
@@ -151,6 +152,7 @@ fn main() {
             let dir = app.path().app_local_data_dir()?.join("workspace");
             std::fs::create_dir_all(&dir)?;
             let (db, backups) = Backups::open(&dir)?;
+            db.prune_completed_editor_recovery()?;
             app.manage(backups);
             let mut assets = Assets::new(dir.join("assets"), &db)?;
             if let Ok(cache) = app.path().app_cache_dir() {
@@ -226,6 +228,7 @@ fn main() {
             save_collection_viewport,
             list_entry_collections,
             save_entry,
+            editor_recovery_put, editor_recovery_list, editor_recovery_get, editor_recovery_discard, editor_recovery_restore,
             set_deleted,
             empty_trash,
             trash_retention,

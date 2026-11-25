@@ -172,8 +172,9 @@ pub async fn save_entry(
     expected_version: i64,
     fields: Fields,
     mode: SaveMode,
+    recovery: Option<crate::content::recovery::Commit>,
 ) -> Result<SaveResult> {
-    state.save_entry(&id, expected_version, fields, mode)
+    state.save_entry_with_recovery(&id, expected_version, fields, mode, recovery.as_ref())
 }
 
 #[tauri::command]

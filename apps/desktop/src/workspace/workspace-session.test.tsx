@@ -60,6 +60,8 @@ let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
   editorQueues.clear();
+  vi.spyOn(desktop, "recoveryList").mockResolvedValue([]);
+  vi.spyOn(desktop, "recoveryPut").mockResolvedValue();
   vi.spyOn(desktop, "wechatPublicationDefaults").mockResolvedValue({ schemaVersion: 1, recommendationCount: 5, recommendationAuthors: [], version: 0, updatedAt: 0 });
   vi.spyOn(desktop, "wechatRecommendations").mockImplementation(async input => ({ inputFingerprint: await recommendationFingerprint(input), items: [] }));
   vi.spyOn(desktop, "resolveWechatRecommendations").mockImplementation(async (_input, items) => ({ items, invalid: [] }));
@@ -391,7 +393,7 @@ it("imports a rich clipboard clipping in a new tab and leaves the current articl
   expect(await editorClipboards.get("original")!.read()).toBe("");
   await vi.waitFor(() => expect(openTabs()).toEqual(["original", "clipped"]));
   expect(editorQueues.get("original")!.snapshot().fields.contentMd).toBe("未保存的正文");
-  await vi.waitFor(() => expect(saved).toHaveBeenCalledWith("original", 1, expect.objectContaining({ contentMd: "未保存的正文" }), "auto"));
+  await vi.waitFor(() => expect(saved).toHaveBeenCalledWith("original", 1, expect.objectContaining({ contentMd: "未保存的正文" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
   expect(container.textContent).toContain("2 张图片未能下载，已保留原链接");
 });
 
@@ -1740,7 +1742,7 @@ it("saves focused properties before switching modules and reflects subsequent ed
     summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
     container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click();
   });
-  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ summary: "尚未失焦的摘要", contentMd: "保留正文" }), "auto"));
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ summary: "尚未失焦的摘要", contentMd: "保留正文" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
   expect(container.querySelector(".properties-sidebar")).not.toBeNull();
   expect(container.querySelector("#right-sidebar-ai-button")?.getAttribute("aria-busy")).toBe("true");
   finishProperty({ version: 2 });
@@ -1759,7 +1761,7 @@ it("saves focused properties before switching modules and reflects subsequent ed
   expect(nextSummary.value).toBe("切换文章前的摘要");
   flushSync(() => container.querySelector<HTMLButtonElement>("#tab-other")!.click());
   await vi.waitFor(() => expect(container.querySelector("#tab-other")?.getAttribute("aria-selected")).toBe("true"));
-  expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ summary: "切换文章前的摘要", contentMd: "编辑器中的最新正文" }), "auto");
+  expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ summary: "切换文章前的摘要", contentMd: "编辑器中的最新正文" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) }));
   await vi.waitFor(() => expect(container.querySelector<HTMLTextAreaElement>('.properties-sidebar [name="summary"]')?.value).toBe("原摘要"));
   flushSync(() => container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click());
   await vi.waitFor(() => expect(container.querySelector("#right-sidebar-ai-button")?.getAttribute("aria-pressed")).toBe("true"));
@@ -1774,7 +1776,7 @@ it("saves focused properties before switching modules and reflects subsequent ed
     title.dispatchEvent(new InputEvent("input", { bubbles: true }));
     container.querySelector<HTMLButtonElement>("#right-sidebar-ai-button")!.click();
   });
-  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ title: "当前文章的标题" }), "auto"));
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith("inspector", expect.any(Number), expect.objectContaining({ title: "当前文章的标题" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
 });
 
 it("keeps invalid properties visible when switching modules or documents", async () => {
@@ -1824,7 +1826,7 @@ it("keeps invalid properties visible when switching modules or documents", async
   flushSync(() => retryFocus.click());
   await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")).toBeNull());
   expect(container.querySelector("#show-sidebar")?.getAttribute("aria-label")).toBe("退出专注写作");
-  expect(save).toHaveBeenLastCalledWith("first", expect.any(Number), expect.objectContaining({ source: expect.objectContaining({ url: "https://example.com/fixed" }) }), "auto");
+  expect(save).toHaveBeenLastCalledWith("first", expect.any(Number), expect.objectContaining({ source: expect.objectContaining({ url: "https://example.com/fixed" }) }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) }));
 });
 
 it("keeps timeline results visible until a folder or tag query settles and ignores superseded results", async () => {
@@ -2067,13 +2069,13 @@ it.each(["folders", "timeline"] as const)("opens properties for a closed article
   flushSync(() => summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
   await vi.waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith(target.id, 3, expect.objectContaining({
     summary: "更新列表文章的摘要",
-  }), "auto"));
+  }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
   flushSync(() => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary, "再次更新摘要");
     summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
     summary.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
   });
-  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(target.id, 4, expect.objectContaining({ summary: "再次更新摘要" }), "auto"));
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(target.id, 4, expect.objectContaining({ summary: "再次更新摘要" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
   expect(document.querySelector('[aria-label="关闭右侧栏"]')).toBeNull();
   flushSync(() => document.querySelector<HTMLButtonElement>('#ai-panel-trigger')!.click());
   await vi.waitFor(() => expect(document.querySelector(".properties-sidebar")).toBeNull());
@@ -2104,7 +2106,7 @@ it("saves and closes an unopened article's properties when the article is delete
   });
   flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === "移入回收站")!.click());
   await vi.waitFor(() => expect(remove).toHaveBeenCalledExactlyOnceWith(target.id, 4, true));
-  expect(save).toHaveBeenCalledExactlyOnceWith(target.id, 3, expect.objectContaining({ summary: "删除前保留的摘要" }), "auto");
+  expect(save).toHaveBeenCalledExactlyOnceWith(target.id, 3, expect.objectContaining({ summary: "删除前保留的摘要" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) }));
   await vi.waitFor(() => expect(container.querySelector(".properties-sidebar")).toBeNull());
   expect(openTabs()).not.toContain(target.id);
 });
@@ -2206,7 +2208,7 @@ it("waits for an unopened article's unblurred property edits before exiting", as
     summary.dispatchEvent(new InputEvent("input", { bubbles: true }));
     requestExit();
   });
-  await vi.waitFor(() => expect(save).toHaveBeenCalledWith(target.id, 1, expect.objectContaining({ summary: "退出前保存的摘要" }), "auto"));
+  await vi.waitFor(() => expect(save).toHaveBeenCalledWith(target.id, 1, expect.objectContaining({ summary: "退出前保存的摘要" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
   expect(begin).not.toHaveBeenCalled(); expect(finish).not.toHaveBeenCalled();
   completeSave();
   await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
@@ -2612,7 +2614,7 @@ it.each(["article", "idea"] as const)("saves the selected preview theme for a %s
   await vi.waitFor(() => expect(document.querySelector('[role="menuitemradio"]')).not.toBeNull());
   const theme = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent === "莫兰迪")!;
   flushSync(() => theme.click());
-  await vi.waitFor(() => expect(save).toHaveBeenCalledWith("preview-theme", expect.any(Number), expect.objectContaining({ themeId: "morandi", contentMd: markdown }), "auto"));
+  await vi.waitFor(() => expect(save).toHaveBeenCalledWith("preview-theme", expect.any(Number), expect.objectContaining({ themeId: "morandi", contentMd: markdown }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) })));
   await vi.waitFor(() => expect(container.querySelector(".preview-theme-label")?.textContent).toBe("莫兰迪"));
   expect(editorQueues.get("preview-theme")!.snapshot().fields.contentMd).toBe(markdown);
 });
@@ -2676,7 +2678,7 @@ it("reports one owned save error and can exit after retrying without losing the 
   await vi.waitFor(() => expect(queue.isDirty()).toBe(false));
   await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
   expect(container.textContent).not.toContain("磁盘写入失败");
-  expect(save).toHaveBeenLastCalledWith("publication-save-error", 1, expect.objectContaining({ contentMd: "不能丢失的当前正文" }), "auto");
+  expect(save).toHaveBeenLastCalledWith("publication-save-error", 1, expect.objectContaining({ contentMd: "不能丢失的当前正文" }), "auto", expect.objectContaining({ sessionId: expect.any(String), localRevision: expect.any(Number) }));
   flushSync(() => queue.edit({ contentMd: "重试成功后继续输入的正文" }));
   await act(async () => { finishRefresh({ items: [], invalid: [] }); });
   expect(container.textContent).not.toContain("磁盘写入失败");

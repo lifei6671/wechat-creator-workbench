@@ -115,6 +115,7 @@
     "allow-save-collection-viewport",
     "allow-list-entry-collections",
     "allow-save-entry",
+    "allow-editor-recovery-put", "allow-editor-recovery-list", "allow-editor-recovery-get", "allow-editor-recovery-discard", "allow-editor-recovery-restore",
     "allow-wechat-publication-defaults",
     "allow-wechat-recommendation-authors",
     "allow-save-wechat-publication-defaults",

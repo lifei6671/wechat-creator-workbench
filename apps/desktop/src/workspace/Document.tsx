@@ -753,7 +753,7 @@ export function DocumentSaveError({ queue, actions }: {
   queue: SaveQueue;
   actions: Pick<DocumentActions, "onCopy" | "onDraft" | "onReload" | "onRetry" | "feedback">;
 }) {
-  const error = useSyncExternalStore(queue.subscribe, () => queue.snapshot().error);
+  const error = useSyncExternalStore(queue.subscribe, queue.saveError);
   const [expanded, setExpanded] = useState(false);
   if (!error) return null;
   const conflict = isConflict(error);

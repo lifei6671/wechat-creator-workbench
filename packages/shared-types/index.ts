@@ -161,6 +161,9 @@ export interface Library {
 export interface Revision { version: number; contentMd: string; reason: "manual" | "before_ai_replace"; createdAt: number }
 export type SaveMode = "auto" | "manual" | "ai_replace";
 export interface SaveResult { version: number }
+export interface RecoveryCommit { sessionId: string; localRevision: number }
+export interface RecoveryDraft extends RecoveryCommit { entryId: string; kind: EntryKind; baseVersion: number; fields: EntryFields }
+export interface RecoverySummary extends RecoveryCommit { entryId: string; title: string; baseVersion: number; updatedAt: number }
 export interface AppError {
   code: "DATABASE" | "INTEGRITY" | "INVALID_INPUT" | "NOT_FOUND" | "VERSION_CONFLICT" | "EXIT_PENDING" | "EXPORT_FAILED";
   message: string;

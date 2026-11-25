@@ -9,7 +9,7 @@ import type { SourceFragment } from "../../../packages/wechat-renderer";
 import type { WebClipping } from "./editor/web-clipping";
 import type {
   CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
-  Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection,
+  Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection, RecoveryCommit, RecoveryDraft, RecoverySummary,
   WechatPublicationDefaults, WechatRecommendationInput, WechatRecommendation, WechatCandidatePage, WechatRecommendationResult, WechatResolvedRecommendations,
 } from "../../../packages/shared-types";
 
@@ -180,8 +180,13 @@ export const desktop = {
     invoke<void>("save_collection_viewport", { collectionId, viewport }),
   entryCollections: (entryId: string) => invoke<Collection[]>("list_entry_collections", { entryId }),
   create: (kind: EntryKind, fields?: EntryFields, sourceEntryId?: string) => invoke<Entry>("create_entry", { kind, fields, sourceEntryId }),
-  save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode) =>
-    invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode }),
+  save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit) =>
+    invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode, recovery }),
+  recoveryPut: (draft: RecoveryDraft) => invoke<void>("editor_recovery_put", { draft }),
+  recoveryList: () => invoke<RecoverySummary[]>("editor_recovery_list"),
+  recoveryGet: (entryId: string, sessionId: string) => invoke<EntryFields>("editor_recovery_get", { entryId, sessionId }),
+  recoveryDiscard: (entryId: string, sessionId: string, localRevision: number) => invoke<void>("editor_recovery_discard", { entryId, sessionId, localRevision }),
+  recoveryRestore: (entryId: string, sessionId: string, localRevision: number, copy: boolean) => invoke<Entry>("editor_recovery_restore", { entryId, sessionId, localRevision, copy }),
   setDeleted: (id: string, expectedVersion: number, deleted: boolean) => invoke<Entry>("set_deleted", { id, expectedVersion, deleted }),
   emptyTrash: () => invoke<string[]>("empty_trash"),
   trashRetention: (days?: number) => invoke<number>("trash_retention", { days }),
