@@ -768,7 +768,9 @@ fn apply_outcome(
                     params![key.entity_type.key(), key.entity_id, generation],
                 )?;
                 tx.execute(
-                    "DELETE FROM sync_issues WHERE (entity_type,entity_id,generation)=(?1,?2,?3) AND remote_json IS NULL",
+                    "DELETE FROM sync_issues WHERE entity_type=?1 AND entity_id=?2 AND generation<=?3
+                     AND remote_json IS NULL AND (code IS NULL OR code<>'revision_conflict')
+                     AND reason NOT IN ('revision_conflict','内容已在另一台设备修改','检测到同一内容在多台设备修改')",
                     params![key.entity_type.key(), key.entity_id, generation],
                 )?;
             }

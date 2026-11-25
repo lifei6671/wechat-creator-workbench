@@ -407,3 +407,32 @@ fn staging_does_not_retry_a_partly_blocked_atomic_group() {
     }).unwrap();
     assert!(stage_outbox(&db).unwrap().is_none());
 }
+
+
+#[test]
+fn successful_receipts_retire_old_local_rejections_but_keep_newer_or_version_conflicts() {
+    for case in ["old-local","newer-local","version-conflict"] {
+        let db=Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d');UPDATE sync_progress SET capture=1;
+                INSERT INTO assets(id,name,kind,created_at) VALUES('asset','Original','original',1);")?;
+            let key=Key{entity_type:Kind::Asset,entity_id:"asset".into()};
+            issue(tx,&key,1,if case=="version-conflict"{"内容已在另一台设备修改"}else{"SYNC_ASSET: original missing"},None)?;
+            if case=="version-conflict" {tx.execute("UPDATE sync_issues SET code='revision_conflict'",[])?;}
+            tx.execute("UPDATE assets SET name='Repaired' WHERE id='asset'",[])?;
+            Ok(())
+        }).unwrap();
+        let(operation,generations)=stage_outbox(&db).unwrap().unwrap();
+        db.write(|tx| {
+            if case=="newer-local" {
+                tx.execute("UPDATE assets SET name='Newer' WHERE id='asset'",[])?;
+                issue(tx,&operation.mutations[0].key,generations[0]+1,"SYNC_ASSET: newer rejection",None)?;
+            }
+            apply_outcome(tx,&operation,&generations,&Outcome{status:"applied".into(),reason:None,versions:Some(vec![Version{key:operation.mutations[0].key.clone(),remote_revision:1}])})?;
+            let count=tx.query_row("SELECT COUNT(*) FROM sync_issues",[],|row|row.get::<_,i64>(0))?;
+            assert_eq!(count,if case=="old-local"{0}else{1},"{case}");
+            if case=="newer-local" {assert_eq!(generation(tx,&operation.mutations[0].key)?,Some(generations[0]+1));}
+            Ok(())
+        }).unwrap();
+    }
+}

@@ -228,3 +228,24 @@ it("saves custom tag removal without requiring a blur", async () => {
   expect(commit.mock.lastCall![2].customProperties).toEqual([{ key: "主题", kind: "tags", value: [] }]);
   expect(queue.isDirty()).toBe(false);
 });
+
+
+it("does not move focus back to a new platform after the user starts editing its link", async () => {
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(callback => { frames.push(callback); return frames.length; });
+  mount();
+  await choose(document.querySelector<HTMLElement>(".property-add")!, "发布平台");
+  await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const platform = document.querySelector<HTMLInputElement>('[aria-label="发布平台 1"]')!;
+  fill(platform, "我的站点");
+  const url = document.querySelector<HTMLInputElement>('[aria-label="发布链接 1"]')!;
+  flushSync(() => url.focus());
+  fill(url, "https://example.com/article");
+  flushSync(() => { for (const callback of frames.splice(0)) callback(performance.now()); });
+  expect(document.activeElement).toBe(url);
+  blur(url);
+  await vi.waitFor(() => expect(queue.snapshot().fields.publicationPlatforms).toEqual([
+    { platform: "我的站点", url: "https://example.com/article" },
+  ]));
+});

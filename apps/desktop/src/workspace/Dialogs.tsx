@@ -424,7 +424,8 @@ function PropertiesForm({ entry, fields, categories, tagSuggestions, locked, onS
             if (!id) return;
             event.preventDefault();
             focusAfterAdd.current = null;
-            requestAnimationFrame(() => document.getElementById(id)?.focus());
+            const active = document.activeElement;
+            if (active === document.body || active?.matches(".property-add")) document.getElementById(id)?.focus();
           }}>
             <DropdownMenu.Item onSelect={() => {
               const id = nextPublicationId.current++;
@@ -556,8 +557,8 @@ export function Confirm({ title, text, action, children, onClose, onConfirm }: {
       {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p role="alert" className="inline-error">{error}</p> : null}</div>}
       <div className="dialog-actions">
         <Dialog.Close><Button variant="soft" color="gray" disabled={saving}>取消</Button></Dialog.Close>
-        <Button color="red" loading={saving} {...buttons.props("confirm")} onClick={() => {
-          if (!buttons.start("confirm")) return;
+        <Button color="red" loading={saving} {...buttons.props("confirm", !dialogOpen)} onClick={() => {
+          if (!dialogOpen || !buttons.start("confirm")) return;
           setError("");
           setSaving(true);
           void onConfirm().then(onClose, error => { buttons.finish("confirm", false); setError(errorMessage(error)); }).finally(() => setSaving(false));

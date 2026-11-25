@@ -119,6 +119,26 @@ test("does not activate a cancelled destructive action during its exit", async (
   expect(await page.evaluate(() => Reflect.get(window, "motionConfirmCalls") ?? 0)).toBe(0);
 });
 
+test("ignores a queued confirmation click after cancellation starts", async ({ page }) => {
+  await mockNativeWindow(page, "Win32");
+  await page.goto("/tests/workspace-resize.html?edit=1");
+  await page.addStyleTag({ content: '.rt-DialogContent[data-state="closed"] { animation-duration: 60s !important; }' });
+  await page.getByRole("button", { name: "回收站", exact: true }).click();
+  await page.locator("#empty-trash").click();
+  const dialog = page.getByRole("dialog", { name: "清空回收站", exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "清空回收站", exact: true }).focus();
+  await page.keyboard.press("Escape");
+  const closing = page.locator('.rt-DialogContent[data-state="closed"]');
+  await expect(closing).toHaveCount(1);
+  await closing.locator('.dialog-actions button').last().evaluate(button => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  expect(await page.evaluate(() => Reflect.get(window, "motionConfirmCalls") ?? 0)).toBe(0);
+  await closing.evaluate(element => { for (const animation of element.getAnimations()) animation.finish(); });
+  await expect(closing).toHaveCount(0);
+});
+
 for (const region of ["right", "directory"] as const) test(`takes over a partially opened ${region} at its rendered boundary`, async ({ page }) => {
   await mockNativeWindow(page, "Win32");
   await page.setViewportSize({ width: 1600, height: 900 });
