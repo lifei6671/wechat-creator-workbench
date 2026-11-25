@@ -1,5 +1,34 @@
 import { expect, test, type Page } from "@playwright/test";
 
+for (const [platform, modifier] of [["Win32", "Control"], ["MacIntel", "Meta"]]) for (const delay of [0, 600]) {
+  test(`undoes source edits after a reading shortcut round trip (${platform}, delay=${delay})`, async ({ page }) => {
+    await page.addInitScript(platform => Object.defineProperty(navigator, "platform", { value: platform }), platform);
+    const original = "# **标题**\n\n后文";
+    const edited = "# **修改标题**\n\n后文";
+    await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent(original));
+    const editor = page.locator(".ProseMirror");
+    await editor.locator("h1 strong").click();
+    await editor.locator('[data-markdown="# "]').click();
+    await selectSource(page, "标题");
+    // Let editing start a separate history event from opening source mode.
+    if (delay) await page.waitForTimeout(delay);
+    await page.keyboard.insertText("修改标题");
+    await expect(editor).toBeFocused();
+    await expect(editor.locator("[data-markdown-source]")).toHaveCount(1);
+    await page.keyboard.press(`${modifier}+r`);
+    await expect(editor).toHaveAttribute("contenteditable", "false");
+    await expect(editor.locator("h1 strong")).toHaveText("修改标题");
+    await expect.poll(() => page.evaluate(() => window.markdown())).toBe(edited);
+    await page.keyboard.press(`${modifier}+r`);
+    await expect(editor).toHaveAttribute("contenteditable", "true");
+    await editor.focus();
+    await page.keyboard.press(`${modifier}+z`);
+    await expect.poll(() => page.evaluate(() => window.markdown())).toBe(original);
+    await page.keyboard.press(`${modifier}+Shift+z`);
+    await expect.poll(() => page.evaluate(() => window.markdown())).toBe(edited);
+  });
+}
+
 test("undoes the text edit once after restoring source on external blur", async ({ page }) => {
   await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent('# **标题**\n\n后文'));
   const editor = page.locator(".ProseMirror");
@@ -173,8 +202,20 @@ test("supports keyboard entry, source paste, line breaks and undo after restorin
   await editor.locator("h2").click();
   await editor.focus();
   await expect(editor.locator('[data-markdown="## "]')).toBeVisible();
+  await editor.locator("h2").evaluate(heading => {
+    const walker = document.createTreeWalker(heading, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) if (walker.currentNode.textContent === "标题") {
+      window.getSelection()!.setBaseAndExtent(walker.currentNode, 2, walker.currentNode, 2);
+      document.dispatchEvent(new Event("selectionchange"));
+      return;
+    }
+    throw new Error("Missing heading text");
+  });
+  await expect.poll(() => page.evaluate(() => window.selectionFrom())).toBe(3);
   await page.keyboard.press("ArrowLeft");
+  await expect.poll(() => page.evaluate(() => window.selectionFrom())).toBe(2);
   await page.keyboard.press("ArrowLeft");
+  await expect.poll(() => page.evaluate(() => window.selectionFrom())).toBe(1);
   await page.keyboard.press("ArrowLeft");
   await expect(editor.locator("[data-markdown-source]")).toHaveText("## 标题");
   await page.keyboard.press("ControlOrMeta+a");

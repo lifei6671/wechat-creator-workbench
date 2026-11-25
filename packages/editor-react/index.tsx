@@ -965,7 +965,7 @@ export function MarkdownEditor(props: Props) {
       })))
       .use(markdownSource)
       .use($prose(ctx => markdownSourceEditing(source => ctx.get(parserCtx)(source), doc => ctx.get(serializerCtx)(doc),
-        tr => tr.setMeta(documentLayout, true).setMeta("addToHistory", false), () => {
+        tr => tr.setMeta(documentLayout, true), () => {
           applyLocalizedImages(ctx.get(editorViewCtx));
           syncUploads.current?.();
         },

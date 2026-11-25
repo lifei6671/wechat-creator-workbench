@@ -1,11 +1,12 @@
 import { createRoot } from "react-dom/client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import "@radix-ui/themes/styles.css";
 import "../src/styles/tokens.css";
 import { TooltipProvider } from "../../../packages/ui-react/Tooltip";
 import { MarkdownEditor, type MarkdownEditorHandle } from "../../../packages/editor-react";
+import { workspaceShortcutForEvent } from "../src/workspace/workspace-shortcuts";
 
 const parameters = new URLSearchParams(location.search);
 const source = parameters.get("source") ?? '# **[老实写作业，很枯燥吧？ | Panache 开源全平台手写生成工具](https://linux.do/t/topic/3223667)**\n\n后文';
@@ -45,6 +46,16 @@ window.finishHostUpload = async () => { finishHostUpload("https://example.com/ho
 function Fixture() {
   const [reading, setReading] = useState(false);
   const [uploadRevision, setUploadRevision] = useState(0);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || workspaceShortcutForEvent({}, event) !== "reading") return;
+      event.preventDefault();
+      event.stopPropagation();
+      flushSync(() => setReading(value => !value));
+    };
+    window.addEventListener("keydown", keydown, true);
+    return () => window.removeEventListener("keydown", keydown, true);
+  }, []);
   window.setReading = value => flushSync(() => setReading(value));
   window.completeUpload = () => { uploaded = true; flushSync(() => setUploadRevision(value => value + 1)); };
   return <Theme><TooltipProvider>

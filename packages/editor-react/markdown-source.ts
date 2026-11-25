@@ -31,7 +31,7 @@ type MarkdownSyntax = {
 };
 
 export function markdownSourceEditing(parse: (source: string) => ProseNode, serialize: (doc: ProseNode) => string,
-  normalize: (tr: Transaction) => Transaction, onRestore: () => void, parseSyntax: (source: string) => MarkdownSyntax) {
+  prepareExit: (tr: Transaction) => Transaction, onRestore: () => void, parseSyntax: (source: string) => MarkdownSyntax) {
   const sourceImages = new Map<number, ProseNode[]>();
   const strongRanges = new WeakMap<ProseNode, { from: number; to: number }[]>();
   let sourceSequence = 0;
@@ -193,7 +193,8 @@ export function markdownSourceEditing(parse: (source: string) => ProseNode, seri
         tr.replaceWith(tr.mapping.map(pos), tr.mapping.map(pos + node.nodeSize),
           parsed.size ? parsed : state.schema.nodes.paragraph.create());
       });
-      return tr.docChanged ? exit ? normalize(tr) : tr : null;
+      // Both explicit exit and blur must append to the last edit to retain undo mappings.
+      return tr.docChanged ? exit ? prepareExit(tr) : tr : null;
     },
     view: () => ({ destroy: () => sourceImages.clear(), update(view, previous) {
       if (view.state.doc === previous.doc) return;
