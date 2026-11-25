@@ -31,7 +31,7 @@ export function prepareImageContext(view: EditorView, event: MouseEvent): ImageC
 }
 
 export interface EditorImages {
-  resolveImage?(url: string, retry?: boolean): Promise<{ src: string; dispose(): void }>;
+  resolveImage?(url: string, retry?: boolean): Promise<{ src: string; width?: number; height?: number; dispose(): void }>;
   imageErrorMessage?(error: unknown): string;
   onImageZoom?(image: { src: string; alt: string }, trigger: HTMLButtonElement): void;
   onError?(error: unknown): void;
@@ -142,7 +142,11 @@ export function imageView(
   source.setAttribute("aria-expanded", "false");
   controls.append(zoom, source);
   frame.append(media, uploadStatus, controls);
-  dom.append(frame);
+  const caption = document.createElement("span");
+  caption.className = "rich-image-caption";
+  caption.textContent = alt;
+  caption.hidden = true;
+  dom.append(frame, caption);
 
   const sourcePanel = document.createElement("span");
   sourcePanel.className = "rich-image-source-editor";
@@ -219,6 +223,7 @@ export function imageView(
       if (manual && retryButton.hasAttribute("aria-disabled")) return;
       window.clearTimeout(feedbackTimer);
       failedImages.delete(load);
+      caption.hidden = true;
       retryButton.setAttribute("aria-disabled", "true");
       retryButton.setAttribute("aria-busy", "true");
       retryButton.dataset.feedbackState = "pending";
@@ -234,9 +239,12 @@ export function imageView(
         const img = document.createElement("img");
         img.alt = alt;
         img.title = node.attrs.title ?? "";
+        if (image.width !== undefined) img.width = image.width;
+        if (image.height !== undefined) img.height = image.height;
         img.src = image.src;
         const restoreFocus = document.activeElement === retryButton;
         media.replaceChildren(img);
+        caption.hidden = !alt.trim();
         if (getOptions().onImageZoom) {
           zoom.disabled = false;
           zoom.onclick = () => getOptions().onImageZoom?.({ src: image.src, alt }, zoom);

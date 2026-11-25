@@ -12,6 +12,31 @@ const themes = [
   { id: "gzh-olive-journal", top: 0, bottom: 24, end: 0 },
 ];
 
+for (const { id } of [...themes, { id: "morandi" }]) test(`${id}: exported inline styles fill the client width without extra side gutters`, async ({ page }) => {
+  await page.goto(`/tests/theme-quotes.html?theme=${id}&urls=1`);
+  await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
+  const measurements = await page.locator("[data-output]").evaluateAll(hosts => hosts.flatMap(host => {
+    const root = host.shadowRoot!.querySelector<HTMLElement>("section")!;
+    host.shadowRoot!.querySelector("style")!.remove();
+    return [300, 677, 980].map(width => {
+      (host as HTMLElement).style.width = `${width}px`;
+      const style = getComputedStyle(root);
+      return { output: (host as HTMLElement).dataset.output, width, actual: root.getBoundingClientRect().width,
+        paddingLeft: style.paddingLeft, paddingRight: style.paddingRight, marginLeft: style.marginLeft, marginRight: style.marginRight,
+        fontSize: style.fontSize, paragraphLeft: root.querySelector("p")!.getBoundingClientRect().left - root.getBoundingClientRect().left };
+    });
+  }));
+  for (const measurement of measurements) {
+    expect(measurement.actual, `${id} ${measurement.output} ${measurement.width}`).toBeCloseTo(measurement.width, 1);
+    expect(measurement.paragraphLeft).toBeCloseTo(0, 1);
+    expect(measurement.paddingLeft).toBe("0px");
+    expect(measurement.paddingRight).toBe("0px");
+    expect(measurement.marginLeft).toBe("0px");
+    expect(measurement.marginRight).toBe("0px");
+    expect(parseFloat(measurement.fontSize)).toBeGreaterThanOrEqual(15);
+  }
+});
+
 for (const theme of themes) test(`${theme.id}: long URLs continue after Chinese labels and reference numbers`, async ({ page }) => {
   await page.goto(`/tests/theme-quotes.html?theme=${theme.id}&urls=1`);
   await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
@@ -86,6 +111,12 @@ for (const theme of themes) for (const newline of ["lf", "crlf"]) {
         for (const [quoteIndex, paragraphs] of quotes.entries()) {
           expect(paragraphs).toHaveLength(quoteIndex === 0 ? 1 : 3);
           for (const [index, paragraph] of paragraphs.entries()) {
+            if (output === 0) {
+              expect(paragraph.top).toBe(0);
+              expect(paragraph.bottom).toBe(index === paragraphs.length - 1 ? 0 : 18);
+              if (paragraph.gap !== null) expect(paragraph.gap).toBeCloseTo(18, 1);
+              continue;
+            }
             expect(paragraph.top, `output ${output} quote ${quoteIndex} paragraph ${index} top`).toBe(theme.top);
             expect(paragraph.bottom, `output ${output} quote ${quoteIndex} paragraph ${index} bottom`)
               .toBe(index === paragraphs.length - 1 ? theme.end : theme.bottom);

@@ -830,7 +830,7 @@ export function MarkdownEditor(props: Props) {
                 if (target.closest(".rich-link-footnoted") || link.querySelector(".rich-link-footnoted")) return true;
                 const { onOpenLink, onError } = latest.current;
                 const shortcut = /Mac/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
-                if (shortcut && !event.altKey && onOpenLink && /^https?:\/\//i.test(link.getAttribute("href")!)) {
+                if ((!view.editable || shortcut) && !event.altKey && onOpenLink && /^https?:\/\//i.test(link.getAttribute("href")!)) {
                   void onOpenLink(link.href).catch(error => onError?.(error));
                 }
                 return true;

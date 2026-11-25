@@ -1,13 +1,14 @@
-import { useCallback, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { Button, ContextMenu, DropdownMenu, Spinner, Theme } from "@radix-ui/themes";
+import { useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { Button, ContextMenu, DropdownMenu, Spinner, Theme, ThemeContext } from "@radix-ui/themes";
 import {
-  ArchiveRestore, BookOpen, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
+  ArchiveRestore, BookOpen, ChevronDown, ChevronLeft, ChevronRight, CloudUpload, Copy, EllipsisVertical, Eye, FileDown, FilePenLine, Focus, History,
   ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
 import { MarkdownEditor, type ClipboardIO, type ImageContext, type ImageUploadState, type MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { footnoteId } from "../../../../packages/markdown-core";
-import { renderWechat, wechatEditorStyles, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
+import { renderWechat, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
+import "../styles/article.css";
 import type { ChatSelection } from "../ai/context";
 import previewCss from "../styles/preview.css?inline";
 import { desktop, errorMessage } from "../desktop";
@@ -392,10 +393,9 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
 }) {
   const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const editor = useRef<MarkdownEditorHandle>(null);
-  const themeStyles = useMemo(() => wechatEditorStyles(fields.themeId), [fields.themeId]);
   const readOnly = reading || locked || queue.entry.deletedAt !== null;
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
-    data-wechat-theme={wechatThemeId(fields.themeId)} style={themeStyles as CSSProperties} hidden={!active}>
+    hidden={!active}>
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
       canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAddSelectionToChat={onAddSelectionToChat}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
@@ -429,10 +429,11 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
   </div>;
 }
 
-export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo, projectLinks, recommendations, publicationError }: {
+export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo, projectLinks, recommendations, publicationError, onThemeChange }: {
   title: string; markdown: string; themeId?: string | null; revision: number; githubRepo?: string; projectLinks?: MarkdownEditorHandle["linkFootnoteMarkdown"] | null;
   recommendations?: import("../../../../packages/shared-types").WechatRecommendation[];
   publicationError?: string;
+  onThemeChange?(themeId: string): void;
 }) {
   const snapshot = useMemo(() => ({ markdown, themeId, revision, githubRepo, recommendations }), [markdown, themeId, revision, githubRepo, recommendations]);
   const deferred = useDeferredValue(snapshot);
@@ -441,7 +442,11 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
   const body = useRef<HTMLElement>(null);
   const displayed = useRef<RenderedWechat | null>(null);
   const [ready, setReady] = useState(false);
-  const [appearance, setAppearance] = useState<PreviewAppearance>("light");
+  const appAppearance = useContext(ThemeContext)?.appearance;
+  const [appearance, setAppearance] = useState<PreviewAppearance>(() => themeId === "morandi" && appAppearance === "dark" ? "dark" : "light");
+  useLayoutEffect(() => {
+    if (themeId === "morandi") setAppearance(appAppearance === "dark" ? "dark" : "light");
+  }, [themeId, appAppearance]);
   const lightStyles = useRef(new WeakMap<HTMLElement, string>());
   const updateAppearance = useEffectEvent(() => applyPreviewAppearance(body.current!, appearance, lightStyles.current));
   const [renderedThemeId, setRenderedThemeId] = useState(() => wechatThemeId(themeId));
@@ -563,9 +568,18 @@ export function MarkdownPreview({ title, markdown, themeId, revision, githubRepo
     </div>
     {publicationError !== undefined && <div className="action-error-slot preview-publication-error"><p className="inline-error" role={publicationError ? "alert" : undefined}>{publicationError}</p></div>}
     <div className="preview-controls">
-      <span className="preview-theme-label" aria-label={`公众号主题：${themeName}`} title={themeName}>
-        <Palette size={12} strokeWidth={1.5} aria-hidden="true" /><span>{themeName}</span>
-      </span>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger>
+          <button type="button" className="preview-theme-label" aria-label={`公众号主题：${themeName}`} title={themeName} disabled={!onThemeChange}>
+            <Palette size={12} strokeWidth={1.5} aria-hidden="true" /><span>{themeName}</span><ChevronDown size={12} aria-hidden="true" />
+          </button>
+        </DropdownMenu.Trigger>
+        {onThemeChange && <DropdownMenu.Content align="center" size="1" className="wechat-theme-menu">
+          <DropdownMenu.RadioGroup aria-label="排版主题" value={wechatThemeId(themeId)} onValueChange={onThemeChange}>
+            {wechatThemes.map(theme => <DropdownMenu.RadioItem key={theme.id} value={theme.id}>{theme.label}</DropdownMenu.RadioItem>)}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>}
+      </DropdownMenu.Root>
       <div className="preview-appearance" role="group" aria-label="微信预览外观">
         {(["light", "dark"] as const).map(value => <button key={value} type="button" aria-pressed={appearance === value}
           onClick={() => setAppearance(value)}>{value === "light" ? "亮色" : "暗色"}</button>)}

@@ -1,5 +1,35 @@
 import { expect, test } from "@playwright/test";
 
+test("keeps the theme list anchored to its trigger when reopening later themes", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto("/tests/wechat-publication.html?empty=1");
+  const trigger = page.getByRole("combobox", { name: "排版主题", exact: true });
+  for (const theme of ["留白禅意", "摸鱼票据", "橄榄手记"]) {
+    await trigger.click();
+    await page.getByRole("option", { name: theme, exact: true }).click();
+    const scrollBefore = await page.evaluate(() => ({ page: window.scrollY, sidebar: document.querySelector(".right-sidebar-content")!.scrollTop }));
+    await trigger.click();
+    const list = page.getByRole("listbox");
+    await expect(list).toHaveAttribute("data-side", "bottom");
+    await expect(list).toHaveCSS("animation-name", "none");
+    await expect(list).toHaveCSS("transition-duration", "0s");
+    await expect(list).toHaveCSS("transform", "none");
+    const triggerBounds = await page.locator("#wechat-theme").boundingBox();
+    const listBounds = await list.boundingBox();
+    expect(Math.abs(listBounds!.y - (triggerBounds!.y + triggerBounds!.height + 4))).toBeLessThanOrEqual(1);
+    const positions = await list.evaluate(async element => {
+      const positions: number[] = [];
+      for (let index = 0; index < 8; index++) { await new Promise(requestAnimationFrame); positions.push(element.getBoundingClientRect().top); }
+      return positions;
+    });
+    expect(Math.max(...positions) - Math.min(...positions)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => ({ page: window.scrollY, sidebar: document.querySelector(".right-sidebar-content")!.scrollTop }))).toEqual(scrollBefore);
+    if (theme === "橄榄手记") await page.screenshot({ path: `output/playwright/anchored-theme-menu-${test.info().project.name}.png` });
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+  }
+});
+
 test("waits for an explicit recommendation request and copies an empty list without generating", async ({ page }) => {
   await page.goto("/tests/wechat-publication.html?empty=1");
   await expect(page.getByRole("button", { name: "自动推荐", exact: true })).toBeVisible();

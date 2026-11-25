@@ -3,6 +3,17 @@ import { expect, it } from "vitest";
 import { renderMarkdown } from "../../../../packages/markdown-core";
 import fixture from "../../../../fixtures/asset-references.json?raw";
 
+it("keeps explicit figure captions in embedded editor HTML without changing publication markup", () => {
+  const source = '<figure onclick="alert(1)"><img src="asset://image" alt="无障碍说明"><figcaption>独立图注</figcaption></figure>';
+  const embedded = renderMarkdown(source, { embedded: true });
+  expect(embedded.querySelector("figure figcaption")?.textContent).toBe("独立图注");
+  expect(embedded.querySelector("[onclick]")).toBeNull();
+  expect(embedded.querySelector<HTMLElement>("[data-image-alt]")?.dataset.imageAlt).toBe("无障碍说明");
+  const publication = renderMarkdown(source);
+  expect(publication.querySelector("figure, figcaption")).toBeNull();
+  expect(publication.textContent).toContain("独立图注");
+});
+
 it("renders Markdown and strips scripts, event handlers and unsafe URLs from raw HTML", () => {
   const fragment = renderMarkdown([
     "# 标题", "", "**加粗**", "",

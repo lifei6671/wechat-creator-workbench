@@ -92,7 +92,7 @@ export function WechatPublicationPanel({ session, locked, onClose, onCopy, publi
       {tab === "article" ? <>
         <div className="wechat-setting-row"><label htmlFor="wechat-theme">排版主题</label><Select.Root size="1" value={wechatThemeId(fields.themeId)} disabled={locked}
           onValueChange={themeId => { session.queue.edit({ themeId }); void session.flush(); }}>
-          <Select.Trigger id="wechat-theme" aria-label="排版主题" /><Select.Content>{wechatThemes.map(theme => <Select.Item key={theme.id} value={theme.id}>{theme.label}</Select.Item>)}</Select.Content>
+          <Select.Trigger id="wechat-theme" aria-label="排版主题" /><Select.Content position="popper" side="bottom" align="start" collisionPadding={8} className="wechat-theme-menu">{wechatThemes.map(theme => <Select.Item key={theme.id} value={theme.id}>{theme.label}</Select.Item>)}</Select.Content>
         </Select.Root></div>
         <section className="wechat-recommendation-settings">
           <div className="wechat-recommendation-header"><h3>推荐阅读</h3>{state.loading && <Spinner size="1" />}<button type="button" className="wechat-recommendation-switch" role="switch"

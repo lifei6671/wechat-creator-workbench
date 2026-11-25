@@ -96,7 +96,7 @@ it("keeps transparent gradient bases transparent while retaining filled theme he
   expect(wechatEditorStyles("plainly-elegant")["--article-blockquote-background"]).toBe("transparent");
 });
 
-it("updates the existing document's spacing when its theme changes without editing its Markdown", () => {
+it("keeps workbench typography independent from publication themes without editing Markdown", () => {
   const entry: Entry = { id: "spacing", kind: "article", title: "标题", contentMd: "## 正文标题\n\n> 引用内容", status: "draft",
     categoryId: null, coverAssetId: null, themeId: "plainly-default", tags: [], summary: "", source: null,
     publishedAt: null, publishedUrl: "", customProperties: [], version: 1, createdAt: 0, updatedAt: 0, deletedAt: null, links: [] };
@@ -111,22 +111,14 @@ it("updates the existing document's spacing when its theme changes without editi
   try {
     flushSync(() => root.render(<DocumentEditor {...props} />));
     const documentEditor = container.querySelector<HTMLElement>(".document-editor")!;
-    expect(documentEditor.style.getPropertyValue("--article-h2-padding-block")).toBe("0px 0px");
-    flushSync(() => queue.edit({ themeId: "plainly-tech" }));
-    expect(container.querySelector(".document-editor")).toBe(documentEditor);
-    expect(documentEditor.style.getPropertyValue("--article-h2-padding-block")).toBe("4px 4px");
-    expect(documentEditor.style.getPropertyValue("--article-h2-border-width")).toBe("0px 0px 0px 5px");
-    expect(documentEditor.style.getPropertyValue("--article-h3-border-width")).toBe("0px 0px 0px 3px");
-    flushSync(() => root.render(<DocumentEditor {...props} reading />));
-    expect(documentEditor.style.getPropertyValue("--article-h2-padding-block")).toBe("4px 4px");
-    flushSync(() => queue.edit({ themeId: "gzh-moyu-ticket" }));
-    expect(documentEditor.style.getPropertyValue("--article-h2-border-width")).toBe("0.5px 0.5px 0.5px 0.5px");
-    expect(documentEditor.style.getPropertyValue("--article-h2-border-style")).toBe("dashed dashed dashed dashed");
-    expect(documentEditor.style.getPropertyValue("--article-h2-background")).toBe("var(--article-quote)");
-    flushSync(() => queue.edit({ themeId: "gzh-graphite-minimal" }));
-    expect(documentEditor.style.getPropertyValue("--article-h1-border-width")).toBe("0px 0px 0px 0px");
-    expect(documentEditor.style.getPropertyValue("--article-h2-border-width")).toBe("0px 0px 0.5px 0px");
-    expect(documentEditor.style.getPropertyValue("--article-h2-background")).toBe("transparent");
+    for (const themeId of ["plainly-tech", "gzh-moyu-ticket", "gzh-graphite-minimal"]) {
+      flushSync(() => queue.edit({ themeId }));
+      expect(container.querySelector(".document-editor")).toBe(documentEditor);
+      expect(documentEditor.hasAttribute("data-wechat-theme")).toBe(false);
+      expect(documentEditor.style.length).toBe(0);
+      flushSync(() => root.render(<DocumentEditor {...props} reading />));
+      expect(container.querySelector(".document-editor")).toBe(documentEditor);
+    }
     expect(queue.snapshotFields().contentMd).toBe(entry.contentMd);
     expect(commit).not.toHaveBeenCalled();
   } finally { queue.dispose(); flushSync(() => root.unmount()); container.remove(); }

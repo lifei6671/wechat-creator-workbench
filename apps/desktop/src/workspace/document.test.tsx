@@ -491,7 +491,7 @@ it("keeps the last active tab at the scroll end as the workspace changes width",
   }
 });
 
-it("renames through the focused breadcrumb and updates the editor theme without remounting it", async () => {
+it("renames through the focused breadcrumb and keeps publication themes separate without remounting the editor", async () => {
   const save = vi.fn().mockResolvedValue({ version: 2 });
   const queue = new SaveQueue(entry("one", "原标题"), save, () => {});
   const noop = () => {};
@@ -527,12 +527,19 @@ it("renames through the focused breadcrumb and updates the editor theme without 
     const scroll = editor.querySelector(".editor-scroll")!;
     expect(scroll.contains(editor.querySelector(".writing-title"))).toBe(true);
     expect(scroll.contains(body)).toBe(true);
-    expect(editor.dataset.wechatTheme).toBe("plainly-default");
+    expect(editor.dataset.wechatTheme).toBeUndefined();
     flushSync(() => queue.edit({ themeId: "plainly-elegant" }));
-    expect(editor.dataset.wechatTheme).toBe("plainly-elegant");
+    expect(editor.dataset.wechatTheme).toBeUndefined();
+    expect(queue.snapshot().fields.themeId).toBe("plainly-elegant");
     expect(editor.querySelector(".ProseMirror")).toBe(body);
     flushSync(() => queue.edit({ themeId: "gzh-zen-whitespace" }));
-    expect(editor.dataset.wechatTheme).toBe("gzh-zen-whitespace");
+    expect(editor.dataset.wechatTheme).toBeUndefined();
+    expect(queue.snapshot().fields.themeId).toBe("gzh-zen-whitespace");
+    expect(editor.querySelector(".ProseMirror")).toBe(body);
+    const originalMarkdown = queue.snapshot().fields.contentMd;
+    flushSync(() => queue.edit({ themeId: "morandi" }));
+    expect(queue.snapshot().fields.themeId).toBe("morandi");
+    expect(queue.snapshot().fields.contentMd).toBe(originalMarkdown);
     expect(editor.querySelector(".ProseMirror")).toBe(body);
     mount(true);
     expect(container.querySelector('input[aria-label="内容标题"]')).toBeNull();

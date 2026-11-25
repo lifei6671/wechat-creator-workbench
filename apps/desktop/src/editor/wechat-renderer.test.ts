@@ -6,6 +6,74 @@ import fixture from "../../../../fixtures/wechat-format.json?raw";
 
 const gzhThemes = wechatThemes.filter(theme => theme.id.startsWith("gzh-"));
 
+it.each(wechatThemes)("renders safe alt captions below ordinary images and respects explicit captions in $label", async theme => {
+  const alt = '<script>alert("caption")</script> 软件截图';
+  const markdown = `![${alt.replaceAll("<", "&lt;").replaceAll(">", "&gt;")}](asset://caption)\n\n![](asset://empty)\n\n<figure><img src="asset://explicit" alt="无障碍说明"><figcaption>明确图注</figcaption></figure>\n\n<figure><p><a href="https://mp.weixin.qq.com/s/example"><img src="asset://nested" alt="嵌套说明"></a></p><figcaption>嵌套说明</figcaption></figure>`;
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const result = await renderWechat({ markdown, themeId: theme.id, revision: 1, output }, {
+      image: async () => ({ src: "https://images.test/caption.png", width: 320, height: 160 }), sources: vi.fn(), derive: vi.fn(),
+    });
+    try {
+      const template = document.createElement("template"); template.innerHTML = result.html;
+      const images = [...template.content.querySelectorAll("img")];
+      expect(images).toHaveLength(4);
+      const caption = images[0].nextElementSibling as HTMLElement;
+      expect(images[0].alt).toContain("软件截图");
+      expect(caption?.textContent).toBe(images[0].alt);
+      expect(caption.style.fontSize).toBe("13px");
+      expect(caption.style.textAlign).toBe("center");
+      expect(caption.style.color).toBe("rgb(100, 100, 100)");
+      expect(caption.style.marginTop).toBe("8px");
+      expect(images[1].nextElementSibling).toBeNull();
+      expect(images[2].nextElementSibling?.textContent).toBe("明确图注");
+      expect(template.content.querySelectorAll("script,figure,figcaption")).toHaveLength(0);
+      expect(result.text.split(images[0].alt)).toHaveLength(2);
+      expect(result.text.split("嵌套说明")).toHaveLength(2);
+      expect(result.html).not.toContain("class=");
+    } finally { result.dispose(); }
+  }
+});
+
+it.each(wechatThemes)("uses the available article width with self-contained inline styles in $label", async theme => {
+  const markdown = "# 标题\n\n## 章节\n\n正文 **强调** 与 `inline`。\n\n> 引用\n\n- 列表\n\n```js\nconst value = 1;\n```\n\n| 名称 |\n| --- |\n| 单元格 |\n\n[微信链接](https://mp.weixin.qq.com/s/example)\n\n![图片](asset://responsive)";
+  for (const output of ["preview", "clipboard", "html"] as const) {
+    const result = await renderWechat({ markdown, themeId: theme.id, revision: 1, output }, {
+      sources: vi.fn(), derive: vi.fn(), image: async () => ({ src: "https://images.test/responsive.png", width: 320, height: 160 }),
+    });
+    try {
+      const template = document.createElement("template"); template.innerHTML = result.html;
+      const article = template.content.firstElementChild as HTMLElement;
+      expect(article.style.width, output).toBe("100%");
+      expect(["", "none"]).toContain(article.style.maxWidth);
+      expect(article.style.boxSizing).toBe("border-box");
+      for (const property of ["paddingLeft", "paddingRight", "marginLeft", "marginRight"] as const) expect(article.style[property], `${output} ${property}`).toBe("0px");
+      expect(article.style.fontSize).not.toBe("");
+      expect(article.querySelector("h1")?.style.fontSize).not.toBe("");
+      expect(article.querySelector("blockquote")?.style.paddingLeft).not.toBe("");
+      expect(article.querySelector("pre")?.style.overflowX).toBe("auto");
+      expect(article.querySelector("th")?.style.padding).not.toBe("");
+      expect(article.querySelector("img")?.style.maxWidth).toBe("100%");
+      expect(article.querySelector("table")?.getAttribute("width")).toBe("100%");
+      expect(result.html).not.toMatch(/<style|<link|\sclass=|var\(/);
+      if (output !== "preview") expect(result.html).not.toMatch(/\sdata-/);
+    } finally { result.dispose(); }
+  }
+});
+
+it.each(["preview", "clipboard", "html"] as const)("retains explicit caption text and image descriptions in %s publication output", async output => {
+  const markdown = '<figure><img src="asset://caption" alt="独立的无障碍描述"><figcaption>明确保存的图片说明</figcaption></figure>';
+  const result = await renderWechat({ markdown, themeId: "plainly-tech", revision: 1, output }, {
+    image: async () => ({ src: "https://images.test/caption.png", width: 320, height: 160 }), sources: vi.fn(), derive: vi.fn(),
+  });
+  try {
+    const template = document.createElement("template"); template.innerHTML = result.html;
+    expect(template.content.textContent).toContain("明确保存的图片说明");
+    expect(template.content.querySelector("img")?.alt).toBe("独立的无障碍描述");
+    expect(template.content.querySelector("figure, figcaption, .rich-table-scroll, .rich-image")).toBeNull();
+    expect(result.html).not.toContain("--article-");
+  } finally { result.dispose(); }
+});
+
 it.each(wechatThemes)("wraps URL text without changing prose, code or link targets in $label", async theme => {
   const url = "https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md";
   const markdown = `官方遥测文档：${url}[^1]\n\n英文 Adversarial Distillation Research。\n\n\`${url}\`\n\n\`\`\`text\n${url}\n\`\`\`\n\n[^1]: ${url}`;

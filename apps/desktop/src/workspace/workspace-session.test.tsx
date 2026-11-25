@@ -16,6 +16,7 @@ import { commandKey } from "../labels";
 import * as markdown from "../../../../packages/markdown-core";
 import { emptyPublication, recommendationFingerprint } from "./wechat-publication";
 import * as publishing from "./Publishing";
+import { wechatThemes } from "../../../../packages/wechat-renderer";
 
 const { editorQueues, editorClipboards } = vi.hoisted(() => ({
   editorQueues: new Map<string, SaveQueue>(),
@@ -1058,6 +1059,7 @@ it("waits for a sync settings operation and disables actions during automatic re
     expect(button).toBeDefined();
     return button!;
   });
+  vi.useFakeTimers();
   flushSync(() => copy.click());
   incoming = true;
   flushSync(notify);
@@ -1065,6 +1067,8 @@ it("waits for a sync settings operation and disables actions during automatic re
   expect(apply).not.toHaveBeenCalled();
   finishInfo({ url: "https://sync.example.test", accessKey: "test-key" });
   await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+  expect(copy.disabled).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(copy.disabled).toBe(true);
   finishApply();
   await vi.waitFor(() => expect(copy.disabled).toBe(false));
@@ -2567,6 +2571,52 @@ it("rejects a stale clipboard render after the recommendation list changes", asy
   expect(dispose).toHaveBeenCalledOnce();
 });
 
+it.each(wechatThemes)("copies $label through the inline renderer before writing HTML to the clipboard", async theme => {
+  localStorage.setItem("links-to-footnotes", "false");
+  saveDocumentTabs(workspaceId, { ids: ["copy-inline-theme"], activeId: "copy-inline-theme" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), themeId: theme.id,
+    contentMd: "## 章节\n\n正文 **强调**。", wechatPublication: { ...emptyPublication(), recommendations: { ...emptyPublication().recommendations, enabled: false } },
+  }));
+  vi.spyOn(desktop, "save").mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  const copied = vi.spyOn(desktop, "copyHtml").mockResolvedValue();
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("copy-inline-theme")).toBe(true));
+  flushSync(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyC", key: "c", altKey: true,
+    [commandKey === "⌘" ? "metaKey" : "ctrlKey"]: true, bubbles: true, cancelable: true })));
+  await vi.waitFor(() => expect(copied).toHaveBeenCalledOnce());
+  const [html, text] = copied.mock.lastCall!;
+  const template = document.createElement("template"); template.innerHTML = html;
+  const article = template.content.firstElementChild as HTMLElement;
+  expect(article.style.width).toBe("100%");
+  expect(article.style.paddingLeft).toBe("0px");
+  expect(article.style.paddingRight).toBe("0px");
+  expect(article.querySelector("h2")?.style.fontSize).not.toBe("");
+  expect(article.querySelector("strong")?.style.fontWeight).not.toBe("");
+  expect(html).not.toMatch(/<style|<link|\sclass=|var\(/);
+  expect(text).toContain("正文 强调。");
+});
+
+it.each(["article", "idea"] as const)("saves the selected preview theme for a %s without changing Markdown", async kind => {
+  localStorage.setItem("links-to-footnotes", "false");
+  localStorage.setItem("view", JSON.stringify("preview"));
+  saveDocumentTabs(workspaceId, { ids: ["preview-theme"], activeId: "preview-theme" });
+  const markdown = "# **原文**\n\n正文内容保持不变。";
+  vi.spyOn(desktop, "entry").mockImplementation(async id => ({ ...entry(id), kind, contentMd: markdown,
+    wechatPublication: { ...emptyPublication(), recommendations: { ...emptyPublication().recommendations, enabled: false } },
+  }));
+  vi.spyOn(desktop, "wechatGraphics").mockResolvedValue([]);
+  const save = vi.spyOn(desktop, "save").mockImplementation(async (_id, version) => ({ version: version + 1 }));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(container.querySelector<HTMLButtonElement>(".preview-theme-label")?.disabled).toBe(false));
+  flushSync(() => container.querySelector<HTMLButtonElement>(".preview-theme-label")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await vi.waitFor(() => expect(document.querySelector('[role="menuitemradio"]')).not.toBeNull());
+  const theme = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent === "莫兰迪")!;
+  flushSync(() => theme.click());
+  await vi.waitFor(() => expect(save).toHaveBeenCalledWith("preview-theme", expect.any(Number), expect.objectContaining({ themeId: "morandi", contentMd: markdown }), "auto"));
+  await vi.waitFor(() => expect(container.querySelector(".preview-theme-label")?.textContent).toBe("莫兰迪"));
+  expect(editorQueues.get("preview-theme")!.snapshot().fields.contentMd).toBe(markdown);
+});
+
 it("previews a deleted article without generating or saving recommendations and can restore it", async () => {
   localStorage.setItem("links-to-footnotes", "false");
   localStorage.setItem("view", JSON.stringify("preview"));
@@ -2583,6 +2633,7 @@ it("previews a deleted article without generating or saving recommendations and 
   await vi.waitFor(() => expect(container.querySelector('[aria-label="公众号排版预览"]')).not.toBeNull());
   expect(desktop.wechatRecommendations).not.toHaveBeenCalled();
   expect(save).not.toHaveBeenCalled();
+  expect(container.querySelector<HTMLButtonElement>(".preview-theme-label")?.disabled).toBe(true);
   const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "恢复");
   expect(button).toBeDefined();
   flushSync(() => button!.click());

@@ -92,6 +92,7 @@ function blockDecorations(doc: ProseNode, folded: Map<number, Section>, lineNumb
     const name = node.type.name;
     const list = name === "bullet_list" || name === "ordered_list";
     const attrs: Record<string, string> = {};
+    if (name === "paragraph" && node.childCount === 1 && node.firstChild!.type.name === "image") attrs["data-image-block"] = "";
     if (name === "blockquote" && !node.attrs.literalCallout && node.firstChild?.type.name === "paragraph") {
       const paragraph = node.firstChild;
       const first = paragraph.firstChild;

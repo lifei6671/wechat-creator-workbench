@@ -2205,6 +2205,7 @@ it("adds rows and columns to the clicked table and persists column formatting an
     const hoverCell = (row: number, column: number, x = 50, y = 15) => {
       const width = table().rows[0].cells.length * 100;
       table().getBoundingClientRect = () => new DOMRect(20, 40, width, table().rows.length * 30);
+      table().closest<HTMLElement>(".rich-table")!.getBoundingClientRect = () => new DOMRect(20, 40, width, table().rows.length * 30);
       [...table().rows].forEach((line, r) => {
         line.getBoundingClientRect = () => new DOMRect(20, 40 + r * 30, width, 30);
         [...line.cells].forEach((cell, c) => { cell.getBoundingClientRect = () => new DOMRect(20 + c * 100, 40 + r * 30, 100, 30); });
@@ -2479,6 +2480,15 @@ it("opens HTTP links only with the platform modifier and measures the context ca
     expect(container.querySelector<HTMLElement>(".rich-context-caret")?.style.getPropertyValue("--context-caret-height")).toBe("25px");
     handle!.contextCaret!(false);
     expect(container.querySelector(".rich-context-caret")).toBeNull();
+    flushSync(() => root.render(<MarkdownEditor entryId="links" ref={value => { handle = value; }}
+      value={"正文 [外链](https://example.com/) [锚点](#heading)"} readOnly onOpenLink={openLink}
+      onChange={vi.fn()} onBlur={() => {}} />));
+    for (const value of ["Win32", "MacIntel"]) {
+      platform.mockReturnValue(value);
+      click(link);
+      click(anchor);
+    }
+    expect(openLink.mock.calls).toEqual(Array.from({ length: 4 }, () => ["https://example.com/"]));
   } finally {
     platform.mockRestore();
     measure.mockRestore();
@@ -2987,6 +2997,27 @@ it("uses the asset resolver without connecting the persisted URLs to image eleme
     expect(disposeLate).toHaveBeenCalledOnce();
   });
   expect(onError).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("shows alt below resolved images without changing Markdown in readOnly=%s", async readOnly => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const source = "![软件截图](asset://caption)\n\n![](asset://empty)";
+  const onChange = vi.fn();
+  let handle: MarkdownEditorHandle | null = null;
+  try {
+    flushSync(() => root.render(<MarkdownEditor entryId="captions" ref={value => { handle = value; }} value={source} readOnly={readOnly}
+      resolveImage={async () => ({ src: "blob:caption", width: 120, height: 60, dispose() {} })}
+      onChange={onChange} onError={error => { throw error; }} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(container.querySelectorAll(".rich-image img")).toHaveLength(2));
+    const captions = [...container.querySelectorAll<HTMLElement>(".rich-image-caption")];
+    expect(captions[0].textContent).toBe("软件截图");
+    expect(captions[0].hidden).toBe(false);
+    expect(captions[1].hidden).toBe(true);
+    expect(container.querySelector<HTMLImageElement>(".rich-image img")?.alt).toBe("软件截图");
+    expect(handle!.captureMarkdown().markdown.trim()).toBe(source);
+    expect(onChange).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); container.remove(); }
 });
 
 it("refreshes an unavailable image on asset change without editing Markdown or reloading its session", async () => {
