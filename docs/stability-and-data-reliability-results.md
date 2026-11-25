@@ -43,9 +43,34 @@
 
 ### ST-05 CI 和故障注入
 
-- 当前 CI 将浏览器与 Rust 检查串联在同一桌面 job，浏览器失败会阻止 Rust 检查。
-- 文件夹动画测试通过实际 rAF 时刻采样中间高度，在繁忙的 WebKit 上可能错过短动画。
-- 实施和验证：待前置任务完成。
+- 调用链：原 `desktop` CI job 先执行 Playwright，再执行 Clippy、Rust 测试与 Tauri 构建；浏览器失败会阻止全部后续原生检查。现拆为互不依赖的 `native`、`browser`，各自保留 Windows/macOS 矩阵及 `fail-fast: false`。
+- 保留原必需检查名称 `Desktop (macos-latest)`、`Desktop (windows-latest)` 作为汇总门槛。只有两类矩阵全部成功才通过；失败、取消或跳过均不能变绿。浏览器失败 trace 独立保留 7 天。
+- 新增 `scripts/stability-ci.test.mjs`：基线两项失败；修改后两项通过。直接执行 YAML 中的汇总命令，验证 success/failure/cancelled/skipped 的全部 16 种组合，避免用另一份实现代替真实门槛。
+- 文件夹动画测试原来按实际 rAF 时间采样中间高度；注入 400ms 帧延迟后，WebKit 普通动画的两个目录场景实际失败。改为在一次浏览器调用中暂停并定位真实 CSS transition 的起点、中点，再恢复播放。保留高度插值、收起期间挂载、最终卸载、inert、快速反向操作和减少动态效果断言；未修改产品动画实现。专项 Chromium/WebKit 20 项通过，包含延迟帧、普通/减少动态效果和两个目录视图。
+- 前端全量测试最初因本机高并发资源竞争出现 6 个计时失败（563 项通过）；相同断言采用 `--maxWorkers=2` 后 40 个文件、569 项全部通过。将此并发限制写入现有 `pnpm test`，没有延长超时或弱化断言。
+- 扩展现有 `npm run test:native --prefix apps/sync-server`，默认逐项运行 8 个真实 Rust 双客户端场景；每项独立临时 SQLite、文件服务及 Windows 系统凭据库身份，结束即清理。支持指定一个既知场景重跑，并保留任一失败的退出码。文章/私图场景首次失败明确为旧测试的手写撤销请求漏发 `X-Sync-Protocol: 2`（HTTP 426），补齐测试请求头后单独重跑通过；其余 7 项通过。
+- 8 个场景覆盖领取/加入/重连、文章及私图、画布、已有数据合并、正文 blob 与组回执响应丢失及设备重新登记、仅存设备恢复、同连接密钥重装、缺图中断初始化/其他设备等待/原身份恢复/继续上传。断网冻结操作、非法正文、事务回滚与重复回执继续由现有 Rust/服务端故障测试覆盖，未新建同步协议或恢复框架。
+
+### 批次 A 汇总验证
+
+| 实际执行项目 | 结果 |
+| --- | --- |
+| `pnpm typecheck` | 通过 |
+| `pnpm test --maxWorkers=2`（与最终脚本有效参数一致） | 40 文件、569 项通过 |
+| `pnpm test:release` | 8 通过、2 跳过；跳过依赖 Docker/发布安装包的可选集成环境 |
+| `npm test --prefix apps/sync-server` | 45 通过、1 跳过；真实云端另行执行，见下文 |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings` | 通过 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 235 通过、11 忽略；其中 8 项真实客户端场景另行通过，另 3 项为需要 S3 凭据的备份集成及两个手动搜索基准 |
+| `pnpm tauri build --debug --no-bundle`（包含 `pnpm web:build`） | Windows 构建通过 |
+| `pnpm test:browser` | Chromium/WebKit 全量 368 项通过，13.0 分钟；含 400ms 延迟帧回归 |
+| Windows Tauri/WebView2 烟雾测试 | 通过；独立应用标识及全新工作区，真实 UI 新建/输入/失焦保存、正常退出、重启后通过 UI 与 IPC 核对正文及版本。未替换生产工作区或运行生产实例 |
+| 真实隔离 Workers/D1/R2 合约 | 通过；当前服务端源码及全部 8 项既有迁移，在临时数据库和私有桶执行 HTTP 合约，包括大附件、摘要、非法 UTF-8、回执、设备恢复与画布 |
+
+真实云端测试资源使用统一前缀 `wcb-stability-1125-01a211ae`，测试后 Worker、对象、R2 桶及 D1 数据库均已删除并确认成功；没有访问生产工作区或修改正式部署。验证产生的临时配置、资源清单和烟雾测试记录位于被忽略的 `output/stability/`，截图位于 `output/playwright/`，不包含真实凭据。
+
+界面变更仅为已批准的统计行及既有错误区：`待上传 N 项` 帮助用户判断剩余上传进度；`需处理 N 项` 指出阻塞数量；错误区增加实体类型/ID 以便定位修复。继续使用既有“立即同步”和素材库重新导入入口，没有新增按钮、Toast 或成功弹窗。
+
+ST-05 独立代码评审 `CHILD_AGENT / FULL_SCOPE` 覆盖 8/8 文件，边界整合覆盖三个分区共 26 个交付文件，未发现代码阻塞项。完整浏览器结果已纳入最终冻结核对；代码评审通过不替代平台和 CI 验收。
 
 ## 批次 B
 
@@ -57,4 +82,10 @@
 
 ## 环境与未执行项目
 
-当前执行环境为 Windows。macOS 原生应用烟雾测试、真实 D1/R2 云资源验证及部署尚未执行；任何后续本地模拟不得替代这些验收。未操作生产工作区或部署。
+当前执行环境为 Windows。真实 D1/R2 隔离验证与 Windows 原生烟雾测试已完成；macOS 远程连接器返回工具服务器不可用，尚未执行 macOS 原生构建/烟雾测试。Playwright WebKit 与模拟 MacIntel 的测试不能替代实际 WKWebView。
+
+Windows 隔离测试应用已正常退出，临时应用标识仅用于验证，未写入正式配置；构建目录已恢复正常应用配置。工具策略拒绝删除本次创建的 `%LOCALAPPDATA%/io.github.lifei6671.wechat-creator-workbench.stability-01a211ae`，仅返回 `blocked by policy`，因此保留该独立测试目录。
+
+当前修改尚未推送或触发本次 GitHub CI。批次 A 因 macOS 与远端 CI 验证缺口尚未宣告验收通过，批次 B 未开始。下一步需将当前提交送入 PR CI，并补充 macOS 实机烟雾验收；未验证平台只有维护者明确确认例外后才可解除相应门槛。现有备份 S3 集成及搜索基准的忽略项没有被伪报为通过。
+
+回退与部署：批次 A 不包含数据库迁移，可以回退相应代码提交；新增设置键及 IPC 字段不要求旧客户端迁移。服务端应先保留数据库和对象存储一致的恢复点，再部署向后兼容的校验/诊断，随后升级客户端。没有实际执行生产备份、升级或回退演练。

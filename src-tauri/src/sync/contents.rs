@@ -3243,10 +3243,12 @@ mod tests {
         let revoked = remote_a
             .request(Method::DELETE, &format!("v1/devices/{}", second.device_id))
             .unwrap()
+            .header("X-Sync-Protocol", "2")
             .send()
             .await
             .unwrap();
-        assert!(revoked.status().is_success());
+        let status = revoked.status();
+        assert!(status.is_success(), "revoke response: {status} {}", revoked.text().await.unwrap());
         assert_eq!(
             stage_recovery(&b, &sync).await.unwrap_err().code(),
             "SYNC_REAUTH"
