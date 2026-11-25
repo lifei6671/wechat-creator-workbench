@@ -26,6 +26,7 @@ use ai::{
     settings::*,
 };
 use assets::{Assets, commands::*, publishing::*};
+use assets::integrity::{asset_integrity,asset_recover_original};
 use backup::{
     Backups, backup_commit_restore, backup_configure, backup_create, backup_discard_restore,
     backup_export_workspace, backup_import_workspace, backup_list, backup_prepare_restore,
@@ -247,6 +248,7 @@ fn main() {
             close_to_tray,
             asset_import,
             asset_library,
+            asset_integrity, asset_recover_original,
             asset_detail,
             asset_upload_progress,
             asset_thumbnail,

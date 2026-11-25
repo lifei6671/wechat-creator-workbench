@@ -24,7 +24,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    fn relative(&self) -> Result<Option<String>> {
+    pub(super) fn relative(&self) -> Result<Option<String>> {
         let Some(hash) = self.sha256.as_deref() else {
             return Ok(None);
         };
@@ -145,17 +145,21 @@ impl Assets {
         if relative.rsplit('.').next() != Some(format.extensions_str()[0]) {
             return Err(AppError::new("SYNC_ASSET", "同步图片格式与记录不一致"));
         }
+        self.cache_original(relative,&bytes)?;
+        Ok(Some(bytes))
+    }
+    pub(super) fn cache_original(&self, relative: &str, bytes: &[u8]) -> Result<()> {
         let path = self.root.join(relative);
-        tokio::fs::create_dir_all(path.parent().expect("asset path has a parent"))
-            .await
+        std::fs::create_dir_all(path.parent().expect("asset path has a parent"))
             .map_err(local_error)?;
         let mut staged =
             tempfile::NamedTempFile::new_in(path.parent().expect("asset path has a parent"))
                 .map_err(local_error)?;
-        staged.write_all(&bytes).map_err(local_error)?;
+        staged.write_all(bytes).map_err(local_error)?;
         staged
             .persist(path)
             .map_err(|error| local_error(error.error))?;
-        Ok(Some(bytes))
+        Ok(())
     }
+
 }

@@ -122,6 +122,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0034_sync_baseline_failure.sql"),
     include_str!("../migrations/0035_sync_issue_codes.sql"),
     include_str!("../migrations/0036_editor_recovery.sql"),
+    include_str!("../migrations/0037_asset_lifecycle.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -251,6 +252,15 @@ impl Workspace {
         let result = operation(&tx)?;
         tx.commit()?;
         Ok(result)
+    }
+
+    pub(crate) fn cleanup_assets<T>(&self, operation: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<Option<T>> {
+        let mut db = self.lock();
+        if db.phase != Phase::Cleaning { return Ok(None); }
+        let tx = db.conn.as_mut().ok_or_else(closed)?.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let result = operation(&tx)?;
+        tx.commit()?;
+        Ok(Some(result))
     }
 
     fn transaction<T>(
@@ -469,6 +479,14 @@ pub fn workspace_id(conn: &Connection) -> Result<String> {
         params!["workspace_id"],
         |r| r.get(0),
     )?)
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_database(path:&Path,version:i64)->Result<Connection> {
+    let mut conn=Connection::open(path)?;
+    conn.pragma_update(None,"foreign_keys",true)?;
+    migrate(&mut conn,0,version)?;
+    Ok(conn)
 }
 
 #[cfg(test)]

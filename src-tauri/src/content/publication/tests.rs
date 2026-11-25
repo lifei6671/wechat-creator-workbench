@@ -89,20 +89,14 @@ fn materialized_author_options_follow_source_edits_trash_restore_sync_and_deleti
 fn author_index_migration_backfills_existing_articles_and_survives_reopening() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("content.db");
-    let db = Workspace::open(&path).unwrap();
-    authored(&db, "已有作者", "published-before-upgrade");
-    let draft = authored(&db, "草稿作者", "draft-before-upgrade");
-    db.write(|tx| {
-        tx.execute("UPDATE entries SET status='draft' WHERE id=?1", [&draft.row.id])?;
-        tx.execute_batch("DROP TRIGGER wechat_author_entry_insert;
-            DROP TRIGGER wechat_author_entry_update;
-            DROP TRIGGER wechat_author_source_update;
-            DROP TABLE wechat_author_entries;
-            DROP TABLE wechat_author_options;")?;
-        tx.pragma_update(None, "user_version", crate::db::SCHEMA_VERSION - 1)?;
-        Ok(())
-    }).unwrap();
-    drop(db);
+    let conn=crate::db::legacy_database(&path,32).unwrap();
+    conn.execute_batch("INSERT INTO sources(id,source_url,author,account_name,imported_at) VALUES
+        ('published','https://example.com/published-before-upgrade','已有作者','',1),
+        ('draft','https://example.com/draft-before-upgrade','草稿作者','',1);
+        INSERT INTO entries(id,kind,title,content_md,status,source_id,published_url,created_at,updated_at) VALUES
+        ('published','article','向量数据库检索实践','向量检索','published','published','https://mp.weixin.qq.com/s/published-before-upgrade',1,1),
+        ('draft','article','向量数据库检索实践','向量检索','draft','draft','https://mp.weixin.qq.com/s/draft-before-upgrade',1,1);").unwrap();
+    drop(conn);
     let upgraded = Workspace::open(&path).unwrap();
     assert_eq!(upgraded.wechat_authors().unwrap(), ["已有作者"]);
     assert_eq!(upgraded.wechat_candidates(&input(), "", false, 0).unwrap().items.len(), 1);

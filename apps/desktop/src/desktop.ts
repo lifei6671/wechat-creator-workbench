@@ -32,6 +32,10 @@ export interface AssetRow {
   uploadStatus: "queued" | "running" | "retrying" | "completed" | "failed" | null;
   uploadError: string | null; cleanupError: string | null; publicUrl: string | null;
 }
+export interface AssetIntegrityItem {
+  id: string; name: string; state: "local" | "sync" | "hosted" | "missing" | "corrupt"; canRestore: boolean;
+  references: { kind: "entry" | "collection"; id: string; title: string }[];
+}
 export interface AssetLibrary { items: AssetRow[]; target: ImageTarget | null; page: number; hasNext: boolean }
 export interface UploadProgress { completed: number; total: number }
 export interface WechatImportJob {
@@ -182,6 +186,8 @@ export const desktop = {
   create: (kind: EntryKind, fields?: EntryFields, sourceEntryId?: string) => invoke<Entry>("create_entry", { kind, fields, sourceEntryId }),
   save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit) =>
     invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode, recovery }),
+  assetIntegrity: () => invoke<AssetIntegrityItem[]>("asset_integrity"),
+  assetRecoverOriginal: (id: string) => invoke<void>("asset_recover_original", { id }),
   recoveryPut: (draft: RecoveryDraft) => invoke<void>("editor_recovery_put", { draft }),
   recoveryList: () => invoke<RecoverySummary[]>("editor_recovery_list"),
   recoveryGet: (entryId: string, sessionId: string) => invoke<EntryFields>("editor_recovery_get", { entryId, sessionId }),

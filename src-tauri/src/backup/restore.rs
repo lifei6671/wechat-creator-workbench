@@ -227,6 +227,28 @@ pub(super) fn prepare_file(path: &Path, pending: &PendingRestore) -> Result<()> 
     db.write(|tx| {
         tx.execute("UPDATE sync_binding SET paused=1,pause_reason='backup_restored'", [])?;
         tx.execute("DELETE FROM jobs WHERE kind='cleanup'", [])?;
+        tx.execute("DELETE FROM asset_cleanup_candidates",[])?;
+        tx.execute("UPDATE app_settings SET value='false' WHERE key LIKE 'asset-backup-state:%'",[])?;
+        tx.execute("UPDATE backup_asset_manifests SET status='unverified'",[])?;
+        let hashes={
+            let mut query=tx.prepare("SELECT DISTINCT sha256 FROM assets WHERE sha256 IS NOT NULL")?;
+            query.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let scopes={
+            let mut query=tx.prepare("SELECT scope FROM backup_asset_manifests WHERE snapshot=?1")?;
+            query.query_map([&pending.name],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for scope in &scopes {
+            super::retention::exact(tx,scope,&pending.name,&hashes)?;
+            tx.execute("UPDATE backup_asset_manifests SET status='pending' WHERE scope=?1 AND snapshot=?2",rusqlite::params![scope,pending.name])?;
+        }
+        if let Some(scope)=super::retention::scope(tx)? {
+            if scopes.is_empty() && pending.migration.is_none() {
+                super::retention::reserve(tx,&scope,&pending.name)?;
+                super::retention::exact(tx,&scope,&pending.name,&hashes)?;
+            }
+            tx.execute("INSERT INTO app_settings VALUES(?1,'false') ON CONFLICT(key) DO UPDATE SET value='false'",[format!("asset-backup-state:{scope}")])?;
+        }
         tx.execute(
             "UPDATE jobs SET status='failed', error='恢复数据库后可手动重试', updated_at=?1
              WHERE kind IN ('upload','wechat_import','import_image') AND status IN ('queued','running','retrying')",

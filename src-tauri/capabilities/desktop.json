@@ -140,6 +140,7 @@
     "allow-close-to-tray",
     "allow-asset-import",
     "allow-asset-library",
+    "allow-asset-integrity", "allow-asset-recover-original",
     "allow-asset-detail",
     "allow-asset-upload-progress",
     "allow-asset-thumbnail",

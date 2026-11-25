@@ -1,3 +1,5 @@
+import { ActionError } from "../button-feedback";
+import { AssetIntegrity } from "./AssetIntegrity";
 import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useState, type FormEvent } from "react";
 import { Button, Select } from "@radix-ui/themes";
@@ -34,6 +36,7 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
       buttons.finish(key, result);
     } finally { setWorking(undefined); }
   }
+  const [integrity,setIntegrity]=useState<import("../desktop").AssetIntegrityItem[]|null>(null);
   const [settings, setSettings] = useState<BackupSettings>();
   const [remote, setRemote] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>();
@@ -85,7 +88,10 @@ export function BackupPanel({ busy, progress, feedback, listRevision, prepared, 
   }} />;
 
   return <>
+    {integrity&&<AssetIntegrity items={integrity} onClose={()=>setIntegrity(null)}/>}
     <div className="settings-card">
+      <SettingRow label="素材完整性">{()=><Button size="2" variant="soft" loading={buttons.status("integrity")==="pending"} {...buttons.props("integrity",busy)} onClick={()=>void buttons.run("integrity",async()=>setIntegrity(await desktop.assetIntegrity()))}>{buttons.label("integrity","检查素材","检查完成")}</Button>}</SettingRow>
+      <ActionError error={buttons.error("integrity")}/>
       {<div className="action-error-slot">{!settings && !error ? <p className="settings-feedback muted-text" role="status">正在读取设置…</p> : null}</div>}
       {settings && <SettingRow label="备份桶" hint={configured ? `数据库快照存放在 ${settings.target?.bucket}。`
         : settings.target ? "重新填写访问密钥后即可读写数据库快照。" : "配置用于保存和读取数据库快照的存储桶。"}>

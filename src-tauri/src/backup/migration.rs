@@ -177,7 +177,7 @@ pub(super) fn prepare(path: &Path, stage: &Path, incoming: &Path) -> Result<Pend
     Ok(pending)
 }
 
-fn verify_asset(path: &Path, hash: &str) -> Result<()> {
+pub(crate) fn verify_asset(path: &Path, hash: &str) -> Result<()> {
     let mut file = File::open(path).map_err(|error| {
         AppError::new(
             "MIGRATION_ASSET",

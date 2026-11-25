@@ -1,4 +1,5 @@
 mod cleanup;
+pub(crate) mod integrity;
 pub mod commands;
 mod export;
 mod image_cache;
@@ -623,6 +624,10 @@ impl Assets {
                 Err(error) => return Err(local_error(error)),
             }
         }
+        self.read_remote_file(db,file).await
+    }
+
+    async fn read_remote_file(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {
         let hosted = db.read(|conn| {
             hosted_location(conn, file)?
                 .map(|location| Ok((Profile::read(conn, &location.profile_id)?, location)))

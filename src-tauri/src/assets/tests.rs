@@ -72,6 +72,10 @@ async fn topic_screenshots_are_hidden_and_retained_until_the_last_reference_is_r
     )
     .unwrap();
     assets.cleanup(&db).await.unwrap();
+    assert_eq!(assets.read(&db,&url).await.unwrap(),bytes);
+    db.write(|tx| {tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[crate::db::now()-7*24*60*60*1000-1])?;Ok(())}).unwrap();
+    db.begin_exit();db.start_cleaning();
+    assets.cleanup_for_update(&db).await.unwrap();
     assert_eq!(
         assets.read(&db, &url).await.unwrap_err().code(),
         "ASSET_MISSING"
@@ -1387,6 +1391,10 @@ async fn exit_keeps_library_imports_and_cleans_unreferenced_attachments() {
             .unwrap(),
         bytes
     );
+    assert!(directory.path().join("assets").join(&path).exists());
+    db.write(|tx| {tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[crate::db::now()-7*24*60*60*1000-1])?;Ok(())}).unwrap();
+    db.begin_exit();db.start_cleaning();
+    assets.cleanup_for_update(&db).await.unwrap();
     assert!(!directory.path().join("assets").join(path).exists());
     let library = assets.library(&db, 0).unwrap();
     assert_eq!(library.items.len(), 1);

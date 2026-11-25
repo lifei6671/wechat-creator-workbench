@@ -382,6 +382,13 @@ async fn multilevel_dependencies_resume_only_after_all_assets_are_repaired() {
     for (id, original) in [(&first, &bytes[0]), (&second, &bytes[1])] {
         assert_eq!(&peer_assets.read_image(&b, &format!("asset://{id}"), false).await.unwrap(), original);
         assert_eq!(a.read(|conn| revision(conn, &Key { entity_type: Kind::Asset, entity_id: id.clone() })).unwrap().0, 1);
+        let relative=b.read(|conn|Ok(conn.query_row("SELECT relative_path FROM assets WHERE id=?1",[id],|row|row.get::<_,String>(0))?)).unwrap();
+        let path=root.path().join("assets-b").join(relative);
+        std::fs::write(&path,b"corrupt cached original").unwrap();
+        let dirty_before=b.read(|conn|Ok(conn.query_row("SELECT COUNT(*) FROM sync_dirty",[],|row|row.get::<_,i64>(0))?)).unwrap();
+        peer_assets.recover_original(&b,id).await.unwrap();
+        assert_eq!(&std::fs::read(path).unwrap(),original);
+        assert_eq!(b.read(|conn|Ok(conn.query_row("SELECT COUNT(*) FROM sync_dirty",[],|row|row.get::<_,i64>(0))?)).unwrap(),dirty_before);
     }
 }
 

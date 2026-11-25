@@ -363,19 +363,12 @@ fn restoring_closes_background_connections_before_replacing_the_database() {
 
 #[test]
 fn upgrading_an_old_workspace_defers_backfill_until_the_worker_starts() {
-    let (_root, path, db) = workspace();
-    source(&db, "old", "公众号", "排版");
-    db.write(|tx| {
-        tx.execute_batch("DROP TRIGGER entries_words_insert; DROP TRIGGER entries_words_update;
-            DROP TRIGGER entries_words_delete; DROP TABLE entries_words_fts;
-            DROP TABLE entries_words_alt_fts; DROP TABLE search_index_dirty; DROP TABLE search_index_state;
-            DROP TRIGGER wechat_author_entry_insert; DROP TRIGGER wechat_author_entry_update;
-            DROP TRIGGER wechat_author_source_update; DROP TABLE wechat_author_entries;
-            DROP TABLE wechat_author_options;
-            PRAGMA user_version=30;")?;
-        Ok(())
-    }).unwrap();
-    drop(db);
+    let root=tempfile::tempdir().unwrap();
+    let path=root.path().join("content.db");
+    let conn=crate::db::legacy_database(&path,30).unwrap();
+    conn.execute("INSERT INTO entries(id,kind,title,content_md,status,created_at,updated_at)
+        VALUES('old','article','公众号','排版','draft',100,100)",[]).unwrap();
+    drop(conn);
     let db = Workspace::open_existing(&path).unwrap();
     assert_eq!(page(&db, "公众号排版")["search"]["indexing"], true);
     assert_eq!(

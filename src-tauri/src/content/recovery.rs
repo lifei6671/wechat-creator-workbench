@@ -53,15 +53,19 @@ impl Workspace {
         }
         let fields: Fields = serde_json::from_value(draft.fields)
             .map_err(|_| AppError::invalid("恢复内容格式无效"))?;
-        let fields = encoded_fields(&fields)?;
+        let encoded = encoded_fields(&fields)?;
         self.save(|tx| {
+            crate::assets::references::cancel_cleanup(tx,&fields.content_md)?;
+            if let Some(cover)=&fields.cover_asset_id {
+                tx.execute("DELETE FROM asset_cleanup_candidates WHERE sha256 IN (SELECT sha256 FROM assets WHERE id=?1)",[cover])?;
+            }
             tx.execute("INSERT INTO editor_recovery(entry_id,session_id,entry_kind,base_version,local_revision,fields_json,updated_at)
                 VALUES(?1,?2,?3,?4,?5,?6,?7)
                 ON CONFLICT(entry_id,session_id) DO UPDATE SET
                   base_version=MAX(editor_recovery.base_version,excluded.base_version),local_revision=excluded.local_revision,
                   fields_json=excluded.fields_json,updated_at=excluded.updated_at
                 WHERE excluded.local_revision>editor_recovery.local_revision AND excluded.local_revision>editor_recovery.saved_revision",
-                params![draft.entry_id,draft.session_id,draft.kind.key(),draft.base_version,draft.local_revision,fields,now()])?;
+                params![draft.entry_id,draft.session_id,draft.kind.key(),draft.base_version,draft.local_revision,encoded,now()])?;
             Ok(())
         })
     }

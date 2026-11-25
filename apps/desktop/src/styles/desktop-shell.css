@@ -977,3 +977,12 @@ button.property-icon:is(:hover, [data-state="open"]) { background: var(--gray-a5
 .editor-recovery-comparison pre { height: min(45vh, 420px); overflow: auto; margin: 0; padding: 12px; border: var(--hairline); border-radius: var(--control-radius); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .editor-recovery-actions { display: flex; align-items: center; gap: 8px; }
 .editor-recovery-actions > span { flex: 1; }
+
+.asset-integrity-dialog { max-width: 900px; }
+.asset-integrity-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.asset-integrity-heading h1 { margin: 0; }
+.asset-integrity-scroll { max-height: 50vh; overflow: auto; }
+.asset-integrity-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.asset-integrity-scroll th, .asset-integrity-scroll td { padding: 8px; border-bottom: var(--hairline); vertical-align: top; overflow-wrap: anywhere; max-width: 300px; }
+.asset-integrity-scroll th { font-weight: 600; }
+.asset-integrity-footer { display: flex; justify-content: flex-end; }

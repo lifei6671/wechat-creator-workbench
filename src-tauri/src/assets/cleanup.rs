@@ -1,14 +1,11 @@
-use super::{Assets, local_error, references, s3::Profile};
-use crate::db::{AppError, Result, Workspace, id, now};
+use super::{Assets, local_error, references};
+use crate::db::{Result, Workspace, id, now};
 use rusqlite::{Connection, params};
 use std::{collections::BTreeSet, path::Path};
 
-struct Group {
-    hash: String,
-    paths: Vec<String>,
-    targets: Vec<(Profile, String)>,
-    keep_sync_asset: bool,
-}
+const GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+struct Group { hash: String, paths: Vec<String> }
 
 impl Assets {
     pub fn cancel_cleanup(&self) {
@@ -39,63 +36,24 @@ impl Assets {
         }
 
         let groups = db.maintenance(|tx| {
-            let (mut references, mut retained) = referenced(tx)?;
-            let mut synced = tx.prepare(
-                "SELECT a.id FROM assets a WHERE
-                   EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=a.id)
-                   OR EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=a.id)",
-            )?;
-            for asset in synced.query_map([], |row| row.get::<_, String>(0))? {
-                references.insert(asset?);
-            }
-            let mut pinned = tx.prepare(
-                "SELECT DISTINCT sha256 FROM assets WHERE retain_on_exit=1 AND sha256 IS NOT NULL",
-            )?;
-            for hash in pinned.query_map([], |row| row.get::<_, String>(0))? {
-                retained.insert(hash?);
-            }
-            tx.execute(
-                "DELETE FROM jobs WHERE kind='cleanup' AND status<>'completed' AND sha256 IS NULL",
-                [],
-            )?;
+            let retained = protected(tx)?;
+            let stamp = now();
             for hash in &retained {
-                tx.execute(
-                    "DELETE FROM jobs WHERE kind='cleanup' AND sha256=?1 AND status<>'completed'",
-                    [hash],
-                )?;
+                tx.execute("DELETE FROM asset_cleanup_candidates WHERE sha256=?1", [hash])?;
             }
-            let mut placeholders = tx.prepare("SELECT id FROM assets WHERE sha256 IS NULL")?;
-            let placeholders = placeholders
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for id in placeholders {
-                if !references.contains(&id) {
-                    tx.execute(
-                        "DELETE FROM jobs WHERE kind='import_image' AND asset_id=?1",
-                        [&id],
-                    )?;
-                    tx.execute("DELETE FROM assets WHERE id=?1", [&id])?;
-                }
+            let mut query = tx.prepare("SELECT DISTINCT sha256 FROM assets WHERE sha256 IS NOT NULL")?;
+            let hashes = query.query_map([], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for hash in hashes.into_iter().filter(|hash| !retained.contains(hash)) {
+                tx.execute("INSERT INTO asset_cleanup_candidates VALUES(?1,?2,?2) ON CONFLICT(sha256) DO UPDATE SET last_checked_at=excluded.last_checked_at",
+                    params![hash,stamp])?;
             }
-            groups(tx, &retained)
+            groups(tx,&retained)
         })?;
         for group in groups {
-            if self.cleanup_stopped.is_cancelled() {
-                return Ok(());
-            }
-            if !self
-                .remove_group(db, &group, async |profile, key| {
-                    profile.provider()?.delete(key).await
-                })
-                .await?
-            {
-                return Ok(());
-            }
+            if self.cleanup_stopped.is_cancelled() { return Ok(()); }
+            self.remove_group(db,&group)?;
         }
-        if !self.cleanup_stopped.is_cancelled() {
-            self.remove_unrecorded(db)?;
-            self.remove_orphaned_thumbnails(db)?;
-        }
+        if !self.cleanup_stopped.is_cancelled() { self.remove_orphaned_thumbnails(db)?; }
         Ok(())
     }
 
@@ -144,132 +102,34 @@ impl Assets {
         Ok(())
     }
 
-    async fn remove_group(
-        &self,
-        db: &Workspace,
-        group: &Group,
-        delete: impl AsyncFn(&Profile, &str) -> Result<()>,
-    ) -> Result<bool> {
-        let hash = &group.hash;
-        db.maintenance(|tx| {
-            tx.execute(
-                "INSERT INTO jobs (id,kind,status,sha256,created_at,updated_at) VALUES (?1,'cleanup','running',?2,?3,?3)
-                 ON CONFLICT(sha256) WHERE kind='cleanup' DO UPDATE SET status='running',error=NULL,updated_at=excluded.updated_at",
-                params![id(), hash, now()],
-            )?;
+    fn remove_group(&self, db: &Workspace, group: &Group) -> Result<()> {
+        let result = db.cleanup_assets(|tx| {
+            // Hold the workspace lock through the final reference check, file removal and commit.
+            let retained = protected(tx)?;
+            if retained.contains(&group.hash) {
+                tx.execute("DELETE FROM asset_cleanup_candidates WHERE sha256=?1", [&group.hash])?;
+                return Ok(());
+            }
+            let due = tx.query_row("SELECT EXISTS(SELECT 1 FROM asset_cleanup_candidates WHERE sha256=?1 AND first_unreferenced_at<=?2)",
+                params![group.hash,now()-GRACE_MS], |row| row.get::<_,bool>(0))?;
+            if !due || self.cleanup_stopped.is_cancelled() { return Ok(()); }
+            for path in &group.paths { remove_file(&self.root.join(path))?; }
+            tx.execute("DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE sha256=?1)", [&group.hash])?;
+            tx.execute("DELETE FROM assets WHERE sha256=?1", [&group.hash])?;
+            tx.execute("DELETE FROM asset_cleanup_candidates WHERE sha256=?1", [&group.hash])?;
+            tx.execute("INSERT INTO jobs(id,kind,status,sha256,created_at,updated_at) VALUES(?1,'cleanup','completed',?2,?3,?3)
+                ON CONFLICT(sha256) WHERE kind='cleanup' DO UPDATE SET status='completed',error=NULL,updated_at=excluded.updated_at",
+                params![id(),group.hash,now()])?;
             Ok(())
-        })?;
-        let result = async {
-            let mut failed = None;
-            for (profile, key) in &group.targets {
-                if self.cleanup_stopped.is_cancelled() {
-                    return Err(AppError::new("CLEANUP_CANCELLED", "剩余素材清理已取消"));
-                }
-                let outcome = tokio::select! {
-                    biased;
-                    outcome = delete(profile, key) => outcome,
-                    () = self.cleanup_stopped.cancelled() => Err(AppError::new("CLEANUP_CANCELLED", "剩余素材清理已取消")),
-                };
-                if let Err(error) = &outcome
-                    && matches!(error.code(), "S3_TIMEOUT" | "S3_NETWORK" | "CLEANUP_CANCELLED") {
-                    db.maintenance(|tx| {
-                        tx.execute("UPDATE asset_locations SET uploaded_at=NULL WHERE sha256=?1 AND storage_profile_id=?2",
-                            params![hash, profile.id])?;
-                        Ok(())
-                    })?;
-                }
-                match outcome {
-                    Ok(()) => db.maintenance(|tx| {
-                        tx.execute("UPDATE asset_locations SET deleted_at=?3 WHERE sha256=?1 AND storage_profile_id=?2",
-                            params![hash, profile.id, now()])?;
-                        Ok(())
-                    })?,
-                    Err(error) if matches!(error.code(), "S3_PERMISSION" | "S3_TIMEOUT" | "CLEANUP_CANCELLED") => return Err(error),
-                    Err(error) => { failed.get_or_insert(error); }
-                }
-            }
-            if let Some(error) = failed { return Err(error); }
-            if self.cleanup_stopped.is_cancelled() {
-                return Err(AppError::new("CLEANUP_CANCELLED", "剩余素材清理已取消"));
-            }
-            if !group.keep_sync_asset {
-                for path in &group.paths {
-                    remove_file(&self.root.join(path))?;
-                }
-            }
-            db.maintenance(|tx| {
-                tx.execute("DELETE FROM jobs WHERE sha256=?1 AND kind='upload' AND status<>'completed'", [hash])?;
-                if !group.keep_sync_asset {
-                    tx.execute("DELETE FROM jobs WHERE kind='import_image' AND asset_id IN (SELECT id FROM assets WHERE sha256=?1)", [hash])?;
-                    tx.execute("DELETE FROM assets WHERE sha256=?1", [hash])?;
-                }
-                tx.execute("DELETE FROM asset_locations WHERE sha256=?1", [hash])?;
-                tx.execute("UPDATE jobs SET status='completed',error=NULL,updated_at=?2 WHERE kind='cleanup' AND sha256=?1", params![hash, now()])?;
-                Ok(())
-            })
-        }.await;
+        });
         if let Err(error) = result {
-            let can_continue = !matches!(
-                error.code(),
-                "CLEANUP_CANCELLED" | "S3_PERMISSION" | "S3_TIMEOUT"
-            );
             db.maintenance(|tx| {
-                tx.execute("UPDATE jobs SET status='failed',error=?2,updated_at=?3 WHERE kind='cleanup' AND sha256=?1",
-                    params![hash, error.to_string(), now()])?;
+                tx.execute("INSERT INTO jobs(id,kind,status,sha256,error,created_at,updated_at) VALUES(?1,'cleanup','failed',?2,?3,?4,?4)
+                    ON CONFLICT(sha256) WHERE kind='cleanup' DO UPDATE SET status='failed',error=excluded.error,updated_at=excluded.updated_at",
+                    params![id(),group.hash,error.to_string(),now()])?;
                 Ok(())
             })?;
-            return Ok(can_continue);
-        }
-        Ok(true)
-    }
-
-    fn remove_unrecorded(&self, db: &Workspace) -> Result<()> {
-        if !self.root.exists() {
-            return Ok(());
-        }
-        let recorded = db.read(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT relative_path FROM assets WHERE relative_path IS NOT NULL",
-            )?;
-            Ok(stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<BTreeSet<_>>>()?)
-        })?;
-        for item in walkdir::WalkDir::new(&self.root)
-            .min_depth(3)
-            .max_depth(3)
-            .follow_links(false)
-        {
-            if self.cleanup_stopped.is_cancelled() {
-                break;
-            }
-            let item = item.map_err(|e| AppError::new("ASSET_FILE", e.to_string()))?;
-            if !item.file_type().is_file() {
-                continue;
-            }
-            let path = item.path();
-            let relative = path
-                .strip_prefix(&self.root)
-                .expect("walk remains under asset root")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let Some((hash, extension)) = item
-                .file_name()
-                .to_str()
-                .and_then(|name| name.rsplit_once('.'))
-            else {
-                continue;
-            };
-            if hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                && matches!(extension, "png" | "jpg" | "jpeg" | "gif" | "webp")
-                && relative == format!("{}/{}/{}.{extension}", &hash[..2], &hash[2..4], hash)
-                && !recorded.contains(&relative)
-            {
-                remove_file(path)?;
-            }
+            return Err(error);
         }
         Ok(())
     }
@@ -286,11 +146,18 @@ fn remove_file(path: &Path) -> Result<()> {
 const ENTRY_BODIES: &str =
     "SELECT content_md FROM entries UNION ALL SELECT content_md FROM entry_revisions";
 
+const RECOVERY_PAYLOADS: &str = "SELECT fields_json AS payload FROM editor_recovery WHERE fields_json IS NOT NULL
+    UNION ALL SELECT m.value->'$.payload' FROM sync_outbox o,json_each(o.operation_json,'$.mutations') m WHERE json_type(m.value,'$.payload')='object'
+    UNION ALL SELECT payload_json->'$.payload' FROM sync_bootstrap
+    UNION ALL SELECT payload_json->'$.payload' FROM sync_inbox
+    UNION ALL SELECT remote_json->'$.payload' FROM sync_issues WHERE remote_json IS NOT NULL";
+
 pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let (mut ids, mut hashes) = markdown_references(
         conn,
         &format!(
-            "{ENTRY_BODIES} UNION ALL SELECT content_md FROM collection_nodes WHERE kind='text'"
+            "WITH recovery_payloads AS ({RECOVERY_PAYLOADS}) {ENTRY_BODIES} UNION ALL SELECT content_md FROM collection_nodes WHERE kind='text'
+             UNION ALL SELECT payload->>'$.contentMd' FROM recovery_payloads WHERE json_type(payload,'$.contentMd')='text'"
         ),
     )?;
     let mut screenshots = conn.prepare(
@@ -302,6 +169,18 @@ pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSe
         let (id, hash) = item?;
         ids.insert(id);
         hashes.extend(hash);
+    }
+    let mut query=conn.prepare(&format!("WITH recovery_payloads AS ({RECOVERY_PAYLOADS}) SELECT payload FROM recovery_payloads WHERE payload IS NOT NULL"))?;
+    for raw in query.query_map([],|row|row.get::<_,String>(0))? {
+        let data:serde_json::Value=serde_json::from_str(&raw?).map_err(|_|crate::db::AppError::new("ASSET_REFERENCES","无法读取素材保护引用"))?;
+        for field in ["coverAssetId","assetId"] { if let Some(id)=data[field].as_str() { ids.insert(id.into()); } }
+        for id in data["assetIds"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str) { ids.insert(id.into()); }
+        if let Some(hash)=data["sha256"].as_str() { hashes.insert(hash.into()); }
+    }
+    let mut hash=conn.prepare_cached("SELECT sha256 FROM assets WHERE id=?1 AND sha256 IS NOT NULL")?;
+    for id in &ids {
+        use rusqlite::OptionalExtension;
+        if let Some(hash)=hash.query_row([id],|row|row.get::<_,String>(0)).optional()? { hashes.insert(hash); }
     }
     Ok((ids, hashes))
 }
@@ -358,43 +237,29 @@ fn markdown_references(
     Ok((ids, hashes))
 }
 
+fn protected(conn: &Connection) -> Result<BTreeSet<String>> {
+    let (_,mut retained) = referenced(conn)?;
+    let mut query = conn.prepare("SELECT sha256 FROM asset_public_protection UNION SELECT sha256 FROM backup_asset_references
+        UNION SELECT a.sha256 FROM assets a WHERE a.sha256 IS NOT NULL AND (a.retain_on_exit=1
+          OR EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=a.id)
+          OR EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=a.id))")?;
+    retained.extend(query.query_map([], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+    if crate::backup::unknown_asset_protection(conn)? {
+        let mut query = conn.prepare("SELECT DISTINCT sha256 FROM assets WHERE sha256 IS NOT NULL")?;
+        retained.extend(query.query_map([], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    Ok(retained)
+}
+
 fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> {
-    let mut hashes = conn.prepare("SELECT sha256 FROM assets WHERE sha256 IS NOT NULL UNION SELECT sha256 FROM asset_locations ORDER BY sha256")?;
-    let hashes = hashes
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut paths = conn.prepare(
-        "SELECT DISTINCT relative_path FROM assets WHERE sha256=?1 AND relative_path IS NOT NULL",
-    )?;
-    let mut locations = conn.prepare("SELECT storage_profile_id,object_key FROM asset_locations WHERE sha256=?1 AND deleted_at IS NULL ORDER BY storage_profile_id")?;
-    let mut synced = conn.prepare(
-        "SELECT EXISTS(SELECT 1 FROM assets a WHERE a.sha256=?1 AND (
-             EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=a.id)
-             OR EXISTS(SELECT 1 FROM sync_dirty d WHERE d.entity_type='asset' AND d.entity_id=a.id)
-        ))",
-    )?;
-    let mut result = Vec::new();
+    let mut query=conn.prepare("SELECT sha256 FROM asset_cleanup_candidates WHERE first_unreferenced_at<=?1
+        AND NOT EXISTS(SELECT 1 FROM asset_locations l WHERE l.sha256=asset_cleanup_candidates.sha256)")?;
+    let hashes=query.query_map([now()-GRACE_MS],|row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut result=Vec::new();
     for hash in hashes.into_iter().filter(|hash| !retained.contains(hash)) {
-        let files = paths
-            .query_map([&hash], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut targets = Vec::new();
-        for row in locations.query_map([&hash], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })? {
-            let (profile, key) = row?;
-            targets.push((Profile::read(conn, &profile)?, key));
-        }
-        let keep_sync_asset = synced.query_row([&hash], |row| row.get(0))?;
-        if keep_sync_asset && targets.is_empty() {
-            continue;
-        }
-        result.push(Group {
-            hash,
-            paths: files,
-            targets,
-            keep_sync_asset,
-        });
+        let mut query=conn.prepare("SELECT DISTINCT relative_path FROM assets WHERE sha256=?1 AND relative_path IS NOT NULL")?;
+        let paths=query.query_map([&hash],|row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        result.push(Group { hash,paths });
     }
     Ok(result)
 }
@@ -402,6 +267,59 @@ fn groups(conn: &Connection, retained: &BTreeSet<String>) -> Result<Vec<Group>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn recovery_draft_references_cancel_the_old_cleanup_deadline() {
+        let(_dir,db,assets)=super::super::tests::setup();
+        let id=assets.import(&db,"recovery.png",&super::super::tests::png()).unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        db.write(|tx|{tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[now()-GRACE_MS-1])?;Ok(())}).unwrap();
+        let draft=crate::content::recovery::Draft {entry_id:"deleted-original".into(),session_id:crate::db::id(),kind:crate::content::Kind::Article,base_version:1,local_revision:1,
+            fields:serde_json::json!({"title":"Recovery","contentMd":format!("![image](asset://{id})"),"status":"draft","categoryId":null,"tags":[],"summary":"","source":null,"publishedAt":null,"publishedUrl":""})};
+        let session=draft.session_id.clone();
+        db.put_editor_recovery(draft).unwrap();
+        db.read(|conn|{assert_eq!(conn.query_row("SELECT COUNT(*) FROM asset_cleanup_candidates",[],|row|row.get::<_,i64>(0))?,0);assert!(!protected(conn)?.is_empty());Ok(())}).unwrap();
+        db.discard_editor_recovery("deleted-original",&session,1).unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        db.read(|conn|{assert!(conn.query_row("SELECT first_unreferenced_at>?1 FROM asset_cleanup_candidates",[now()-1000],|row|row.get::<_,bool>(0))?);Ok(())}).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_local_deletion_keeps_the_candidate_and_can_retry() {
+        let(_dir,db,assets)=super::super::tests::setup();
+        let id=assets.import(&db,"retry.png",&super::super::tests::png()).unwrap();
+        let file=db.read(|conn|super::super::by_id(conn,&id)).unwrap();
+        let path=assets.root.join(file.path.unwrap());
+        assets.cleanup_for_update(&db).await.unwrap();
+        db.write(|tx|{tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[now()-GRACE_MS-1])?;Ok(())}).unwrap();
+        std::fs::remove_file(&path).unwrap(); std::fs::create_dir(&path).unwrap();
+        db.begin_exit();db.start_cleaning();
+        assert!(assets.cleanup_for_update(&db).await.is_err());
+        db.read(|conn|{assert_eq!(conn.query_row("SELECT COUNT(*) FROM asset_cleanup_candidates",[],|row|row.get::<_,i64>(0))?,1);assert_eq!(conn.query_row("SELECT status FROM jobs WHERE kind='cleanup'",[],|row|row.get::<_,String>(0))?,"failed");Ok(())}).unwrap();
+        std::fs::remove_dir(&path).unwrap();std::fs::write(&path,super::super::tests::png()).unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(!path.exists());
+        db.read(|conn|{assert_eq!(conn.query_row("SELECT status FROM jobs WHERE kind='cleanup'",[],|row|row.get::<_,String>(0))?,"completed");Ok(())}).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unreferenced_original_waits_seven_days_and_only_deletes_with_writers_frozen() {
+        let (_dir, db, assets) = super::super::tests::setup();
+        let id = assets.import(&db,"delayed.png",&super::super::tests::png()).unwrap();
+        let file = db.read(|conn| super::super::by_id(conn,&id)).unwrap();
+        let path = assets.root.join(file.path.unwrap());
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(path.exists(),"unreferenced originals must survive the grace period");
+        db.maintenance(|tx| {
+            tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[now()-7*24*60*60*1000-1])?;
+            Ok(())
+        }).unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(path.exists(),"running writers must prevent physical deletion");
+        db.begin_exit(); db.start_cleaning();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(!path.exists());
+    }
 
     #[tokio::test]
     async fn regression_cleanup_removes_orphaned_thumbnails_and_keeps_live_shared_hashes() {
@@ -430,6 +348,10 @@ mod tests {
             Ok(())
         })
         .unwrap();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(live.exists());
+        db.maintenance(|tx| { tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[now()-GRACE_MS-1])?; Ok(()) }).unwrap();
+        db.begin_exit(); db.start_cleaning();
         assets.cleanup_for_update(&db).await.unwrap();
         assert!(!live.exists());
         assert!(unrelated.exists());
@@ -516,50 +438,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partial_remote_failure_keeps_local_file_and_retries_only_remaining_target() {
-        let (dir, db, assets) = super::super::tests::setup();
-        let asset = assets
-            .import(&db, "图片.png", &super::super::tests::png())
-            .unwrap();
-        let file = db.read(|conn| super::super::by_id(conn, &asset)).unwrap();
-        let hash = file.hash.unwrap();
-        let local = assets.root.join(file.path.unwrap());
-        for id in ["a", "b"] {
-            db.write(|tx| {
-                tx.execute("INSERT INTO storage_profiles VALUES (?1,'images','https://s3.example.test','test','bucket','','https://images.example.test',?1)", [id])?;
-                tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key) VALUES (?1,?2,?2)", params![hash, id])?;
-                Ok(())
-            }).unwrap();
-        }
-        let pending = || db.read(|conn| groups(conn, &BTreeSet::new())).unwrap();
-        assert!(
-            assets
-                .remove_group(&db, &pending()[0], async |_, key| {
-                    assert!(local.is_file());
-                    if key == "b" {
-                        Err(AppError::new("S3_SERVICE", "temporary failure"))
-                    } else {
-                        Ok(())
-                    }
-                })
-                .await
-                .unwrap()
-        );
-        assert_eq!(pending()[0].targets.len(), 1);
-        assert_eq!(pending()[0].targets[0].1, "b");
-        assets.remove_unrecorded(&db).unwrap();
-        assert!(local.is_file());
-        assets
-            .remove_group(&db, &pending()[0], async |_, key| {
-                assert_eq!(key, "b");
-                assert!(local.is_file());
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert!(!local.exists());
-        assert!(pending().is_empty());
-        drop(dir);
+    async fn shared_remote_targets_remain_untouched_without_global_reference_evidence() {
+        let (_dir,db,assets)=super::super::tests::setup();
+        let asset=assets.import(&db,"shared.png",&super::super::tests::png()).unwrap();
+        let file=db.read(|conn| super::super::by_id(conn,&asset)).unwrap();
+        let hash=file.hash.unwrap();
+        db.write(|tx| {
+            for profile in ["a","b"] {
+                tx.execute("INSERT INTO storage_profiles VALUES(?1,'images','https://s3.example.test','test','bucket','','https://images.example.test',?1)",[profile])?;
+                tx.execute("INSERT INTO asset_locations(sha256,storage_profile_id,object_key) VALUES(?1,?2,?2)",params![hash,profile])?;
+            }
+            Ok(())
+        }).unwrap();
+        db.begin_exit(); db.start_cleaning();
+        assets.cleanup_for_update(&db).await.unwrap();
+        assert!(assets.root.join(file.path.unwrap()).is_file());
+        db.read(|conn| {
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM asset_locations WHERE deleted_at IS NULL",[],|row| row.get::<_,i64>(0))?,2);
+            assert!(groups(conn,&BTreeSet::new())?.is_empty());
+            Ok(())
+        }).unwrap();
     }
 
     #[test]
@@ -587,86 +485,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_cleanup_preserves_the_sync_asset() {
-        let (_dir, db, assets) = super::super::tests::setup();
-        let id = assets
-            .import(&db, "图片.png", &super::super::tests::png())
-            .unwrap();
-        let file = db.read(|conn| super::super::by_id(conn, &id)).unwrap();
-        let hash = file.hash.unwrap();
+    async fn public_and_synced_images_stay_protected_even_after_losing_local_references() {
+        let (_dir,db,assets)=super::super::tests::setup();
+        let asset=assets.import(&db,"public.png",&super::super::tests::png()).unwrap();
+        let file=db.read(|conn| super::super::by_id(conn,&asset)).unwrap();
+        let hash=file.hash.unwrap();
         db.write(|tx| {
-            tx.execute("INSERT INTO sync_revisions VALUES ('asset',?1,1,0)", [&id])?;
-            tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
-            tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,uploaded_at) VALUES (?1,'s','key',1)", [&hash])?;
+            tx.execute("INSERT INTO sync_revisions VALUES('asset',?1,1,0)",[&asset])?;
+            tx.execute("INSERT INTO storage_profiles VALUES('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')",[])?;
+            tx.execute("INSERT INTO asset_locations(sha256,storage_profile_id,object_key,public_url,uploaded_at) VALUES(?1,'s','key','https://images.example.test/key',1)",[&hash])?;
             Ok(())
         }).unwrap();
-        let mut pending = db.read(|conn| groups(conn, &BTreeSet::new())).unwrap();
-        let group = pending.pop().unwrap();
-        assert!(group.keep_sync_asset);
-        assert!(
-            assets
-                .remove_group(&db, &group, async |_, key| {
-                    assert_eq!(key, "key");
-                    Ok(())
-                })
-                .await
-                .unwrap()
-        );
-        assert!(assets.root.join(file.path.unwrap()).is_file());
-        assert!(db.read(|conn| super::super::by_id(conn, &id)).is_ok());
-        assert!(
-            db.read(|conn| groups(conn, &BTreeSet::new()))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn timed_out_delete_keeps_target_for_cleanup_and_allows_reupload() {
-        let (_dir, db, assets) = super::super::tests::setup();
-        let id = assets
-            .import(&db, "图片.png", &super::super::tests::png())
-            .unwrap();
-        let file = db.read(|conn| super::super::by_id(conn, &id)).unwrap();
-        let hash = file.hash.unwrap();
-        db.write(|tx| {
-            tx.execute("INSERT INTO storage_profiles VALUES ('s','images','https://s3.example.test','test','bucket','','https://images.example.test','s')", [])?;
-            tx.execute("INSERT INTO app_settings VALUES ('image_storage_profile','s')", [])?;
-            tx.execute("INSERT INTO asset_locations (sha256,storage_profile_id,object_key,public_url,uploaded_at) VALUES (?1,'s','key','https://images.example.test/key',1)", [&hash])?;
-            Ok(())
-        }).unwrap();
-        let group = db
-            .read(|conn| groups(conn, &BTreeSet::new()))
-            .unwrap()
-            .pop()
-            .unwrap();
-        assert!(
-            !assets
-                .remove_group(&db, &group, async |_, _| Err(AppError::new(
-                    "S3_TIMEOUT",
-                    "delayed response"
-                )))
-                .await
-                .unwrap()
-        );
+        db.begin_exit(); db.start_cleaning();
+        // No remote delete is issued, so an unknown or timed-out prior delete cannot lose this local copy.
+        assets.cleanup_for_update(&db).await.unwrap();
         assert!(assets.root.join(file.path.unwrap()).is_file());
         db.read(|conn| {
-            let location = conn.query_row(
-                "SELECT object_key, uploaded_at, deleted_at FROM asset_locations WHERE sha256=?1",
-                [&hash],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<i64>>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                    ))
-                },
-            )?;
-            assert_eq!(location, ("key".into(), None, None));
+            assert!(protected(conn)?.contains(&hash));
+            assert_eq!(conn.query_row("SELECT uploaded_at,deleted_at FROM asset_locations WHERE sha256=?1",[&hash],|row| Ok((row.get::<_,i64>(0)?,row.get::<_,Option<i64>>(1)?)))?,(1,None));
             Ok(())
-        })
-        .unwrap();
-        assets.upload(&db, &id).unwrap();
-        assert!(super::super::claim(&db).unwrap().is_some());
+        }).unwrap();
     }
 }
