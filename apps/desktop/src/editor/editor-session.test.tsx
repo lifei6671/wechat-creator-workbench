@@ -3073,16 +3073,6 @@ it("zooms the selected image and commits valid Markdown when its line loses focu
     sourceButton().click();
     expect(sourceField().value).toBe('![旧图](asset://old "说明")');
     expect(handle!.clipboard("paste", { read: vi.fn(), write: vi.fn(), onError: vi.fn() }, sourceField())).toBe(false);
-    sourceField().value = "这不是图片";
-    const enter = () => sourceField().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    enter();
-    expect(container.querySelector(".rich-image-source-editor [role=alert]")?.textContent).toContain("Markdown 图片");
-    sourceField().blur();
-    expect(sourceField().parentElement?.hidden).toBe(false);
-    expect(sourceField().value).toBe("这不是图片");
-    expect(onChange).not.toHaveBeenCalled();
-
-    sourceButton().click();
     sourceField().value = "![新图](asset://replacement)";
     sourceField().blur();
     expect(onChange).toHaveBeenCalledExactlyOnceWith("image-tools", 1, "图文示例\n\n![新图](asset://replacement)\n\n![另一张](asset://other)");

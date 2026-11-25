@@ -329,22 +329,26 @@ it.each([false, true])("retains invalid formula drafts on blur and saves correct
   } finally { m.dispose(); }
 });
 
-it("retains an invalid image draft on blur and reopening, and allows correction or Escape", async () => {
+it.each(["", "![", "未完成的图片"])("allows replacing image Markdown with %j, undoing, and cancelling", async replacement => {
   const original = "![图片](asset://original)";
   const m = await mount(original);
   try {
     const button = () => m.container.querySelector<HTMLButtonElement>(".rich-image-source-toggle")!;
     const field = () => m.container.querySelector<HTMLTextAreaElement>(".rich-image-source-editor textarea")!;
     button().click();
-    field().value = "未完成的图片";
+    field().value = replacement;
     field().blur();
-    expect(field().parentElement!.hidden).toBe(false);
-    expect(field().getAttribute("aria-invalid")).toBe("true");
+    expect(m.container.querySelector(".rich-image")).toBeNull();
+    expect(m.container.querySelector('[role="alert"]')).toBeNull();
+    expect(m.view.state.doc.textContent).toBe(replacement);
+    expect(m.handle.captureMarkdown().markdown).not.toContain("asset://original");
+    m.handle.command("undo");
     expect(m.handle.captureMarkdown().markdown).toBe(original);
     button().click();
-    expect(field().value).toBe("未完成的图片");
+    field().value = "取消的修改";
     field().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(field().parentElement!.hidden).toBe(true);
+    expect(m.handle.captureMarkdown().markdown).toBe(original);
     button().click();
     field().value = "![新图](asset://corrected)";
     field().dispatchEvent(new Event("input", { bubbles: true }));

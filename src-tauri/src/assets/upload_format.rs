@@ -195,8 +195,15 @@ mod tests {
     #[test]
     fn compressed_modes_preserve_gif_and_animated_webp_bytes() {
         let mut gif = Cursor::new(Vec::new());
-        DynamicImage::new_rgb8(4, 4)
-            .write_to(&mut gif, ImageFormat::Gif)
+        image::codecs::gif::GifEncoder::new(&mut gif)
+            .encode_frames([
+                image::Frame::new(image::RgbaImage::from_pixel(
+                    4,
+                    4,
+                    image::Rgba([0, 0, 0, 255]),
+                )),
+                image::Frame::new(image::RgbaImage::from_pixel(4, 4, image::Rgba([255; 4]))),
+            ])
             .unwrap();
         let config = webp::WebPConfig::new().unwrap();
         let mut animation = webp::AnimEncoder::new(4, 4, &config);
@@ -208,18 +215,25 @@ mod tests {
                 .unwrap()
                 .has_animation()
         );
-        let options = UploadOptions {
-            quality: Quality::Economy,
-            ..UploadOptions::default()
-        };
         for (format, original) in [
             (ImageFormat::Gif, gif.into_inner()),
             (ImageFormat::WebP, animated),
         ] {
-            assert_eq!(
-                options.encode(original.clone()).unwrap(),
-                (format, original)
-            );
+            for quality in [
+                Quality::Original,
+                Quality::High,
+                Quality::Standard,
+                Quality::Economy,
+            ] {
+                let options = UploadOptions {
+                    quality,
+                    ..UploadOptions::default()
+                };
+                assert_eq!(
+                    options.encode(original.clone()).unwrap(),
+                    (format, original.clone())
+                );
+            }
         }
     }
 }

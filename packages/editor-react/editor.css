@@ -208,8 +208,6 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 }
 .rich-image-source-editor textarea:focus { outline: none; }
 .rich-image-source-editor textarea::selection { background: var(--accent-a5); }
-.rich-image-source-editor .inline-error { font-size: var(--small-font); }
-.rich-image-source-editor .inline-error:empty { display: none; }
 .radix-themes.dark .rich-editor .rich-formula img { filter: invert(1); }
 .rich-editor span.rich-formula img { max-height: 1.75em; }
 .rich-editor div.rich-formula { margin: 12px 0; }

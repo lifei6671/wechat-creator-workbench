@@ -17,7 +17,7 @@ export function textEditingScope(state: EditorState) {
   const selection = state.selection;
   if (!(selection instanceof TextSelection) || !selection.$from.sameParent(selection.$to)) return null;
   const { $from } = selection;
-  const kind: "code" | "cellText" | null = $from.parent.type.name === "code_block" ? "code" : cellAround($from) ? "cellText" : null;
+  const kind: "code" | "cellText" | null = ["code_block", "markdown_source"].includes($from.parent.type.name) ? "code" : cellAround($from) ? "cellText" : null;
   return kind && { kind, from: $from.start(), to: $from.end() };
 }
 

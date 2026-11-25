@@ -151,10 +151,7 @@ export function imageView(
   field.setAttribute("aria-label", "图片 Markdown 源码");
   field.rows = 1;
   field.spellcheck = false;
-  const error = document.createElement("span");
-  error.className = "inline-error";
-  error.setAttribute("role", "alert");
-  sourcePanel.append(field, error);
+  sourcePanel.append(field);
   dom.prepend(sourcePanel);
 
   function closeSource() {
@@ -167,8 +164,6 @@ export function imageView(
     const schema = view.state.schema;
     if (sourcePanel.hidden) {
       field.value = serialize(schema.topNodeType.create(null, schema.nodes.paragraph.create(null, node))).trim();
-      error.textContent = "";
-      field.removeAttribute("aria-invalid");
     }
     sourcePanel.hidden = false;
     source.setAttribute("aria-expanded", "true");
@@ -182,22 +177,24 @@ export function imageView(
     const parsed = parse(field.value.trim());
     const paragraph = parsed.firstChild;
     const image = paragraph?.firstChild;
-    if (parsed.childCount !== 1 || paragraph?.type !== view.state.schema.nodes.paragraph
-      || paragraph.childCount !== 1 || image?.type !== node.type || !imagePattern.test(image.attrs.src)) {
-      error.textContent = "请输入一条使用 HTTP、HTTPS 或 asset:// 地址的 Markdown 图片语法";
-      field.setAttribute("aria-invalid", "true");
-      return;
-    }
     closeSource();
     const pos = getPos();
-    if (pos !== undefined && !node.sameMarkup(image.mark(node.marks))) {
-      view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, image.attrs));
+    if (pos !== undefined) {
+      if (parsed.childCount === 1 && paragraph?.type === view.state.schema.nodes.paragraph
+        && paragraph.childCount === 1 && image?.type === node.type && imagePattern.test(image.attrs.src)) {
+        if (!node.sameMarkup(image.mark(node.marks))) view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, image.attrs));
+      } else {
+        const text = field.value;
+        const tr = view.state.tr;
+        if (text) tr.replaceWith(pos, pos + node.nodeSize, view.state.schema.text(text, node.marks));
+        else tr.delete(pos, pos + node.nodeSize);
+        view.dispatch(tr);
+      }
     }
     if (!blur) view.focus();
   }
 
   field.onblur = () => finishSource(true);
-  field.oninput = () => { error.textContent = ""; field.removeAttribute("aria-invalid"); };
   sourcePanel.onkeydown = event => {
     event.stopPropagation();
     if (event.isComposing || event.keyCode === 229) return;

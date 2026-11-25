@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type Ref } from "react";
-import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
+import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx, remarkCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
 import { history } from "@milkdown/kit/plugin/history";
 import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
 import { gfm, tableSchema } from "@milkdown/kit/preset/gfm";
@@ -31,6 +31,7 @@ import "./editor.css";
 import { inlineChangedBlocks, insertCodeFence, promoteCodeFence, repairInlineStrong } from "./inline-changes";
 import type { WorkspaceSearchHit } from "../shared-types";
 import { locateSearchHit } from "./search-location";
+import { exitMarkdownSource, markdownSource, markdownSourceEditing } from "./markdown-source";
 
 export type { EditorCommand } from "./commands";
 export type { ImageContext } from "./image-view";
@@ -592,7 +593,12 @@ export function MarkdownEditor(props: Props) {
   const [footnote, setFootnote] = useState<ReturnType<typeof footnoteDraft>>(null);
   useEffect(() => { if (props.active === false || props.readOnly) setFootnote(null); }, [props.active, props.readOnly]);
   useLayoutEffect(() => { latest.current = props; }, [props]);
-  useLayoutEffect(() => viewRef.current?.setProps({ editable: () => !props.readOnly }), [props.active, props.readOnly, props.lineNumbers, props.convertLinks]);
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    if (props.readOnly) view.dispatch(view.state.tr.setMeta(exitMarkdownSource, true));
+    view.setProps({ editable: () => !props.readOnly });
+  }, [props.active, props.readOnly, props.lineNumbers, props.convertLinks]);
   useEffect(() => { syncUploads.current?.(); }, [props.uploadRevision, props.readImageUploadState, props.resolveHostedImage]);
 
   useEffect(() => {
@@ -937,6 +943,10 @@ export function MarkdownEditor(props: Props) {
           return normalizeDocument(state);
         },
       })))
+      .use(markdownSource)
+      .use($prose(ctx => markdownSourceEditing(source => ctx.get(parserCtx)(source), doc => ctx.get(serializerCtx)(doc),
+        tr => tr.setMeta(documentLayout, true).setMeta("addToHistory", false), () => syncUploads.current?.(),
+        source => ctx.get(remarkCtx).parse(source))))
       .use($prose(ctx => editorPresentation(() => latest.current, (state, source, value) => {
         const { schema, doc } = state;
         const { mark, from, to, opening, token } = source;
@@ -1123,6 +1133,7 @@ export function MarkdownEditor(props: Props) {
         },
         async hostImages(upload, eligible, onTotal) {
           if (!isWritable(view)) return 0;
+          view.dispatch(view.state.tr.setMeta(exitMarkdownSource, true));
           const original = new Set<ProseNode>();
           const uploads = new Map<string, { url: string; frames: ImageContext[] }>();
           view.state.doc.descendants((node, pos) => {
@@ -1146,6 +1157,7 @@ export function MarkdownEditor(props: Props) {
             finally { for (const frame of group.frames) frame.setUploading(false); }
           }
           if (!isWritable(view)) return 0;
+          view.dispatch(view.state.tr.setMeta(exitMarkdownSource, true));
           const tr = closeHistory(view.state.tr);
           let count = 0;
           view.state.doc.descendants((node, pos) => {
