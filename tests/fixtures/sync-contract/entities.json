@@ -1,0 +1,468 @@
+{
+  "templates": {
+    "entry": {
+      "kind": "article",
+      "title": "草稿",
+      "contentMd": "正文",
+      "categoryId": null
+    },
+    "category": {
+      "name": "目录",
+      "parentId": null
+    },
+    "asset": {
+      "sha256": null,
+      "name": "占位图",
+      "kind": "original"
+    },
+    "collection": {
+      "title": "专题",
+      "description": "",
+      "createdAt": 1,
+      "updatedAt": 2
+    },
+    "collection_node": {
+      "collectionId": "topic",
+      "kind": "text",
+      "contentMd": "卡片",
+      "x": 0,
+      "y": 0,
+      "width": 320,
+      "height": 200,
+      "createdAt": 1,
+      "updatedAt": 2
+    },
+    "collection_edge": {
+      "collectionId": "topic",
+      "sourceNodeId": "node-a",
+      "targetNodeId": "node-b",
+      "label": "关系",
+      "createdAt": 1
+    },
+    "wechat_publication_defaults": {
+      "schemaVersion": 1,
+      "recommendationCount": 5,
+      "updatedAt": 1
+    }
+  },
+  "cases": [
+    {
+      "name": "legacy-entry",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "name": "entry-extension",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "futureFeature": {
+          "value": true
+        }
+      },
+      "accept": true
+    },
+    {
+      "name": "entry-status",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "status": "inbox"
+      },
+      "accept": false,
+      "error": "invalid_entry_status",
+      "field": "status"
+    },
+    {
+      "name": "entry-tags",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "tags": [
+          12
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "tags"
+    },
+    {
+      "name": "entry-summary",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "summary": 12
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "summary"
+    },
+    {
+      "name": "entry-published-url",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "publishedUrl": "javascript:alert(1)"
+      },
+      "accept": false,
+      "error": "invalid_entry_url",
+      "field": "publishedUrl"
+    },
+    {
+      "name": "entry-source-url",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "source": {
+          "url": "https://user:pass@example.com",
+          "author": "",
+          "accountName": ""
+        }
+      },
+      "accept": false,
+      "error": "invalid_entry_url",
+      "field": "source.url"
+    },
+    {
+      "name": "entry-source-author",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "source": {
+          "url": "https://example.com",
+          "author": 1
+        }
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "source.author"
+    },
+    {
+      "name": "entry-publication-platform",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "publicationPlatforms": [
+          {
+            "platform": "平台",
+            "url": "file:///tmp/x"
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_url",
+      "field": "publicationPlatforms[0].url"
+    },
+    {
+      "name": "entry-property-type",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "属性",
+            "kind": "text",
+            "value": 1
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "customProperties[0].value"
+    },
+    {
+      "name": "entry-property-date",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "2026-02-30"
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "customProperties[0].value"
+    },
+    {
+      "name": "entry-property-duplicate",
+      "protocolVersion": 2,
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "A",
+            "kind": "text",
+            "value": "x"
+          },
+          {
+            "key": " a ",
+            "kind": "text",
+            "value": "y"
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "customProperties[1].key"
+    },
+    {
+      "name": "category-legacy",
+      "protocolVersion": 2,
+      "entityType": "category",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "name": "category-color",
+      "protocolVersion": 2,
+      "entityType": "category",
+      "payload": {
+        "iconColor": "#123abc"
+      },
+      "accept": true
+    },
+    {
+      "name": "category-bad-color",
+      "protocolVersion": 2,
+      "entityType": "category",
+      "payload": {
+        "iconColor": "pink"
+      },
+      "accept": false,
+      "error": "invalid_category_field",
+      "field": "iconColor"
+    },
+    {
+      "name": "asset-placeholder",
+      "protocolVersion": 2,
+      "entityType": "asset",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "name": "asset-name-type",
+      "protocolVersion": 2,
+      "entityType": "asset",
+      "payload": {
+        "name": 1
+      },
+      "accept": false,
+      "error": "invalid_asset",
+      "field": "name"
+    },
+    {
+      "name": "asset-width-type",
+      "protocolVersion": 2,
+      "entityType": "asset",
+      "payload": {
+        "width": "wide"
+      },
+      "accept": false,
+      "error": "invalid_asset_field",
+      "field": "width"
+    },
+    {
+      "name": "asset-created-type",
+      "protocolVersion": 2,
+      "entityType": "asset",
+      "payload": {
+        "createdAt": "today"
+      },
+      "accept": false,
+      "error": "invalid_asset_field",
+      "field": "createdAt"
+    },
+    {
+      "name": "collection-valid",
+      "protocolVersion": 2,
+      "entityType": "collection",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "name": "node-text",
+      "protocolVersion": 2,
+      "entityType": "collection_node",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "name": "node-web",
+      "protocolVersion": 2,
+      "entityType": "collection_node",
+      "payload": {
+        "kind": "web",
+        "contentMd": "",
+        "externalUrl": "https://example.com"
+      },
+      "accept": true
+    },
+    {
+      "name": "node-web-credentials",
+      "protocolVersion": 2,
+      "entityType": "collection_node",
+      "payload": {
+        "kind": "web",
+        "contentMd": "",
+        "externalUrl": "https://u:p@example.com"
+      },
+      "accept": true
+    },
+    {
+      "name": "edge-valid",
+      "protocolVersion": 2,
+      "entityType": "collection_edge",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "name": "defaults-legacy",
+      "protocolVersion": 2,
+      "entityType": "wechat_publication_defaults",
+      "payload": {},
+      "accept": true
+    },
+    {
+      "protocolVersion": 2,
+      "name": "asset-kind-array",
+      "entityType": "asset",
+      "payload": {
+        "kind": [
+          "original"
+        ]
+      },
+      "accept": false,
+      "error": "invalid_asset",
+      "field": "kind"
+    },
+    {
+      "protocolVersion": 2,
+      "name": "node-web-extension",
+      "entityType": "collection_node",
+      "payload": {
+        "kind": "web",
+        "contentMd": "",
+        "externalUrl": "https://example.com",
+        "contentBlobSize": 1
+      },
+      "accept": true
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-0",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "+270000-01-01"
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "customProperties[0].value"
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-1",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "-262144-01-01"
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "customProperties[0].value"
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-2",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "+262142-12-31"
+          }
+        ]
+      },
+      "accept": true
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-3",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "-262143-01-01"
+          }
+        ]
+      },
+      "accept": true
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-4",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "1-2-3"
+          }
+        ]
+      },
+      "accept": true
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-5",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": " 2026- 1- 2"
+          }
+        ]
+      },
+      "accept": true
+    },
+    {
+      "protocolVersion": 2,
+      "name": "entry-date-range-6",
+      "entityType": "entry",
+      "payload": {
+        "customProperties": [
+          {
+            "key": "日期",
+            "kind": "date",
+            "value": "10000-01-01"
+          }
+        ]
+      },
+      "accept": false,
+      "error": "invalid_entry_field",
+      "field": "customProperties[0].value"
+    }
+  ]
+}

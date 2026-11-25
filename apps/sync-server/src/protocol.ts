@@ -12,13 +12,13 @@ const identifier = /^[a-zA-Z0-9_-]{1,128}$/;
 export const hashPattern = /^[a-f0-9]{64}$/;
 
 export class SyncError extends Error {
-  constructor(readonly status: ContentfulStatusCode, readonly code: string, readonly reason?: string) {
+  constructor(readonly status: ContentfulStatusCode, readonly code: string, readonly reason?: string, readonly field?: string) {
     super(code);
   }
 }
 
-export function invalid(code = "invalid_request"): never {
-  throw new SyncError(400, code);
+export function invalid(code = "invalid_request", field?: string): never {
+  throw new SyncError(400, code, undefined, field);
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -72,7 +72,7 @@ export function equalDigest(left: string, right: string): boolean {
   return difference === 0;
 }
 
-function mutation(value: unknown) {
+function mutation(value: unknown, validatePayload: boolean) {
   const input = record(value);
   const type = entityType(input.entityType);
   const entityId = id(input.entityId);
@@ -86,6 +86,9 @@ function mutation(value: unknown) {
 
   const payload = operation === "delete" && (type !== "entry" || input.payload == null)
     ? null : record(input.payload);
+  // Receipt lookup must still identify operations accepted before validation
+  // tightened, without making those payloads eligible for a new write.
+  if (!validatePayload) return { entityType: type, entityId, baseRevision, operation, payload };
   if (payload && type === "wechat_publication_defaults") {
     if (payload.schemaVersion !== 1 || !Number.isInteger(payload.recommendationCount)
         || Number(payload.recommendationCount) < 1 || Number(payload.recommendationCount) > 0xffffffff) invalid("invalid_publication_defaults");
@@ -98,11 +101,14 @@ function mutation(value: unknown) {
   if (payload && type === "category") {
     text(payload.name, 256);
     if (payload.parentId != null) id(payload.parentId);
+    if (payload.iconColor != null && (typeof payload.iconColor !== "string"
+        || !/^(red|orange|amber|green|blue|violet|#[a-fA-F0-9]{6})$/.test(payload.iconColor))) invalid("invalid_category_field", "iconColor");
   }
   if (payload && type === "entry") {
     const kind = payload.kind;
     if (kind !== "article" && kind !== "idea" && kind !== "reference") invalid("invalid_entry_kind");
     if (typeof payload.title !== "string") invalid("invalid_entry_title");
+    entryFields(payload, kind);
     if (payload.categoryId != null) id(payload.categoryId);
     if (payload.coverAssetId != null) id(payload.coverAssetId);
     if (payload.wechatPublication != null) publication(payload.wechatPublication);
@@ -110,11 +116,20 @@ function mutation(value: unknown) {
       if (references === undefined) continue;
       if (!Array.isArray(references)) invalid("invalid_references");
       references.forEach(id);
+      if (new Set(references).size !== references.length) invalid("invalid_references");
     }
     markdown(payload, "invalid_entry_content");
   }
   if (payload && type === "asset") {
-    if (typeof payload.name !== "string" || !["original", "derived"].includes(String(payload.kind))) invalid("invalid_asset");
+    if (typeof payload.name !== "string") invalid("invalid_asset", "name");
+    if (typeof payload.kind !== "string" || !["original", "derived"].includes(payload.kind)) invalid("invalid_asset", "kind");
+    for (const field of ["bytes", "width", "height"]) {
+      if (payload[field] != null && !Number.isSafeInteger(payload[field])) invalid("invalid_asset_field", field);
+    }
+    if (payload.createdAt !== undefined && !Number.isSafeInteger(payload.createdAt)) invalid("invalid_asset_field", "createdAt");
+    if (payload.sourceKey != null && typeof payload.sourceKey !== "string") invalid("invalid_asset_field", "sourceKey");
+    if (payload.mimeType != null && typeof payload.mimeType !== "string") invalid("invalid_asset_field", "mimeType");
+    if (payload.retainOnExit !== undefined && typeof payload.retainOnExit !== "boolean") invalid("invalid_asset_field", "retainOnExit");
     if (payload.sha256 !== null) {
       if (typeof payload.sha256 !== "string" || !hashPattern.test(payload.sha256) ||
           integer(payload.bytes) > MAX_BLOB_BYTES ||
@@ -139,6 +154,67 @@ function mutation(value: unknown) {
   }
   if (utf8.encode(JSON.stringify(payload)).byteLength > 512 * KiB) throw new SyncError(413, "entity_too_large");
   return { entityType: type, entityId, baseRevision, operation, payload };
+}
+
+function httpUrl(value: unknown, code: string, field: string) {
+  if (typeof value !== "string" || !URL.canParse(value.trim())) invalid(code, field);
+  const url = new URL(value.trim());
+  if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) invalid(code, field);
+}
+
+function entryFields(payload: Record<string, unknown>, kind: string) {
+  const statuses = kind === "article" ? ["draft", "ready", "published", "archived"]
+    : kind === "idea" ? ["inbox", "planned", "used", "archived"] : ["unread", "reviewed", "used", "archived"];
+  if (payload.status !== undefined && (typeof payload.status !== "string" || !statuses.includes(payload.status))) invalid("invalid_entry_status", "status");
+  for (const field of ["summary", "publishedUrl"]) {
+    if (payload[field] !== undefined && typeof payload[field] !== "string") invalid("invalid_entry_field", field);
+  }
+  if (payload.themeId != null && typeof payload.themeId !== "string") invalid("invalid_entry_field", "themeId");
+  if (payload.tags !== undefined && (!Array.isArray(payload.tags) || payload.tags.some(tag => typeof tag !== "string"))) invalid("invalid_entry_field", "tags");
+  if (payload.publishedAt != null && !Number.isSafeInteger(payload.publishedAt)) invalid("invalid_entry_field", "publishedAt");
+  if (typeof payload.publishedUrl === "string" && payload.publishedUrl.trim()) httpUrl(payload.publishedUrl, "invalid_entry_url", "publishedUrl");
+  if (payload.source != null) {
+    const source = record(payload.source);
+    httpUrl(source.url, "invalid_entry_url", "source.url");
+    for (const field of ["author", "accountName"]) {
+      if (source[field] !== undefined && typeof source[field] !== "string") invalid("invalid_entry_field", `source.${field}`);
+    }
+    for (const field of ["originalPublishedAt", "importedAt"]) {
+      if (source[field] != null && !Number.isSafeInteger(source[field])) invalid("invalid_entry_field", `source.${field}`);
+    }
+  }
+  if (payload.publicationPlatforms != null) {
+    if (!Array.isArray(payload.publicationPlatforms)) invalid("invalid_entry_field", "publicationPlatforms");
+    const names = new Set<string>();
+    for (const [index, value] of payload.publicationPlatforms.entries()) {
+      const item = record(value), field = `publicationPlatforms[${index}]`;
+      if (typeof item.platform !== "string" || !item.platform.trim() || names.has(item.platform.trim().toLowerCase())) invalid("invalid_entry_field", `${field}.platform`);
+      names.add(item.platform.trim().toLowerCase());
+      if (typeof item.url !== "string") invalid("invalid_entry_field", `${field}.url`);
+      if (item.url.trim()) httpUrl(item.url, "invalid_entry_url", `${field}.url`);
+    }
+  }
+  if (payload.customProperties != null) {
+    if (!Array.isArray(payload.customProperties)) invalid("invalid_entry_field", "customProperties");
+    const names = new Set<string>();
+    for (const [index, value] of payload.customProperties.entries()) {
+      const item = record(value), field = `customProperties[${index}]`;
+      if (typeof item.key !== "string" || !item.key.trim() || names.has(item.key.trim().toLowerCase())) invalid("invalid_entry_field", `${field}.key`);
+      names.add(item.key.trim().toLowerCase());
+      if (item.kind === "tags") {
+        if (!Array.isArray(item.value) || item.value.some(tag => typeof tag !== "string")) invalid("invalid_entry_field", `${field}.value`);
+      } else if (item.kind === "text" || item.kind === "date") {
+        if (typeof item.value !== "string") invalid("invalid_entry_field", `${field}.value`);
+        if (item.kind === "date" && item.value) {
+          const parts = /^\p{White_Space}*([+-]\d+|\d{1,4})-\p{White_Space}*(\d{1,2})-\p{White_Space}*(\d{1,2})$/u.exec(item.value);
+          if (!parts) invalid("invalid_entry_field", `${field}.value`);
+          const date = new Date(0), year = Number(parts[1]), month = Number(parts[2]), day = Number(parts[3]);
+          date.setUTCFullYear(year, month - 1, day);
+          if (year < -262143 || year > 262142 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) invalid("invalid_entry_field", `${field}.value`);
+        }
+      } else invalid("invalid_entry_field", `${field}.kind`);
+    }
+  }
 }
 
 function publication(value: unknown) {
@@ -174,6 +250,7 @@ function publication(value: unknown) {
 
 function markdown(payload: Record<string, unknown>, invalidContent: string) {
   if (payload.contentBlobHash === undefined) {
+    if (payload.contentBlobSize !== undefined) invalid("invalid_content_blob", "contentBlobSize");
     if (typeof payload.contentMd !== "string") invalid(invalidContent);
     if (utf8.encode(payload.contentMd).byteLength >= 64 * KiB) throw new SyncError(413, "content_requires_blob");
   } else if (typeof payload.contentBlobHash !== "string" || !hashPattern.test(payload.contentBlobHash) ||
@@ -208,13 +285,13 @@ function canvasNode(payload: Record<string, unknown>) {
         (payload.contentMd !== "" || payload.contentBlobHash !== undefined || payload.assetIds !== undefined))) invalid("invalid_canvas_node");
 }
 
-export function operation(value: unknown) {
+export function operation(value: unknown, validatePayload = true) {
   const input = record(value);
   const operationId = id(input.operationId);
   if (!Array.isArray(input.mutations) || input.mutations.length === 0 || input.mutations.length > MAX_MUTATIONS) {
     invalid("invalid_mutation_count");
   }
-  const mutations = input.mutations.map(mutation);
+  const mutations = input.mutations.map(value => mutation(value, validatePayload));
   const keys = new Set(mutations.map(({ entityType, entityId }) => entityType + "/" + entityId));
   if (keys.size !== mutations.length) invalid("duplicate_entity");
   return { operationId, mutations };

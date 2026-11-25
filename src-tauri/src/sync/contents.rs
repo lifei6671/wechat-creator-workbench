@@ -22,6 +22,8 @@ const MAX_ENTITY_BYTES: usize = 512 * 1024;
 const MAX_GROUP: usize = 256;
 
 mod canvas_conflicts;
+#[cfg(test)]
+mod contract_tests;
 mod merge;
 #[cfg(test)]
 mod transport_tests;
@@ -238,12 +240,22 @@ impl<'a> Remote<'a> {
     }
 
     async fn hydrate(&self, entity: &mut Entity) -> Result<()> {
-        let Some(hash) = entity.payload["contentBlobHash"].as_str() else {
-            return Ok(());
-        };
-        if entity.payload["contentMd"].is_string() {
+        if entity.key.entity_type != Kind::Entry
+            && !(entity.key.entity_type == Kind::CollectionNode
+                && entity.payload["kind"].as_str() == Some("text"))
+        {
             return Ok(());
         }
+        let Some(blob) = entity.payload.get("contentBlobHash") else {
+            if entity.payload.get("contentBlobSize").is_some() {
+                return Err(protocol_error());
+            }
+            return Ok(());
+        };
+        if entity.payload.get("contentMd").is_some() {
+            return Err(protocol_error());
+        }
+        let hash = blob.as_str().ok_or_else(protocol_error)?;
         let size = entity.payload["contentBlobSize"]
             .as_i64()
             .ok_or_else(protocol_error)?;
