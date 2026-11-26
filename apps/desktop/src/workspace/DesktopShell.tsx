@@ -2566,6 +2566,7 @@ export function DesktopShell() {
             <div className="right-sidebar-content">
               <div role="region" id="right-sidebar-review-panel" aria-labelledby="right-sidebar-review-button" hidden={!showReviewPanel}>
                 {showReviewPanel && queue && workspaceId && <ReviewPanel key={`${workspaceId}:${queue.sessionId}`}
+                  articleId={queue.entry.id} articleTitle={queue.entry.title || untitled}
                   editor={handles.current.get(queue.entry.id)} configurationRevision={reviewConfigurationRevision}
                   selectionEnabled={viewMode === "edit"} locked={globalLock || Boolean(exitMessage) || locked.includes(queue.entry.id)}
                   onSettings={() => openSettings("review")}

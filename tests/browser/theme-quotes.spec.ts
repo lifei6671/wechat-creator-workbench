@@ -1,5 +1,28 @@
 import { expect, test } from "@playwright/test";
 
+for (const id of ["plainly-default", "plainly-elegant", "plainly-tech"]) test(`${id}: portrait and landscape images keep their intrinsic ratio at publisher widths`, async ({ page }) => {
+  await page.goto(`/tests/theme-quotes.html?theme=${id}&images=1`);
+  await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
+  await expect.poll(() => page.locator("[data-output]").evaluateAll(hosts => hosts.every(host =>
+    [...host.shadowRoot!.querySelectorAll("img")].every(img => img.complete && img.naturalWidth > 0)))).toBe(true);
+  for (const width of [300, 677, 980]) {
+    const images = await page.locator("[data-output]").evaluateAll((hosts, width) => hosts.flatMap(host => {
+      host.shadowRoot!.querySelector("style")?.remove();
+      (host as HTMLElement).style.width = `${width}px`;
+      return [...host.shadowRoot!.querySelectorAll("img")].map(img => {
+        const rect = img.getBoundingClientRect();
+        return { output: (host as HTMLElement).dataset.output, ratio: rect.width / rect.height,
+          expected: img.naturalWidth / img.naturalHeight, width: rect.width, maxHeight: img.style.maxHeight };
+      });
+    }), width);
+    for (const image of images) {
+      expect(image.ratio, `${id} ${image.output} ${width}`).toBeCloseTo(image.expected, 2);
+      expect(image.width).toBeLessThanOrEqual(width);
+      expect(["", "none"]).toContain(image.maxHeight);
+    }
+  }
+});
+
 const themes = [
   { id: "plainly-default", top: 16, bottom: 16, end: 16 },
   { id: "plainly-elegant", top: 20, bottom: 20, end: 20 },

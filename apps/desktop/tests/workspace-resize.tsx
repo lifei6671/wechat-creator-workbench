@@ -21,7 +21,8 @@ Object.assign(window, { publicationTyping });
 desktop.library = async () => ({ workspaceId: "resize-fixture", categories: new URLSearchParams(location.search).has("folder")
   ? [{ id: "creation-folder", parentId: null, name: "回归目录", sortOrder: 0, icon: "folder" }] : [], tags: [], tagSuggestions: [] });
 const createdEntries: Entry[] = [];
-desktop.entries = async filter => ({ items: filter.pinned ? [] : [...createdEntries, article, second], nextOffset: null });
+desktop.entries = async filter => ({ items: filter.pinned ? [] : [...createdEntries, article,
+  ...(new URLSearchParams(location.search).has("statuses") ? [{ ...second, status: "ready" as const }, { ...article, id: "published", title: "已经发布的文章", status: "published" as const }] : [second])], nextOffset: null });
 desktop.entry = async id => createdEntries.find(entry => entry.id === id) ?? (id === second.id ? second : article);
 
 let created = 0;

@@ -5,13 +5,16 @@ import type { MarkdownEditorHandle, ReviewRange, ReviewSnapshot } from "../../..
 import { desktop, errorMessage, type ReviewResult, type ReviewSettings } from "../desktop";
 import { ActionError, useButtonFeedback } from "../button-feedback";
 import { Tool } from "../ui";
+import { ReviewHistory } from "./ReviewHistory";
 import "../styles/review.css";
 
 type Scope = "document" | "selection";
 type Result = { snapshot: ReviewSnapshot; result: ReviewResult; scope: Scope };
 
-export function ReviewPanel({ editor, configurationRevision, selectionEnabled, locked, onSettings, onNavigate }: {
+export function ReviewPanel({ editor, articleId, articleTitle, configurationRevision, selectionEnabled, locked, onSettings, onNavigate }: {
   editor?: MarkdownEditorHandle;
+  articleTitle: string;
+  articleId: string;
   configurationRevision: number;
   selectionEnabled: boolean;
   locked: boolean;
@@ -25,6 +28,8 @@ export function ReviewPanel({ editor, configurationRevision, selectionEnabled, l
   const [busy, setBusy] = useState(false);
   const [hasSelection, setHasSelection] = useState(false);
   const [marks, setMarks] = useState(true);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [cacheBusy, setCacheBusy] = useState(false);
   const buttons = useButtonFeedback();
   const request = useRef(0);
   const snapshot = useRef<ReviewSnapshot | undefined>(undefined);
@@ -58,7 +63,7 @@ export function ReviewPanel({ editor, configurationRevision, selectionEnabled, l
 
   const enabled = settings?.enabled && settings.hasKey;
   const feedbackLocked = ["document", "selection", "force"].some(key => buttons.isLocked(key));
-  const blocked = locked || busy || feedbackLocked || !editor || !enabled;
+  const blocked = locked || busy || cacheBusy || feedbackLocked || !editor || !enabled;
 
   async function check(scope: Scope, force = false) {
     if (running.current || blocked) return;
@@ -77,8 +82,9 @@ export function ReviewPanel({ editor, configurationRevision, selectionEnabled, l
       }
       snapshot.current = captured;
       lastScope.current = scope;
-      const value = await desktop.reviewCheck(captured.projection.text, captured.projection.version, force);
+      const value = await desktop.reviewCheck(captured.projection.text, captured.projection.version, force, { entryId: articleId, title: articleTitle, scope });
       if (!alive.current || id !== request.current) return;
+      setHistoryRevision(previous => previous + 1);
       if (!editor!.matchesReview(captured)) { setStale(true); return; }
       if (value.settingsRevision !== settings!.revision) return;
       setResult({ snapshot: captured, result: value, scope });
@@ -138,5 +144,6 @@ export function ReviewPanel({ editor, configurationRevision, selectionEnabled, l
       loading={buttons.status("force") === "pending"} {...buttons.props("force", blocked || lastScope.current === "selection" && (!selectionEnabled || !hasSelection))}
       onClick={() => void check(lastScope.current, true)}>{buttons.label("force", "重新检测", "检测完成", "检测失败")}</Button>}
     {valid && <p className="review-hint review-disclaimer"><ClipboardCheck size={13} />检测结果仅供参考。</p>}
+    <ReviewHistory key={articleId} articleId={articleId} revision={historyRevision + configurationRevision} disabled={locked || busy || feedbackLocked} onBusyChange={setCacheBusy} />
   </section>;
 }

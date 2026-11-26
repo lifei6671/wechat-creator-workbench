@@ -78,9 +78,28 @@ Windows 浏览器单次取样，合成引用块每 100 汉字一段；未通过�
 
 本次类型检查通过；Chromium 与 Windows WebKit 回归共 22 项通过，包含未配置、未启用、未保存密钥、覆盖已存密钥、清空后回退及不调用保存的断言。Rust 审查模块 11 项通过、3 项默认忽略；新增 Windows 原生 Keyring 与本地 HTTP mock 测试另行 1 项通过，临时工作区的凭据、开关和代次保持不变，结束删除合成凭据。全量 Rust 267 项通过、16 项默认忽略；Clippy 通过。全量并发曾使既有模拟响应校验的 50ms 时限误触发，现仅专门验证超时的用例保留 50ms，其余 HTTP 响应用例使用 2 秒时限，错误码及禁止重试断言保持。Windows 构建与启动通过。本轮未调用真实朱雀服务，未消耗额度。
 
+## 缓存记录与时间流状态（2026-11-26）
+
+[交互原型](prototypes/review-history-and-timeline.html)与[可见元素说明](prototypes/review-history-and-timeline.md)确认后，正式审查面板新增 `ReviewHistory.tsx`，直接复用 AI 对话记录的列表、标题、时间与删除入口样式。记录点击后在自身下方展开检测范围及人类撰写、AI 生成、疑似 AI 三类比例，不显示原文，不调用检测接口或恢复编辑器标记。删除等待真实持久化完成，原按钮保持完成反馈 1 秒再撤下条目；清空同样保留按钮反馈，失败保留记录并在固定错误区域显示原因。
+
+`review_check` 接收可选 `context: { entryId, title, scope }`；不传上下文的调用只使用检测缓存，不产生文章记录。独立缓存库通过事务迁移至 `user_version=2`，新增 `review_cache_articles` 保存文章 ID、缓存键、标题与检测范围，以 `(entry_id, cache_key)` 唯一关联，不修改主库。同一文本跨文章复用检测缓存，但各篇文章独立保留标题与范围。原始缓存及第一版列表缓存缺少可靠文章 ID，迁移保留检测结果供复用，清理无关联的旧标题/范围列，不按标题猜测归属；当前文章主动检测命中旧缓存后建立关联。
+
+`review_cache_list(entryId)` 只查询当前文章的记录，返回缓存键、标题、检测时间、范围与比例。`review_cache_delete(entryId,id)` 仅删除当前文章的关联；缓存还被其他文章引用时保留共享结果，无其他引用时删除对应缓存。`review_clear_cache(entryId?)` 指定文章时仅清空该篇记录，不传文章时保持设置页清理整个工作区的行为。删除与清空继续受现有检测互斥锁约束，不改变用量统计。外键级联清理确保缓存 30 天到期或全局清理后不会残留文章关联。记录列表按文章会话挂载，切换文章立即清空列表状态，迟到的查询、检测或删除响应不能改写另一篇文章的记录。工作区目录隔离及缓存不进入发布、备份、同步的边界保持有效，本轮不请求真实朱雀接口或读写个人凭据。
+
+时间流的时间前使用既有状态名称显示 12px、0.5px 描边标签，颜色取自 Radix 状态色阶；置顶文章也显示状态。技术、默认、优雅主题移除图片固定最大高度，保留 `max-width:100%`、`height:auto` 和原始尺寸，避免长图的高度受限而宽度仍使用原始值。图片源与格式未变更。
+
+验证结果：
+
+- `pnpm typecheck`、`pnpm web:build` 通过。
+- `pnpm test apps/desktop/src/editor/wechat-renderer.test.ts`：85 项通过，所有主题均检查内联图片高度与宽度样式。
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings` 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked`：271 项通过、16 项按原有条件忽略；覆盖 v0/v1 缓存迁移、文章 ID 隔离、共享文本独立标题/范围、单条删除、当前文章清空与工作区全清、30 天到期及关联级联清理、工作区隔离、用量保持与列表不含原文/定位信息。审查模块定向测试 13 项通过、3 项忽略。
+- 文章关联修正后，`pnpm exec playwright test tests/browser/review-history.spec.ts tests/browser/article-review.spec.ts --grep-invert 'timeline statuses'`：Chromium 与 Windows WebKit 共 28 项通过。覆盖仅列当前文章、隐藏未关联旧缓存、当前文章清空保留其他文章、列表/检测/删除在切换后迟到、删除等待与 999ms/1000ms 反馈边界，以及既有选区、快照失效、装饰和设置回归。时间流字号调整的 4 项两引擎、两平台布局用例此前已通过；横竖图比例及主题排版的前轮 106 项浏览器验证未涉及本轮关联逻辑。
+- 已检查浅色与深色实际组件截图。Win32/MacIntel 浏览器分支属于布局模拟；本轮未进行 macOS 原生运行与真实微信公众号粘贴验收。
+
 ## 实现差异与待确认项
 
-- 后端实际路径为 `src-tauri/src/review.rs` 与 `review/{settings,zhuque,cache,tests}.rs`。在 `main.rs`、`build.rs` 和 `capabilities/desktop.json` 同步注册 6 条命令（含方案表未列出的缓存清理命令）。
+- 后端实际路径为 `src-tauri/src/review.rs` 与 `review/{settings,zhuque,cache,tests}.rs`。在 `main.rs`、`build.rs` 和 `capabilities/desktop.json` 同步注册 8 条命令，含缓存清理、列表及单条删除命令。
 - 单一服务拒绝重叠推理，不建立任务队列。固定端点复用 reqwest 能力，但不复用会补全 `/chat/completions` 的生成模型配置。保持系统 DNS 与本机 TUN 可用。
 - 输入保护为客户端 128 KiB UTF-8 字节上限，已验证该大小的合成样本；真实厂商最大值仍未知，不自动拆分或拼接比例。适配器版本与投影版本纳入缓存键。
 - 精确位置按实测标量起点及长度解析，并校验切片；无法定位的发现不保存原始片段。结果 DTO 保留分类、置信度与可空区间，UI 文案从类别生成，摘要由当前快照切片生成。

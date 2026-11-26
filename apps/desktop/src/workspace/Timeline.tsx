@@ -3,7 +3,7 @@ import { Button } from "@radix-ui/themes";
 import { ChevronDown, FolderOpen, Layers, Tag as TagIcon, type LucideIcon } from "lucide-react";
 import type { Category, EntryFilter, EntryPage, EntryRow, Tag, TimelineSelection } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
-import { rootFolderLabel, untitled } from "../labels";
+import { rootFolderLabel, statusLabels, untitled } from "../labels";
 import { Tool } from "../ui";
 import { CoverThumbnail } from "./Assets";
 import { allEntries, BlankAreaMenu, ContentRow, type RowActions } from "./Explorer";
@@ -262,9 +262,12 @@ function TimelineGroup({ label, items, actions, articleTags, recent, pinned, sco
                       : <span key={tag}>{tag}</span>;
                   })}
                 </span>}
-                {!pinned && <time dateTime={time.toISOString()} title={time.toLocaleString("zh-CN")}>
+                <span className="timeline-entry-meta">
+                  {item.status && <span className="timeline-status" data-status={item.status}>{statusLabels[item.status]}</span>}
+                  {!pinned && <time dateTime={time.toISOString()} title={time.toLocaleString("zh-CN")}>
                   {recent ? timeLabel.format(time) : dayLabel.format(time)}
-                </time>}
+                  </time>}
+                </span>
               </span>
               {item.preview?.image && <CoverThumbnail key={item.preview.image} source={item.preview.image} />}
             </> }} />;

@@ -8,6 +8,8 @@ fn main() {
             "review_test_connection",
             "review_usage",
             "review_clear_cache",
+            "review_cache_list",
+            "review_cache_delete",
             "app_info",
             "app_update_status",
             "app_update_check",

@@ -22,7 +22,7 @@ export const theme = {
     "code": "font-family: \"Fira Code\", Consolas, Monaco, \"Courier New\", monospace; font-size: 14px; padding: 3px 6px; background-color: #f5f9fc !important; color: #1B365D !important; border-radius: 8px; font-weight: 500;",
     "pre": "margin: 24px 0; padding: 20px; background-color: #f5f9fc !important;color: #1B365D !important;  border-radius: 8px; overflow-x: auto; line-height: 1.6 !important; box-shadow: 0 2px 8px rgba(0,0,0,0.1);",
     "hr": "margin: 36px 0; border: none; height: 2px; background: linear-gradient(to right, transparent, #4a7c59, transparent);",
-    "img": "max-width: 100%; max-height: 600px !important; height: auto; display: block; margin: 24px auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);",
+    "img": "max-width: 100%; height: auto; display: block; margin: 24px auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);",
     "table": "width: 100%; margin: 24px 0; border-collapse: collapse; font-size: 15px; box-shadow: 0 1px 4px rgba(0,0,0,0.1);",
     "th": "background-color: #808080 !important; color: #fff !important; padding: 12px; text-align: left; border: 1px solid #f0f0f0; font-weight: 600;",
     "td": "padding: 12px; border: 1px solid #e0e0e0; background-color: #fff !important;",

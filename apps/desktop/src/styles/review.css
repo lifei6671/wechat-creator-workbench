@@ -21,3 +21,12 @@
 .review-disclaimer { display: flex; align-items: center; gap: 6px; margin-top: 16px; }
 .review-stale { color: var(--text-muted); margin-block: 16px; }
 .review-empty { margin-block: 20px; color: var(--text-muted); }
+.review-history { margin-top: 28px; padding-top: 20px; border-top: var(--hairline); }
+.review-history-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+.review-history-heading button { margin: 0; }
+.review-history-conclusion { padding: 8px 10px 12px; font-size: var(--small-font); color: var(--text-muted); }
+.review-history-conclusion p { margin: 0 0 8px; }
+.review-history-conclusion dl { display: grid; grid-template-columns: 1fr auto; gap: 4px; margin: 0; }
+.review-history-conclusion dd { margin: 0; color: var(--text-main); font-variant-numeric: tabular-nums; }
+.review-history .ai-thread-delete[data-feedback-state] { opacity: 1; pointer-events: auto; }
+.review-history .ai-thread-item:has(.ai-thread-delete[data-feedback-state]) .ai-thread-time { visibility: hidden; }

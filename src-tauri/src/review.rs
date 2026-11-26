@@ -59,6 +59,21 @@ pub struct ReviewResult {
     settings_revision: u64,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewScope {
+    Document,
+    Selection,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewContext {
+    entry_id: String,
+    title: String,
+    scope: ReviewScope,
+}
+
 pub struct ReviewService {
     client: Client,
     root: PathBuf,
@@ -74,6 +89,7 @@ struct CheckInput<'a> {
     version: u32,
     force: bool,
     connection_test: bool,
+    context: Option<&'a ReviewContext>,
 }
 
 impl ReviewService {
@@ -148,6 +164,7 @@ impl ReviewService {
             version,
             force,
             connection_test,
+            context,
         } = input;
         let directory = self.directory(workspace);
         // A captured directory owns this request's result even if the active workspace changes.
@@ -156,7 +173,7 @@ impl ReviewService {
         let key = cache_key(text, version);
         if !force
             && !connection_test
-            && let Some(mut result) = cache::lookup(&mut store, &key, now())?
+            && let Some(mut result) = cache::lookup(&mut store, &key, now(), context)?
         {
             result.settings_revision = revision;
             return Ok(result);
@@ -178,6 +195,7 @@ impl ReviewService {
                 &mut store,
                 (!connection_test).then_some(key.as_str()),
                 &result,
+                context,
             )
         });
         match saved {
@@ -209,6 +227,7 @@ pub async fn review_check(
     text: String,
     projection_version: u32,
     force: bool,
+    context: Option<ReviewContext>,
 ) -> Result<ReviewResult> {
     service
         .check(
@@ -219,6 +238,7 @@ pub async fn review_check(
                 version: projection_version,
                 force,
                 connection_test: false,
+                context: context.as_ref(),
             },
             None,
         )
@@ -241,6 +261,7 @@ pub async fn review_test_connection(
                 version: 1,
                 force: true,
                 connection_test: true,
+                context: None,
             },
             api_key.as_deref(),
         )
@@ -257,14 +278,40 @@ pub fn review_usage(
 }
 
 #[tauri::command]
+pub fn review_cache_list(
+    db: State<'_, Workspace>,
+    service: State<'_, ReviewService>,
+    entry_id: String,
+) -> Result<Vec<cache::CacheEntry>> {
+    let directory = service.directory(&db.read_running(workspace_id)?);
+    cache::list(&cache::open(&directory)?, &entry_id, now())
+}
+
+#[tauri::command]
+pub fn review_cache_delete(
+    db: State<'_, Workspace>,
+    service: State<'_, ReviewService>,
+    entry_id: String,
+    id: String,
+) -> Result<()> {
+    let _request = service
+        .request
+        .try_lock()
+        .map_err(|_| AppError::new("REVIEW_BUSY", "检测进行中，请稍后删除记录"))?;
+    let directory = service.directory(&db.read_running(workspace_id)?);
+    cache::delete(&mut cache::open(&directory)?, &entry_id, Some(&id))
+}
+
+#[tauri::command]
 pub fn review_clear_cache(
     db: State<'_, Workspace>,
     service: State<'_, ReviewService>,
+    entry_id: Option<String>,
 ) -> Result<()> {
     let _request = service
         .request
         .try_lock()
         .map_err(|_| AppError::new("REVIEW_BUSY", "检测进行中，请稍后清理缓存"))?;
     let directory = service.directory(&db.read_running(workspace_id)?);
-    cache::clear(&cache::open(&directory)?)
+    cache::clear(&mut cache::open(&directory)?, entry_id.as_deref())
 }

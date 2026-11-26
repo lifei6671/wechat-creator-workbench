@@ -9,6 +9,8 @@
     "allow-review-test-connection",
     "allow-review-usage",
     "allow-review-clear-cache",
+    "allow-review-cache-list",
+    "allow-review-cache-delete",
     "allow-app-info",
     "allow-app-update-status",
     "allow-app-update-check",
