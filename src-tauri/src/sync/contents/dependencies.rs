@@ -31,6 +31,21 @@ fn dependency_issue(code: Option<&str>, reason: &str) -> bool {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetrySource {
+    AcknowledgedDependency,
+    Manual,
+}
+
+fn retryable_rejection(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some(
+            "category_name_conflict" | "source_url_conflict" | "category_in_use" | "canvas_in_use"
+        )
+    )
+}
+
 fn references(kind: Kind, data: &Value) -> Vec<(Key, bool)> {
     let mut refs = Vec::new();
     let mut add = |kind, id: Option<&str>, active| {
@@ -72,7 +87,7 @@ fn references(kind: Kind, data: &Value) -> Vec<(Key, bool)> {
     refs
 }
 
-fn group_ready(conn: &Connection, keys: &[Key]) -> Result<bool> {
+fn group_ready(conn: &Connection, keys: &[Key], source: RetrySource) -> Result<bool> {
     for key in keys {
         let issue = conn.query_row(
             "SELECT code,reason,remote_json IS NOT NULL FROM sync_issues WHERE entity_type=?1 AND entity_id=?2
@@ -81,7 +96,8 @@ fn group_ready(conn: &Connection, keys: &[Key]) -> Result<bool> {
             |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?)),
         ).optional()?;
         if issue.is_some_and(|(code, reason, remote)| {
-            remote || !dependency_issue(code.as_deref(), &reason)
+            remote || !(dependency_issue(code.as_deref(), &reason)
+                || source == RetrySource::Manual && retryable_rejection(code.as_deref()))
         }) || in_outbox(conn, key)?
         {
             return Ok(false);
@@ -131,7 +147,7 @@ fn group_ready(conn: &Connection, keys: &[Key]) -> Result<bool> {
 
 use rusqlite::OptionalExtension;
 
-fn retry_group(conn: &Connection, key: &Key) -> Result<()> {
+fn retry_group(conn: &Connection, key: &Key, source: RetrySource) -> Result<()> {
     let mut query = conn.prepare(
         "SELECT entity_type,entity_id FROM sync_dirty WHERE (entity_type,entity_id)=(?1,?2)
          OR batch_id=(SELECT batch_id FROM sync_dirty WHERE entity_type=?1 AND entity_id=?2)",
@@ -149,7 +165,7 @@ fn retry_group(conn: &Connection, key: &Key) -> Result<()> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    if group_ready(conn, &keys)? {
+    if group_ready(conn, &keys, source)? {
         for key in keys {
             conn.execute("DELETE FROM sync_issues WHERE entity_type=?1 AND entity_id=?2 AND remote_json IS NULL
                 AND generation=(SELECT generation FROM sync_dirty WHERE entity_type=?1 AND entity_id=?2)",
@@ -203,6 +219,7 @@ pub(super) fn retry(conn: &Connection, acknowledged: &[Key]) -> Result<()> {
                             .map_err(super::invalid_response)?,
                         entity_id: id,
                     },
+                    RetrySource::AcknowledgedDependency,
                 )?;
             }
         }
@@ -210,20 +227,21 @@ pub(super) fn retry(conn: &Connection, acknowledged: &[Key]) -> Result<()> {
     Ok(())
 }
 
-/// Explicit retry rechecks repaired groups; blob checks still run through prepare_uploads.
+/// Manual retry rechecks dependency failures and repairable business rejections as whole groups.
 pub(super) fn retry_blocked(conn: &Connection) -> Result<()> {
     let mut query = conn.prepare(
-        "SELECT entity_type,entity_id FROM sync_issues WHERE remote_json IS NULL
-        AND (code IN ('asset_missing','category_missing','source_entry_missing','collection_missing','canvas_endpoint_missing','blob_missing')
-        OR (code IS NULL AND reason IN ('asset_missing','category_missing','source_entry_missing','collection_missing','canvas_endpoint_missing','blob_missing',
-            '云端缺少关联素材','云端缺少关联目录','云端缺少关联条目','云端缺少关联专题','云端缺少连线引用的卡片')))",
+        "SELECT entity_type,entity_id,code,reason FROM sync_issues WHERE remote_json IS NULL",
     )?;
     let keys = query
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (kind, id) in keys {
+    for (kind, id, code, reason) in keys {
+        if !dependency_issue(code.as_deref(), &reason) && !retryable_rejection(code.as_deref()) {
+            continue;
+        }
         retry_group(
             conn,
             &Key {
@@ -231,6 +249,7 @@ pub(super) fn retry_blocked(conn: &Connection) -> Result<()> {
                     .map_err(super::invalid_response)?,
                 entity_id: id,
             },
+            RetrySource::Manual,
         )?;
     }
     Ok(())

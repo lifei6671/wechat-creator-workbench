@@ -408,6 +408,81 @@ fn staging_does_not_retry_a_partly_blocked_atomic_group() {
     assert!(stage_outbox(&db).unwrap().is_none());
 }
 
+#[test]
+fn rejected_category_group_retries_after_rename_and_preserves_other_blockers() {
+    for blocker in ["none", "revision", "remote", "unknown", "frozen"] {
+        let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d');
+                INSERT INTO categories(id,name,depth,sort_order) VALUES('retry-parent','Parent',1,0);
+                INSERT INTO categories(id,name,parent_id,depth,sort_order) VALUES('retry-child','Child','retry-parent',2,0);
+                UPDATE sync_progress SET capture=1;")?;
+            for id in ["retry-parent", "retry-child"] {
+                remember(tx, &Key { entity_type: Kind::Category, entity_id: id.into() }, 1, false)?;
+            }
+            Ok(())
+        }).unwrap();
+        db.delete_category(
+            "retry-parent",
+            crate::content::taxonomy::CategoryDeleteMode::Promote,
+        )
+        .unwrap();
+        let (operation, generations) = stage_outbox(&db).unwrap().unwrap();
+        assert_eq!(operation.mutations.len(), 2);
+        let rejected = Outcome {
+            status: "rejected".into(),
+            reason: Some("category_name_conflict".into()),
+            versions: None,
+        };
+        db.write(|tx| apply_outcome(tx, &operation, &generations, &rejected))
+            .unwrap();
+        assert!(stage_outbox(&db).unwrap().is_none());
+        db.write(|tx| {
+            tx.execute("UPDATE categories SET name='Repaired unique name' WHERE id='retry-child'", [])?;
+            if blocker == "revision" || blocker == "unknown" {
+                tx.execute("UPDATE sync_issues SET code=?1 WHERE entity_id='retry-parent'", [if blocker == "revision" { "revision_conflict" } else { "unknown_rejection" }])?;
+            } else if blocker == "remote" {
+                tx.execute("UPDATE sync_issues SET remote_json='{}' WHERE entity_id='retry-parent'", [])?;
+            } else if blocker == "frozen" {
+                tx.execute("INSERT INTO sync_outbox(id,operation_json,generations_json,origin_device_id) VALUES(1,?1,?2,'d')",
+                    params![encode(&operation)?, encode(&generations)?])?;
+            }
+            dependencies::retry_blocked(tx)
+        }).unwrap();
+        if blocker == "none" {
+            let (retried, next_generations) = stage_outbox(&db).unwrap().unwrap();
+            assert_ne!(retried.operation_id, operation.operation_id);
+            assert_eq!(retried.mutations.len(), 2);
+            for (mutation, next) in retried.mutations.iter().zip(next_generations) {
+                let index = operation
+                    .mutations
+                    .iter()
+                    .position(|old| old.key.entity_id == mutation.key.entity_id)
+                    .unwrap();
+                if mutation.key.entity_id == "retry-parent" {
+                    assert_eq!(mutation.operation, "delete");
+                    assert_eq!(next, generations[index]);
+                } else {
+                    assert_eq!(
+                        mutation.payload.as_ref().unwrap()["name"],
+                        "Repaired unique name"
+                    );
+                    assert!(next > generations[index]);
+                }
+            }
+        } else {
+            assert_eq!(db.read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM sync_issues WHERE entity_id IN ('retry-parent','retry-child')", [], |row| row.get::<_, i64>(0))?)).unwrap(), 2, "{blocker}");
+            if blocker == "frozen" {
+                assert_eq!(
+                    stage_outbox(&db).unwrap().unwrap().0.operation_id,
+                    operation.operation_id
+                );
+            } else {
+                assert!(stage_outbox(&db).unwrap().is_none(), "{blocker}");
+            }
+        }
+    }
+}
 
 #[test]
 fn successful_receipts_retire_old_local_rejections_but_keep_newer_or_version_conflicts() {
