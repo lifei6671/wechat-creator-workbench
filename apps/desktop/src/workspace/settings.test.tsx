@@ -28,6 +28,35 @@ it("shows seven-day trash retention and persists changes including disabling aut
     }
   } finally { flushSync(() => root.unmount()); container.remove(); }
 });
+it("keeps trash retention failures inside the description and restores the hint after retry", async () => {
+  vi.spyOn(desktop, "trashRetention").mockResolvedValueOnce(7)
+    .mockRejectedValueOnce(new Error("无法保存回收站保留时间，请重试"))
+    .mockResolvedValueOnce(30);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  try {
+    flushSync(() => root.render(<Theme><form><TrashRetentionSetting /></form></Theme>));
+    const trigger = container.querySelector("#trash-retention")!;
+    await vi.waitFor(() => expect(trigger.textContent).toContain("7 天"));
+    const description = trigger.closest(".setting-row")!.querySelector(".setting-description")!;
+    const errorSlot = description.querySelector(".action-error-slot")!;
+    const select = container.querySelector("select")!;
+    flushSync(() => { select.value = "30"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await vi.waitFor(() => expect(errorSlot.textContent).toContain("无法保存回收站保留时间，请重试"));
+    expect(description.querySelector(".setting-hint")?.getAttribute("aria-hidden")).toBe("true");
+    expect(document.getElementById(trigger.getAttribute("aria-describedby")!)).toBe(errorSlot);
+    expect(errorSlot.querySelector('[role="alert"]')).not.toBeNull();
+    expect(errorSlot.getAttribute("tabindex")).toBe("0");
+    await vi.waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
+    flushSync(() => { select.value = "30"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await vi.waitFor(() => expect(trigger.textContent).toContain("30 天"));
+    expect(description.querySelector(".action-error-slot")).toBe(errorSlot);
+    expect(errorSlot.querySelector('[role="alert"]')).toBeNull();
+    expect(errorSlot.getAttribute("tabindex")).toBe("-1");
+    expect(document.getElementById(trigger.getAttribute("aria-describedby")!)?.textContent).toContain("按移入回收站的时间计算");
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
 beforeEach(() => {
   vi.spyOn(desktop, "onSyncStatusChanged").mockResolvedValue(() => {});
   vi.spyOn(desktop, "syncActivity").mockResolvedValue(null);

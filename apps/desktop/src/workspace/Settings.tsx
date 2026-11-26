@@ -190,16 +190,21 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   </Dialog.Root>;
 }
 
-export function SettingRow({ id, label, hint, warning, children }: {
-  id?: string; label: string; hint?: string; warning?: string; children(hintId: string): ReactNode;
+export function SettingRow({ id, label, hint, warning, error, children }: {
+  id?: string; label: string; hint?: string; warning?: string; error?: string; children(hintId: string): ReactNode;
 }) {
   const generatedId = useId();
   const hintId = id ? `${id}-hint` : generatedId;
   return <div className="setting-row"><div className="setting-copy">
     {id ? <label htmlFor={id}>{label}</label> : <span>{label}</span>}
-    {(hint || warning) && <span id={hintId} className="setting-hint">
-      {hint}{warning && <> <span className="setting-warning">{warning}</span></>}
-    </span>}
+    {(hint || warning || error !== undefined) && <div className="setting-description" data-error={error ? true : undefined}>
+      <span id={error ? undefined : hintId} className="setting-hint" aria-hidden={error ? true : undefined}>
+        {hint}{warning && <> <span className="setting-warning">{warning}</span></>}
+      </span>
+      {error !== undefined && <div id={error ? hintId : undefined} className="action-error-slot" tabIndex={error ? 0 : -1}>
+        {error ? <p className="settings-feedback inline-error" role="alert">{error}</p> : null}
+      </div>}
+    </div>}
   </div><div className="setting-control">{children(hintId)}</div></div>;
 }
 
@@ -268,17 +273,14 @@ export function TrashRetentionSetting() {
     catch (failure) { setError(errorMessage(failure)); }
     finally { setSaving(false); }
   }
-  return <>
-    <SettingRow id="trash-retention" label="回收站保留时间" hint="按移入回收站的时间计算，过期内容将永久删除。">
+  return <SettingRow id="trash-retention" label="回收站保留时间" hint="按移入回收站的时间计算，过期内容将永久删除。" error={error}>
       {hintId => <Select.Root size="2" value={days?.toString() ?? ""} disabled={days === undefined || saving} onValueChange={save}>
         <Select.Trigger id="trash-retention" aria-describedby={hintId} />
         <Select.Content>{trashRetentionOptions.map(days => <Select.Item key={days} value={String(days)}>
           {days ? `${days} 天` : "不自动清理"}
         </Select.Item>)}</Select.Content>
       </Select.Root>}
-    </SettingRow>
-    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="settings-feedback inline-error" role="alert">{error}</p> : null}</div>}
-  </>;
+    </SettingRow>;
 }
 
 function NativeToggleSetting({ id, label, hint, warning, preference }: {
@@ -309,13 +311,10 @@ function NativeToggleSetting({ id, label, hint, warning, preference }: {
     }
   }
 
-  return <>
-    <SettingRow id={id} label={label} hint={hint} warning={warning}>
+  return <SettingRow id={id} label={label} hint={hint} warning={warning} error={error}>
       {hintId => <Switch id={id} aria-describedby={hintId} radius="full"
         checked={enabled === true} disabled={enabled === null || saving} onCheckedChange={save} />}
-    </SettingRow>
-    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="settings-feedback inline-error" role="alert">{error}</p> : null}</div>}
-  </>;
+    </SettingRow>;
 }
 
 export function WorkspaceSettings({ page, appearance, shortcut, workspaceShortcuts, preferredView, explorer, downloadPastedImages, convertLinks, defaultOutline, documentOpenMode, folderLoading, folderPageSize,
