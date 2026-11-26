@@ -122,7 +122,7 @@ test("does not activate a cancelled destructive action during its exit", async (
 test("ignores a queued confirmation click after cancellation starts", async ({ page }) => {
   await mockNativeWindow(page, "Win32");
   await page.goto("/tests/workspace-resize.html?edit=1");
-  await page.addStyleTag({ content: '.rt-DialogContent[data-state="closed"] { animation-duration: 60s !important; }' });
+  await page.addStyleTag({ content: ':is(.rt-BaseDialogOverlay, .rt-DialogContent)[data-state="closed"] { animation-duration: 60s !important; }' });
   await page.getByRole("button", { name: "回收站", exact: true }).click();
   await page.locator("#empty-trash").click();
   const dialog = page.getByRole("dialog", { name: "清空回收站", exact: true });
@@ -135,7 +135,9 @@ test("ignores a queued confirmation click after cancellation starts", async ({ p
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   expect(await page.evaluate(() => Reflect.get(window, "motionConfirmCalls") ?? 0)).toBe(0);
-  await closing.evaluate(element => { for (const animation of element.getAnimations()) animation.finish(); });
+  await page.locator('.rt-BaseDialogOverlay[data-state="closed"]').evaluate(element => {
+    for (const animation of element.getAnimations({ subtree: true })) animation.finish();
+  });
   await expect(closing).toHaveCount(0);
 });
 

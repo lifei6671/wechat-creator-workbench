@@ -239,7 +239,7 @@ textarea.rich-formula-source { display: block; width: 100%; min-height: 5em; mar
 textarea.rich-formula-source:focus { outline: none; border-color: var(--gray-a8); }
 .rich-formula-error { font-size: var(--small-font); }
 .rich-editor dl[data-type="footnote_definition"] { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--text-muted); margin-block: 8px; }
-.rich-editor dl[data-type="footnote_definition"] dt { flex: none; max-inline-size: 40%; white-space: normal; overflow-wrap: break-word; word-break: normal; }
+.rich-editor dl[data-type="footnote_definition"] dt { flex: none; max-inline-size: calc(50% - 1em); white-space: normal; overflow-wrap: break-word; word-break: normal; }
 .rich-editor dl[data-type="footnote_definition"] dd { flex: 1; min-width: 0; margin: 0; overflow-wrap: break-word; word-break: normal; }
 .rich-editor dl[data-type="footnote_definition"] dd > :first-child { margin-block-start: 0; }
 .rich-editor dl[data-type="footnote_definition"] dd > :last-child { margin-block-end: 0; }

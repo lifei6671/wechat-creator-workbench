@@ -111,12 +111,6 @@ for (const theme of themes) for (const newline of ["lf", "crlf"]) {
         for (const [quoteIndex, paragraphs] of quotes.entries()) {
           expect(paragraphs).toHaveLength(quoteIndex === 0 ? 1 : 3);
           for (const [index, paragraph] of paragraphs.entries()) {
-            if (output === 0) {
-              expect(paragraph.top).toBe(0);
-              expect(paragraph.bottom).toBe(index === paragraphs.length - 1 ? 0 : 18);
-              if (paragraph.gap !== null) expect(paragraph.gap).toBeCloseTo(18, 1);
-              continue;
-            }
             expect(paragraph.top, `output ${output} quote ${quoteIndex} paragraph ${index} top`).toBe(theme.top);
             expect(paragraph.bottom, `output ${output} quote ${quoteIndex} paragraph ${index} bottom`)
               .toBe(index === paragraphs.length - 1 ? theme.end : theme.bottom);
