@@ -148,8 +148,8 @@ button.rich-code-language:hover { background: var(--gray-a4); }
 .rich-editor :is(.rich-embedded-html, .rich-disclosure) summary { cursor: pointer; }
 .rich-editor .rich-disclosure { margin-block: .75em; }
 .dark .rich-editor .rich-formula img { filter: invert(1); }
-.rich-image { display: inline-flex; flex-direction: column; max-width: 100%; vertical-align: middle; }
-.rich-image:has(.rich-image-source-editor:not([hidden])) { display: flex; }
+.rich-image { display: flex; flex-direction: column; width: fit-content; max-width: 100%; margin-inline: auto; vertical-align: middle; }
+.rich-image:has(.rich-image-source-editor:not([hidden])) { width: auto; }
 .rich-editor .rich-image.ProseMirror-selectednode { outline: none; }
 .rich-image:is(.ProseMirror-selectednode, :focus-within):not(:has(.rich-image-source-editor:not([hidden]))) .rich-image-frame {
   border-radius: 8px; box-shadow: 0 0 0 2px var(--accent-a9), var(--shadow-3);
