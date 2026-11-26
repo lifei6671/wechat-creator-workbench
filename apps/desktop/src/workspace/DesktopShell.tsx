@@ -46,6 +46,8 @@ import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 import { WechatPublishing, type PublicationSession } from "./wechat-publication";
 import { WechatPublicationPanel } from "./WechatPublicationPanel";
 import { RightSidebarToolbar, type RightSidebarMode } from "./RightSidebar";
+import { ReviewPanel } from "./ReviewPanel";
+import { ReviewSettings } from "./ReviewSettings";
 import { useReducedMotion } from "../../../../packages/ui-react/motion";
 import "../styles/right-sidebar.css";
 import "../styles/wechat-publication.css";
@@ -218,6 +220,7 @@ export function DesktopShell() {
   const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
   const [rightPanelOverride, setRightPanel] = useState<RightSidebarMode | null | undefined>(undefined);
+  const [reviewConfigurationRevision, setReviewConfigurationRevision] = useState(0);
   const [sidebarWorking, setSidebarWorking] = useState<RightSidebarMode | "close" | null>(null);
   const documentOutline = activeId !== null && (documentOptions.get(activeId)?.outline ?? defaultOutline);
   const rightPanel = rightPanelOverride === undefined ? (documentOutline ? "outline" : initialLayout.aiOpen ? "ai" : null) : rightPanelOverride;
@@ -276,7 +279,9 @@ export function DesktopShell() {
   const [wechatPublishing] = useState(() => new WechatPublishing());
   const showPropertiesPanel = rightPanel === "properties" && propertiesId !== null && !focusMode;
   const showOutlinePanel = rightPanel === "outline" && activeId !== null && !collectionMode && !focusMode;
-  const showRightPanel = showAiPanel || showWechatPanel || showPropertiesPanel || showOutlinePanel;
+  const showReviewPanel = rightPanel === "review" && activeId !== null && !collectionMode && !focusMode && !reading
+    && sessions.some(session => session.entry.id === activeId && session.entry.kind === "article" && session.entry.deletedAt === null);
+  const showRightPanel = showAiPanel || showWechatPanel || showPropertiesPanel || showOutlinePanel || showReviewPanel;
   useEffect(() => () => wechatPublishing.dispose(), [wechatPublishing]);
   const propertiesFlush = useRef<((closing?: boolean) => Promise<boolean>) | null>(null);
   const propertiesQueue = useRef<SaveQueue | null>(null);
@@ -2556,8 +2561,23 @@ export function DesktopShell() {
               ai: globalLock || reading || collectionMode,
               properties: globalLock || !(activeId || propertiesId),
               outline: globalLock || !queue || collectionMode,
+              review: globalLock || !canShowWechat || reading || collectionMode,
             }} onChange={mode => run(() => showSidebar(mode))} />}
             <div className="right-sidebar-content">
+              <div role="region" id="right-sidebar-review-panel" aria-labelledby="right-sidebar-review-button" hidden={!showReviewPanel}>
+                {showReviewPanel && queue && workspaceId && <ReviewPanel key={`${workspaceId}:${queue.sessionId}`}
+                  editor={handles.current.get(queue.entry.id)} configurationRevision={reviewConfigurationRevision}
+                  selectionEnabled={viewMode === "edit"} locked={globalLock || Boolean(exitMessage) || locked.includes(queue.entry.id)}
+                  onSettings={() => openSettings("review")}
+                  onNavigate={(snapshot, range) => {
+                    const editor = handles.current.get(queue.entry.id);
+                    if (!editor?.matchesReview(snapshot)) return;
+                    if (viewMode === "preview") {
+                      view("edit");
+                      requestAnimationFrame(() => { if (active.current === queue.entry.id) editor.revealReview(snapshot, range); });
+                    } else editor.revealReview(snapshot, range);
+                  }} />}
+              </div>
               <div role="region" id="right-sidebar-ai-panel" aria-labelledby="right-sidebar-ai-button" hidden={!showAiPanel}>
                 <div className="ai-sidebar" inert={!showAiPanel}>
                   {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
@@ -2618,6 +2638,7 @@ export function DesktopShell() {
         }}
           status={backupWorking ?? undefined} toast={notice?.type === "error" ? toast : undefined} key={modal!.instance} onClose={() => closeModal(modal!)} renderPage={page => {
           if (page === "about") return <AboutPage onInstall={() => finishWorkspace(undefined, true)} />;
+          if (page === "review") return <ReviewSettings key={workspaceId} onSaved={() => setReviewConfigurationRevision(value => value + 1)} />;
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;

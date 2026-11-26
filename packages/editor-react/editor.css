@@ -398,3 +398,6 @@ button.rich-slash-group { border: 0; background: transparent; cursor: pointer; }
   .rich-search-field, .rich-search-options, .rich-search-actions { flex-wrap: wrap; }
   .rich-search-field input { flex-basis: 100%; }
 }
+.ProseMirror .review-mark { text-decoration-line: underline; text-decoration-style: dotted; text-underline-offset: 4px; }
+.ProseMirror .review-mark-ai { background: var(--amber-a3); text-decoration-color: var(--amber-9); }
+.ProseMirror .review-mark-suspected { background: var(--yellow-a3); text-decoration-color: var(--yellow-9); }

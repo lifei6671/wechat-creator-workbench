@@ -1,0 +1,1097 @@
+{
+  "recordedAt": "2026-11-26T05:57:58.970Z",
+  "source": "real Makers endpoint; fixed synthetic text only",
+  "samples": [
+    {
+      "id": "unicode-split",
+      "isMerge": false,
+      "utf8Bytes": 203,
+      "utf16Length": 82,
+      "unicodeScalars": 80,
+      "httpStatus": 200,
+      "elapsedMs": 4190,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 134,
+      "modelTokens": 80,
+      "labelsRatio": {
+        "0": 0,
+        "1": 0,
+        "2": 1
+      },
+      "segments": [
+        {
+          "label": 2,
+          "confidence": 0.6015,
+          "order": 1,
+          "position": [
+            0,
+            80
+          ],
+          "textUtf16Length": 82,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "unicode-scalar:half-open",
+            "unicode-scalar:inclusive"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unicode-merge",
+      "isMerge": true,
+      "utf8Bytes": 203,
+      "utf16Length": 82,
+      "unicodeScalars": 80,
+      "httpStatus": 200,
+      "elapsedMs": 2299,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 134,
+      "modelTokens": 80,
+      "labelsRatio": {
+        "0": 0,
+        "1": 0,
+        "2": 1
+      },
+      "segments": [
+        {
+          "label": 2,
+          "confidence": 0.6015,
+          "order": 1,
+          "position": [
+            0,
+            80
+          ],
+          "textUtf16Length": 82,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "unicode-scalar:half-open",
+            "unicode-scalar:inclusive"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "crlf-and-whitespace",
+      "isMerge": false,
+      "utf8Bytes": 69,
+      "utf16Length": 34,
+      "unicodeScalars": 33,
+      "httpStatus": 200,
+      "elapsedMs": 1983,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 55,
+      "modelTokens": 33,
+      "labelsRatio": {
+        "0": 0,
+        "1": 0,
+        "2": 1
+      },
+      "segments": [
+        {
+          "label": 2,
+          "confidence": 0.6486,
+          "order": 1,
+          "position": [
+            0,
+            33
+          ],
+          "textUtf16Length": 34,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "utf16:inclusive",
+            "unicode-scalar:half-open",
+            "unicode-scalar:inclusive"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "chinese-1",
+      "isMerge": false,
+      "utf8Bytes": 3,
+      "utf16Length": 1,
+      "unicodeScalars": 1,
+      "httpStatus": 200,
+      "elapsedMs": 2121,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 2,
+      "modelTokens": 1,
+      "labelsRatio": {
+        "0": 1,
+        "1": 0,
+        "2": 0
+      },
+      "segments": [
+        {
+          "label": 0,
+          "confidence": 0.0181,
+          "order": 1,
+          "position": [
+            0,
+            1
+          ],
+          "textUtf16Length": 1,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "utf16:half-open",
+            "utf16:inclusive",
+            "unicode-scalar:half-open",
+            "unicode-scalar:inclusive"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "chinese-1000",
+      "isMerge": false,
+      "utf8Bytes": 3000,
+      "utf16Length": 1000,
+      "unicodeScalars": 1000,
+      "httpStatus": 200,
+      "elapsedMs": 7076,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 1667,
+      "modelTokens": 1000,
+      "labelsRatio": {
+        "0": 0,
+        "1": 1,
+        "2": 0
+      },
+      "segments": [
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 1,
+          "position": [
+            0,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "utf16:half-open",
+            "unicode-scalar:half-open"
+          ]
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 2,
+          "position": [
+            384,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 3,
+          "position": [
+            768,
+            232
+          ],
+          "textUtf16Length": 232,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        }
+      ]
+    },
+    {
+      "id": "chinese-5000",
+      "isMerge": false,
+      "utf8Bytes": 15000,
+      "utf16Length": 5000,
+      "unicodeScalars": 5000,
+      "httpStatus": 200,
+      "elapsedMs": 3659,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 8334,
+      "modelTokens": 5000,
+      "labelsRatio": {
+        "0": 0,
+        "1": 1,
+        "2": 0
+      },
+      "segments": [
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 1,
+          "position": [
+            0,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "utf16:half-open",
+            "unicode-scalar:half-open"
+          ]
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 2,
+          "position": [
+            384,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 3,
+          "position": [
+            768,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 4,
+          "position": [
+            1152,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 5,
+          "position": [
+            1536,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 6,
+          "position": [
+            1920,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 7,
+          "position": [
+            2304,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 8,
+          "position": [
+            2688,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 9,
+          "position": [
+            3072,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 10,
+          "position": [
+            3456,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 11,
+          "position": [
+            3840,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 12,
+          "position": [
+            4224,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 13,
+          "position": [
+            4608,
+            392
+          ],
+          "textUtf16Length": 392,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        }
+      ]
+    },
+    {
+      "id": "chinese-20000",
+      "isMerge": false,
+      "utf8Bytes": 60000,
+      "utf16Length": 20000,
+      "unicodeScalars": 20000,
+      "httpStatus": 200,
+      "elapsedMs": 5966,
+      "fields": [
+        "status",
+        "softmax_confidence",
+        "ratio_confidence",
+        "labels_ratio",
+        "segment_labels",
+        "usage",
+        "msg",
+        "makers_models_usage"
+      ],
+      "businessSuccess": true,
+      "makersTokens": 33334,
+      "modelTokens": 20000,
+      "labelsRatio": {
+        "0": 0,
+        "1": 1,
+        "2": 0
+      },
+      "segments": [
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 1,
+          "position": [
+            0,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": [
+            "utf16:half-open",
+            "unicode-scalar:half-open"
+          ]
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 2,
+          "position": [
+            384,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 3,
+          "position": [
+            768,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 4,
+          "position": [
+            1152,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 5,
+          "position": [
+            1536,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 6,
+          "position": [
+            1920,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 7,
+          "position": [
+            2304,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 8,
+          "position": [
+            2688,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 9,
+          "position": [
+            3072,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 10,
+          "position": [
+            3456,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 11,
+          "position": [
+            3840,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 12,
+          "position": [
+            4224,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 13,
+          "position": [
+            4608,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 14,
+          "position": [
+            4992,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 15,
+          "position": [
+            5376,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 16,
+          "position": [
+            5760,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 17,
+          "position": [
+            6144,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 18,
+          "position": [
+            6528,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 19,
+          "position": [
+            6912,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 20,
+          "position": [
+            7296,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 21,
+          "position": [
+            7680,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 22,
+          "position": [
+            8064,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 23,
+          "position": [
+            8448,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 24,
+          "position": [
+            8832,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 25,
+          "position": [
+            9216,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 26,
+          "position": [
+            9600,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 27,
+          "position": [
+            9984,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 28,
+          "position": [
+            10368,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 29,
+          "position": [
+            10752,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 30,
+          "position": [
+            11136,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 31,
+          "position": [
+            11520,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 32,
+          "position": [
+            11904,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 33,
+          "position": [
+            12288,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 34,
+          "position": [
+            12672,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 35,
+          "position": [
+            13056,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 36,
+          "position": [
+            13440,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 37,
+          "position": [
+            13824,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 38,
+          "position": [
+            14208,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 39,
+          "position": [
+            14592,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 40,
+          "position": [
+            14976,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 41,
+          "position": [
+            15360,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 42,
+          "position": [
+            15744,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 43,
+          "position": [
+            16128,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 44,
+          "position": [
+            16512,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 45,
+          "position": [
+            16896,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 46,
+          "position": [
+            17280,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 47,
+          "position": [
+            17664,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 48,
+          "position": [
+            18048,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 49,
+          "position": [
+            18432,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 50,
+          "position": [
+            18816,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 51,
+          "position": [
+            19200,
+            384
+          ],
+          "textUtf16Length": 384,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        },
+        {
+          "label": 1,
+          "confidence": 0.9985,
+          "order": 52,
+          "position": [
+            19584,
+            416
+          ],
+          "textUtf16Length": 416,
+          "exactSubstring": true,
+          "offsetCandidates": []
+        }
+      ]
+    }
+  ]
+}

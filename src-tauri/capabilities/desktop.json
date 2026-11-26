@@ -3,6 +3,12 @@
   "identifier": "desktop",
   "webviews": ["main"],
   "permissions": [
+    "allow-review-settings",
+    "allow-review-save-settings",
+    "allow-review-check",
+    "allow-review-test-connection",
+    "allow-review-usage",
+    "allow-review-clear-cache",
     "allow-app-info",
     "allow-app-update-status",
     "allow-app-update-check",

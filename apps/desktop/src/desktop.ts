@@ -251,6 +251,12 @@ export const desktop = {
   copyMcpConfig: (client: McpClient) => invoke<void>("mcp_copy_config", { client }),
   resetMcpToken: () => invoke<void>("mcp_reset_token"),
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
+  reviewSettings: () => invoke<ReviewSettings>("review_settings"),
+  saveReviewSettings: (enabled: boolean, apiKey?: string) => invoke<ReviewSettings>("review_save_settings", { enabled, apiKey }),
+  reviewCheck: (text: string, projectionVersion: number, force = false) => invoke<ReviewResult>("review_check", { checkerId: "zhuque_text", text, projectionVersion, force }),
+  reviewTestConnection: (apiKey?: string) => invoke<ReviewResult>("review_test_connection", { apiKey }),
+  reviewUsage: () => invoke<ReviewUsage>("review_usage"),
+  reviewClearCache: () => invoke<void>("review_clear_cache"),
   aiSettings: () => invoke<AiSettings>("ai_settings"),
   aiAgentVersions: () => invoke<[AiAgent, string | null][]>("ai_agent_versions"),
   aiAgentModels: () => invoke<[AiAgent, AiAgentModel[]][]>("ai_agent_models"),
@@ -331,3 +337,11 @@ export function errorMessage(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error) return String(error.message);
   return String(error);
 }
+export type ReviewSettings = { enabled: boolean; hasKey: boolean; revision: number; maxTextBytes: number };
+export type ReviewUsage = { month: string; knownTokens: number; unknownCalls: number; successfulCalls: number; cacheHits: number };
+export type ReviewResult = {
+  checkerId: "zhuque_text"; contentHash: string; projectionVersion: number; checkedAt: number;
+  cacheHit: boolean; chargedTokens: number | null; cached: boolean; persistenceError: string | null; settingsRevision: number;
+  summary: { humanRatio: number; aiRatio: number; suspectedRatio: number; ratioConfidence: number; softmaxConfidence: number };
+  findings: { id: string; category: "ai_generated" | "ai_suspected"; range: { from: number; to: number } | null; confidence: number }[];
+};

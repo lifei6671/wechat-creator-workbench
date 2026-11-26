@@ -13,6 +13,7 @@ mod github_import;
 mod graphics;
 mod link_import;
 mod mcp;
+mod review;
 mod secrets;
 mod search_index;
 mod sync;
@@ -43,6 +44,10 @@ use db::Workspace;
 use graphics::gpu_acceleration;
 use link_import::{import_clipping, import_link};
 use mcp::{McpServer, mcp_copy_config, mcp_reset_token, mcp_save, mcp_status};
+use review::{
+    ReviewService, review_check, review_clear_cache, review_test_connection, review_usage,
+    settings::{review_save_settings, review_settings},
+};
 use sync::contents::{
     sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
     sync_resolve, sync_run,
@@ -164,6 +169,9 @@ fn main() {
             app.manage(assets);
             app.manage(Imports::new(&db)?);
             app.manage(AiService::new(&db)?);
+            app.manage(ReviewService::new(
+                app.path().app_cache_dir()?.join("article-review"),
+            )?);
             app.manage(db);
             app.manage(McpServer::default());
             app.manage(AppUpdater::default());
@@ -193,6 +201,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            review_settings,
+            review_save_settings,
+            review_check,
+            review_test_connection,
+            review_usage,
+            review_clear_cache,
             app_info,
             app_update_status,
             app_update_check,

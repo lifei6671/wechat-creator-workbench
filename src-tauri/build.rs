@@ -2,6 +2,12 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "review_settings",
+            "review_save_settings",
+            "review_check",
+            "review_test_connection",
+            "review_usage",
+            "review_clear_cache",
             "app_info",
             "app_update_status",
             "app_update_check",

@@ -2,7 +2,7 @@ import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { mcpConfigHints } from "./mcp-connection";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
-import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { ClipboardCheck, Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpClient, type McpConfig, type McpStatus } from "../desktop";
 import { Tool } from "../ui";
 import type { ViewMode } from "./Document";
@@ -21,6 +21,7 @@ const groups = [
   ] },
   { label: "服务", items: [
     { id: "model", label: "AI 代理", icon: Sparkles, keywords: "默认 AI 目标 本地代理 本地模型 自定义模型 Codex Claude Code Ollama LM Studio 供应商 接口地址 模型名 API 密钥 超时 摘要 标题 改写 OpenAI" },
+    { id: "review", label: "文章审查", icon: ClipboardCheck, keywords: "朱雀 AI 文本 检测 审查 API Key 密钥 用量 缓存" },
     { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Agent 客户端 复制配置 Codex Claude" },
   ] },
   { label: "存储", items: [
@@ -36,7 +37,7 @@ const groups = [
 export type SettingsPage = typeof groups[number]["items"][number]["id"];
 const allPages = groups.flatMap(group => [...group.items]).filter(item => item.id !== "about");
 const trashRetentionOptions = [1, 7, 14, 30, 90, 0];
-const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync"];
+const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync", "review"];
 
 function settingsSection(viewport: HTMLElement, page: SettingsPage) {
   return viewport.querySelector<HTMLElement>(`#settings-section-${page}`)!;
