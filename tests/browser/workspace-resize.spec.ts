@@ -208,6 +208,7 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps every panel directly a
 });
 
 for (const platform of ["Win32", "MacIntel"]) test(`keeps publication controls while typing stable on ${platform}`, async ({ page }) => {
+  await page.clock.install();
   await mockNativeWindow(page, platform);
   await page.goto("/tests/workspace-resize.html?edit=1");
   await page.getByRole("button", { name: "公众号设置", exact: true }).click();
@@ -217,6 +218,7 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps publication controls w
   const editor = page.locator(".document-editor:not([hidden]) .ProseMirror");
   await editor.locator("p").first().click();
   await editor.press("End");
+  await page.clock.pauseAt(new Date(Date.now() + 60_000));
   const initial = await page.evaluate(() => {
     const copy = document.querySelector<HTMLButtonElement>(".wechat-publishing-footer button")!;
     let disabledChanges = 0;
@@ -225,7 +227,10 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps publication controls w
     Object.assign(window, { typingFeedback: () => ({ disabledChanges, connected: copy.isConnected }) });
     return { ...Reflect.get(window, "publicationTyping") };
   });
-  await editor.pressSequentially("连续输入正文", { delay: 60 });
+  for (const character of "连续输入正文") {
+    await editor.pressSequentially(character);
+    await page.clock.runFor(60);
+  }
   const result = await page.evaluate(() => ({ ...Reflect.get(window, "publicationTyping"), ...Reflect.get(window, "typingFeedback")() }));
   expect(result.saves).toBe(initial.saves);
   expect(result.recommendations).toBe(initial.recommendations);
@@ -233,6 +238,7 @@ for (const platform of ["Win32", "MacIntel"]) test(`keeps publication controls w
   expect(result.connected).toBe(true);
   await expect(page.locator("#tab-resize .unsaved-dot")).toHaveCount(1);
   await expect(copy).toBeEnabled();
+  await page.clock.runFor(750);
   await expect.poll(async () => (await page.evaluate(() => Reflect.get(window, "publicationTyping"))).saves).toBeGreaterThan(initial.saves);
 });
 
