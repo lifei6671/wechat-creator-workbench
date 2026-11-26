@@ -7,25 +7,117 @@ use tokio::{
 };
 
 #[tokio::test]
-async fn external_images_use_system_dns_resolution() {
+async fn external_resources_reject_loopback_dns() {
     let (_folder, db, assets) = setup();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let url = format!(
         "http://localhost:{}/image.png",
         listener.local_addr().unwrap().port()
     );
-    let bytes = png();
-    let served_bytes = bytes.clone();
-    let server = tokio::spawn(async move {
-        for _ in 0..2 {
-            serve_image_response(&listener, "200 OK", "", &served_bytes).await;
-        }
-    });
+    assert_eq!(
+        assets.read(&db, &url).await.unwrap_err().code(),
+        "IMAGE_NETWORK"
+    );
+    assert_eq!(
+        assets.localize(&db, &url).await.unwrap_err().code(),
+        "IMAGE_NETWORK"
+    );
+    assert_eq!(
+        assets
+            .fetch_external_page(&url::Url::parse(&url).unwrap())
+            .await
+            .unwrap_err()
+            .code(),
+        "LINK_NETWORK"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
 
-    assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
-    let localized = assets.localize(&db, &url).await.unwrap();
-    assert!(localized.starts_with("asset://"));
-    assert_eq!(assets.read(&db, &localized).await.unwrap(), bytes);
+#[test]
+fn external_dns_accepts_proxy_fake_ips_without_allowing_literal_fake_ip_urls() {
+    for address in [
+        "198.18.0.0",
+        "198.18.0.20",
+        "198.19.255.255",
+        "::ffff:198.18.0.20",
+    ] {
+        let ip: IpAddr = address.parse().unwrap();
+        assert!(external_dns_ip(ip), "DNS answer {address}");
+        assert!(!public_ip(ip), "literal address {address}");
+    }
+    for address in [
+        "127.0.0.1",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "198.51.100.1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "::1",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:127.0.0.1",
+        "::ffff:192.168.1.1",
+    ] {
+        assert!(
+            !external_dns_ip(address.parse().unwrap()),
+            "DNS answer {address}"
+        );
+    }
+    for address in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+        assert!(
+            external_dns_ip(address.parse().unwrap()),
+            "public DNS answer {address}"
+        );
+    }
+    for address in [
+        "http://198.18.0.20/image.png",
+        "http://[::ffff:198.18.0.20]/image.png",
+    ] {
+        assert!(!has_public_image_host(&remote_image_url(address).unwrap()));
+    }
+}
+
+#[tokio::test]
+async fn external_dns_filters_redirect_destinations() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .dns_resolver(Arc::new(ExternalResourceDns))
+        .resolve("images.example.test", address)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let server = tokio::spawn(async move {
+        serve_image_response(
+            &listener,
+            "302 Found",
+            &format!("Location: http://localhost:{}/private\r\n", address.port()),
+            &[],
+        )
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    });
+    let failure = client
+        .get(format!(
+            "http://images.example.test:{}/image.png",
+            address.port()
+        ))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{failure:?}").contains("外部资源不能访问本机或内网地址"));
     server.await.unwrap();
 }
 

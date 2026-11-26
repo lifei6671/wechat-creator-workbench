@@ -14,6 +14,7 @@ pub(crate) mod upload_format;
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use image::{ImageDecoder, ImageFormat, ImageReader};
 use image_cache::ImageCache;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use s3::{Profile, Target};
 use serde::Serialize;
@@ -23,7 +24,10 @@ use std::{
     io::{Cursor, Write},
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
@@ -56,6 +60,31 @@ enum ImageOrigin<'a> {
     Library,
     ImportPlaceholder(&'a str),
     Derived(&'a str),
+}
+
+#[derive(Debug)]
+struct ExternalResourceDns;
+
+impl Resolve for ExternalResourceDns {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|address| external_dns_ip(address.ip()))
+                .collect();
+            if addresses.is_empty() {
+                return Err(std::io::Error::other("外部资源不能访问本机或内网地址").into());
+            }
+            Ok(Box::new(addresses.into_iter()) as Addrs)
+        })
+    }
+}
+
+fn external_dns_ip(ip: IpAddr) -> bool {
+    // Trust the system network's TUN mapping for DNS answers in the Fake IP pool.
+    // Literal URLs still require public_ip; the local proxy owns the final destination.
+    public_ip(ip)
+        || matches!(ip.to_canonical(), IpAddr::V4(ip) if matches!(ip.octets(), [198, 18 | 19, _, _]))
 }
 
 fn public_ip(ip: IpAddr) -> bool {
@@ -221,6 +250,7 @@ impl Assets {
                 .map_err(|error| AppError::new("S3_NETWORK", error.to_string()))?,
             external_http: reqwest::Client::builder()
                 .no_proxy()
+                .dns_resolver(Arc::new(ExternalResourceDns))
                 .referer(false)
                 .redirect(reqwest::redirect::Policy::custom(|redirect| {
                     if redirect.previous().len() > 5 {
