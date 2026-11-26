@@ -7,6 +7,29 @@ use tokio::{
 };
 
 #[tokio::test]
+async fn external_images_use_system_dns_resolution() {
+    let (_folder, db, assets) = setup();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let url = format!(
+        "http://localhost:{}/image.png",
+        listener.local_addr().unwrap().port()
+    );
+    let bytes = png();
+    let served_bytes = bytes.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            serve_image_response(&listener, "200 OK", "", &served_bytes).await;
+        }
+    });
+
+    assert_eq!(assets.read(&db, &url).await.unwrap(), bytes);
+    let localized = assets.localize(&db, &url).await.unwrap();
+    assert!(localized.starts_with("asset://"));
+    assert_eq!(assets.read(&db, &localized).await.unwrap(), bytes);
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn reimporting_the_verified_original_repairs_a_corrupt_shared_file() {
     let (_root, db, assets) = setup();
     let bytes = png();

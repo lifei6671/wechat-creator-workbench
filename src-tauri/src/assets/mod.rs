@@ -14,7 +14,6 @@ pub(crate) mod upload_format;
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use image::{ImageDecoder, ImageFormat, ImageReader};
 use image_cache::ImageCache;
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use s3::{Profile, Target};
 use serde::Serialize;
@@ -24,10 +23,7 @@ use std::{
     io::{Cursor, Write},
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
@@ -60,24 +56,6 @@ enum ImageOrigin<'a> {
     Library,
     ImportPlaceholder(&'a str),
     Derived(&'a str),
-}
-
-#[derive(Debug)]
-struct PublicImageDns;
-
-impl Resolve for PublicImageDns {
-    fn resolve(&self, name: Name) -> Resolving {
-        Box::pin(async move {
-            let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .filter(|address| public_ip(address.ip()))
-                .collect();
-            if addresses.is_empty() {
-                return Err(std::io::Error::other("外链图片必须使用公网地址").into());
-            }
-            Ok(Box::new(addresses.into_iter()) as Addrs)
-        })
-    }
 }
 
 fn public_ip(ip: IpAddr) -> bool {
@@ -243,7 +221,6 @@ impl Assets {
                 .map_err(|error| AppError::new("S3_NETWORK", error.to_string()))?,
             external_http: reqwest::Client::builder()
                 .no_proxy()
-                .dns_resolver(Arc::new(PublicImageDns))
                 .referer(false)
                 .redirect(reqwest::redirect::Policy::custom(|redirect| {
                     if redirect.previous().len() > 5 {
