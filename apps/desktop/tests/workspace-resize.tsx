@@ -37,6 +37,8 @@ desktop.collections = async () => [];
 desktop.entryCollections = async () => [];
 desktop.imageStorageTarget = async () => null;
 desktop.mcpStatus = async () => ({ running: false, config: { enabled: false, port: 8787, permission: "read" }, error: null });
+desktop.recoveryList = async () => [];
+desktop.recoveryPut = async () => {};
 desktop.restoreNotice = async () => null;
 desktop.syncActivity = async () => null;
 desktop.syncStatus = async () => null;

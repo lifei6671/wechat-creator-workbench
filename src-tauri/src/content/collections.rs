@@ -251,12 +251,14 @@ impl Workspace {
                 params![node_id, collection_id, kind, entry_id, asset_id, markdown,
                         external_url, position.x, position.y, width, height, now()],
             )?;
+            crate::assets::references::cancel_cleanup(tx,markdown)?;
             node(tx, &node_id)
         })
     }
 
     pub fn update_collection_node_text(&self, node_id: &str, markdown: &str) -> Result<()> {
         self.write(|tx| {
+            crate::assets::references::cancel_cleanup(tx,markdown)?;
             changed(tx.execute(
             "UPDATE collection_nodes SET content_md=?2,updated_at=?3 WHERE id=?1 AND kind='text'",
             params![node_id, markdown, now()],

@@ -31,12 +31,15 @@ import "./editor.css";
 import { inlineChangedBlocks, insertCodeFence, promoteCodeFence, repairInlineStrong } from "./inline-changes";
 import type { WorkspaceSearchHit } from "../shared-types";
 import { locateSearchHit } from "./search-location";
+import { projectReviewText, reviewRanges, type ReviewSnapshot, type ReviewMark, type ReviewRange } from "./review-projection";
+import { reviewDecorations, reviewGeneration, setReviewMarks } from "./review-decoration";
 import { exitMarkdownSource, markdownSource, markdownSourceEditing } from "./markdown-source";
 
 export type { EditorCommand } from "./commands";
 export type { ImageContext } from "./image-view";
 export type { TableAction, TableContext } from "./table-view";
 export type { OutlineItem, OutlinePlacement } from "./outline";
+export type { ReviewProjection, ReviewSnapshot, ReviewMark, ReviewRange } from "./review-projection";
 
 export interface LinkContext { kind: "link"; scope: "body" | "cellText" | TableContext; convert(): void }
 
@@ -57,6 +60,11 @@ export interface MarkdownSnapshot { markdown: string; localRevision: number }
 type OutlineActions = ReturnType<typeof editorOutline>["actions"];
 
 export interface MarkdownEditorHandle extends OutlineActions {
+  captureReview(scope: "document" | "selection"): ReviewSnapshot | null;
+  matchesReview(snapshot: ReviewSnapshot): boolean;
+  showReview(snapshot: ReviewSnapshot, marks: ReviewMark[]): boolean;
+  clearReview(): void;
+  revealReview(snapshot: ReviewSnapshot, range: ReviewRange): boolean;
   focus(): void;
   search(): void;
   revealSearchHit(hit: WorkspaceSearchHit, showContext?: boolean): boolean;
@@ -956,6 +964,7 @@ export function MarkdownEditor(props: Props) {
         },
         props: { decorations: state => workspaceSearchHighlights.getState(state) },
       })))
+      .use($prose(reviewDecorations))
       .use($prose(() => new Plugin({
         key: documentLayout,
         appendTransaction(transactions, _old, state) {
@@ -1068,6 +1077,29 @@ export function MarkdownEditor(props: Props) {
       }, () => !disposed && latest.current.active !== false);
       const handle: MarkdownEditorHandle = {
         ...outline.actions,
+        captureReview(scope) {
+          if (disposed || latest.current.active === false) return null;
+          if (scope === "selection" && (!handle.hasSelection(false) || view.state.selection instanceof CellSelection)) return null;
+          return { entryId, session, generation: reviewGeneration(view),
+            projection: projectReviewText(view.state.doc, scope === "selection" ? view.state.selection : undefined) };
+        },
+        matchesReview: snapshot => !disposed && snapshot.entryId === entryId && snapshot.session === session
+          && snapshot.generation === reviewGeneration(view),
+        showReview(snapshot, marks) {
+          if (!handle.matchesReview(snapshot)) return false;
+          setReviewMarks(view, snapshot, marks);
+          return true;
+        },
+        clearReview() { if (!disposed) setReviewMarks(view); },
+        revealReview(snapshot, range) {
+          if (!handle.matchesReview(snapshot) || latest.current.active === false) return false;
+          const first = reviewRanges(snapshot.projection, range)[0];
+          if (!first) return false;
+          view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, first.from, first.to))
+            .setMeta("addToHistory", false).scrollIntoView());
+          view.focus();
+          return true;
+        },
         pendingEdits: () => edits.size ? Promise.all(edits) : undefined,
         focus: () => view.focus(),
         search: () => {

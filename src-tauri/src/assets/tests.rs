@@ -7,6 +7,121 @@ use tokio::{
 };
 
 #[tokio::test]
+async fn external_resources_reject_loopback_dns() {
+    let (_folder, db, assets) = setup();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let url = format!(
+        "http://localhost:{}/image.png",
+        listener.local_addr().unwrap().port()
+    );
+    assert_eq!(
+        assets.read(&db, &url).await.unwrap_err().code(),
+        "IMAGE_NETWORK"
+    );
+    assert_eq!(
+        assets.localize(&db, &url).await.unwrap_err().code(),
+        "IMAGE_NETWORK"
+    );
+    assert_eq!(
+        assets
+            .fetch_external_page(&url::Url::parse(&url).unwrap())
+            .await
+            .unwrap_err()
+            .code(),
+        "LINK_NETWORK"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn external_dns_accepts_proxy_fake_ips_without_allowing_literal_fake_ip_urls() {
+    for address in [
+        "198.18.0.0",
+        "198.18.0.20",
+        "198.19.255.255",
+        "::ffff:198.18.0.20",
+    ] {
+        let ip: IpAddr = address.parse().unwrap();
+        assert!(external_dns_ip(ip), "DNS answer {address}");
+        assert!(!public_ip(ip), "literal address {address}");
+    }
+    for address in [
+        "127.0.0.1",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "198.51.100.1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "::1",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:127.0.0.1",
+        "::ffff:192.168.1.1",
+    ] {
+        assert!(
+            !external_dns_ip(address.parse().unwrap()),
+            "DNS answer {address}"
+        );
+    }
+    for address in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+        assert!(
+            external_dns_ip(address.parse().unwrap()),
+            "public DNS answer {address}"
+        );
+    }
+    for address in [
+        "http://198.18.0.20/image.png",
+        "http://[::ffff:198.18.0.20]/image.png",
+    ] {
+        assert!(!has_public_image_host(&remote_image_url(address).unwrap()));
+    }
+}
+
+#[tokio::test]
+async fn external_dns_filters_redirect_destinations() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .dns_resolver(Arc::new(ExternalResourceDns))
+        .resolve("images.example.test", address)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let server = tokio::spawn(async move {
+        serve_image_response(
+            &listener,
+            "302 Found",
+            &format!("Location: http://localhost:{}/private\r\n", address.port()),
+            &[],
+        )
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    });
+    let failure = client
+        .get(format!(
+            "http://images.example.test:{}/image.png",
+            address.port()
+        ))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{failure:?}").contains("外部资源不能访问本机或内网地址"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn reimporting_the_verified_original_repairs_a_corrupt_shared_file() {
     let (_root, db, assets) = setup();
     let bytes = png();
@@ -72,6 +187,10 @@ async fn topic_screenshots_are_hidden_and_retained_until_the_last_reference_is_r
     )
     .unwrap();
     assets.cleanup(&db).await.unwrap();
+    assert_eq!(assets.read(&db,&url).await.unwrap(),bytes);
+    db.write(|tx| {tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[crate::db::now()-7*24*60*60*1000-1])?;Ok(())}).unwrap();
+    db.begin_exit();db.start_cleaning();
+    assets.cleanup_for_update(&db).await.unwrap();
     assert_eq!(
         assets.read(&db, &url).await.unwrap_err().code(),
         "ASSET_MISSING"
@@ -1387,6 +1506,10 @@ async fn exit_keeps_library_imports_and_cleans_unreferenced_attachments() {
             .unwrap(),
         bytes
     );
+    assert!(directory.path().join("assets").join(&path).exists());
+    db.write(|tx| {tx.execute("UPDATE asset_cleanup_candidates SET first_unreferenced_at=?1",[crate::db::now()-7*24*60*60*1000-1])?;Ok(())}).unwrap();
+    db.begin_exit();db.start_cleaning();
+    assets.cleanup_for_update(&db).await.unwrap();
     assert!(!directory.path().join("assets").join(path).exists());
     let library = assets.library(&db, 0).unwrap();
     assert_eq!(library.items.len(), 1);

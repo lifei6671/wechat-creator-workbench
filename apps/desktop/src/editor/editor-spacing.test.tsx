@@ -96,7 +96,7 @@ it("keeps transparent gradient bases transparent while retaining filled theme he
   expect(wechatEditorStyles("plainly-elegant")["--article-blockquote-background"]).toBe("transparent");
 });
 
-it("keeps workbench typography independent from publication themes without editing Markdown", () => {
+it("renders the selected publication theme while editing and reading without editing Markdown", () => {
   const entry: Entry = { id: "spacing", kind: "article", title: "标题", contentMd: "## 正文标题\n\n> 引用内容", status: "draft",
     categoryId: null, coverAssetId: null, themeId: "plainly-default", tags: [], summary: "", source: null,
     publishedAt: null, publishedUrl: "", customProperties: [], version: 1, createdAt: 0, updatedAt: 0, deletedAt: null, links: [] };
@@ -114,8 +114,10 @@ it("keeps workbench typography independent from publication themes without editi
     for (const themeId of ["plainly-tech", "gzh-moyu-ticket", "gzh-graphite-minimal"]) {
       flushSync(() => queue.edit({ themeId }));
       expect(container.querySelector(".document-editor")).toBe(documentEditor);
-      expect(documentEditor.hasAttribute("data-wechat-theme")).toBe(false);
-      expect(documentEditor.style.length).toBe(0);
+      expect(documentEditor.dataset.wechatTheme).toBe(themeId);
+      for (const [name, value] of Object.entries(wechatEditorStyles(themeId))) {
+        expect(documentEditor.style.getPropertyValue(name)).toBe(value);
+      }
       flushSync(() => root.render(<DocumentEditor {...props} reading />));
       expect(container.querySelector(".document-editor")).toBe(documentEditor);
     }

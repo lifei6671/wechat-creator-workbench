@@ -8,6 +8,7 @@ import type { ChatSelection } from "../ai/context";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type ActiveImageStorage, type AiAgent, type AiAgentModel, type AiSelection, type AiSettings, type BackupSnapshot, type McpStatus, type SyncActivity, type SyncApplied, type SyncBinding, type UploadProgress } from "../desktop";
 import { useButtonFeedback } from "../button-feedback";
 import { installInputContextMenu } from "../input-context-menu";
+import { EditorRecovery } from "./EditorRecovery";
 import { SaveQueue, isConflict } from "../editor/save-queue";
 import { attachClipboard, writeClipboard } from "../editor/clipboard";
 import { editHistory } from "../editor/history";
@@ -45,6 +46,8 @@ import type { RenderedWechat } from "../../../../packages/wechat-renderer";
 import { WechatPublishing, type PublicationSession } from "./wechat-publication";
 import { WechatPublicationPanel } from "./WechatPublicationPanel";
 import { RightSidebarToolbar, type RightSidebarMode } from "./RightSidebar";
+import { ReviewPanel } from "./ReviewPanel";
+import { ReviewSettings } from "./ReviewSettings";
 import { useReducedMotion } from "../../../../packages/ui-react/motion";
 import "../styles/right-sidebar.css";
 import "../styles/wechat-publication.css";
@@ -68,6 +71,7 @@ function hasWorkspaceSize(group: HTMLDivElement | null): group is HTMLDivElement
 type Modal =
   | { type: "palette" | "reload" | "emptyTrash" }
   | { type: "revisions"; id: string }
+  | { type: "recovery"; drafts: import("../../../../packages/shared-types").RecoverySummary[] }
   | { type: "deleteCategory"; target: Category }
   | { type: "settings"; page: SettingsPage }
   | { type: "linkImport"; categoryId: string | null }
@@ -216,6 +220,7 @@ export function DesktopShell() {
   const [migrationFeedback, setMigrationFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const [restoreRestarting, setRestoreRestarting] = useState(false);
   const [rightPanelOverride, setRightPanel] = useState<RightSidebarMode | null | undefined>(undefined);
+  const [reviewConfigurationRevision, setReviewConfigurationRevision] = useState(0);
   const [sidebarWorking, setSidebarWorking] = useState<RightSidebarMode | "close" | null>(null);
   const documentOutline = activeId !== null && (documentOptions.get(activeId)?.outline ?? defaultOutline);
   const rightPanel = rightPanelOverride === undefined ? (documentOutline ? "outline" : initialLayout.aiOpen ? "ai" : null) : rightPanelOverride;
@@ -274,7 +279,9 @@ export function DesktopShell() {
   const [wechatPublishing] = useState(() => new WechatPublishing());
   const showPropertiesPanel = rightPanel === "properties" && propertiesId !== null && !focusMode;
   const showOutlinePanel = rightPanel === "outline" && activeId !== null && !collectionMode && !focusMode;
-  const showRightPanel = showAiPanel || showWechatPanel || showPropertiesPanel || showOutlinePanel;
+  const showReviewPanel = rightPanel === "review" && activeId !== null && !collectionMode && !focusMode && !reading
+    && sessions.some(session => session.entry.id === activeId && session.entry.kind === "article" && session.entry.deletedAt === null);
+  const showRightPanel = showAiPanel || showWechatPanel || showPropertiesPanel || showOutlinePanel || showReviewPanel;
   useEffect(() => () => wechatPublishing.dispose(), [wechatPublishing]);
   const propertiesFlush = useRef<((closing?: boolean) => Promise<boolean>) | null>(null);
   const propertiesQueue = useRef<SaveQueue | null>(null);
@@ -363,7 +370,7 @@ export function DesktopShell() {
         else if (!queue.isDirty() && queues.current.get(entry.id) === queue) install(entry, queue);
         else if (!queue.isDirty() && propertiesQueue.current === queue) {
           queue.dispose();
-          propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+          propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh, desktop.recoveryPut);
         }
       }
       if (changedCollections.length) {
@@ -594,17 +601,20 @@ export function DesktopShell() {
   }, [workspaceId, navigationWorkspace, categoryId, timelineSelection, includeTimelineChildren, query, caseSensitive]);
 
   const restoreTabs = useEffectEvent(async (workspaceId: string, isCurrent: () => boolean) => {
+    try {
+    const recoveryDrafts = await desktop.recoveryList();
+    if (!isCurrent() || exit.current) return;
+    if (recoveryDrafts.length) showModal({ type: "recovery", drafts: recoveryDrafts });
     const saved = readDocumentTabs(workspaceId);
     if (selecting.current || exit.current) return;
     if (!saved?.ids.length) { setFocusMode(false); return; }
-    try {
       const entries = await Promise.all(saved.ids.map(id => desktop.entry(id).catch((failure: unknown) => {
         if (typeof failure === "object" && failure !== null && "code" in failure && failure.code === "NOT_FOUND") return null;
         throw failure;
       })));
       if (!isCurrent() || selecting.current || exit.current) return;
       for (const entry of entries) {
-        if (entry && entry.deletedAt === null) queues.current.set(entry.id, new SaveQueue(entry, desktop.save, refresh));
+        if (entry && entry.deletedAt === null) queues.current.set(entry.id, new SaveQueue(entry, desktop.save, refresh, desktop.recoveryPut));
       }
       setReadingIds((saved.readingIds ?? []).filter(id => queues.current.has(id)));
       setDocumentOptions(new Map(Object.entries(saved.options ?? {}).filter(([id]) => queues.current.has(id))));
@@ -757,7 +767,7 @@ export function DesktopShell() {
   }
 
   function install(entry: Entry, replacing?: SaveQueue) {
-    const queue = new SaveQueue(entry, desktop.save, refresh);
+    const queue = new SaveQueue(entry, desktop.save, refresh, desktop.recoveryPut);
     if (replacing) {
       const order = [...queues.current.values()].map(tab => tab === replacing ? queue : tab);
       setTabReplacement({ from: replacing.entry.id, to: entry.id });
@@ -1251,13 +1261,13 @@ export function DesktopShell() {
     return entry;
   }
 
-  async function saveCollectionArticle(id: string, version: number, fields: EntryFields, mode: SaveMode): Promise<SaveResult> {
+  async function saveCollectionArticle(id: string, version: number, fields: EntryFields, mode: SaveMode, recovery?: import("../../../../packages/shared-types").RecoveryCommit): Promise<SaveResult> {
     if (locking.current.has(id)) throw new Error("文章正在处理，请稍后再试");
     let saved: SaveResult;
     await withEntryLock(id, async () => {
       const tab = queues.current.get(id);
       if (tab && !await tab.flush()) throw tab.saveError();
-      saved = await desktop.save(id, version, fields, mode);
+      saved = await (recovery ? desktop.save(id, version, fields, mode, recovery) : desktop.save(id, version, fields, mode));
       if (tab && queues.current.get(id) === tab) {
         wechatPublishing.release(tab);
         tab.dispose();
@@ -1485,7 +1495,7 @@ export function DesktopShell() {
     if (!queue) {
       if (propertiesQueue.current?.entry.id !== entry.id) {
         propertiesQueue.current?.dispose();
-        propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+        propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh, desktop.recoveryPut);
       }
       queue = propertiesQueue.current;
     }
@@ -1700,7 +1710,7 @@ export function DesktopShell() {
           const entry = await desktop.entry(entryId);
           if (ticket !== sidebarIntent.current || exit.current) return false;
           releasePropertiesQueue();
-          propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh);
+          propertiesQueue.current = new SaveQueue(entry, desktop.save, refresh, desktop.recoveryPut);
         }
       }
       return activate();
@@ -2551,8 +2561,23 @@ export function DesktopShell() {
               ai: globalLock || reading || collectionMode,
               properties: globalLock || !(activeId || propertiesId),
               outline: globalLock || !queue || collectionMode,
+              review: globalLock || !canShowWechat || reading || collectionMode,
             }} onChange={mode => run(() => showSidebar(mode))} />}
             <div className="right-sidebar-content">
+              <div role="region" id="right-sidebar-review-panel" aria-labelledby="right-sidebar-review-button" hidden={!showReviewPanel}>
+                {showReviewPanel && queue && workspaceId && <ReviewPanel key={`${workspaceId}:${queue.sessionId}`}
+                  editor={handles.current.get(queue.entry.id)} configurationRevision={reviewConfigurationRevision}
+                  selectionEnabled={viewMode === "edit"} locked={globalLock || Boolean(exitMessage) || locked.includes(queue.entry.id)}
+                  onSettings={() => openSettings("review")}
+                  onNavigate={(snapshot, range) => {
+                    const editor = handles.current.get(queue.entry.id);
+                    if (!editor?.matchesReview(snapshot)) return;
+                    if (viewMode === "preview") {
+                      view("edit");
+                      requestAnimationFrame(() => { if (active.current === queue.entry.id) editor.revealReview(snapshot, range); });
+                    } else editor.revealReview(snapshot, range);
+                  }} />}
+              </div>
               <div role="region" id="right-sidebar-ai-panel" aria-labelledby="right-sidebar-ai-button" hidden={!showAiPanel}>
                 <div className="ai-sidebar" inert={!showAiPanel}>
                   {(showAiPanel || aiVisited) && <Suspense fallback={null}>{aiPanel}</Suspense>}
@@ -2613,6 +2638,7 @@ export function DesktopShell() {
         }}
           status={backupWorking ?? undefined} toast={notice?.type === "error" ? toast : undefined} key={modal!.instance} onClose={() => closeModal(modal!)} renderPage={page => {
           if (page === "about") return <AboutPage onInstall={() => finishWorkspace(undefined, true)} />;
+          if (page === "review") return <ReviewSettings key={workspaceId} onSaved={() => setReviewConfigurationRevision(value => value + 1)} />;
           if (page === "model") return <ModelSettings settings={aiSettings} loadError={aiSettingsError}
             saving={savingAiSettings} onSave={saveAiSettings} />;
           if (page === "mcp") return <McpSettings status={mcpStatus} loadError={mcpLoadError} onStatus={setMcpStatus} />;
@@ -2672,6 +2698,11 @@ export function DesktopShell() {
       {modal?.type === "publishImages" && <PublishImagesDialog images={modal.images} key={modal!.instance} onClose={() => closeModal(modal!)} />}
       {modal?.type === "imageViewer" && <ImageViewer src={modal.src} alt={modal.alt} key={modal!.instance} onClose={() => closeModal(modal!)} />}
       {modal?.type === "palette" && <CommandPalette actions={commands} key={modal!.instance} onClose={() => closeModal(modal!)} onOpen={id => run(() => open(id))} />}
+      {modal?.type === "recovery" && <EditorRecovery drafts={modal.drafts} key={modal.instance} onClose={() => closeModal(modal)} onRecovered={entry => {
+        const previous = queues.current.get(entry.id);
+        if (previous) { wechatPublishing.release(previous); previous.dispose(); }
+        install(entry); select(entry.id); refresh();
+      }} />}
       {modal?.type === "revisions" && <RevisionsDialog id={modal.id} key={modal!.instance} onClose={() => closeModal(modal!)} onCopy={copy} />}
       {modal?.type === "deleteCategory" && <DeleteCategoryDialog target={modal.target}
         key={modal!.instance} onClose={() => closeModal(modal!)} onConfirm={trashContents => deleteCategory(modal.target, trashContents)} />}

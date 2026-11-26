@@ -101,6 +101,11 @@
 .setting-copy { min-width: 94px; display: grid; gap: 3px; color: var(--text-main); font-weight: var(--setting-title-weight); }
 .settings-pages :is(strong, b) { font-weight: var(--setting-title-weight); }
 .setting-hint { font-size: var(--small-font); line-height: 1.45; color: var(--text-muted); font-weight: 400; overflow-wrap: anywhere; }
+.setting-description { position: relative; min-width: 0; min-height: 18px; }
+.setting-description > .setting-hint { display: block; }
+.setting-description[data-error] > .setting-hint { visibility: hidden; }
+.setting-description > .action-error-slot { position: absolute; inset: 0; block-size: auto; align-content: start; font-weight: 400; }
+.setting-description > .action-error-slot > .inline-error { line-height: 1.45; }
 .setting-warning { color: var(--orange-11); }
 .setting-control { display: grid; justify-items: end; gap: 7px; min-width: 0; max-width: 62%; }
 .setting-control:has(> .rt-TextFieldRoot) { flex: 0 1 310px; }

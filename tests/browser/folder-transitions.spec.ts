@@ -25,6 +25,7 @@ for (const section of ["folders", "timeline"]) for (const motion of ["no-prefere
         // Seek the actual CSS transitions inside this one browser evaluation.
         // Delayed RAF or protocol delivery cannot consume the intermediate frame.
         for (const animation of running) animation.pause();
+        await Promise.all(running.map(animation => animation.ready));
         for (const fraction of [0, .5]) {
           for (const animation of running) animation.currentTime = Number(animation.effect!.getTiming().duration) * fraction;
           heights.push(branch.getBoundingClientRect().height);

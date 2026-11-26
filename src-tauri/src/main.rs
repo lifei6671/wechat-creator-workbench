@@ -13,6 +13,7 @@ mod github_import;
 mod graphics;
 mod link_import;
 mod mcp;
+mod review;
 mod secrets;
 mod search_index;
 mod sync;
@@ -26,6 +27,7 @@ use ai::{
     settings::*,
 };
 use assets::{Assets, commands::*, publishing::*};
+use assets::integrity::{asset_integrity,asset_recover_original};
 use backup::{
     Backups, backup_commit_restore, backup_configure, backup_create, backup_discard_restore,
     backup_export_workspace, backup_import_workspace, backup_list, backup_prepare_restore,
@@ -36,11 +38,16 @@ use canvas_preview_cache::canvas_preview_cache_read;
 use canvas_webview::{canvas_webview, canvas_webview_page, canvas_webview_snapshot};
 use clipboard::{clipboard_read, clipboard_write, clipboard_write_html};
 use commands::*;
+use content::recovery::{editor_recovery_put, editor_recovery_list, editor_recovery_get, editor_recovery_discard, editor_recovery_restore};
 use content::trash::{empty_trash, trash_retention};
 use db::Workspace;
 use graphics::gpu_acceleration;
 use link_import::{import_clipping, import_link};
 use mcp::{McpServer, mcp_copy_config, mcp_reset_token, mcp_save, mcp_status};
+use review::{
+    ReviewService, review_check, review_clear_cache, review_test_connection, review_usage,
+    settings::{review_save_settings, review_settings},
+};
 use sync::contents::{
     sync_activity, sync_apply, sync_conflicts, sync_rebuild_apply, sync_rebuild_stage,
     sync_resolve, sync_run,
@@ -151,6 +158,7 @@ fn main() {
             let dir = app.path().app_local_data_dir()?.join("workspace");
             std::fs::create_dir_all(&dir)?;
             let (db, backups) = Backups::open(&dir)?;
+            db.prune_completed_editor_recovery()?;
             app.manage(backups);
             let mut assets = Assets::new(dir.join("assets"), &db)?;
             if let Ok(cache) = app.path().app_cache_dir() {
@@ -161,6 +169,9 @@ fn main() {
             app.manage(assets);
             app.manage(Imports::new(&db)?);
             app.manage(AiService::new(&db)?);
+            app.manage(ReviewService::new(
+                app.path().app_cache_dir()?.join("article-review"),
+            )?);
             app.manage(db);
             app.manage(McpServer::default());
             app.manage(AppUpdater::default());
@@ -190,6 +201,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            review_settings,
+            review_save_settings,
+            review_check,
+            review_test_connection,
+            review_usage,
+            review_clear_cache,
             app_info,
             app_update_status,
             app_update_check,
@@ -226,6 +243,7 @@ fn main() {
             save_collection_viewport,
             list_entry_collections,
             save_entry,
+            editor_recovery_put, editor_recovery_list, editor_recovery_get, editor_recovery_discard, editor_recovery_restore,
             set_deleted,
             empty_trash,
             trash_retention,
@@ -244,6 +262,7 @@ fn main() {
             close_to_tray,
             asset_import,
             asset_library,
+            asset_integrity, asset_recover_original,
             asset_detail,
             asset_upload_progress,
             asset_thumbnail,

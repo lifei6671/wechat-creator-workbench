@@ -965,3 +965,24 @@ button.property-icon:is(:hover, [data-state="open"]) { background: var(--gray-a5
 .command-row span { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .command-row kbd { margin-left: auto; }
 .command-palette :is(.command-empty, .inline-error) { margin: 0; padding: 12px 16px; }
+
+
+.editor-recovery-dialog { max-width: 900px; }
+.editor-recovery-dialog .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.editor-recovery-dialog .dialog-heading h1 { margin: 0; }
+.editor-recovery-dialog select { width: 100%; padding: 6px 8px; color: var(--text-main); background: var(--panel-bg); border: var(--hairline); border-radius: var(--control-radius); font: inherit; }
+.editor-recovery-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+.editor-recovery-comparison section { min-width: 0; }
+.editor-recovery-comparison h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.editor-recovery-comparison pre { height: min(45vh, 420px); overflow: auto; margin: 0; padding: 12px; border: var(--hairline); border-radius: var(--control-radius); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.editor-recovery-actions { display: flex; align-items: center; gap: 8px; }
+.editor-recovery-actions > span { flex: 1; }
+
+.asset-integrity-dialog { max-width: 900px; }
+.asset-integrity-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.asset-integrity-heading h1 { margin: 0; }
+.asset-integrity-scroll { max-height: 50vh; overflow: auto; }
+.asset-integrity-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.asset-integrity-scroll th, .asset-integrity-scroll td { padding: 8px; border-bottom: var(--hairline); vertical-align: top; overflow-wrap: anywhere; max-width: 300px; }
+.asset-integrity-scroll th { font-weight: 600; }
+.asset-integrity-footer { display: flex; justify-content: flex-end; }

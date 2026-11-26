@@ -15,13 +15,17 @@ export async function validateContentBlobs(db: Database, blobs: BlobStore, input
     if (!stored) continue;
     if (stored.size_bytes !== size) throw new SyncError(400, "invalid_content_blob", undefined, "contentBlobSize");
     if (checked.has(hash)) continue;
-    const stream = await blobs.get(hash);
+    const stream = await blobs.get(hash).catch(() => {
+      throw new SyncError(503, "blob_storage_unavailable", undefined, "contentBlobHash");
+    });
     if (!stream) throw new SyncError(503, "blob_unavailable");
     const reader = stream.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
     let received = 0;
     try {
       for (;;) {
-        const { value, done } = await reader.read();
+        const { value, done } = await reader.read().catch(() => {
+          throw new SyncError(503, "blob_storage_unavailable", undefined, "contentBlobHash");
+        });
         if (done) break;
         received += value.byteLength;
         if (received > stored.size_bytes) throw new SyncError(422, "blob_length_mismatch");
@@ -38,8 +42,11 @@ export async function validateContentBlobs(db: Database, blobs: BlobStore, input
         throw new SyncError(422, "invalid_content_utf8", undefined, "contentBlobHash");
       }
     } finally {
-      await reader.cancel();
-      reader.releaseLock();
+      try {
+        await reader.cancel().catch(() => {
+          throw new SyncError(503, "blob_storage_unavailable", undefined, "contentBlobHash");
+        });
+      } finally { reader.releaseLock(); }
     }
     checked.add(hash);
   }

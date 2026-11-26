@@ -1,4 +1,5 @@
 mod cleanup;
+pub(crate) mod integrity;
 pub mod commands;
 mod export;
 mod image_cache;
@@ -62,21 +63,28 @@ enum ImageOrigin<'a> {
 }
 
 #[derive(Debug)]
-struct PublicImageDns;
+struct ExternalResourceDns;
 
-impl Resolve for PublicImageDns {
+impl Resolve for ExternalResourceDns {
     fn resolve(&self, name: Name) -> Resolving {
         Box::pin(async move {
             let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
                 .await?
-                .filter(|address| public_ip(address.ip()))
+                .filter(|address| external_dns_ip(address.ip()))
                 .collect();
             if addresses.is_empty() {
-                return Err(std::io::Error::other("外链图片必须使用公网地址").into());
+                return Err(std::io::Error::other("外部资源不能访问本机或内网地址").into());
             }
             Ok(Box::new(addresses.into_iter()) as Addrs)
         })
     }
+}
+
+fn external_dns_ip(ip: IpAddr) -> bool {
+    // Trust the system network's TUN mapping for DNS answers in the Fake IP pool.
+    // Literal URLs still require public_ip; the local proxy owns the final destination.
+    public_ip(ip)
+        || matches!(ip.to_canonical(), IpAddr::V4(ip) if matches!(ip.octets(), [198, 18 | 19, _, _]))
 }
 
 fn public_ip(ip: IpAddr) -> bool {
@@ -242,7 +250,7 @@ impl Assets {
                 .map_err(|error| AppError::new("S3_NETWORK", error.to_string()))?,
             external_http: reqwest::Client::builder()
                 .no_proxy()
-                .dns_resolver(Arc::new(PublicImageDns))
+                .dns_resolver(Arc::new(ExternalResourceDns))
                 .referer(false)
                 .redirect(reqwest::redirect::Policy::custom(|redirect| {
                     if redirect.previous().len() > 5 {
@@ -623,6 +631,10 @@ impl Assets {
                 Err(error) => return Err(local_error(error)),
             }
         }
+        self.read_remote_file(db,file).await
+    }
+
+    async fn read_remote_file(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {
         let hosted = db.read(|conn| {
             hosted_location(conn, file)?
                 .map(|location| Ok((Profile::read(conn, &location.profile_id)?, location)))

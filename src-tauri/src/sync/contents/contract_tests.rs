@@ -56,7 +56,12 @@ fn invalid_baseline_retains_staging_and_rolls_back_all_local_writes() {
             deleted_at: None, payload: json!({"kind":"article","title":"原文","contentMd":"保留正文","status":status}) }).unwrap();
     }
     db.write(|tx| { tx.execute("UPDATE sync_progress SET bootstrap_cursor=2", [])?; Ok(()) }).unwrap();
-    assert!(apply_received(&db).is_err());
+    let failure = apply_received(&db).err().unwrap();
+    db.read(|conn| {
+        assert_eq!(conn.query_row("SELECT bootstrap_failed_cursor,bootstrap_error FROM sync_progress", [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?, (2, failure.to_string()));
+        Ok(())
+    }).unwrap();
     db.read(|conn| {
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get::<_,i64>(0))?, 0);
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM sync_bootstrap", [], |row| row.get::<_,i64>(0))?, 2);

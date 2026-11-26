@@ -1,0 +1,12 @@
+{
+  "status": "success",
+  "softmax_confidence": 0.0019,
+  "ratio_confidence": 0,
+  "labels_ratio": {"0": 1, "1": 0, "2": 0},
+  "segment_labels": [
+    {"text": "hello world", "label": 0, "conf": 0.0019, "order": 1, "position": [0, 11]}
+  ],
+  "usage": {"total_tokens": 50},
+  "msg": "",
+  "makers_models_usage": {"total_tokens": 30}
+}

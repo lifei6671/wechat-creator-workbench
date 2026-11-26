@@ -4,6 +4,32 @@ const themes = ["plainly-default", "plainly-elegant", "plainly-tech", "gzh-moyu-
   "gzh-graphite-minimal", "gzh-zen-whitespace", "gzh-moyu-ticket", "gzh-olive-journal"];
 const cases = [...themes.map(theme => ({ theme, newline: "lf" })), { theme: "plainly-tech", newline: "crlf" }];
 
+test("compact footnote labels stay on one line with wider fallback font metrics", async ({ page }) => {
+  await page.goto("/tests/footnote-layout.html?theme=plainly-elegant");
+  const editor = page.locator(".ProseMirror");
+  await expect(editor.locator('dl[data-type="footnote_definition"]')).toHaveCount(6);
+  await page.locator(".document-editor").evaluate(element => {
+    element.style.width = "340px";
+    element.style.setProperty("--article-font", "monospace");
+  });
+  for (const reading of [false, true]) {
+    await page.getByLabel("阅读模式").setChecked(reading);
+    const rows = await editor.locator('dl[data-type="footnote_definition"]').evaluateAll(rows => rows.map(row => {
+      const label = row.querySelector("dt")!, body = row.querySelector("dd")!;
+      const range = document.createRange(); range.selectNodeContents(label);
+      return { label: (row as HTMLElement).dataset.label,
+        lines: new Set([...range.getClientRects()].filter(rect => rect.width > 0).map(rect => Math.round(rect.top))).size,
+        overflow: row.scrollWidth - row.clientWidth, bodyShare: body.getBoundingClientRect().width / row.getBoundingClientRect().width };
+    }));
+    for (const row of rows) {
+      if (row.label!.startsWith("https:")) expect(row.lines).toBeGreaterThan(1);
+      else expect(row.lines, row.label).toBe(1);
+      expect(row.overflow).toBeLessThanOrEqual(1);
+      expect(row.bodyShare).toBeGreaterThan(0.5);
+    }
+  }
+});
+
 for (const { theme, newline } of cases) test(`${theme} ${newline}: footnotes align and wrap naturally`, async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));

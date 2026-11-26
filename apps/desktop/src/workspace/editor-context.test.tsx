@@ -24,6 +24,7 @@ it("routes editor context actions and limits the reading menu", async () => {
     current: {
       focus: vi.fn(), search: vi.fn(), target: vi.fn(), insert: vi.fn(), replaceTarget: vi.fn(),
       revealSearchHit: vi.fn(), clearSearchHit: vi.fn(),
+      captureReview: vi.fn(), matchesReview: vi.fn(), showReview: vi.fn(), clearReview: vi.fn(), revealReview: vi.fn(),
       captureMarkdown: vi.fn(), pendingEdits: vi.fn(), captureDocumentMatch: vi.fn(),
       captureContext: vi.fn<MarkdownEditorHandle["captureContext"]>(), selectionText: vi.fn(), subscribeSelection: vi.fn(), matchesTarget: vi.fn(),
       retryMissingImages: vi.fn(),

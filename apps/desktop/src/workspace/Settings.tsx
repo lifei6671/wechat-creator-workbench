@@ -2,7 +2,7 @@ import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { mcpConfigHints } from "./mcp-connection";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, Select, Switch, TextField } from "@radix-ui/themes";
-import { Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { ClipboardCheck, Cloud, DatabaseBackup, Eye, EyeOff, FolderInput, Info, Keyboard, Plug, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 import { desktop, errorMessage, macTitleBar, windowsTitleBar, type BackupTarget, type ImageSecret, type McpClient, type McpConfig, type McpStatus } from "../desktop";
 import { Tool } from "../ui";
 import type { ViewMode } from "./Document";
@@ -21,6 +21,7 @@ const groups = [
   ] },
   { label: "服务", items: [
     { id: "model", label: "AI 代理", icon: Sparkles, keywords: "默认 AI 目标 本地代理 本地模型 自定义模型 Codex Claude Code Ollama LM Studio 供应商 接口地址 模型名 API 密钥 超时 摘要 标题 改写 OpenAI" },
+    { id: "review", label: "文章审查", icon: ClipboardCheck, keywords: "朱雀 AI 文本 检测 审查 API Key 密钥 用量 缓存" },
     { id: "mcp", label: "MCP 服务", icon: Plug, keywords: "运行状态 端口 令牌权限 访问令牌 读写 本机地址 Agent 客户端 复制配置 Codex Claude" },
   ] },
   { label: "存储", items: [
@@ -36,7 +37,7 @@ const groups = [
 export type SettingsPage = typeof groups[number]["items"][number]["id"];
 const allPages = groups.flatMap(group => [...group.items]).filter(item => item.id !== "about");
 const trashRetentionOptions = [1, 7, 14, 30, 90, 0];
-const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync"];
+const deferredPages: readonly SettingsPage[] = ["images", "backups", "sync", "review"];
 
 function settingsSection(viewport: HTMLElement, page: SettingsPage) {
   return viewport.querySelector<HTMLElement>(`#settings-section-${page}`)!;
@@ -190,16 +191,21 @@ export function SettingsDialog({ initialPage, renderPage, status, toast, onClose
   </Dialog.Root>;
 }
 
-export function SettingRow({ id, label, hint, warning, children }: {
-  id?: string; label: string; hint?: string; warning?: string; children(hintId: string): ReactNode;
+export function SettingRow({ id, label, hint, warning, error, children }: {
+  id?: string; label: string; hint?: string; warning?: string; error?: string; children(hintId: string): ReactNode;
 }) {
   const generatedId = useId();
   const hintId = id ? `${id}-hint` : generatedId;
   return <div className="setting-row"><div className="setting-copy">
     {id ? <label htmlFor={id}>{label}</label> : <span>{label}</span>}
-    {(hint || warning) && <span id={hintId} className="setting-hint">
-      {hint}{warning && <> <span className="setting-warning">{warning}</span></>}
-    </span>}
+    {(hint || warning || error !== undefined) && <div className="setting-description" data-error={error ? true : undefined}>
+      <span id={error ? undefined : hintId} className="setting-hint" aria-hidden={error ? true : undefined}>
+        {hint}{warning && <> <span className="setting-warning">{warning}</span></>}
+      </span>
+      {error !== undefined && <div id={error ? hintId : undefined} className="action-error-slot" tabIndex={error ? 0 : -1}>
+        {error ? <p className="settings-feedback inline-error" role="alert">{error}</p> : null}
+      </div>}
+    </div>}
   </div><div className="setting-control">{children(hintId)}</div></div>;
 }
 
@@ -268,17 +274,14 @@ export function TrashRetentionSetting() {
     catch (failure) { setError(errorMessage(failure)); }
     finally { setSaving(false); }
   }
-  return <>
-    <SettingRow id="trash-retention" label="回收站保留时间" hint="按移入回收站的时间计算，过期内容将永久删除。">
+  return <SettingRow id="trash-retention" label="回收站保留时间" hint="按移入回收站的时间计算，过期内容将永久删除。" error={error}>
       {hintId => <Select.Root size="2" value={days?.toString() ?? ""} disabled={days === undefined || saving} onValueChange={save}>
         <Select.Trigger id="trash-retention" aria-describedby={hintId} />
         <Select.Content>{trashRetentionOptions.map(days => <Select.Item key={days} value={String(days)}>
           {days ? `${days} 天` : "不自动清理"}
         </Select.Item>)}</Select.Content>
       </Select.Root>}
-    </SettingRow>
-    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="settings-feedback inline-error" role="alert">{error}</p> : null}</div>}
-  </>;
+    </SettingRow>;
 }
 
 function NativeToggleSetting({ id, label, hint, warning, preference }: {
@@ -309,13 +312,10 @@ function NativeToggleSetting({ id, label, hint, warning, preference }: {
     }
   }
 
-  return <>
-    <SettingRow id={id} label={label} hint={hint} warning={warning}>
+  return <SettingRow id={id} label={label} hint={hint} warning={warning} error={error}>
       {hintId => <Switch id={id} aria-describedby={hintId} radius="full"
         checked={enabled === true} disabled={enabled === null || saving} onCheckedChange={save} />}
-    </SettingRow>
-    {<div className="action-error-slot" tabIndex={(error) ? 0 : -1}>{error ? <p className="settings-feedback inline-error" role="alert">{error}</p> : null}</div>}
-  </>;
+    </SettingRow>;
 }
 
 export function WorkspaceSettings({ page, appearance, shortcut, workspaceShortcuts, preferredView, explorer, downloadPastedImages, convertLinks, defaultOutline, documentOpenMode, folderLoading, folderPageSize,

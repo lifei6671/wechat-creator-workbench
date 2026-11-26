@@ -40,6 +40,7 @@ for (const appearance of ["light", "dark"]) for (const width of [360, 1200]) {
           firstMargin: getComputedStyle(headings[0]).marginTop,
           bodyContrast: contrast(style.color, background),
           linkContrast: contrast(getComputedStyle(links[0]).color, background),
+          headerContrast: contrast(getComputedStyle(root.querySelector("th")!).color, getComputedStyle(root.querySelector("th")!).backgroundColor),
           linkDecoration: getComputedStyle(links[0]).textDecorationLine,
           imageWidth: image.getBoundingClientRect().width, naturalWidth: image.naturalWidth,
           captionFont: getComputedStyle(caption).fontSize, captionAlign: getComputedStyle(caption).textAlign,
@@ -66,6 +67,7 @@ for (const appearance of ["light", "dark"]) for (const width of [360, 1200]) {
       expect(metrics.firstMargin).toBe("0px");
       expect(metrics.bodyContrast).toBeGreaterThanOrEqual(4.5);
       expect(metrics.linkContrast).toBeGreaterThanOrEqual(4.5);
+      expect(metrics.headerContrast).toBeGreaterThanOrEqual(4.5);
       expect(metrics.linkDecoration).toContain("underline");
       expect(metrics.imageWidth).toBeLessThanOrEqual(metrics.naturalWidth);
       expect(metrics.captionFont).toBe("13px");
@@ -174,4 +176,23 @@ test("long articles keep the same document and editor while typing and switching
   expect(await page.evaluate(() => window.articleTest.markdown().markdown)).toContain(originalLastParagraph + "追加内容");
   console.log(`Long article theme/layout p95 (${test.info().project.name}): ${samples[18].toFixed(2)} ms`);
   test.info().annotations.push({ type: "theme-layout-p95-ms", description: samples[18].toFixed(2) });
+});
+
+
+test("renders publication theme decoration in editing mode without recreating the editor", async ({ page }) => {
+  await page.goto("/tests/article-typography.html?theme=plainly-tech");
+  const editor = page.locator(".ProseMirror");
+  await expect(editor).toHaveAttribute("contenteditable", "true");
+  await page.evaluate(() => Reflect.set(window, "themedEditor", document.querySelector(".ProseMirror")));
+  const heading = editor.locator(":scope > h2").first();
+  await expect.poll(() => heading.evaluate(element => getComputedStyle(element).backgroundImage)).toContain("linear-gradient");
+  await page.evaluate(() => window.articleTest.theme("gzh-moyu-ticket"));
+  await expect(page.locator(".document-editor")).toHaveAttribute("data-wechat-theme", "gzh-moyu-ticket");
+  await expect.poll(() => heading.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+  await page.evaluate(() => window.setArticleReading(true));
+  await expect(editor).toHaveAttribute("contenteditable", "false");
+  await page.evaluate(() => window.setArticleReading(false));
+  await expect(editor).toHaveAttribute("contenteditable", "true");
+  expect(await page.evaluate(() => document.querySelector(".ProseMirror") === Reflect.get(window, "themedEditor"))).toBe(true);
+  expect((await page.evaluate(() => window.articleTest.markdown())).markdown).toBe(await page.evaluate(() => window.articleTest.source));
 });

@@ -6,7 +6,7 @@
 
 `GET /v1/sync/diagnostics` 每页检查最多 100 个实体，返回 `checked`、`issues` 和 `nextAfter`。按 `nextAfter.entityType`、`nextAfter.entityId` 分别传入下一页的 `afterType`、`afterId`，直到 `nextAfter` 为 null。
 
-问题包含实体类型、ID、远端修订号、稳定错误码及可定位的字段路径；不返回正文或凭据。检查不会更改实体、回执、游标或初始化归属。正文附件以流式方式检查长度与 UTF-8，摘要由附件上传流程验证。检查不是数据库快照，并发编辑期间可在写入停止后重新检查。
+问题包含实体类型、ID、远端修订号、稳定错误码及可定位的字段路径；不返回正文或凭据。检查不会更改实体、回执、游标或初始化归属。附件先检查数据库索引，再使用 R2 `head` 或本地文件元数据核对对象存在性和大小，不下载完整图片。`blob_missing` 表示索引缺失，`blob_object_missing` 表示实际对象缺失，`blob_object_size_mismatch` 表示对象大小与索引不符，`blob_storage_unavailable` 表示存储查询暂时失败；后者不应作为对象丢失处理。正文附件仍以流式方式检查长度与 UTF-8，摘要由附件上传流程验证。检查不是数据库快照，并发编辑期间可在写入停止后重新检查。
 
 ## 修复实体
 

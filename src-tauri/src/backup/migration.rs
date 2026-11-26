@@ -177,7 +177,7 @@ pub(super) fn prepare(path: &Path, stage: &Path, incoming: &Path) -> Result<Pend
     Ok(pending)
 }
 
-fn verify_asset(path: &Path, hash: &str) -> Result<()> {
+pub(crate) fn verify_asset(path: &Path, hash: &str) -> Result<()> {
     let mut file = File::open(path).map_err(|error| {
         AppError::new(
             "MIGRATION_ASSET",
@@ -274,6 +274,18 @@ mod tests {
         let (source, _) = source_files.open().unwrap();
         let identity = source.read(workspace_id).unwrap();
         source.set_setting("migration_test", &"kept").unwrap();
+        source
+            .set_setting("review_zhuque", &serde_json::json!({"enabled":true}))
+            .unwrap();
+        let derived = old
+            .path()
+            .join("app-cache/article-review/isolated-workspace");
+        fs::create_dir_all(&derived).unwrap();
+        fs::write(
+            derived.join("review-cache.sqlite3"),
+            b"synthetic derived review data",
+        )
+        .unwrap();
         let media = Assets::new(old.path().join("assets"), &source).unwrap();
         let mut png = Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(5, 5)
@@ -291,6 +303,12 @@ mod tests {
         )
         .unwrap();
 
+        let archive = ZipArchive::new(File::open(&package).unwrap()).unwrap();
+        assert!(archive.file_names().all(|name| {
+            let name = name.unwrap();
+            name == "content.db" || name.starts_with("assets/")
+        }));
+
         let new = tempfile::tempdir().unwrap();
         let destination = Files::new(new.path()).unwrap();
         drop(Workspace::open(&destination.database).unwrap());
@@ -300,6 +318,14 @@ mod tests {
         let (restored, notice) = destination.open().unwrap();
         assert!(!notice.unwrap().failed);
         assert_eq!(restored.read(workspace_id).unwrap(), identity);
+        assert_eq!(
+            restored
+                .setting::<serde_json::Value>("review_zhuque")
+                .unwrap()
+                .unwrap()["enabled"],
+            true
+        );
+        assert!(!new.path().join("app-cache").exists());
         assert_eq!(
             restored
                 .setting::<String>("migration_test")

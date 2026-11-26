@@ -1,5 +1,6 @@
 pub mod collections;
 pub mod publication;
+pub mod recovery;
 mod search;
 pub(crate) use search::{MatchPage, WorkspaceSearch};
 pub(crate) mod sync;
@@ -609,46 +610,16 @@ impl Workspace {
         fields: Fields,
         mode: SaveMode,
     ) -> Result<SaveResult> {
-        let operation = |tx: &Transaction<'_>| {
-            let (kind, version, deleted): (String, i64, bool) = tx.query_row(
-                "SELECT kind, version, deleted_at IS NOT NULL FROM entries WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )?;
-            if version != expected_version {
-                return Err(AppError::conflict(version));
-            }
-            if deleted {
-                return Err(AppError::invalid("请先从回收站恢复内容"));
-            }
-            let timestamp = now();
-            let source_id = validate_fields(tx, id, Kind::from_key(&kind), &fields, timestamp, false)?;
-            if matches!(mode, SaveMode::AiReplace) {
-                record_revision(tx, id, "before_ai_replace", timestamp)?;
-            }
-            tx.execute(
-                "UPDATE entries SET title=?2, content_md=?3, status=?4, category_id=?5, source_id=?6, summary=?7,
-                 published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12,
-                 custom_properties=COALESCE(?13, custom_properties), source_details=?14,
-                 publication_platforms=COALESCE(?15, publication_platforms),
-                 wechat_publication=COALESCE(?16, wechat_publication) WHERE id=?1",
-                params![id, fields.title, fields.content_md, fields.status, fields.category_id, source_id,
-                        fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id,
-                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?, fields.encoded_wechat_publication()?],
-            )?;
-            crate::assets::references::sync_entry(tx, id, &fields.content_md)?;
-            taxonomy::replace_tags(tx, id, &fields.tags)?;
-            if matches!(mode, SaveMode::Manual) {
-                record_revision(tx, id, "manual", timestamp)?;
-            }
-            Ok(SaveResult {
-                version: version + 1,
-            })
-        };
-        match mode {
-            SaveMode::Auto | SaveMode::Manual | SaveMode::AiReplace => self.save(operation),
-            SaveMode::External => self.write(operation),
-        }
+        self.save_entry_with_recovery(id, expected_version, fields, mode, None)
+    }
+
+    pub fn save_entry_with_recovery(
+        &self, id: &str, expected_version: i64, fields: Fields, mode: SaveMode,
+        recovery: Option<&recovery::Commit>,
+    ) -> Result<SaveResult> {
+        let editor_save = !matches!(mode, SaveMode::External);
+        let operation = |tx: &Transaction<'_>| save_in_transaction(tx, id, expected_version, fields, mode, recovery);
+        if editor_save { self.save(operation) } else { self.write(operation) }
     }
 
     pub fn set_entry_pinned(&self, id: &str, pinned: bool) -> Result<()> {
@@ -1123,4 +1094,47 @@ fn record_revision(conn: &Connection, id: &str, reason: &str, timestamp: i64) ->
         [id],
     )?;
     Ok(())
+}
+
+fn save_in_transaction(
+    tx: &Transaction<'_>, id: &str, expected_version: i64, fields: Fields, mode: SaveMode,
+    recovery: Option<&recovery::Commit>,
+) -> Result<SaveResult> {
+            let (kind, version, deleted): (String, i64, bool) = tx.query_row(
+                "SELECT kind, version, deleted_at IS NOT NULL FROM entries WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            if version != expected_version {
+                return Err(AppError::conflict(version));
+            }
+            if deleted {
+                return Err(AppError::invalid("请先从回收站恢复内容"));
+            }
+            let timestamp = now();
+            let source_id = validate_fields(tx, id, Kind::from_key(&kind), &fields, timestamp, false)?;
+            if matches!(mode, SaveMode::AiReplace) {
+                record_revision(tx, id, "before_ai_replace", timestamp)?;
+            }
+            tx.execute(
+                "UPDATE entries SET title=?2, content_md=?3, status=?4, category_id=?5, source_id=?6, summary=?7,
+                 published_at=?8, published_url=?9, version=version+1, updated_at=?10, cover_asset_id=?11, theme_id=?12,
+                 custom_properties=COALESCE(?13, custom_properties), source_details=?14,
+                 publication_platforms=COALESCE(?15, publication_platforms),
+                 wechat_publication=COALESCE(?16, wechat_publication) WHERE id=?1",
+                params![id, fields.title, fields.content_md, fields.status, fields.category_id, source_id,
+                        fields.summary, fields.published_at, fields.published_url, timestamp, fields.cover_asset_id,
+                        fields.theme_id, fields.encoded_properties()?, source_details(&fields, timestamp), fields.encoded_publications()?, fields.encoded_wechat_publication()?],
+            )?;
+            crate::assets::references::sync_entry(tx, id, &fields.content_md)?;
+            taxonomy::replace_tags(tx, id, &fields.tags)?;
+            if matches!(mode, SaveMode::Manual) {
+                record_revision(tx, id, "manual", timestamp)?;
+            }
+            if let Some(recovery) = recovery {
+                recovery::acknowledge(tx, id, version + 1, recovery)?;
+            }
+            Ok(SaveResult {
+                version: version + 1,
+            })
 }

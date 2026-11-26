@@ -90,10 +90,10 @@ fn dependent_entries_only_retry_after_all_required_assets_are_acknowledged() {
             issue(tx, &key, generation(tx, &key)?.unwrap(), "云端缺少关联素材", None)?;
         }
         remember(tx, &Key { entity_type: Kind::Asset, entity_id: "a".into() }, 1, false)?;
-        retry_asset_dependents(tx, &["a"])?;
+        dependencies::retry(tx, &[Key { entity_type: Kind::Asset, entity_id: "a".into() }])?;
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM sync_issues", [], |row| row.get::<_,i64>(0))?, 2);
         remember(tx, &Key { entity_type: Kind::Asset, entity_id: "b".into() }, 1, false)?;
-        retry_asset_dependents(tx, &["b"])?;
+        dependencies::retry(tx, &[Key { entity_type: Kind::Asset, entity_id: "b".into() }])?;
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM sync_issues", [], |row| row.get::<_,i64>(0))?, 0);
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM sync_dirty WHERE entity_type='entry'", [], |row| row.get::<_,i64>(0))?, 2);
         assert_eq!(entries::snapshot(tx,"first")?.unwrap()["contentMd"], "keep first");
@@ -256,4 +256,258 @@ async fn initialization_resumes_after_original_repair_and_keeps_other_devices_wa
             .unwrap(),
         bytes
     );
+}
+
+
+#[tokio::test]
+#[ignore = "requires an isolated fresh service and a native system keyring"]
+async fn failed_legacy_baseline_refetches_after_versioned_admin_repair() {
+    use crate::sync::{ConnectWith, connect};
+    struct Credentials(Vec<keyring::Entry>);
+    impl Drop for Credentials {
+        fn drop(&mut self) {
+            for key in &self.0 { let _ = key.delete_credential(); }
+        }
+    }
+    let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
+    let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let writer = Workspace::open(&root.path().join("writer.sqlite")).unwrap();
+    let reader_path = root.path().join("reader.sqlite");
+    let reader = Workspace::open(&reader_path).unwrap();
+    let assets = Assets::new(root.path().join("assets"), &writer).unwrap();
+    let reader_assets = Assets::new(root.path().join("reader-assets"), &reader).unwrap();
+    let sync = SyncConnection::new().unwrap();
+    let mut credentials = Credentials(Vec::new());
+    let binding = connect(&writer, &sync, &url, "Admin", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&writer).unwrap());
+    writer.write(|tx| {
+        tx.execute_batch("INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at) VALUES('legacy','article','Legacy','draft','preserved remote body',1,1)")?;
+        Ok(())
+    }).unwrap();
+    run(&writer, &assets, &sync).await.unwrap();
+    reqwest::Client::new().post(format!("{url}__test/legacy-invalid")).send().await.unwrap().error_for_status().unwrap();
+    let binding = connect(&reader, &sync, &url, "Fresh reader", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&reader).unwrap());
+    run(&reader, &reader_assets, &sync).await.unwrap();
+    assert!(apply_received(&reader).is_err());
+    let failed_cursor = progress(&reader).unwrap().3.unwrap();
+    assert!(!progress(&reader).unwrap().0);
+    assert!(reader.read(|conn| entries::snapshot(conn, "legacy")).unwrap().is_none());
+    writer.write(|tx| { tx.execute("UPDATE entries SET title='Repaired' WHERE id='legacy'", [])?; Ok(()) }).unwrap();
+    run(&writer, &assets, &sync).await.unwrap();
+    drop(reader);
+    let reader = Workspace::open(&reader_path).unwrap();
+    run(&reader, &reader_assets, &sync).await.unwrap();
+    assert!(progress(&reader).unwrap().3.unwrap() > failed_cursor);
+    apply_received(&reader).unwrap();
+    assert!(progress(&reader).unwrap().0);
+    let restored = reader.read(|conn| entries::snapshot(conn, "legacy")).unwrap().unwrap();
+    assert_eq!(restored["title"], "Repaired");
+    assert_eq!(restored["contentMd"], "preserved remote body");
+    assert_eq!(reader.read(|conn| revision(conn, &Key { entity_type: Kind::Entry, entity_id: "legacy".into() })).unwrap(), (2, false));
+}
+
+
+#[tokio::test]
+#[ignore = "requires an isolated fresh service and a native system keyring"]
+async fn multilevel_dependencies_resume_only_after_all_assets_are_repaired() {
+    use crate::sync::{ConnectWith, connect};
+    struct Credentials(Vec<keyring::Entry>);
+    impl Drop for Credentials {
+        fn drop(&mut self) { for key in &self.0 { let _ = key.delete_credential(); } }
+    }
+    let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
+    let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let a = Workspace::open(&root.path().join("a.sqlite")).unwrap();
+    let b = Workspace::open(&root.path().join("b.sqlite")).unwrap();
+    let asset_root = root.path().join("assets-a");
+    let assets = Assets::new(asset_root.clone(), &a).unwrap();
+    let peer_assets = Assets::new(root.path().join("assets-b"), &b).unwrap();
+    let sync = SyncConnection::new().unwrap();
+    let mut credentials = Credentials(Vec::new());
+    let binding = connect(&a, &sync, &url, "Writer", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&a).unwrap());
+    let mut bytes = Vec::new();
+    for width in [2, 3] {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(width, 2).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        bytes.push(png.into_inner());
+    }
+    let first = assets.import(&a, "first.png", &bytes[0]).unwrap();
+    let second = assets.import(&a, "second.png", &bytes[1]).unwrap();
+    let paths = a.read(|conn| {
+        [first.as_str(), second.as_str()].into_iter().map(|id| {
+            Ok(asset_root.join(conn.query_row("SELECT relative_path FROM assets WHERE id=?1", [id], |row| row.get::<_, String>(0))?))
+        }).collect::<Result<Vec<_>>>()
+    }).unwrap();
+    for path in &paths { std::fs::remove_file(path).unwrap(); }
+    a.write(|tx| {
+        tx.execute_batch("INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at) VALUES
+            ('source','reference','Source','unread','',1,1),('reference','article','Reference','draft','linked body',1,1);
+            INSERT INTO entry_links VALUES('reference','source');
+            INSERT INTO collections(id,title,created_at,updated_at) VALUES('topic','Topic',1,1);
+            INSERT INTO collection_nodes(id,collection_id,kind,entry_id,created_at,updated_at) VALUES('source-node','topic','entry','source',1,1),('reference-node','topic','entry','reference',1,1);
+            INSERT INTO collection_edges VALUES('link','topic','source-node','reference-node','Link',1);")?;
+        let markdown = format!("![first](asset://{first}) ![second](asset://{second})");
+        tx.execute("UPDATE entries SET content_md=?1 WHERE id='source'", [&markdown])?;
+        crate::assets::references::sync_entry(tx, "source", &markdown)?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(run(&a, &assets, &sync).await.unwrap_err().code(), "SYNC_INITIALIZATION_BLOCKED");
+    let binding = connect(&b, &sync, &url, "Reader", ConnectWith::Join, &setup).await.unwrap();
+    credentials.0.push(binding.key(&b).unwrap());
+    assert_eq!(run(&b, &peer_assets, &sync).await.unwrap_err().code(), "SYNC_WAITING_SEED");
+    std::fs::write(&paths[0], &bytes[0]).unwrap();
+    retry_repaired_assets(&a, &assets).await.unwrap();
+    assert_eq!(run(&a, &assets, &sync).await.unwrap_err().code(), "SYNC_INITIALIZATION_BLOCKED");
+    a.read(|conn| {
+        for id in ["source", "reference"] {
+            assert_eq!(revision(conn, &Key { entity_type: Kind::Entry, entity_id: id.into() })?.0, 0);
+            assert!(conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_issues WHERE entity_type='entry' AND entity_id=?1)", [id], |row| row.get::<_, bool>(0))?);
+        }
+        Ok(())
+    }).unwrap();
+    std::fs::write(&paths[1], &bytes[1]).unwrap();
+    retry_repaired_assets(&a, &assets).await.unwrap();
+    run(&a, &assets, &sync).await.unwrap();
+    assert!(progress(&a).unwrap().0);
+    assert_eq!(activity(&a).unwrap().unwrap().pending_count, 0);
+    assert_eq!(activity(&a).unwrap().unwrap().issues, 0);
+    run(&b, &peer_assets, &sync).await.unwrap();
+    apply_received(&b).unwrap();
+    assert_eq!(b.read(|conn| entries::snapshot(conn, "reference")).unwrap().unwrap()["sourceEntryIds"], json!(["source"]));
+    assert_eq!(serde_json::to_value(b.collection_canvas("topic").unwrap()).unwrap()["edges"].as_array().unwrap().len(), 1);
+    for (id, original) in [(&first, &bytes[0]), (&second, &bytes[1])] {
+        assert_eq!(&peer_assets.read_image(&b, &format!("asset://{id}"), false).await.unwrap(), original);
+        assert_eq!(a.read(|conn| revision(conn, &Key { entity_type: Kind::Asset, entity_id: id.clone() })).unwrap().0, 1);
+        let relative=b.read(|conn|Ok(conn.query_row("SELECT relative_path FROM assets WHERE id=?1",[id],|row|row.get::<_,String>(0))?)).unwrap();
+        let path=root.path().join("assets-b").join(relative);
+        std::fs::write(&path,b"corrupt cached original").unwrap();
+        let dirty_before=b.read(|conn|Ok(conn.query_row("SELECT COUNT(*) FROM sync_dirty",[],|row|row.get::<_,i64>(0))?)).unwrap();
+        peer_assets.recover_original(&b,id).await.unwrap();
+        assert_eq!(&std::fs::read(path).unwrap(),original);
+        assert_eq!(b.read(|conn|Ok(conn.query_row("SELECT COUNT(*) FROM sync_dirty",[],|row|row.get::<_,i64>(0))?)).unwrap(),dirty_before);
+    }
+}
+
+
+#[test]
+fn staging_does_not_retry_a_partly_blocked_atomic_group() {
+    let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+    db.write(|tx| {
+        tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d');
+            UPDATE sync_progress SET capture=1;
+            INSERT INTO entries(id,kind,title,status,content_md,created_at,updated_at) VALUES('a','article','A','draft','a',1,1),('b','article','B','draft','b',1,1);
+            UPDATE sync_dirty SET batch_id='atomic';")?;
+        let key = Key { entity_type: Kind::Entry, entity_id: "b".into() };
+        issue(tx, &key, generation(tx, &key)?.unwrap(), "revision_conflict", None)?;
+        Ok(())
+    }).unwrap();
+    assert!(stage_outbox(&db).unwrap().is_none());
+}
+
+#[test]
+fn rejected_category_group_retries_after_rename_and_preserves_other_blockers() {
+    for blocker in ["none", "revision", "remote", "unknown", "frozen"] {
+        let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d');
+                INSERT INTO categories(id,name,depth,sort_order) VALUES('retry-parent','Parent',1,0);
+                INSERT INTO categories(id,name,parent_id,depth,sort_order) VALUES('retry-child','Child','retry-parent',2,0);
+                UPDATE sync_progress SET capture=1;")?;
+            for id in ["retry-parent", "retry-child"] {
+                remember(tx, &Key { entity_type: Kind::Category, entity_id: id.into() }, 1, false)?;
+            }
+            Ok(())
+        }).unwrap();
+        db.delete_category(
+            "retry-parent",
+            crate::content::taxonomy::CategoryDeleteMode::Promote,
+        )
+        .unwrap();
+        let (operation, generations) = stage_outbox(&db).unwrap().unwrap();
+        assert_eq!(operation.mutations.len(), 2);
+        let rejected = Outcome {
+            status: "rejected".into(),
+            reason: Some("category_name_conflict".into()),
+            versions: None,
+        };
+        db.write(|tx| apply_outcome(tx, &operation, &generations, &rejected))
+            .unwrap();
+        assert!(stage_outbox(&db).unwrap().is_none());
+        db.write(|tx| {
+            tx.execute("UPDATE categories SET name='Repaired unique name' WHERE id='retry-child'", [])?;
+            if blocker == "revision" || blocker == "unknown" {
+                tx.execute("UPDATE sync_issues SET code=?1 WHERE entity_id='retry-parent'", [if blocker == "revision" { "revision_conflict" } else { "unknown_rejection" }])?;
+            } else if blocker == "remote" {
+                tx.execute("UPDATE sync_issues SET remote_json='{}' WHERE entity_id='retry-parent'", [])?;
+            } else if blocker == "frozen" {
+                tx.execute("INSERT INTO sync_outbox(id,operation_json,generations_json,origin_device_id) VALUES(1,?1,?2,'d')",
+                    params![encode(&operation)?, encode(&generations)?])?;
+            }
+            dependencies::retry_blocked(tx)
+        }).unwrap();
+        if blocker == "none" {
+            let (retried, next_generations) = stage_outbox(&db).unwrap().unwrap();
+            assert_ne!(retried.operation_id, operation.operation_id);
+            assert_eq!(retried.mutations.len(), 2);
+            for (mutation, next) in retried.mutations.iter().zip(next_generations) {
+                let index = operation
+                    .mutations
+                    .iter()
+                    .position(|old| old.key.entity_id == mutation.key.entity_id)
+                    .unwrap();
+                if mutation.key.entity_id == "retry-parent" {
+                    assert_eq!(mutation.operation, "delete");
+                    assert_eq!(next, generations[index]);
+                } else {
+                    assert_eq!(
+                        mutation.payload.as_ref().unwrap()["name"],
+                        "Repaired unique name"
+                    );
+                    assert!(next > generations[index]);
+                }
+            }
+        } else {
+            assert_eq!(db.read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM sync_issues WHERE entity_id IN ('retry-parent','retry-child')", [], |row| row.get::<_, i64>(0))?)).unwrap(), 2, "{blocker}");
+            if blocker == "frozen" {
+                assert_eq!(
+                    stage_outbox(&db).unwrap().unwrap().0.operation_id,
+                    operation.operation_id
+                );
+            } else {
+                assert!(stage_outbox(&db).unwrap().is_none(), "{blocker}");
+            }
+        }
+    }
+}
+
+#[test]
+fn successful_receipts_retire_old_local_rejections_but_keep_newer_or_version_conflicts() {
+    for case in ["old-local","newer-local","version-conflict"] {
+        let db=Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        db.write(|tx| {
+            tx.execute_batch("INSERT INTO sync_binding(id,url,instance_id,epoch,device_id) VALUES(1,'http://localhost/','i','e','d');UPDATE sync_progress SET capture=1;
+                INSERT INTO assets(id,name,kind,created_at) VALUES('asset','Original','original',1);")?;
+            let key=Key{entity_type:Kind::Asset,entity_id:"asset".into()};
+            issue(tx,&key,1,if case=="version-conflict"{"内容已在另一台设备修改"}else{"SYNC_ASSET: original missing"},None)?;
+            if case=="version-conflict" {tx.execute("UPDATE sync_issues SET code='revision_conflict'",[])?;}
+            tx.execute("UPDATE assets SET name='Repaired' WHERE id='asset'",[])?;
+            Ok(())
+        }).unwrap();
+        let(operation,generations)=stage_outbox(&db).unwrap().unwrap();
+        db.write(|tx| {
+            if case=="newer-local" {
+                tx.execute("UPDATE assets SET name='Newer' WHERE id='asset'",[])?;
+                issue(tx,&operation.mutations[0].key,generations[0]+1,"SYNC_ASSET: newer rejection",None)?;
+            }
+            apply_outcome(tx,&operation,&generations,&Outcome{status:"applied".into(),reason:None,versions:Some(vec![Version{key:operation.mutations[0].key.clone(),remote_revision:1}])})?;
+            let count=tx.query_row("SELECT COUNT(*) FROM sync_issues",[],|row|row.get::<_,i64>(0))?;
+            assert_eq!(count,if case=="old-local"{0}else{1},"{case}");
+            if case=="newer-local" {assert_eq!(generation(tx,&operation.mutations[0].key)?,Some(generations[0]+1));}
+            Ok(())
+        }).unwrap();
+    }
 }

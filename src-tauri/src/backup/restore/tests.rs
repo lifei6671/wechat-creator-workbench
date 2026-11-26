@@ -347,3 +347,38 @@ fn staging_rejects_missing_columns_and_broken_references_at_the_declared_version
         "BACKUP_SCHEMA"
     );
 }
+
+
+#[test]
+fn restoring_a_snapshot_invalidates_old_backup_knowledge_and_rebuilds_its_own_hash_manifest() {
+    let root=tempfile::tempdir().unwrap();let path=root.path().join("live.db");
+    let(live,workspace)=populate(&path,"Before restore");
+    let first="a".repeat(64);let later="b".repeat(64);
+    let scope=live.write(|tx| {
+        tx.execute("INSERT INTO app_settings VALUES('backup_target','{}')",[])?;
+        tx.execute("INSERT INTO assets(id,name,kind,sha256,created_at) VALUES('first','First','original',?1,1)",[&first])?;
+        let scope=super::super::retention::scope(tx)?.unwrap();
+        super::super::retention::reserve(tx,&scope,"snapshot.sqlite")?;
+        super::super::retention::reconcile(tx,&scope,&[])?;
+        super::super::retention::reserve(tx,&scope,"retained.sqlite")?;
+        tx.execute("UPDATE backup_asset_manifests SET status='confirmed' WHERE snapshot='retained.sqlite'",[])?;
+        tx.execute("INSERT INTO assets(id,name,kind,sha256,created_at) VALUES('later','Later','original',?1,2)",[&later])?;
+        Ok(scope)
+    }).unwrap();
+    let snapshot=NamedTempFile::new_in(root.path()).unwrap().into_temp_path();
+    make_snapshot(&path,&snapshot,&workspace).unwrap();
+    prepare_file(&snapshot,&PendingRestore{workspace,name:"snapshot.sqlite".into(),migration:None}).unwrap();
+    let restored=Workspace::open_existing(&snapshot).unwrap();
+    restored.write(|tx| {
+        assert!(super::super::retention::unknown(tx)?);
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM backup_asset_references WHERE scope=?1 AND snapshot='snapshot.sqlite'",[&scope],|row|row.get::<_,i64>(0))?,2);
+        super::super::retention::reconcile(tx,&scope,&[
+            super::super::store::Backup{name:"snapshot.sqlite".into(),created_at:1,bytes:1},
+            super::super::store::Backup{name:"retained.sqlite".into(),created_at:0,bytes:1}])?;
+        assert!(super::super::retention::unknown(tx)?,"an inherited manifest cannot be trusted from object-name existence alone");
+        super::super::retention::reconcile(tx,&scope,&[super::super::store::Backup{name:"snapshot.sqlite".into(),created_at:1,bytes:1}])?;
+        assert!(!super::super::retention::unknown(tx)?);
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM backup_asset_references WHERE sha256=?1",[later],|row|row.get::<_,i64>(0))?,1);
+        Ok(())
+    }).unwrap();
+}

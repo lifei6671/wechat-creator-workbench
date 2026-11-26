@@ -1,6 +1,6 @@
 use crate::{
     assets::s3::{S3Storage, http_base, sdk_error},
-    db::{AppError, Result, Workspace, id, now},
+    db::{AppError, Result, Workspace},
     secrets,
 };
 use aws_sdk_s3::{primitives::ByteStream, types::Object};
@@ -86,6 +86,12 @@ pub fn configure(db: &Workspace, target: Target, secret: Option<Secret>) -> Resu
     } else if read_secret(&entry)?.is_none() {
         return Err(AppError::invalid("请填写备份桶的访问密钥"));
     }
+    db.write(|tx| {
+        if let Some(scope)=super::retention::scope(tx)? {
+            tx.execute("INSERT OR IGNORE INTO app_settings VALUES(?1,'false')",[format!("asset-backup-state:{scope}")])?;
+        }
+        Ok(())
+    })?;
     db.set_setting(SETTINGS, &target)
 }
 
@@ -109,6 +115,7 @@ pub fn store(db: &Workspace) -> Result<Store> {
 }
 
 pub struct Store {
+    scope_target:serde_json::Value,
     s3: S3Storage,
     root: String,
 }
@@ -136,6 +143,7 @@ impl Store {
             format!("{}/{NAMESPACE}/", target.prefix)
         };
         Self {
+            scope_target:serde_json::to_value(&target).expect("backup target serializes"),
             s3: S3Storage::for_bucket(
                 &target.endpoint,
                 &target.region,
@@ -170,6 +178,10 @@ impl Store {
             return Err(AppError::invalid("工作区 ID 无效"));
         }
         Ok(format!("{}{workspace}/backups/", self.root))
+    }
+
+    pub(super) fn asset_scope(&self,workspace:&str)->String {
+        super::retention::scope_for(&self.scope_target,workspace)
     }
 
     pub async fn list(&self, workspace: &str) -> Result<Vec<Backup>> {
@@ -221,9 +233,7 @@ impl Store {
         }
     }
 
-    pub async fn upload(&self, workspace: &str, path: &Path) -> Result<UploadResult> {
-        let stamp = now();
-        let name = format!("{stamp:013}-{}.sqlite", id());
+    pub async fn upload(&self, workspace: &str, path: &Path, name: String, stamp: i64) -> Result<UploadResult> {
         self.upload_named(workspace, path, name, stamp).await
     }
 
@@ -349,6 +359,27 @@ fn backup_file(error: std::io::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{id,now};
+
+    #[test]
+    fn a_captured_store_keeps_its_scope_when_the_active_backup_target_changes() {
+        let db=Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        let target=Target{endpoint:"https://s3.example.test".into(),region:"auto".into(),bucket:"first".into(),prefix:String::new()};
+        let store=Store::new(target,Secret{access_key:"test".into(),secret_key:"test".into()});
+        let workspace=db.read(crate::db::workspace_id).unwrap();
+        let captured=store.asset_scope(&workspace);
+        let replacement=Target{endpoint:"https://s3.example.test".into(),region:"auto".into(),bucket:"second".into(),prefix:String::new()};
+        db.set_setting("backup_target",&replacement).unwrap();
+        db.write(|tx|{
+            let current=super::super::retention::scope(tx)?.unwrap();
+            assert_ne!(captured,current);
+            super::super::retention::reserve(tx,&current,"valid.sqlite")?;
+            tx.execute("UPDATE backup_asset_manifests SET status='confirmed'",[])?;
+            super::super::retention::reconcile(tx,&captured,&[])?;
+            assert_eq!(tx.query_row("SELECT COUNT(*) FROM backup_asset_manifests WHERE scope=?1",[current],|row|row.get::<_,i64>(0))?,1);
+            Ok(())
+        }).unwrap();
+    }
 
     #[test]
     fn retention_classifies_only_canonical_database_objects_in_the_selected_workspace() {

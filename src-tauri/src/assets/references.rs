@@ -290,6 +290,18 @@ pub fn apply_image_edits(markdown: &str, mut edits: Vec<(Range<usize>, String)>)
     output
 }
 
+pub(crate) fn cancel_cleanup(conn: &Connection, markdown: &str) -> Result<()> {
+    if !conn.query_row("SELECT EXISTS(SELECT 1 FROM asset_cleanup_candidates)",[],|row|row.get::<_,bool>(0))? { return Ok(()); }
+    for url in urls(markdown)? {
+        conn.execute("DELETE FROM asset_cleanup_candidates WHERE sha256 IN (SELECT sha256 FROM assets WHERE id=?1
+            OR sha256 IN (SELECT sha256 FROM asset_urls WHERE url=?2))",params![url.strip_prefix("asset://"),url])?;
+    }
+    for key in derived_keys(markdown) {
+        conn.execute("DELETE FROM asset_cleanup_candidates WHERE sha256 IN (SELECT sha256 FROM assets WHERE source_key=?1)",[key])?;
+    }
+    Ok(())
+}
+
 pub fn sync_entry(conn: &Connection, entry_id: &str, markdown: &str) -> Result<()> {
     conn.execute("DELETE FROM entry_assets WHERE entry_id=?1", [entry_id])?;
     let mut insert = conn.prepare_cached(
@@ -299,6 +311,9 @@ pub fn sync_entry(conn: &Connection, entry_id: &str, markdown: &str) -> Result<(
     for url in urls(markdown)? {
         insert.execute(params![entry_id, url.strip_prefix("asset://"), url])?;
     }
+    conn.execute("DELETE FROM asset_cleanup_candidates WHERE sha256 IN (SELECT sha256 FROM assets WHERE id IN
+        (SELECT asset_id FROM entry_assets WHERE entry_id=?1 UNION SELECT cover_asset_id FROM entries WHERE id=?1))",[entry_id])?;
+    cancel_cleanup(conn,markdown)?;
     conn.execute(
         "DELETE FROM jobs WHERE kind='cleanup' AND status<>'completed' AND sha256 IN (
          SELECT sha256 FROM assets WHERE id IN (SELECT asset_id FROM entry_assets WHERE entry_id=?1

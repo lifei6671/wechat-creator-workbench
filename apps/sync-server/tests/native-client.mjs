@@ -11,6 +11,8 @@ import { openSqlite } from "../dist/adapters/sqlite.js";
 import { localFiles } from "../dist/adapters/local-files.js";
 
 const cases = [
+  "multilevel_dependencies_resume_only_after_all_assets_are_repaired",
+  "failed_legacy_baseline_refetches_after_versioned_admin_repair",
   "claim_join_and_reconnect_using_real_service",
   "articles_and_private_images_between_workspaces",
   "canvases_between_workspaces",
@@ -29,7 +31,15 @@ for (const testName of selected) {
   const setup = randomBytes(32).toString("hex");
   const db = openSqlite(join(directory, "sync.db"));
   const app = createApp(db, await localFiles(join(directory, "blobs")), setup);
-  const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+  const fetch = async request => {
+    if (testName === "failed_legacy_baseline_refetches_after_versioned_admin_repair"
+        && new URL(request.url).pathname === "/__test/legacy-invalid" && request.method === "POST") {
+      await db.batch([["UPDATE sync_entities SET payload_json=json_set(payload_json, '$.status', 'inbox') WHERE entity_type='entry' AND entity_id='legacy'"]]);
+      return new Response(null, { status: 204 });
+    }
+    return app.fetch(request);
+  };
+  const server = serve({ fetch, hostname: "127.0.0.1", port: 0 });
   try {
     if (!server.listening) await once(server, "listening");
     const child = spawn("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked",

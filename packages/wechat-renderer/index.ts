@@ -90,8 +90,8 @@ export function wechatEditorStyles(id?: string | null) {
   if (cell.backgroundColor === "rgb(255, 255, 255)") variables["--article-td-background"] = "var(--app-bg)";
   const header = template.content.querySelector<HTMLElement>("th")!.style;
   variables["--article-th-font-weight"] = header.fontWeight || "bold";
-  variables["--article-th-color"] = header.color === "rgb(255, 255, 255)" ? "var(--gray-1)" : "inherit";
-  if (header.backgroundColor === "rgb(128, 128, 128)") variables["--article-th-background"] = "var(--gray-9)";
+  variables["--article-th-color"] = "inherit";
+  if (header.backgroundColor === "rgb(128, 128, 128)") variables["--article-th-background"] = "var(--gray-3)";
   const listParagraph = template.content.querySelector<HTMLElement>("li > p")!.style;
   variables["--article-list-paragraph-margin-block"] = `${listParagraph.marginTop || "0px"} ${listParagraph.marginBottom || "0px"}`;
   const pre = template.content.querySelector<HTMLElement>("pre")!;

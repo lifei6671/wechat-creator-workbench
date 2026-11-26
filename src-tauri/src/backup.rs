@@ -1,4 +1,7 @@
 mod migration;
+pub(crate) use migration::verify_asset as verify_asset_file;
+mod retention;
+pub(crate) use retention::unknown as unknown_asset_protection;
 mod restore;
 mod store;
 
@@ -104,8 +107,16 @@ pub async fn backup_workspaces(db: State<'_, Workspace>) -> Result<Vec<String>> 
 }
 
 #[tauri::command]
-pub async fn backup_list(db: State<'_, Workspace>, workspace: String) -> Result<Vec<Backup>> {
-    store::store(&db)?.list(&workspace).await
+pub async fn backup_list(db: State<'_, Workspace>, backups:State<'_,Backups>, workspace: String) -> Result<Vec<Backup>> {
+    let _operation=backups.prepared.lock().await;
+    let store=store::store(&db)?;
+    let local_workspace=db.read_running(workspace_id)?;
+    let scope=store.asset_scope(&local_workspace);
+    let items=store.list(&workspace).await?;
+    if workspace==local_workspace {
+        db.write(|tx|retention::reconcile(tx,&scope,&items))?;
+    }
+    Ok(items)
 }
 
 #[tauri::command]
@@ -117,10 +128,15 @@ pub async fn backup_create(
     let _operation = backups.prepared.lock().await;
     let workspace = db.read_running(workspace_id)?;
     let store = store::store(&db)?;
+    let stamp=now();
+    let name=format!("{stamp:013}-{}.sqlite",id());
+    let scope=store.asset_scope(&workspace);
+    db.write(|tx|retention::reserve(tx,&scope,&name))?;
     progress(&app, "snapshot");
     let source = backups.files.database.clone();
     let stage = backups.files.stage.clone();
     let worker_workspace = workspace.clone();
+    let preparation = async {
     let file = tokio::task::spawn_blocking(move || {
         let file = NamedTempFile::new_in(stage)
             .map_err(file_error)?
@@ -130,8 +146,30 @@ pub async fn backup_create(
     })
     .await
     .map_err(|error| AppError::new("BACKUP_SNAPSHOT", error.to_string()))??;
+    let hashes={
+        let snapshot=rusqlite::Connection::open_with_flags(&file,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let mut query=snapshot.prepare("SELECT DISTINCT sha256 FROM assets WHERE sha256 IS NOT NULL")?;
+        query.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    db.maintenance(|tx|retention::exact(tx,&scope,&name,&hashes))?;
+    Ok::<_,AppError>(file)
+    }.await;
+    let file=match preparation {
+        Ok(file)=>file,
+        Err(error)=>{
+            db.maintenance(|tx|{tx.execute("DELETE FROM backup_asset_manifests WHERE scope=?1 AND snapshot=?2 AND status='pending'",rusqlite::params![scope,name])?;Ok(())})?;
+            return Err(error);
+        }
+    };
     progress(&app, "upload");
-    let result = store.upload(&workspace, &file).await?;
+    let result = store.upload(&workspace, &file,name.clone(),stamp).await?;
+    db.maintenance(|tx| {
+        tx.execute("UPDATE backup_asset_manifests SET status='confirmed' WHERE scope=?1 AND snapshot=?2",rusqlite::params![scope,name])?;
+        Ok(())
+    })?;
+    if let Ok(items)=store.list(&workspace).await {
+        db.maintenance(|tx|retention::reconcile(tx,&scope,&items))?;
+    }
     db.maintenance(|tx| {
         tx.execute(
             "INSERT INTO backup_records VALUES (?1,'backup',?2,'completed',?3,?4)",

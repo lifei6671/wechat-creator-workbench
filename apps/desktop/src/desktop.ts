@@ -9,7 +9,7 @@ import type { SourceFragment } from "../../../packages/wechat-renderer";
 import type { WebClipping } from "./editor/web-clipping";
 import type {
   CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
-  Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection,
+  Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection, RecoveryCommit, RecoveryDraft, RecoverySummary,
   WechatPublicationDefaults, WechatRecommendationInput, WechatRecommendation, WechatCandidatePage, WechatRecommendationResult, WechatResolvedRecommendations,
 } from "../../../packages/shared-types";
 
@@ -31,6 +31,10 @@ export interface AssetRow {
   id: string; name: string; width: number | null; height: number | null; bytes: number | null;
   uploadStatus: "queued" | "running" | "retrying" | "completed" | "failed" | null;
   uploadError: string | null; cleanupError: string | null; publicUrl: string | null;
+}
+export interface AssetIntegrityItem {
+  id: string; name: string; state: "local" | "sync" | "hosted" | "missing" | "corrupt"; canRestore: boolean;
+  references: { kind: "entry" | "collection"; id: string; title: string }[];
 }
 export interface AssetLibrary { items: AssetRow[]; target: ImageTarget | null; page: number; hasNext: boolean }
 export interface UploadProgress { completed: number; total: number }
@@ -180,8 +184,15 @@ export const desktop = {
     invoke<void>("save_collection_viewport", { collectionId, viewport }),
   entryCollections: (entryId: string) => invoke<Collection[]>("list_entry_collections", { entryId }),
   create: (kind: EntryKind, fields?: EntryFields, sourceEntryId?: string) => invoke<Entry>("create_entry", { kind, fields, sourceEntryId }),
-  save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode) =>
-    invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode }),
+  save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit) =>
+    invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode, recovery }),
+  assetIntegrity: () => invoke<AssetIntegrityItem[]>("asset_integrity"),
+  assetRecoverOriginal: (id: string) => invoke<void>("asset_recover_original", { id }),
+  recoveryPut: (draft: RecoveryDraft) => invoke<void>("editor_recovery_put", { draft }),
+  recoveryList: () => invoke<RecoverySummary[]>("editor_recovery_list"),
+  recoveryGet: (entryId: string, sessionId: string) => invoke<EntryFields>("editor_recovery_get", { entryId, sessionId }),
+  recoveryDiscard: (entryId: string, sessionId: string, localRevision: number) => invoke<void>("editor_recovery_discard", { entryId, sessionId, localRevision }),
+  recoveryRestore: (entryId: string, sessionId: string, localRevision: number, copy: boolean) => invoke<Entry>("editor_recovery_restore", { entryId, sessionId, localRevision, copy }),
   setDeleted: (id: string, expectedVersion: number, deleted: boolean) => invoke<Entry>("set_deleted", { id, expectedVersion, deleted }),
   emptyTrash: () => invoke<string[]>("empty_trash"),
   trashRetention: (days?: number) => invoke<number>("trash_retention", { days }),
@@ -240,6 +251,12 @@ export const desktop = {
   copyMcpConfig: (client: McpClient) => invoke<void>("mcp_copy_config", { client }),
   resetMcpToken: () => invoke<void>("mcp_reset_token"),
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
+  reviewSettings: () => invoke<ReviewSettings>("review_settings"),
+  saveReviewSettings: (enabled: boolean, apiKey?: string) => invoke<ReviewSettings>("review_save_settings", { enabled, apiKey }),
+  reviewCheck: (text: string, projectionVersion: number, force = false) => invoke<ReviewResult>("review_check", { checkerId: "zhuque_text", text, projectionVersion, force }),
+  reviewTestConnection: (apiKey?: string) => invoke<ReviewResult>("review_test_connection", { apiKey }),
+  reviewUsage: () => invoke<ReviewUsage>("review_usage"),
+  reviewClearCache: () => invoke<void>("review_clear_cache"),
   aiSettings: () => invoke<AiSettings>("ai_settings"),
   aiAgentVersions: () => invoke<[AiAgent, string | null][]>("ai_agent_versions"),
   aiAgentModels: () => invoke<[AiAgent, AiAgentModel[]][]>("ai_agent_models"),
@@ -320,3 +337,11 @@ export function errorMessage(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error) return String(error.message);
   return String(error);
 }
+export type ReviewSettings = { enabled: boolean; hasKey: boolean; revision: number; maxTextBytes: number };
+export type ReviewUsage = { month: string; knownTokens: number; unknownCalls: number; successfulCalls: number; cacheHits: number };
+export type ReviewResult = {
+  checkerId: "zhuque_text"; contentHash: string; projectionVersion: number; checkedAt: number;
+  cacheHit: boolean; chargedTokens: number | null; cached: boolean; persistenceError: string | null; settingsRevision: number;
+  summary: { humanRatio: number; aiRatio: number; suspectedRatio: number; ratioConfidence: number; softmaxConfidence: number };
+  findings: { id: string; category: "ai_generated" | "ai_suspected"; range: { from: number; to: number } | null; confidence: number }[];
+};

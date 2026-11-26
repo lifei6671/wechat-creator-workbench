@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { FilePenLine, ListTree, LoaderCircle, Sparkles } from "lucide-react";
+import { ClipboardCheck, FilePenLine, ListTree, LoaderCircle, Sparkles } from "lucide-react";
 import { Tool, WechatIcon } from "../ui";
 import { WindowDragRegion } from "./WindowTitle";
 
-export type RightSidebarMode = "wechat" | "ai" | "properties" | "outline";
+export type RightSidebarMode = "wechat" | "ai" | "properties" | "outline" | "review";
 const tools = [
   { id: "wechat", label: "公众号设置", icon: <WechatIcon /> },
   { id: "ai", label: "AI 助手", icon: <Sparkles size={17} strokeWidth={1.8} /> },
   { id: "properties", label: "内容属性", icon: <FilePenLine size={17} strokeWidth={1.8} /> },
   { id: "outline", label: "文档大纲", icon: <ListTree size={17} strokeWidth={1.8} /> },
+  { id: "review", label: "文章审查", icon: <ClipboardCheck size={17} strokeWidth={1.8} /> },
 ] as const;
 
 export function RightSidebarToolbar({ value, disabled, working, onChange, onError }: {

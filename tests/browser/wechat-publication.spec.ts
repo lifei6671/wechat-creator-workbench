@@ -163,7 +163,7 @@ test("switches sidebar tools directly and autosaves properties without a modal",
   await expect(page.locator(".wechat-recommendation-row")).toHaveCount(5);
   const toolbar = page.getByRole("toolbar", { name: "右侧栏工具", exact: true });
   const buttons = toolbar.getByRole("button");
-  await expect(buttons).toHaveCount(4);
+  await expect(buttons).toHaveCount(5);
   await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
   await expect(page.locator(".right-sidebar-header").getByRole("tablist")).toHaveCount(0);
   for (const button of await buttons.all()) expect((await button.boundingBox())!.width).toBeLessThanOrEqual(32);
@@ -267,6 +267,10 @@ test("spaces sidebar icons and keeps the shared toggle clear of Windows window c
   expect(header.x + header.width - bounds.x - bounds.width).toBeGreaterThanOrEqual(8);
   await toggle.hover();
   await expect(page.getByRole("tooltip")).toHaveText("隐藏右侧栏");
+  await page.locator(".right-sidebar").evaluate(element => { element.style.width = "300px"; });
+  const sidebarBounds = (await page.locator(".right-sidebar").boundingBox())!;
+  const narrowLast = (await tools.last().boundingBox())!;
+  expect(narrowLast.x + narrowLast.width).toBeLessThanOrEqual(sidebarBounds.x + sidebarBounds.width - 132);
 });
 
 test("adds selected candidates using only the persisted recommendation fields", async ({ page }) => {

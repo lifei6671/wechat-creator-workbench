@@ -2,6 +2,12 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "review_settings",
+            "review_save_settings",
+            "review_check",
+            "review_test_connection",
+            "review_usage",
+            "review_clear_cache",
             "app_info",
             "app_update_status",
             "app_update_check",
@@ -32,6 +38,7 @@ fn main() {
             "save_collection_viewport",
             "list_entry_collections",
             "save_entry",
+            "editor_recovery_put", "editor_recovery_list", "editor_recovery_get", "editor_recovery_discard", "editor_recovery_restore",
             "wechat_publication_defaults",
             "wechat_recommendation_authors",
             "save_wechat_publication_defaults",
@@ -56,6 +63,7 @@ fn main() {
             "close_to_tray",
             "asset_import",
             "asset_library",
+            "asset_integrity", "asset_recover_original",
             "asset_detail",
             "asset_upload_progress",
             "asset_thumbnail",

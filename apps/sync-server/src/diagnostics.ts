@@ -23,6 +23,11 @@ export async function diagnoseEntities(db: Database, blobs: BlobStore, afterType
         const [blob] = await query<{ size_bytes: number }>(db, ["SELECT size_bytes FROM sync_blobs WHERE sha256=?", data[blobField]]);
         if (!blob) throw new SyncError(422, "blob_missing", undefined, blobField);
         if (blob.size_bytes !== data[blobField === "sha256" ? "bytes" : "contentBlobSize"]) throw new SyncError(422, "blob_length_mismatch", undefined, blobField);
+        let object;
+        try { object = await blobs.head(data[blobField] as string); }
+        catch { throw new SyncError(503, "blob_storage_unavailable", undefined, blobField); }
+        if (!object) throw new SyncError(422, "blob_object_missing", undefined, blobField);
+        if (object.size !== blob.size_bytes) throw new SyncError(422, "blob_object_size_mismatch", undefined, blobField);
       }
       await validateContentBlobs(db, blobs, input);
       if (row.deleted_at === null || row.entity_type === "entry") {

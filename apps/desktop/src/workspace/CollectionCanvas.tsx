@@ -3,7 +3,7 @@ import { Background, ReactFlow, ReactFlowProvider, ViewportPortal, applyEdgeChan
   type Edge, type NodeChange, type Viewport } from "@xyflow/react";
 import { BookOpen, Clipboard, Copy, ExternalLink, FilePlus2, FileText, Focus, Globe2, Image, Link2, Maximize, Minus, Plus, Scaling, SquarePen, StickyNote, Trash2, Workflow, X } from "lucide-react";
 import { Button, ContextMenu, Spinner } from "@radix-ui/themes";
-import type { CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, Collection, CollectionCanvas as Canvas, Entry, EntryFields, SaveMode, SaveResult } from "../../../../packages/shared-types";
+import type { CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, Collection, CollectionCanvas as Canvas, Entry, EntryFields, SaveMode, SaveResult, RecoveryCommit } from "../../../../packages/shared-types";
 import type { ClipboardAction, ClipboardIO, MarkdownEditorHandle } from "../../../../packages/editor-react";
 import { desktop, errorMessage } from "../desktop";
 import { commandKey, untitled } from "../labels";
@@ -38,7 +38,7 @@ interface Props {
   waitForWrites(): Promise<unknown>;
   onOpenEntry(id: string): void;
   onLoadArticle(id: string): Promise<Entry>;
-  onSaveArticle(id: string, version: number, fields: EntryFields, mode: SaveMode): Promise<SaveResult>;
+  onSaveArticle(id: string, version: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit): Promise<SaveResult>;
   onArticleImages(files: File[]): Promise<string>;
   onDelete(): void;
   downloadLinkImages: boolean;
@@ -659,7 +659,7 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
       setEditingId(null);
       const entry = await onLoadArticle(node.data.entryId!);
       if (!area.current || intent !== editIntent.current || !nodesRef.current.some(item => item.id === id)) return;
-      const next = { nodeId: id, queue: new SaveQueue(entry, (...args) => track(onSaveArticle(...args)), onEntryCreated) };
+      const next = { nodeId: id, queue: new SaveQueue(entry, (...args) => track(onSaveArticle(...args)), onEntryCreated, desktop.recoveryPut) };
       activeArticleEdit.current = next;
       setArticleEdit(next);
       setEditingId(id);

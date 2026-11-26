@@ -1,7 +1,7 @@
-import type { AppError, Entry, EntryFields, SaveMode, SaveResult } from "../../../../packages/shared-types";
+import type { AppError, Entry, EntryFields, SaveMode, SaveResult, RecoveryCommit, RecoveryDraft } from "../../../../packages/shared-types";
 import type { MarkdownSnapshot } from "../../../../packages/editor-react";
 
-type Commit = (id: string, version: number, fields: EntryFields, mode: SaveMode) => Promise<SaveResult>;
+type Commit = (id: string, version: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit) => Promise<SaveResult>;
 type SaveOptions = { manual?: boolean; retry?: boolean; aiReplace?: boolean };
 const SAVE_DELAY_MS = 750;
 const MAX_SAVE_DELAY_MS = 4000;
@@ -14,6 +14,7 @@ export interface SaveSnapshot {
   saving: boolean;
   processingImages: boolean;
   error: unknown;
+  recoveryError: unknown;
 }
 
 export function isConflict(error: unknown): error is AppError {
@@ -24,6 +25,9 @@ let sessionSequence = 0;
 
 export class SaveQueue {
   readonly sessionId = ++sessionSequence;
+  private readonly recoverySessionId = crypto.randomUUID();
+  private recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  private captured?: { revision: number; fields: EntryFields };
   private listeners = new Set<() => void>();
   private state: SaveSnapshot;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -40,11 +44,12 @@ export class SaveQueue {
     readonly entry: Entry,
     private readonly commit: Commit,
     private readonly onCommit: () => void,
+    private readonly persistRecovery?: (draft: RecoveryDraft) => Promise<void>,
   ) {
     const { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties, wechatPublication } = entry;
     this.state = {
       fields: { title, contentMd, status, categoryId, coverAssetId, themeId, tags, summary, source, publishedAt, publishedUrl, publicationPlatforms, customProperties, wechatPublication },
-      version: entry.version, revision: 0, savedRevision: 0, saving: false, processingImages: false, error: null,
+      version: entry.version, revision: 0, savedRevision: 0, saving: false, processingImages: false, error: null, recoveryError: null,
     };
   }
 
@@ -60,7 +65,7 @@ export class SaveQueue {
   setProcessingImages = (processingImages: boolean) => {
     if (processingImages !== this.state.processingImages) this.update({ processingImages });
   };
-  saveError = () => this.state.error;
+  saveError = () => this.state.error ?? this.state.recoveryError;
 
   bindContentProvider(read: () => MarkdownSnapshot) {
     this.contentProvider = read;
@@ -81,9 +86,12 @@ export class SaveQueue {
   capture(): SaveSnapshot {
     const snapshot = this.state;
     if (this.pendingContentRevision === undefined) return snapshot;
+    if (this.captured?.revision === snapshot.revision) return { ...snapshot, fields: this.captured.fields };
     const content = this.contentProvider?.();
     if (content?.localRevision !== this.pendingContentRevision) throw new Error("无法读取当前正文修订");
-    return { ...snapshot, fields: { ...snapshot.fields, contentMd: content.markdown } };
+    const fields = { ...snapshot.fields, contentMd: content.markdown };
+    this.captured = { revision: snapshot.revision, fields };
+    return { ...snapshot, fields };
   }
 
   private update(change: Partial<SaveSnapshot>) {
@@ -98,11 +106,31 @@ export class SaveQueue {
 
   private change(fields = this.state.fields) {
     this.update({ fields, revision: this.state.revision + 1 });
+    if (this.persistRecovery && this.recoveryTimer === undefined) {
+      this.recoveryTimer = setTimeout(() => {
+        this.recoveryTimer = undefined;
+        void this.writeRecovery();
+      }, SAVE_DELAY_MS);
+    }
     clearTimeout(this.timer);
     if (!this.state.error) {
       const now = Date.now();
       this.saveDeadline ??= now + MAX_SAVE_DELAY_MS;
       this.timer = setTimeout(() => { void this.requestSave(); }, Math.min(SAVE_DELAY_MS, this.saveDeadline - now));
+    }
+  }
+
+  private async writeRecovery() {
+    if (!this.persistRecovery || !this.isDirty()) return;
+    let revision = this.state.revision;
+    try {
+      const snapshot = this.capture();
+      revision = snapshot.revision;
+      await this.persistRecovery({ entryId: this.entry.id, kind: this.entry.kind,
+        sessionId: this.recoverySessionId, baseVersion: snapshot.version, localRevision: revision, fields: snapshot.fields });
+      if (revision === this.state.revision) this.update({ recoveryError: null });
+    } catch (recoveryError) {
+      if (revision === this.state.revision && revision > this.state.savedRevision) this.update({ recoveryError });
     }
   }
 
@@ -143,17 +171,21 @@ export class SaveQueue {
         const mode = this.aiReplace ? "ai_replace" : this.manual ? "manual" : "auto";
         if (mode === "ai_replace") this.aiReplace = false;
         if (mode === "manual") this.manual = false;
-        const { version: committedVersion } = await this.commit(this.entry.id, version, fields, mode).catch(error => {
+        const saving = this.persistRecovery && revision > 0
+          ? this.commit(this.entry.id, version, fields, mode, { sessionId: this.recoverySessionId, localRevision: revision })
+          : this.commit(this.entry.id, version, fields, mode);
+        const { version: committedVersion } = await saving.catch(error => {
           this.manual ||= mode === "manual";
           this.aiReplace ||= mode === "ai_replace";
           throw error;
         });
         committed = true;
-        this.update({ version: committedVersion, savedRevision: revision });
+        this.update({ version: committedVersion, savedRevision: revision, recoveryError: null });
       }
       return true;
     } catch (error) {
       this.update({ error });
+      await this.writeRecovery();
       return false;
     } finally {
       this.drainToLatest = false;
@@ -173,6 +205,10 @@ export class SaveQueue {
 
   dispose() {
     clearTimeout(this.timer);
+    clearTimeout(this.recoveryTimer);
+    this.recoveryTimer = undefined;
+    // Capture while the editor provider is still bound; failed queues retain their last draft.
+    void this.writeRecovery();
     this.contentProvider = undefined;
     this.pendingContentRevision = undefined;
     this.listeners.clear();

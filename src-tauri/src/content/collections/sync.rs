@@ -155,6 +155,7 @@ pub fn apply_card(
     if let Some(url) = &card.external_url {
         parse_web_url(url)?;
     }
+    references::cancel_cleanup(conn,&card.content_md)?;
     let inserted = conn.execute(
         "INSERT INTO collection_nodes (id,collection_id,kind,entry_id,asset_id,content_md,external_url,
             color,custom_color,x,y,width,height,created_at,updated_at)
