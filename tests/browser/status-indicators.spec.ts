@@ -76,12 +76,17 @@ for (const appearance of ["light", "dark"]) for (const reducedMotion of ["reduce
     await mcp.hover();
     await expect(page.getByRole("tooltip")).toHaveText("MCP 状态异常：服务读取失败");
     await page.mouse.move(900, 50);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.keyboard.press("Tab");
     await mcp.focus();
+    await expect(mcp).toBeFocused();
     await expect(page.getByRole("tooltip")).toHaveText("MCP 状态异常：服务读取失败");
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("clicked")).toHaveText("mcp");
     await page.getByLabel("同步场景").selectOption("incoming");
+    await page.keyboard.press("Tab");
     await sync.focus();
+    await expect(sync).toBeFocused();
     await expect(page.getByRole("tooltip")).toHaveText("已下载，等待结束编辑");
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("clicked")).toHaveText("sync");
