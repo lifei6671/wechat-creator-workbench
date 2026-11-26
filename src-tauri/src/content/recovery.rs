@@ -124,6 +124,13 @@ impl Workspace {
                 && !tx.query_row("SELECT EXISTS(SELECT 1 FROM categories WHERE id=?1)", [category], |row| row.get::<_, bool>(0))? {
                 fields.category_id = None;
             }
+            if let Some(source) = &fields.source {
+                let mut url = super::http_url(&source.url)?;
+                url.set_fragment(None);
+                if super::web_reference(tx, url.as_str())?.is_some() {
+                    fields.source = None;
+                }
+            }
             let kind = Kind::from_key(&kind);
             fields.status = kind.statuses()[0].into();
             fields.published_at = None;
@@ -374,6 +381,100 @@ mod tests {
             "remote update"
         );
     }
+    #[test]
+    fn source_conflict_after_restart_can_be_saved_as_a_draft_without_changing_the_original() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("workspace.sqlite");
+        let session = crate::db::id();
+        let mut imported_fields = fields("imported body");
+        imported_fields["source"] = json!({"url":"https://example.com/article", "author":"原作者", "accountName":"来源", "originalPublishedAt":123, "importedAt":456});
+        {
+            let db = Workspace::open(&path).unwrap();
+            setup(&db);
+            let imported = db
+                .save_entry(
+                    "entry",
+                    1,
+                    serde_json::from_value(imported_fields.clone()).unwrap(),
+                    SaveMode::Manual,
+                )
+                .unwrap();
+            let mut recovery = draft(&session, 1, "未保存的正文😀\n\n第二段");
+            recovery.base_version = imported.version;
+            recovery.fields["source"] = imported_fields["source"].clone();
+            recovery.fields["source"]["url"] = json!("https://example.com/article#section");
+            recovery.fields["summary"] = json!("恢复摘要");
+            recovery.fields["tags"] = json!(["恢复标签"]);
+            db.put_editor_recovery(recovery).unwrap();
+            let mut remote = db.get_entry("entry").unwrap().fields;
+            remote.content_md = "remote update".into();
+            db.save_entry("entry", imported.version, remote, SaveMode::External)
+                .unwrap();
+        }
+        let db = Workspace::open(&path).unwrap();
+        assert_eq!(
+            db.restore_editor_recovery("entry", &session, 1, false)
+                .err()
+                .unwrap()
+                .code(),
+            "VERSION_CONFLICT"
+        );
+        assert_eq!(
+            db.editor_recovery_fields("entry", &session).unwrap()["contentMd"],
+            "未保存的正文😀\n\n第二段"
+        );
+        let copy = db
+            .restore_editor_recovery("entry", &session, 1, true)
+            .unwrap();
+        assert_ne!(copy.row.id, "entry");
+        assert_eq!(copy.fields.content_md, "未保存的正文😀\n\n第二段");
+        assert_eq!(copy.fields.title, "Draft");
+        assert_eq!(copy.fields.summary, "恢复摘要");
+        assert_eq!(copy.fields.tags, ["恢复标签"]);
+        assert!(copy.fields.source.is_none());
+        let original = db.get_entry("entry").unwrap();
+        assert_eq!(original.fields.content_md, "remote update");
+        assert_eq!(
+            original.fields.source.unwrap().url,
+            "https://example.com/article"
+        );
+        assert!(db.editor_recoveries().unwrap().is_empty());
+        assert_eq!(
+            db.create_entry(
+                Kind::Article,
+                Some(serde_json::from_value(imported_fields).unwrap()),
+                None
+            )
+            .err()
+            .unwrap()
+            .code(),
+            "INVALID_INPUT"
+        );
+    }
+
+    #[test]
+    fn saving_recovery_as_a_draft_keeps_an_unclaimed_source() {
+        let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+        setup(&db);
+        let session = crate::db::id();
+        let mut recovery = draft(&session, 1, "unsaved body");
+        recovery.fields["source"] = json!({"url":"https://example.com/unclaimed#section", "author":"原作者", "accountName":"来源", "originalPublishedAt":123, "importedAt":456});
+        db.put_editor_recovery(recovery).unwrap();
+        let copy = db
+            .restore_editor_recovery("entry", &session, 1, true)
+            .unwrap();
+        assert_eq!(copy.fields.content_md, "unsaved body");
+        let source = copy.fields.source.unwrap();
+        assert_eq!(source.url, "https://example.com/unclaimed");
+        assert_eq!(source.author, "原作者");
+        assert_eq!(source.imported_at, Some(456));
+        assert_eq!(
+            db.get_entry("entry").unwrap().fields.content_md,
+            "saved body"
+        );
+        assert!(db.editor_recoveries().unwrap().is_empty());
+    }
+
     #[test]
     fn startup_prunes_only_confirmed_or_identical_drafts_and_stale_discard_keeps_new_content() {
         let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
