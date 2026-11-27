@@ -16,7 +16,9 @@ import previewCss from "../src/styles/preview.css?inline";
 const parameters = new URLSearchParams(location.search);
 const themeId = parameters.get("theme") ?? wechatThemes[0].id;
 const newline = parameters.get("newline") === "crlf" ? "\r\n" : "\n";
-const source = (parameters.has("urls") ? [
+const source = (parameters.has("images") ? [
+  "![竖向长图](asset://portrait)", "![横向图片](asset://landscape)",
+] : parameters.has("urls") ? [
   "官方遥测文档：https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md[^1]",
   "English words stay complete: Adversarial Distillation Research Natural wrapping.",
   "`https://example.test/inline-code`",
@@ -51,7 +53,11 @@ function Fixture() {
 createRoot(document.getElementById("root")!).render(<Fixture />);
 for (const output of ["preview", "clipboard", "html"] as const) {
   const result = await renderWechat({ markdown: source, themeId, revision: 1, output }, {
-    sources: unexpected, image: unexpected, derive: unexpected,
+    sources: unexpected, image: async url => {
+      if (!parameters.has("images")) return unexpected();
+      const [width, height] = url.endsWith("portrait") ? [800, 1800] : [1600, 400];
+      return { src: `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#8ec8f6"/></svg>`)}`, width, height };
+    }, derive: unexpected,
   });
   const host = document.body.appendChild(document.createElement("div"));
   host.dataset.output = output;

@@ -53,6 +53,8 @@ it.each(wechatThemes)("uses the available article width with self-contained inli
       expect(article.querySelector("pre")?.style.overflowX).toBe("auto");
       expect(article.querySelector("th")?.style.padding).not.toBe("");
       expect(article.querySelector("img")?.style.maxWidth).toBe("100%");
+      expect(["", "none"]).toContain(article.querySelector("img")?.style.maxHeight);
+      expect(article.querySelector("img")?.style.height).toBe("auto");
       expect(article.querySelector("table")?.getAttribute("width")).toBe("100%");
       expect(result.html).not.toMatch(/<style|<link|\sclass=|var\(/);
       if (output !== "preview") expect(result.html).not.toMatch(/\sdata-/);

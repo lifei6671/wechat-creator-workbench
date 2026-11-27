@@ -23,7 +23,125 @@ fn input(text: &str, force: bool) -> CheckInput<'_> {
         version: 1,
         force,
         connection_test: false,
+        context: None,
     }
+}
+
+#[test]
+fn legacy_cache_migrates_without_guessing_article_ownership() {
+    for version in [0, 1] {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = rusqlite::Connection::open(root.path().join("review-cache.sqlite3")).unwrap();
+        legacy.execute_batch("CREATE TABLE review_cache(cache_key TEXT PRIMARY KEY,result_json TEXT NOT NULL,checked_at INTEGER NOT NULL);").unwrap();
+        if version == 1 {
+            legacy.execute_batch("ALTER TABLE review_cache ADD COLUMN title TEXT NOT NULL DEFAULT ''; ALTER TABLE review_cache ADD COLUMN scope TEXT; PRAGMA user_version=1;").unwrap();
+        }
+        let result = parse(&response("不保存的原文", 1), "不保存的原文").unwrap();
+        legacy
+            .execute(
+                "INSERT INTO review_cache(cache_key,result_json,checked_at) VALUES('legacy',?1,?2)",
+                rusqlite::params![serde_json::to_string(&result).unwrap(), result.checked_at],
+            )
+            .unwrap();
+        drop(legacy);
+        let mut conn = cache::open(root.path()).unwrap();
+        assert!(cache::list(&conn, "article-a", now()).unwrap().is_empty());
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let context = ReviewContext {
+            entry_id: "article-a".into(),
+            title: "文章标题".into(),
+            scope: ReviewScope::Selection,
+        };
+        let cached = cache::lookup(&mut conn, "legacy", now(), Some(&context))
+            .unwrap()
+            .unwrap();
+        assert!(cached.cache_hit);
+        assert_eq!(cached.charged_tokens, Some(0));
+        let entries =
+            serde_json::to_value(cache::list(&conn, "article-a", now()).unwrap()).unwrap();
+        assert_eq!(entries[0]["title"], "文章标题");
+        assert_eq!(entries[0]["scope"], "selection");
+        assert!(!entries.to_string().contains("不保存的原文"));
+        assert!(entries[0].get("findings").is_none());
+        assert!(cache::list(&conn, "article-b", now()).unwrap().is_empty());
+        drop(conn);
+        assert_eq!(
+            cache::list(&cache::open(root.path()).unwrap(), "article-a", now())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn shared_cache_keeps_article_records_and_deletion_scopes_independent() {
+    let root = tempfile::tempdir().unwrap();
+    let mut conn = cache::open(&root.path().join("workspace-a")).unwrap();
+    let result = parse(&response("不保存的原文", 1), "不保存的原文").unwrap();
+    let a = ReviewContext {
+        entry_id: "article-a".into(),
+        title: "同名文章".into(),
+        scope: ReviewScope::Document,
+    };
+    let b = ReviewContext {
+        entry_id: "article-b".into(),
+        title: "同名文章".into(),
+        scope: ReviewScope::Selection,
+    };
+    cache::save(&mut conn, Some("shared"), &result, Some(&a)).unwrap();
+    cache::lookup(&mut conn, "shared", now(), Some(&b))
+        .unwrap()
+        .unwrap();
+    let records_a = serde_json::to_value(cache::list(&conn, "article-a", now()).unwrap()).unwrap();
+    let records_b = serde_json::to_value(cache::list(&conn, "article-b", now()).unwrap()).unwrap();
+    assert_eq!(records_a[0]["scope"], "document");
+    assert_eq!(records_b[0]["scope"], "selection");
+    assert!(cache::list(&conn, "article-c", now()).unwrap().is_empty());
+    cache::save(&mut conn, Some("only-a"), &result, Some(&a)).unwrap();
+    cache::save(&mut conn, Some("only-b"), &result, Some(&b)).unwrap();
+    let before = serde_json::to_value(cache::usage(&conn, now()).unwrap()).unwrap();
+    cache::delete(&mut conn, "article-a", Some("only-b")).unwrap();
+    assert_eq!(cache::list(&conn, "article-b", now()).unwrap().len(), 2);
+    cache::delete(&mut conn, "article-a", Some("shared")).unwrap();
+    assert_eq!(cache::list(&conn, "article-a", now()).unwrap().len(), 1);
+    assert_eq!(cache::list(&conn, "article-b", now()).unwrap().len(), 2);
+    cache::clear(&mut conn, Some("article-a")).unwrap();
+    assert!(cache::list(&conn, "article-a", now()).unwrap().is_empty());
+    assert_eq!(cache::list(&conn, "article-b", now()).unwrap().len(), 2);
+    assert!(
+        cache::lookup(&mut conn, "only-a", now(), None)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::to_value(cache::usage(&conn, now()).unwrap()).unwrap(),
+        before
+    );
+    let mut other = cache::open(&root.path().join("workspace-b")).unwrap();
+    cache::save(&mut other, Some("shared"), &result, Some(&a)).unwrap();
+    cache::clear(&mut conn, None).unwrap();
+    assert!(cache::list(&conn, "article-b", now()).unwrap().is_empty());
+    assert_eq!(
+        serde_json::to_value(cache::usage(&conn, now()).unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(cache::list(&other, "article-a", now()).unwrap().len(), 1);
+    assert!(
+        cache::list(&other, "article-a", now() + 31 * 24 * 60 * 60 * 1000)
+            .unwrap()
+            .is_empty()
+    );
+    let associations: i64 = other
+        .query_row("SELECT count(*) FROM review_cache_articles", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(associations, 0);
 }
 
 async fn mock(
@@ -207,21 +325,58 @@ async fn http_success_cache_force_scope_and_usage_are_integrated() {
     let (endpoint, server) = mock(200, response("合成文本", 1).to_string(), Duration::ZERO).await;
     let mut service = ReviewService::new(root.path().into()).unwrap();
     service.endpoint = endpoint;
+    let context = ReviewContext {
+        entry_id: "article-a".into(),
+        title: "文章标题".into(),
+        scope: ReviewScope::Selection,
+    };
     let result = service
-        .perform("workspace-a", 7, auth(), input("合成文本", false))
+        .perform(
+            "workspace-a",
+            7,
+            auth(),
+            CheckInput {
+                context: Some(&context),
+                ..input("合成文本", false)
+            },
+        )
         .await
         .unwrap();
     assert_eq!(result.charged_tokens, Some(30));
     assert!(result.cached);
     assert!(!result.cache_hit);
     assert_eq!(result.settings_revision, 7);
+    let store = cache::open(&service.directory("workspace-a")).unwrap();
+    let records = serde_json::to_value(cache::list(&store, "article-a", now()).unwrap()).unwrap();
+    assert_eq!(records[0]["title"], "文章标题");
+    assert_eq!(records[0]["scope"], "selection");
+    assert!(records[0].get("findings").is_none());
+    assert!(records[0].get("contentHash").is_none());
+    let second_article = ReviewContext {
+        entry_id: "article-b".into(),
+        title: "另一篇文章".into(),
+        scope: ReviewScope::Document,
+    };
     let cached = service
-        .perform("workspace-a", 8, auth(), input("合成文本", false))
+        .perform(
+            "workspace-a",
+            8,
+            auth(),
+            CheckInput {
+                context: Some(&second_article),
+                ..input("合成文本", false)
+            },
+        )
         .await
         .unwrap();
     assert!(cached.cache_hit);
     assert_eq!(cached.charged_tokens, Some(0));
     assert_eq!(cached.settings_revision, 8);
+    assert_eq!(cache::list(&store, "article-a", now()).unwrap().len(), 1);
+    let second_records =
+        serde_json::to_value(cache::list(&store, "article-b", now()).unwrap()).unwrap();
+    assert_eq!(second_records[0]["title"], "另一篇文章");
+    assert_eq!(second_records[0]["scope"], "document");
     service
         .perform("workspace-a", 8, auth(), input("合成文本", true))
         .await
@@ -230,7 +385,7 @@ async fn http_success_cache_force_scope_and_usage_are_integrated() {
         .perform("workspace-b", 8, auth(), input("合成文本", false))
         .await
         .unwrap();
-    let conn = cache::open(&service.directory("workspace-a")).unwrap();
+    let mut conn = cache::open(&service.directory("workspace-a")).unwrap();
     let usage = serde_json::to_value(cache::usage(&conn, now()).unwrap()).unwrap();
     assert_eq!(usage["knownTokens"], 60);
     assert_eq!(usage["successfulCalls"], 2);
@@ -240,7 +395,7 @@ async fn http_success_cache_force_scope_and_usage_are_integrated() {
         .unwrap();
     assert!(!json.contains("合成文本"));
     assert!(!json.contains("synthetic-test-key"));
-    cache::clear(&conn).unwrap();
+    cache::clear(&mut conn, None).unwrap();
     assert_eq!(
         serde_json::to_value(cache::usage(&conn, now()).unwrap()).unwrap()["knownTokens"],
         60
@@ -299,9 +454,9 @@ fn expiry_unknown_usage_and_independent_database_preserve_boundaries() {
     let mut result = parse(&response("片段", 1), "片段").unwrap();
     result.checked_at = now() - 31 * 24 * 60 * 60 * 1000;
     result.charged_tokens = None;
-    cache::save(&mut conn, Some("expired"), &result).unwrap();
+    cache::save(&mut conn, Some("expired"), &result, None).unwrap();
     assert!(
-        cache::lookup(&mut conn, "expired", now())
+        cache::lookup(&mut conn, "expired", now(), None)
             .unwrap()
             .is_none()
     );
@@ -501,7 +656,7 @@ async fn connection_tests_charge_usage_without_populating_the_article_cache() {
     assert!(!result.cached);
     let mut conn = cache::open(&service.directory("a")).unwrap();
     assert!(
-        cache::lookup(&mut conn, &cache_key("合成", 1), now())
+        cache::lookup(&mut conn, &cache_key("合成", 1), now(), None)
             .unwrap()
             .is_none()
     );
@@ -593,7 +748,7 @@ async fn live_makers_review_uses_production_service_keyring_and_cache() {
             .all(|finding| finding.range.is_some())
     );
     let mut conn = cache::open(&service.directory(&db.read(workspace_id).unwrap())).unwrap();
-    let cached = cache::lookup(&mut conn, &cache_key(text, 1), now())
+    let cached = cache::lookup(&mut conn, &cache_key(text, 1), now(), None)
         .unwrap()
         .unwrap();
     assert!(cached.cache_hit);

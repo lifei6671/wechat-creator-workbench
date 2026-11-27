@@ -45,7 +45,7 @@ use graphics::gpu_acceleration;
 use link_import::{import_clipping, import_link};
 use mcp::{McpServer, mcp_copy_config, mcp_reset_token, mcp_save, mcp_status};
 use review::{
-    ReviewService, review_check, review_clear_cache, review_test_connection, review_usage,
+    ReviewService, review_cache_delete, review_cache_list, review_check, review_clear_cache, review_test_connection, review_usage,
     settings::{review_save_settings, review_settings},
 };
 use sync::contents::{
@@ -207,6 +207,8 @@ fn main() {
             review_test_connection,
             review_usage,
             review_clear_cache,
+            review_cache_list,
+            review_cache_delete,
             app_info,
             app_update_status,
             app_update_check,

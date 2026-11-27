@@ -253,10 +253,12 @@ export const desktop = {
   onWorkspaceChanged: (callback: () => void) => listen("workspace-changed", callback),
   reviewSettings: () => invoke<ReviewSettings>("review_settings"),
   saveReviewSettings: (enabled: boolean, apiKey?: string) => invoke<ReviewSettings>("review_save_settings", { enabled, apiKey }),
-  reviewCheck: (text: string, projectionVersion: number, force = false) => invoke<ReviewResult>("review_check", { checkerId: "zhuque_text", text, projectionVersion, force }),
+  reviewCheck: (text: string, projectionVersion: number, force = false, context?: { entryId: string; title: string; scope: "document" | "selection" }) => invoke<ReviewResult>("review_check", { checkerId: "zhuque_text", text, projectionVersion, force, context }),
   reviewTestConnection: (apiKey?: string) => invoke<ReviewResult>("review_test_connection", { apiKey }),
   reviewUsage: () => invoke<ReviewUsage>("review_usage"),
-  reviewClearCache: () => invoke<void>("review_clear_cache"),
+  reviewClearCache: (entryId?: string) => invoke<void>("review_clear_cache", { entryId }),
+  reviewCacheList: (entryId: string) => invoke<ReviewCacheEntry[]>("review_cache_list", { entryId }),
+  reviewCacheDelete: (entryId: string, id: string) => invoke<void>("review_cache_delete", { entryId, id }),
   aiSettings: () => invoke<AiSettings>("ai_settings"),
   aiAgentVersions: () => invoke<[AiAgent, string | null][]>("ai_agent_versions"),
   aiAgentModels: () => invoke<[AiAgent, AiAgentModel[]][]>("ai_agent_models"),
@@ -344,4 +346,7 @@ export type ReviewResult = {
   cacheHit: boolean; chargedTokens: number | null; cached: boolean; persistenceError: string | null; settingsRevision: number;
   summary: { humanRatio: number; aiRatio: number; suspectedRatio: number; ratioConfidence: number; softmaxConfidence: number };
   findings: { id: string; category: "ai_generated" | "ai_suspected"; range: { from: number; to: number } | null; confidence: number }[];
+};
+export type ReviewCacheEntry = {
+  id: string; title: string; scope: "document" | "selection"; checkedAt: number; summary: ReviewResult["summary"];
 };
