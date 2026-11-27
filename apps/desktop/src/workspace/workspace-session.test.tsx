@@ -1894,7 +1894,8 @@ it("shows timeline article tags and navigates by counted folders and tags", asyn
     tags: [{ id: "wechat", name: "微信" }],
     articleCounts: { root: 1, folders: { closed: 1, child: 2 }, tags: { wechat: 1 }, untagged: 2 },
   });
-  const tagged = { ...entry("有标签的文章", "closed"), preview: { summary: "", image: null, tags: ["微信", "笔记"] } };
+  const tagged = { ...entry("有标签的文章", "closed"), createdAt: Date.UTC(2026, 0, 1, 10),
+    preview: { summary: "", image: null, tags: ["微信", "笔记"] } };
   const untagged = entry("无标签的文章", "child");
   vi.mocked(desktop.entries).mockImplementation(async filter => ({
     items: !filter.includePreview || filter.pinned ? [] : filter.untagged ? [untagged] : [tagged],
@@ -1916,7 +1917,9 @@ it("shows timeline article tags and navigates by counted folders and tags", asyn
     expect(container.querySelector(".timeline-entry-tags")?.textContent).toBe("微信笔记");
   });
   expect(count("#folder-row-child")).toBe("2");
-  expect(container.querySelector(".timeline-entry-tags")?.nextElementSibling?.tagName).toBe("TIME");
+  const metadata = container.querySelector(".timeline-entry-tags")?.nextElementSibling;
+  expect(metadata?.matches(".timeline-entry-meta")).toBe(true);
+  expect(metadata?.querySelector("time")?.dateTime).toBe(new Date(tagged.createdAt).toISOString());
   click('.timeline-heading [aria-label="包含子目录"]');
   expect(count("#folder-row-closed")).toBe("1");
   const [wechatRow, untaggedRow] = container.querySelectorAll<HTMLButtonElement>(".timeline-tag-row");
