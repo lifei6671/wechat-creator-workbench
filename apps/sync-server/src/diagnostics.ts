@@ -1,6 +1,7 @@
 import { operation, SyncError } from "./protocol.js";
 import { query, type BlobStore, type Database } from "./storage.js";
 import { validateContentBlobs } from "./content-blobs.js";
+import { imageSceneHash } from "./image-canvas.js";
 
 export async function diagnoseEntities(db: Database, blobs: BlobStore, afterType: string, afterId: string) {
   const rows = await query<{ entity_type: string; entity_id: string; revision: number; payload_json: string; deleted_at: number | null }>(db,
@@ -17,9 +18,15 @@ export async function diagnoseEntities(db: Database, blobs: BlobStore, afterType
     try {
       const input = operation({ operationId: "diagnostic", mutations: [{ entityType: row.entity_type, entityId: row.entity_id,
         baseRevision: row.revision, operation: row.deleted_at === null ? "upsert" : "delete", payload: data }] });
+      if (row.entity_type === "image_render" && data.sceneHash !== await imageSceneHash(data.scene)) {
+        throw new SyncError(422, "invalid_image_scene_hash", undefined, "sceneHash");
+      }
       const blobField = row.entity_type === "asset" ? "sha256"
         : row.entity_type === "entry" || row.entity_type === "collection_node" && data.kind === "text" ? "contentBlobHash" : undefined;
-      if (blobField && typeof data[blobField] === "string") {
+      const [retired]=await query<{expected:number}>(db,[`SELECT EXISTS(SELECT 1 FROM image_gc_private_heads h JOIN image_gc_copies c ON c.id=h.copy_id
+        JOIN image_gc_render_assets r ON r.sha256=c.source_sha256 WHERE h.sha256=? AND r.asset_id=? AND c.state IN ('retired','expired')
+        AND NOT EXISTS(SELECT 1 FROM image_gc_live_hashes live WHERE live.sha256=h.sha256)) AS expected`,typeof data.sha256==='string'?data.sha256:null,row.entity_id]);
+      if (blobField && typeof data[blobField] === "string" && !(row.entity_type==='asset'&&retired.expected)) {
         const [blob] = await query<{ size_bytes: number }>(db, ["SELECT size_bytes FROM sync_blobs WHERE sha256=?", data[blobField]]);
         if (!blob) throw new SyncError(422, "blob_missing", undefined, blobField);
         if (blob.size_bytes !== data[blobField === "sha256" ? "bytes" : "contentBlobSize"]) throw new SyncError(422, "blob_length_mismatch", undefined, blobField);
@@ -41,8 +48,13 @@ export async function diagnoseEntities(db: Database, blobs: BlobStore, afterType
           add("asset", data.coverAssetId, false, "asset_missing", "coverAssetId");
           for (const id of data.sourceEntryIds as string[] ?? []) add("entry", id, false, "source_entry_missing", "sourceEntryIds");
         }
-        if (row.entity_type === "entry" || row.entity_type === "collection_node") {
+        if (["entry", "collection_node", "image_project", "image_render"].includes(row.entity_type)) {
           for (const id of data.assetIds as string[] ?? []) add("asset", id, false, "asset_missing", "assetIds");
+        }
+        if (row.entity_type === "image_project") add("asset", data.baseAssetId, false, "asset_missing", "baseAssetId");
+        if (row.entity_type === "image_render") {
+          add("asset", data.outputAssetId, false, "asset_missing", "outputAssetId");
+          add("image_project", data.projectId, false, "image_project_missing", "projectId");
         }
         if (row.entity_type === "collection_node" || row.entity_type === "collection_edge") {
           add("collection", data.collectionId, true, "collection_missing", "collectionId");

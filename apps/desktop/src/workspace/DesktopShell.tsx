@@ -32,6 +32,7 @@ import { startSyncApplication } from "./sync-scheduler";
 import { defaultViewShortcut, matchesViewShortcut } from "./view-shortcut";
 import { readWorkspaceShortcuts, workspaceShortcutForEvent, workspaceShortcutLabel, type WorkspaceShortcutId } from "./workspace-shortcuts";
 import { flushSync } from "react-dom";
+import { flushSaveBarriers, hasActiveSaveBarriers } from "../editor/save-barriers";
 import { aiAvailability, ModelSettings } from "./AiSettings";
 import { AiTargetPicker } from "./AiTargetPicker";
 import { BackupPanel, backupDate, backupProgress, type PreparedBackup } from "./Backup";
@@ -343,6 +344,7 @@ export function DesktopShell() {
   const [syncWaitingReason, setSyncWaitingReason] = useState<string>();
 
   async function flushWorkspaceForSync() {
+    await flushSaveBarriers();
     if (propertiesFlush.current && !await propertiesFlush.current()) throw new Error("有内容属性未保存，请处理后重试");
     if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
     await Promise.all(writing.current);
@@ -400,6 +402,7 @@ export function DesktopShell() {
     const applied = await withSync(async () => {
       await flushWorkspaceForSync();
       const applyIncoming = async () => {
+        if (hasActiveSaveBarriers()) return;
         if (!exit.current && (await desktop.syncActivity())?.incoming) return applySync(desktop.syncApply);
       };
       try {
@@ -432,6 +435,7 @@ export function DesktopShell() {
   }
 
   const automaticSyncWaitingReason = useEffectEvent(() => {
+    if (hasActiveSaveBarriers()) return "等待关闭图片编辑窗口";
     if (!tabsRestored) return "等待工作区加载完成";
     if (exit.current) return "等待工作区保存退出";
     if (syncing.current || globalLock || syncSettingsBusy.current) return "等待当前操作完成";
@@ -1793,14 +1797,17 @@ export function DesktopShell() {
     const editor = handles.current.get(origin.entry.id);
     if (!editor?.hostImages || (image && (!image.isCurrent() || !canHostImage(target, image.src)))) return;
     const sessionId = origin.sessionId;
+    let uploaded = 0;
     const update = (change: Partial<UploadProgress & { src?: string }>) => {
       setImageUpload(previous => previous?.sessionId === sessionId ? { ...previous, ...change } : previous);
     };
     const upload = async (src: string) => {
       update({ src });
       const url = await desktop.hostImage(src, target);
+      uploaded += 1;
       setImageUpload(previous => previous?.sessionId === sessionId ? { ...previous, src: undefined, completed: previous.completed + 1 } : previous);
-      return url;
+      const asset = src.startsWith("asset://") ? await desktop.assetDetail(src.slice("asset://".length)) : null;
+      return asset?.preserveSource ? src : url;
     };
     run(() => documentButtons.run("hostImages", async () => {
       setImageUpload({ sessionId, total: image ? 1 : 0, completed: 0 });
@@ -1812,7 +1819,7 @@ export function DesktopShell() {
           finally { image.setUploading(false); }
         })());
         if (count && !await origin.flush()) throw origin.snapshot().error ?? new Error("图片链接未能保存，请重试保存");
-        return count > 0;
+        return uploaded > 0;
       } finally { setImageUpload(null); }
     }));
   }
@@ -1889,6 +1896,7 @@ export function DesktopShell() {
   );
 
   const workspaceShortcutEvent = useEffectEvent((event: KeyboardEvent) => {
+    if (event.target instanceof Element && event.target.closest(".image-canvas-dialog, .image-canvas-small-dialog")) return;
     if (event.isComposing || event.keyCode === 229 || event.getModifierState("AltGraph") || exit.current || modal || globalLock || event.defaultPrevented) return;
     if (selected && !collectionMode && matchesViewShortcut(shortcut, event)) {
       event.preventDefault(); event.stopPropagation();
@@ -1921,6 +1929,7 @@ export function DesktopShell() {
       if (!await wechatPublishing.flush()) throw new Error("有公众号配置未保存，请处理后重试");
       const failedWrite = (await waitForCollectionWrites()).find(write => write.status === "rejected");
       if (failedWrite) throw failedWrite.reason;
+      await flushSaveBarriers();
       await collectionCanvas.current?.flush();
       await desktop.beginExit();
       await Promise.allSettled(writing.current);
@@ -2495,6 +2504,7 @@ export function DesktopShell() {
                 <CollectionCanvas key={`${activeCollection.id}:${canvasRevisions.get(activeCollection.id) ?? 0}`}
                   collection={activeCollection} dark={dark}
                   revision={refreshCount} articleLocked={globalLock} previewBlocked={Boolean(modal || exitMessage || globalLock)} clipboard={editorClipboard}
+                  autoUploadImages={imageTarget?.autoUpload} assetRevision={assetsRevision}
                   canvasRef={collectionCanvas} track={trackCollectionWrite} waitForWrites={waitForCollectionWrites}
                   onOpenEntry={onOpenCollectionEntry}
                   onLoadArticle={loadCollectionArticle} onSaveArticle={saveCollectionArticle} onArticleImages={importImages}

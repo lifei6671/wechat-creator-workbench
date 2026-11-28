@@ -32,6 +32,35 @@ function MarkdownEditor({ onChange, ref, ...props }: Omit<ComponentProps<typeof 
 }
 
 const nativeHitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+it("prepares one exact image replacement, blocks edits during handoff, and keeps a single undo item", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const source = "![第一张](asset://same)\n\n![第二张](asset://same)";
+  try {
+    flushSync(() => root.render(<RichEditor entryId="image-atomic" value={source} readOnly={false}
+      ref={value => { handle = value; }} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(container.querySelectorAll(".rich-image-frame")).toHaveLength(2));
+    const second = container.querySelectorAll(".rich-image-frame")[1];
+    const event = new MouseEvent("contextmenu", { bubbles: true, button: 2 });
+    second.dispatchEvent(event);
+    const image = handle!.prepareContext(event);
+    if (!image || typeof image !== "object" || !("kind" in image) || image.kind !== "image") throw new Error("missing image context");
+    const prepared = handle!.prepareImageReplacement(image, "asset://output");
+    expect(prepared.markdown).toBe("![第一张](asset://same)\n\n![第二张](asset://output)");
+    expect(handle!.captureMarkdown().markdown).toBe(source);
+    handle!.insert("处理中输入");
+    expect(handle!.captureMarkdown().markdown).toBe(source);
+    prepared.commit();
+    expect(handle!.captureMarkdown().markdown).toBe(prepared.markdown);
+    handle!.command("undo");
+    expect(handle!.captureMarkdown().markdown).toBe(source);
+    handle!.command("redo");
+    expect(handle!.captureMarkdown().markdown).toBe(prepared.markdown);
+    expect(() => handle!.prepareImageReplacement(image, "asset://stale")).toThrow("原图片已更改");
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
 it("preserves safe embedded HTML through a partial rich clipboard copy and paste", async () => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
@@ -2754,6 +2783,24 @@ it.each(["revision", "reenable"] as const)("retries public validation after tran
     await vi.waitFor(() => expect(handle!.captureMarkdown().markdown).toContain("https://images.example.test/imported.png"));
     expect(resolveHostedImage).toHaveBeenCalledTimes(3);
     expect(onError).toHaveBeenCalledTimes(2);
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
+it("replaces a hosted canvas output with its public URL while retaining editable render identity", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  let handle: MarkdownEditorHandle | null = null;
+  const resolveHostedImage = vi.fn(async () => "https://images.example.test/output.png");
+  const readImageUploadState = vi.fn(async () => ({ pending: false, publicUrl: "https://images.example.test/output.png", preserveSource: true }));
+  try {
+    flushSync(() => root.render(<RichEditor ref={value => { handle = value; }} entryId="render-source"
+      value="![可编辑成品](asset://render-output)" readOnly={false} readImageUploadState={readImageUploadState}
+      resolveHostedImage={resolveHostedImage} onDocumentChanged={() => {}} onBlur={() => {}} />));
+    await vi.waitFor(() => expect(readImageUploadState).toHaveBeenCalled());
+    await handle!.pendingEdits();
+    expect(handle!.captureMarkdown().markdown).toBe("![可编辑成品](https://images.example.test/output.png#wcb-image=render-output)");
+    expect(resolveHostedImage).toHaveBeenCalledExactlyOnceWith("asset://render-output");
+    expect(container.querySelector<HTMLElement>(".rich-image-upload")?.hidden).toBe(true);
   } finally { flushSync(() => root.unmount()); container.remove(); }
 });
 

@@ -270,7 +270,7 @@ test("Workers + local D1/R2 bindings", { timeout: 120_000 }, async (t) => {
     const { pageBytes, credentials, retainedHash } = await runContract(base, value);
     t.diagnostic("UTF-8 pull response bytes: " + pageBytes);
     const check = async error => {
-      const response = await fetch(base + "/v1/sync/diagnostics", { headers: { ...credentials, "X-Sync-Protocol": "2" } });
+      const response = await fetch(base + "/v1/sync/diagnostics", { headers: { ...credentials, "X-Sync-Protocol": "3" } });
       assert.equal(response.status, 200);
       const result = await response.json();
       assert.ok(result.issues.some(issue => issue.entityId === "private-image" && issue.error === error), JSON.stringify(result));

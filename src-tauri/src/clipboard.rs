@@ -38,14 +38,17 @@ pub struct PastedImage {
 }
 
 #[tauri::command]
-pub fn clipboard_write(text: String) -> Result<()> {
+pub async fn clipboard_write(db: State<'_, Workspace>, assets: State<'_, Assets>, text: String) -> Result<()> {
+    let text=crate::assets::version_cleanup::protect_external(&db, &assets, &text).await?;
     Clipboard::new()
         .and_then(|mut clipboard| clipboard.set_text(text))
         .map_err(clipboard_error)
 }
 
 #[tauri::command]
-pub fn clipboard_write_html(html: String, text: String) -> Result<()> {
+pub async fn clipboard_write_html(db: State<'_, Workspace>, assets: State<'_, Assets>, html: String, text: String) -> Result<()> {
+    let html=crate::assets::version_cleanup::protect_external(&db, &assets, &html).await?;
+    let text=crate::assets::version_cleanup::protect_external(&db, &assets, &text).await?;
     Clipboard::new()
         .and_then(|mut clipboard| clipboard.set_html(html, Some(text)))
         .map_err(clipboard_error)

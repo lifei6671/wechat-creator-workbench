@@ -17,6 +17,57 @@ function pending() {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("SaveQueue", () => {
+  it("publishes an atomic image replacement only after the native commit and acknowledges its revision", async () => {
+    vi.useFakeTimers();
+    const commit = vi.fn();
+    const changed = vi.fn();
+    const queue = new SaveQueue(entry, commit, changed);
+    let localRevision = 0, markdown = "";
+    queue.bindContentProvider(() => ({ localRevision, markdown }));
+    const native = pending();
+    const installed = vi.fn(() => { markdown = "![结果](asset://result)"; queue.markContentDirty(++localRevision); });
+    const cancelled = vi.fn();
+    const save = vi.fn().mockReturnValue(native.promise);
+    const applying = queue.applyExternalContent(() => ({ markdown: "![结果](asset://result)", commit: installed, cancel: cancelled }), save);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith(4, expect.objectContaining({ contentMd: "![结果](asset://result)" }), expect.objectContaining({ localRevision: 1 }));
+    expect(installed).not.toHaveBeenCalled();
+    expect(queue.isSaving()).toBe(true);
+    const barrier = queue.flush();
+    native.resolve({ version: 5 });
+    await applying;
+    expect(await barrier).toBe(true);
+    expect(installed).toHaveBeenCalledOnce();
+    expect(queue.snapshot()).toMatchObject({ version: 5, revision: 1, savedRevision: 1, fields: { contentMd: "![结果](asset://result)" } });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(changed).toHaveBeenCalledOnce();
+    queue.dispose();
+  });
+
+  it("keeps the original document when an atomic native image commit fails", async () => {
+    const queue = new SaveQueue(entry, vi.fn(), () => {});
+    const install = vi.fn(), cancel = vi.fn();
+    const failure = { code: "VERSION_CONFLICT", message: "内容已有新版本" };
+    await expect(queue.applyExternalContent(() => ({ markdown: "结果", commit: install, cancel }), () => Promise.reject(failure))).rejects.toBe(failure);
+    expect(install).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(queue.snapshot()).toMatchObject({ version: 4, fields: { contentMd: "" }, error: failure, saving: false });
+    queue.dispose();
+  });
+
+  it("blocks stale autosave if the native receipt commits but the editor cannot acknowledge it", async () => {
+    const commit = vi.fn();
+    const queue = new SaveQueue(entry, commit, () => {});
+    await expect(queue.applyExternalContent(() => ({ markdown: "结果", commit() { throw new Error("编辑器已卸载"); }, cancel() {} }),
+      async () => ({ version: 5 }))).rejects.toThrow("编辑器已卸载");
+    expect(queue.snapshot()).toMatchObject({ version: 5, error: { code: "VERSION_CONFLICT" } });
+    expect(await queue.flush({ retry: true })).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    queue.dispose();
+  });
+
   it("captures the newest editor revision once per commit and includes concurrent metadata", async () => {
     const first = pending();
     const commit = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce({ version: 6 });

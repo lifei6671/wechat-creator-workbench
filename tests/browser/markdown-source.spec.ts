@@ -1,5 +1,81 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("keeps the default Delete behavior for a structurally required list paragraph", async ({ page }) => {
+  await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent('* 前文\n\n  > 引用'));
+  const editor = page.locator(".ProseMirror");
+  await editor.focus();
+  await editor.locator("li > p").first().evaluate(element => {
+    document.getSelection()!.selectAllChildren(element);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.keyboard.press("Backspace");
+  await expect(editor.locator("li > p").first()).toHaveText("- ");
+  await page.keyboard.press("Delete");
+  await expect(editor.locator("li")).toHaveCount(1);
+  await expect(editor.locator("blockquote")).toHaveCount(0);
+  await expect(editor.locator("li")).toContainText("引用");
+});
+
+for (const platform of ["Win32", "MacIntel"]) for (const action of ["blank-delete", "blank-backspace", "quote-backspace"]) {
+  test(`removes the empty paragraph before a quote without unwrapping it (${platform}, ${action})`, async ({ page }) => {
+    await page.addInitScript(platform => Object.defineProperty(navigator, "platform", { value: platform }), platform);
+    const markdown = "前文\n\n> **引用**\n>\n> 第二段";
+    await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent(markdown));
+    const editor = page.locator(".ProseMirror");
+    await editor.focus();
+    await editor.locator(":scope > p").first().evaluate(element => {
+      document.getSelection()!.collapse(element.firstChild, element.firstChild!.textContent!.length);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.keyboard.press("Enter");
+    await expect(editor.locator(":scope > p")).toHaveCount(3);
+    if (action === "quote-backspace") {
+      await editor.locator("blockquote strong").evaluate(element => {
+        document.getSelection()!.collapse(element.firstChild, 0);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+    }
+    await page.keyboard.press(action === "blank-delete" ? "Delete" : "Backspace");
+    await expect(editor.locator(":scope > p")).toHaveCount(2);
+    await expect(editor.locator("blockquote strong")).toHaveText("引用");
+    await expect(editor.locator("blockquote p")).toHaveCount(2);
+    await expect.poll(() => page.evaluate(() => window.markdown())).toBe(markdown);
+    const modifier = platform === "Win32" ? "Control" : "Meta";
+    await page.keyboard.press(`${modifier}+z`);
+    await expect(editor.locator(":scope > p")).toHaveCount(3);
+    await expect(editor.locator("blockquote strong")).toHaveText("引用");
+    await page.keyboard.press(`${modifier}+Shift+z`);
+    await expect.poll(() => page.evaluate(() => window.markdown())).toBe(markdown);
+  });
+}
+
+for (const platform of ["Win32", "MacIntel"]) test(`recognizes literal bold after adding a gap before ordinary text (${platform})`, async ({ page }) => {
+  await page.addInitScript(platform => Object.defineProperty(navigator, "platform", { value: platform }), platform);
+  const source = "**标题：**不到两个月斩获 2.3K Star！这款开源下载器，连 AI 大模型都能下载！";
+  await page.goto('/tests/markdown-source.html?source=' + encodeURIComponent(source));
+  const editor = page.locator(".ProseMirror");
+  await expect(editor.locator("strong")).toHaveCount(0);
+  await editor.focus();
+  await editor.locator("p").evaluate(element => {
+    const text = document.createTreeWalker(element, NodeFilter.SHOW_TEXT).nextNode()!;
+    document.getSelection()!.collapse(text, text.textContent!.indexOf("不到"));
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.keyboard.press("Space");
+  await expect(editor.locator("strong")).toHaveText("标题：");
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe(source.replace("**不到", "** 不到"));
+  await expect(editor).toBeFocused();
+  const modifier = platform === "Win32" ? "Control" : "Meta";
+  await page.keyboard.press(`${modifier}+z`);
+  await expect(editor.locator("strong")).toHaveCount(0);
+  await expect(editor.locator("p")).toHaveText(source);
+  await page.keyboard.press(`${modifier}+Shift+z`);
+  await expect(editor.locator("strong")).toHaveText("标题：");
+  await page.keyboard.insertText("新增");
+  await expect(editor.locator("strong")).toHaveText("标题：");
+  await expect.poll(() => page.evaluate(() => window.markdown())).toBe(source.replace("**不到", "** 新增不到"));
+});
+
 for (const [platform, modifier] of [["Win32", "Control"], ["MacIntel", "Meta"]]) for (const delay of [0, 600]) {
   test(`undoes source edits after a reading shortcut round trip (${platform}, delay=${delay})`, async ({ page }) => {
     await page.addInitScript(platform => Object.defineProperty(navigator, "platform", { value: platform }), platform);

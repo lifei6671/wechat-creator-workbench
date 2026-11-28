@@ -12,19 +12,22 @@ export async function localFiles(directory: string): Promise<BlobStore> {
   await mkdir(directory, { recursive: true });
   return {
     async head(hash) {
-      try { return { size: (await stat(join(directory, hash))).size }; }
+      try {
+        const file = await stat(join(directory, hash));
+        return { size: file.size, version: `${file.dev}:${file.ino}:${file.mtimeMs}:${file.size}` };
+      }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
       }
     },
-    async put(hash, size, source) {
+    async put(hash, size, source, checksum = hash) {
       const staged = join(directory, "." + randomUUID());
       const digest = createHash("sha256");
       let received = 0;
       try {
         await pipeline(
-          Readable.fromWeb(source as NodeReadableStream<Uint8Array>),
+          source instanceof Uint8Array ? Readable.from([source]) : Readable.fromWeb(source as NodeReadableStream<Uint8Array>),
           new Transform({
             transform(chunk: Buffer, _encoding, callback) {
               received += chunk.length;
@@ -39,7 +42,9 @@ export async function localFiles(directory: string): Promise<BlobStore> {
           createWriteStream(staged, { flags: "wx", mode: 0o600 }),
         );
         if (received !== size) throw new SyncError(400, "blob_length_mismatch");
-        if (digest.digest("hex") !== hash) throw new SyncError(422, "blob_checksum_mismatch");
+        if (digest.digest("hex") !== checksum) throw new SyncError(422, "blob_checksum_mismatch");
+        const file = await open(staged, "r+");
+        try { await file.sync(); } finally { await file.close(); }
         await rename(staged, join(directory, hash));
       } finally {
         await rm(staged, { force: true });
@@ -54,5 +59,6 @@ export async function localFiles(directory: string): Promise<BlobStore> {
         throw error;
       }
     },
+    remove: key => rm(join(directory, key), { force: true }),
   };
 }

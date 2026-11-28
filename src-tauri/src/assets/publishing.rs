@@ -218,6 +218,7 @@ pub async fn wechat_export_html(
     html: String,
     images: Vec<ExportImage>,
 ) -> Result<bool> {
+    let html=super::version_cleanup::protect_external(&db, &assets, &html).await?;
     let files = db.read(|conn| {
         let mut files = BTreeMap::new();
         for image in images {

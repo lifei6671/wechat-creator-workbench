@@ -83,7 +83,7 @@ for (const platform of ["cloudflare", "vps"]) {
   }
   writeFileSync(join(directory, "third-party.json"), JSON.stringify(licenses, null, 2));
   writeFileSync(join(directory, "version.json"), JSON.stringify({ version, commit: process.env.GITHUB_SHA
-    || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), protocol: 2, platform }, null, 2));
+    || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), protocol: 3, platform }, null, 2));
   cpSync(join(root, `scripts/release-templates/${platform}.md`), join(directory, "README.md"));
   run("tar", ["-czf", join(output, name + ".tar.gz"), "-C", dirname(directory), name], root);
 }

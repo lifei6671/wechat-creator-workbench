@@ -16,7 +16,7 @@ import { CaseSensitive, ChevronDown, ChevronRight, ChevronUp, Regex, Replace, Re
 import { SearchQuery, type SearchResult } from "prosemirror-search";
 import { runCommand, textEditingScope, type EditorCommand } from "./commands";
 import { clipboardMarkdownCtx, hrefPattern, richCommonmark, richSchema } from "./schema";
-import { imageContext, imagePattern, prepareImageContext, type EditorImages, type ImageContext } from "./image-view";
+import { imageContext, imagePattern, imageReplacement, prepareImageContext, type EditorImages, type ImageContext } from "./image-view";
 import { editorPresentation, foldedSections, showContextCaret } from "./presentation";
 import { editorOutline, lastBodyBlock } from "./outline";
 import { cellParagraph, isTableSlice, prepareTableContext, preservesTableSelection, replaceSelectedCells, runTableAction, tableView, type TableAction, type TableContext } from "./table-view";
@@ -56,6 +56,11 @@ export interface EditorTarget {
 export type AiContextScope = "selection" | "section" | "document";
 export type AiEditorContext = EditorTarget & { scope: AiContextScope; headingPath: string[] };
 export interface MarkdownSnapshot { markdown: string; localRevision: number }
+export interface PreparedImageReplacement {
+  markdown: string;
+  commit(): void;
+  cancel(): void;
+}
 
 type OutlineActions = ReturnType<typeof editorOutline>["actions"];
 
@@ -71,6 +76,7 @@ export interface MarkdownEditorHandle extends OutlineActions {
   clearSearchHit(): void;
   target(scope?: "document"): EditorTarget;
   captureMarkdown(): MarkdownSnapshot;
+  prepareImageReplacement(image: ImageContext, url: string): PreparedImageReplacement;
   pendingEdits(): Promise<unknown> | undefined;
   captureDocumentMatch(): () => boolean;
   captureContext(scope: AiContextScope): AiEditorContext | null;
@@ -104,6 +110,7 @@ export interface ImageUploadState {
   pending: boolean;
   publicUrl?: string | null;
   error?: string | null;
+  preserveSource?: boolean;
 }
 
 interface Props extends EditorImages {
@@ -633,6 +640,7 @@ export function MarkdownEditor(props: Props) {
     let disposed = false;
     let uploadRequest = 0;
     const publicChecks = new Map<string, Promise<string>>();
+    let externalImageTransaction: Transaction | undefined;
     const uploadErrors = new Map<string, string>();
     let detachRef: (() => void) | undefined;
     function publish(doc: ProseNode) {
@@ -808,6 +816,36 @@ export function MarkdownEditor(props: Props) {
             keydown: (view, event) => {
               if (view.composing || event.isComposing || event.keyCode === 229) return false;
               const selection = view.state.selection;
+              if (view.editable && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+                && (event.key === "Backspace" || event.key === "Delete") && selection instanceof TextSelection && selection.$cursor) {
+                const cursor = selection.$cursor;
+                let from: number | undefined, to: number | undefined;
+                if (cursor.parent.type.name === "paragraph" && !cursor.parent.content.size
+                  && view.state.doc.resolve(cursor.after()).nodeAfter?.type.name === "blockquote") {
+                  from = cursor.before();
+                  to = cursor.after();
+                } else if (event.key === "Backspace" && !cursor.parentOffset) {
+                  // Only the first textblock in the quote can consume the empty paragraph before it.
+                  for (let depth = cursor.depth - 1; depth > 0 && cursor.index(depth) === 0; depth--) {
+                    if (cursor.node(depth).type.name !== "blockquote") continue;
+                    const boundary = cursor.before(depth);
+                    const previous = view.state.doc.resolve(boundary).nodeBefore;
+                    if (previous?.type.name === "paragraph" && !previous.content.size) {
+                      from = boundary - previous.nodeSize;
+                      to = boundary;
+                      break;
+                    }
+                  }
+                }
+                if (from !== undefined && to !== undefined) {
+                  const boundary = view.state.doc.resolve(from);
+                  if (!boundary.parent.canReplace(boundary.index(), boundary.index() + 1)) return false;
+                  event.preventDefault();
+                  const tr = closeHistory(view.state.tr).delete(from, to);
+                  view.dispatch(tr.setSelection(Selection.near(tr.doc.resolve(from), 1)).scrollIntoView());
+                  return true;
+                }
+              }
               if (view.editable && event.key === "Enter" && selection instanceof NodeSelection && selection.node.type.name === "footnote_reference") {
                 event.preventDefault();
                 showFootnote(view, selection.from, selection.node.attrs.label);
@@ -1020,6 +1058,7 @@ export function MarkdownEditor(props: Props) {
           init: () => 0,
           apply: (tr, value) => {
             if (!tr.docChanged) return value;
+            if (isHistoryTransaction(tr)) queueMicrotask(() => { if (!disposed) syncUploads.current?.(); });
             if (outlineListeners.size) outline?.mapTransaction(tr);
             for (const [id, range] of pending) {
               const mapped = mapRange(range, tr);
@@ -1041,7 +1080,8 @@ export function MarkdownEditor(props: Props) {
             return tr.getMeta(documentLayout) ? value : value + 1;
           },
         },
-        filterTransaction: tr => !tr.docChanged || !latest.current.readOnly || Boolean(tr.getMeta(documentLayout)) || Boolean(tr.getMeta(imageUploadUpdate)),
+        filterTransaction: tr => !tr.docChanged || ((!externalImageTransaction || tr === externalImageTransaction)
+          && (!latest.current.readOnly || tr === externalImageTransaction || Boolean(tr.getMeta(documentLayout)) || Boolean(tr.getMeta(imageUploadUpdate)))),
         view: () => ({
           update(view, previous) {
             if (!view.composing || !view.editable) resumeCompositionEdits();
@@ -1135,6 +1175,30 @@ export function MarkdownEditor(props: Props) {
           const { doc } = view.state;
           if (lastSnapshot.doc !== doc) lastSnapshot = { doc, markdown: publish(doc) };
           return { markdown: lastSnapshot.markdown, localRevision: revision.getState(view.state)! };
+        },
+        prepareImageReplacement(image, url) {
+          if (disposed || externalImageTransaction) throw new Error("编辑器正在处理其他图片操作");
+          const tr = imageReplacement(view, image, url);
+          if (!tr) throw new Error("原图片已更改或不可编辑，请重新打开图片编辑");
+          const original = view.state.doc;
+          externalImageTransaction = closeHistory(tr);
+          let active = true;
+          const cancel = () => {
+            if (!active) return;
+            active = false;
+            externalImageTransaction = undefined;
+          };
+          return {
+            markdown: publish(tr.doc),
+            commit() {
+              if (!active || disposed || view.isDestroyed || view.state.doc !== original) throw new Error("正文编辑会话已改变，请重新打开文章");
+              view.dispatch(tr);
+              cancel();
+              view.dispatch(closeHistory(view.state.tr));
+              syncUploads.current?.();
+            },
+            cancel,
+          };
         },
         captureDocumentMatch() {
           const { doc } = view.state;
@@ -1470,8 +1534,13 @@ export function MarkdownEditor(props: Props) {
               check = attempt;
               publicChecks.set(key, check);
             }
-            const url = await check;
+            let url = await check;
             if (!current()) return;
+            if (state.preserveSource) {
+              const hosted = new URL(url);
+              hosted.hash = `wcb-image=${src.slice("asset://".length)}`;
+              url = hosted.href;
+            }
             const tr = view.state.tr;
             view.state.doc.descendants((node, pos) => {
               if (nodes.has(node) && node.attrs.src === src && url !== src) tr.setNodeAttribute(pos, "src", url);

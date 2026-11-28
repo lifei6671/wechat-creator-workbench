@@ -11,6 +11,7 @@ mod content;
 mod db;
 mod github_import;
 mod graphics;
+mod image_canvas;
 mod link_import;
 mod mcp;
 mod review;
@@ -28,6 +29,7 @@ use ai::{
 };
 use assets::{Assets, commands::*, publishing::*};
 use assets::integrity::{asset_integrity,asset_recover_original};
+use assets::version_cleanup::{image_version_status,image_version_keep,image_version_restore};
 use backup::{
     Backups, backup_commit_restore, backup_configure, backup_create, backup_discard_restore,
     backup_export_workspace, backup_import_workspace, backup_list, backup_prepare_restore,
@@ -42,6 +44,7 @@ use content::recovery::{editor_recovery_put, editor_recovery_list, editor_recove
 use content::trash::{empty_trash, trash_retention};
 use db::Workspace;
 use graphics::gpu_acceleration;
+use image_canvas::{image_canvas_import,image_canvas_info,image_canvas_read,image_project_open,image_project_save,image_render_prepare,image_render_commit};
 use link_import::{import_clipping, import_link};
 use mcp::{McpServer, mcp_copy_config, mcp_reset_token, mcp_save, mcp_status};
 use review::{
@@ -53,9 +56,9 @@ use sync::contents::{
     sync_resolve, sync_run,
 };
 use sync::{
-    sync_connect, sync_connection_info, sync_create_access_key, sync_create_recovery_key,
-    sync_default_device_name, sync_devices, sync_generate_secret, sync_reauthorize, sync_recover,
-    sync_revoke_device, sync_status, sync_wake,
+    sync_change_url, sync_connect, sync_connection_info, sync_create_access_key,
+    sync_create_recovery_key, sync_default_device_name, sync_devices, sync_generate_secret,
+    sync_reauthorize, sync_recover, sync_revoke_device, sync_status, sync_wake,
 };
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
@@ -263,8 +266,16 @@ fn main() {
             gpu_acceleration,
             close_to_tray,
             asset_import,
+            image_canvas_import,
+            image_canvas_read,
+            image_canvas_info,
+            image_project_open,
+            image_project_save,
+            image_render_prepare,
+            image_render_commit,
             asset_library,
             asset_integrity, asset_recover_original,
+            image_version_status, image_version_keep, image_version_restore,
             asset_detail,
             asset_upload_progress,
             asset_thumbnail,
@@ -296,6 +307,7 @@ fn main() {
             mcp_copy_config,
             mcp_reset_token,
             sync_status,
+            sync_change_url,
             sync_default_device_name,
             sync_connect,
             sync_recover,

@@ -29,7 +29,7 @@ async fn restored_original_can_requeue_a_rejected_initialization_asset() {
     // This file was created by the test inside its own temporary asset root.
     std::fs::remove_file(&path).unwrap();
     let sync = SyncConnection::new().unwrap();
-    let remote = Remote {
+    let remote = Remote { image_gc: 0,
         sync: &sync,
         base: Url::parse("http://127.0.0.1:1/").unwrap(),
         token: "isolated".into(),
@@ -120,7 +120,7 @@ async fn network_failure_keeps_the_frozen_operation_and_dirty_generation() {
     let (operation, generations) = stage_outbox(&db).unwrap().unwrap();
     let frozen = encode(&operation).unwrap();
     let sync = SyncConnection::new().unwrap();
-    let remote = Remote {
+    let remote = Remote { image_gc: 0,
         sync: &sync,
         base: Url::parse("http://127.0.0.1:1/").unwrap(),
         token: "isolated".into(),

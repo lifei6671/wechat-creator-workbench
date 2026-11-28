@@ -2767,6 +2767,20 @@ it("uses persisted custom workspace keys and honors disabled defaults", async ()
   await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
 });
 
+it("keeps workspace capture shortcuts outside the image canvas keyboard scope", async () => {
+  saveDocumentTabs(workspaceId, { ids: ["canvas-keys"], activeId: "canvas-keys" });
+  vi.spyOn(desktop, "entry").mockImplementation(async id => entry(id));
+  flushSync(() => root.render(<DesktopShell />));
+  await vi.waitFor(() => expect(editorQueues.has("canvas-keys")).toBe(true));
+  const dialog = container.appendChild(document.createElement("div")); dialog.className = "image-canvas-dialog";
+  const button = dialog.appendChild(document.createElement("button")); button.focus();
+  const event = new KeyboardEvent("keydown", { ctrlKey: commandKey !== "⌘", metaKey: commandKey === "⌘", key: "r", code: "KeyR", bubbles: true, cancelable: true });
+  flushSync(() => button.dispatchEvent(event));
+  expect(event.defaultPrevented).toBe(false);
+  expect(container.querySelector(".reading-toggle")?.getAttribute("aria-pressed")).toBe("false");
+  expect(openTabs()).toEqual(["canvas-keys"]);
+});
+
 it("toggles reading with Mod+R and preview with Mod+W without reloading or closing the current tab", async () => {
   localStorage.setItem("links-to-footnotes", "false");
   saveDocumentTabs(workspaceId, { ids: ["mode-keys"], activeId: "mode-keys" });

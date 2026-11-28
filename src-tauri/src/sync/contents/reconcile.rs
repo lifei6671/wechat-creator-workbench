@@ -152,6 +152,8 @@ fn queue_untracked(conn: &Connection) -> Result<()> {
         ("collection", "collections"),
         ("collection_node", "collection_nodes"),
         ("collection_edge", "collection_edges"),
+        ("image_project", "image_projects"),
+        ("image_render", "image_renders"),
     ] {
         conn.execute(&format!(
             "INSERT OR IGNORE INTO sync_dirty (entity_type,entity_id,generation)
@@ -226,6 +228,8 @@ fn dependencies_available(
     let payload = &entity.payload;
     let fields: &[(Kind, &str)] = match entity.key.entity_type {
         Kind::Category => &[(Kind::Category, "parentId")],
+        Kind::ImageProject => &[(Kind::Asset,"baseAssetId")],
+        Kind::ImageRender => &[(Kind::ImageProject,"projectId"),(Kind::Asset,"outputAssetId")],
         Kind::Entry => &[
             (Kind::Category, "categoryId"),
             (Kind::Asset, "coverAssetId"),
@@ -256,9 +260,11 @@ fn dependencies_available(
     }
     for (kind, id) in references {
         if let Some(target) = pending.get(&(kind.key(), id)) {
-            if target.deleted_at.is_some() && kind != Kind::Entry {
+            if target.deleted_at.is_some() && !matches!(kind, Kind::Entry|Kind::ImageProject) {
                 return Ok(false);
             }
+        } else if kind == Kind::ImageProject {
+            if !conn.query_row("SELECT EXISTS(SELECT 1 FROM image_projects WHERE id=?1)",[id],|row|row.get::<_,bool>(0))? { return Ok(false); }
         } else if local_snapshot(
             conn,
             &Key {

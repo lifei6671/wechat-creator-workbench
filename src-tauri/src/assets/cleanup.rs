@@ -53,7 +53,24 @@ impl Assets {
             if self.cleanup_stopped.is_cancelled() { return Ok(()); }
             self.remove_group(db,&group)?;
         }
-        if !self.cleanup_stopped.is_cancelled() { self.remove_orphaned_thumbnails(db)?; }
+        if !self.cleanup_stopped.is_cancelled() { self.expire_canvas_staging(db)?; self.remove_orphaned_thumbnails(db)?; }
+        Ok(())
+    }
+
+    fn expire_canvas_staging(&self, db:&Workspace)->Result<()> {
+        db.cleanup_assets(|tx| {
+            let cutoff=now()-GRACE_MS;
+            let mut query=tx.prepare("SELECT DISTINCT sha256,relative_path FROM image_render_staging WHERE created_at<=?1")?;
+            let expired=query.query_map([cutoff],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            tx.execute("DELETE FROM image_render_staging WHERE created_at<=?1",[cutoff])?;
+            let retained=protected(tx)?;
+            for (hash,path) in expired {
+                if !retained.contains(&hash) && !tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE sha256=?1)",[&hash],|r|r.get::<_,bool>(0))? {
+                    remove_file(&self.root.join(path))?;
+                }
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -153,16 +170,38 @@ const RECOVERY_PAYLOADS: &str = "SELECT fields_json AS payload FROM editor_recov
     UNION ALL SELECT remote_json->'$.payload' FROM sync_issues WHERE remote_json IS NOT NULL";
 
 pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    reference_roots(conn, true)
+}
+
+pub(super) fn reference_roots(conn: &Connection, include_all_renders: bool) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    roots(conn,include_all_renders,true)
+}
+
+pub(super) fn committed_roots(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    roots(conn,false,false)
+}
+
+fn roots(conn: &Connection, include_all_renders: bool, include_recovery:bool) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    let bodies=if include_recovery {format!(
+        "WITH recovery_payloads AS ({RECOVERY_PAYLOADS}) {ENTRY_BODIES} UNION ALL SELECT content_md FROM collection_nodes WHERE kind='text'
+        UNION ALL SELECT payload->>'$.contentMd' FROM recovery_payloads WHERE json_type(payload,'$.contentMd')='text'"
+    )} else {format!("{ENTRY_BODIES} UNION ALL SELECT content_md FROM collection_nodes WHERE kind='text'")};
     let (mut ids, mut hashes) = markdown_references(
         conn,
-        &format!(
-            "WITH recovery_payloads AS ({RECOVERY_PAYLOADS}) {ENTRY_BODIES} UNION ALL SELECT content_md FROM collection_nodes WHERE kind='text'
-             UNION ALL SELECT payload->>'$.contentMd' FROM recovery_payloads WHERE json_type(payload,'$.contentMd')='text'"
-        ),
+        &bodies,
     )?;
     let mut screenshots = conn.prepare(
         "SELECT DISTINCT a.id,a.sha256 FROM collection_nodes n JOIN assets a ON a.id=n.asset_id",
     )?;
+    let engineering_sql = if include_all_renders {
+        "SELECT asset_id FROM image_project_assets UNION SELECT output_asset_id FROM image_renders UNION SELECT value FROM image_renders,json_each(asset_ids_json) UNION SELECT output_asset_id FROM image_render_staging UNION SELECT value FROM image_render_staging,json_each(asset_ids_json)"
+    } else {
+        "SELECT asset_id FROM image_project_assets UNION SELECT output_asset_id FROM image_render_staging UNION SELECT value FROM image_render_staging,json_each(asset_ids_json)"
+    };
+    let mut engineering=conn.prepare(engineering_sql)?;
+    for asset in engineering.query_map([],|row|row.get::<_,String>(0))? { ids.insert(asset?); }
+    let mut staging=conn.prepare("SELECT sha256 FROM image_render_staging")?;
+    for hash in staging.query_map([],|row|row.get::<_,String>(0))? { hashes.insert(hash?); }
     for item in screenshots.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
     })? {
@@ -170,12 +209,14 @@ pub(super) fn referenced(conn: &Connection) -> Result<(BTreeSet<String>, BTreeSe
         ids.insert(id);
         hashes.extend(hash);
     }
+    if include_recovery {
     let mut query=conn.prepare(&format!("WITH recovery_payloads AS ({RECOVERY_PAYLOADS}) SELECT payload FROM recovery_payloads WHERE payload IS NOT NULL"))?;
     for raw in query.query_map([],|row|row.get::<_,String>(0))? {
         let data:serde_json::Value=serde_json::from_str(&raw?).map_err(|_|crate::db::AppError::new("ASSET_REFERENCES","无法读取素材保护引用"))?;
         for field in ["coverAssetId","assetId"] { if let Some(id)=data[field].as_str() { ids.insert(id.into()); } }
         for id in data["assetIds"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str) { ids.insert(id.into()); }
         if let Some(hash)=data["sha256"].as_str() { hashes.insert(hash.into()); }
+    }
     }
     let mut hash=conn.prepare_cached("SELECT sha256 FROM assets WHERE id=?1 AND sha256 IS NOT NULL")?;
     for id in &ids {
@@ -225,7 +266,7 @@ fn markdown_references(
             hashes.insert(hash);
         }
     }
-    let mut aliases = conn.prepare("SELECT url,sha256 FROM asset_urls")?;
+    let mut aliases = conn.prepare("SELECT url,sha256 FROM asset_urls UNION SELECT payload_json->>'$.publicUrl',sha256 FROM image_gc_remote WHERE payload_json->>'$.publicUrl' IS NOT NULL")?;
     for alias in aliases.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })? {

@@ -1,7 +1,8 @@
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { validateImagePayload } from "./image-canvas.js";
 
 export const KiB = 1024;
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const MiB = 1024 * KiB;
 export const MAX_PUSH_BYTES = MiB;
 export const MAX_BLOB_BYTES = 25 * MiB;
@@ -49,7 +50,8 @@ export function queryInteger(value: string | undefined, fallback: number): numbe
 
 export function entityType(value: unknown) {
   if (value !== "asset" && value !== "category" && value !== "entry" && value !== "collection"
-      && value !== "collection_node" && value !== "collection_edge" && value !== "wechat_publication_defaults") invalid("unsupported_entity");
+      && value !== "collection_node" && value !== "collection_edge" && value !== "wechat_publication_defaults"
+      && value !== "image_project" && value !== "image_render") invalid("unsupported_entity");
   return value;
 }
 
@@ -79,7 +81,7 @@ function mutation(value: unknown, validatePayload: boolean) {
   const baseRevision = integer(input.baseRevision);
   const operation = input.operation;
   if (type === "wechat_publication_defaults" && (entityId !== "default" || operation !== "upsert")) invalid("invalid_publication_defaults");
-  if (operation !== "upsert" && !(operation === "delete" && type !== "asset")
+  if (operation !== "upsert" && !(operation === "delete" && type !== "asset" && type !== "image_render")
       && !(operation === "restore" && type === "entry")) {
     invalid("invalid_operation");
   }
@@ -146,6 +148,7 @@ function mutation(value: unknown, validatePayload: boolean) {
     if (["viewport", "viewportX", "viewportY", "viewportZoom"].some(key => key in payload)) invalid("invalid_collection");
   }
   if (payload && type === "collection_node") canvasNode(payload);
+  if (payload && (type === "image_project" || type === "image_render")) validateImagePayload(type, payload);
   if (payload && type === "collection_edge") {
     id(payload.collectionId);
     if (id(payload.sourceNodeId) === id(payload.targetNodeId) || typeof payload.label !== "string" ||

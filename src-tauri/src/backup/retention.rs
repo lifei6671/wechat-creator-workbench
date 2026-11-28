@@ -41,7 +41,8 @@ pub(super) fn reserve(conn: &Connection, scope: &str, snapshot: &str) -> Result<
         "INSERT INTO backup_asset_manifests VALUES(?1,?2,'pending',?3)",
         params![scope, snapshot, now()],
     )?;
-    conn.execute("INSERT INTO backup_asset_references SELECT ?1,?2,sha256 FROM assets WHERE sha256 IS NOT NULL GROUP BY sha256",params![scope,snapshot])?;
+    conn.execute("INSERT INTO backup_asset_references SELECT ?1,?2,sha256 FROM assets WHERE sha256 IS NOT NULL
+        AND NOT EXISTS(SELECT 1 FROM image_version_cleanup c WHERE c.sha256=assets.sha256 AND c.state IN ('removed','expired')) GROUP BY sha256",params![scope,snapshot])?;
     Ok(())
 }
 

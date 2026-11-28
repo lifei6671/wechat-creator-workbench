@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { runImageCanvasContract } from "./image-canvas-contract.mjs";
 
 const digest = (data) => createHash("sha256").update(data).digest("hex");
 const deviceToken = () => randomBytes(32).toString("hex");
@@ -14,7 +15,7 @@ const operation = (...mutations) => ({ operationId: randomUUID(), mutations });
 
 export async function runContract(base, setupSecret) {
   const request = async (path, method = "GET", headers = {}, data) => {
-    headers = { "X-Sync-Protocol": "2", ...headers };
+    headers = { "X-Sync-Protocol": "3", ...headers };
     const json = data !== undefined && !Buffer.isBuffer(data);
     let response;
     let bytes;
@@ -39,7 +40,7 @@ export async function runContract(base, setupSecret) {
     return res.body;
   };
   const meta = await ok(200, "meta");
-  assert.equal(meta.protocolVersion, 2);
+  assert.equal(meta.protocolVersion, 3);
   assert.equal((await request("devices", "GET", { "X-Sync-Protocol": "1" })).status, 426);
   assert.equal((await request("devices", "GET", { "X-Sync-Protocol": "" })).status, 426);
   assert.equal(meta.canvasSync, true);
@@ -87,7 +88,7 @@ export async function runContract(base, setupSecret) {
   await ok(409, "sync/seed", "POST", b, { action: "begin" });
   await ok(409, "sync/bootstrap", "GET", b);
   const push = async (who, ...operations) => (await ok(200, "sync/push", "POST", who, {
-    protocolVersion: 2, cursor: 0, operations,
+    protocolVersion: 3, cursor: 0, operations,
   })).results;
   const seed = operation(category("root", "Topics"), entry("draft", "初稿", 0, "root"));
   const [initial] = await push(a, seed);
@@ -297,7 +298,7 @@ export async function runContract(base, setupSecret) {
   for (const invalid of [
     { ...defaults, entityId: "other" }, { ...defaults, operation: "delete" },
     { ...defaults, payload: { ...defaults.payload, recommendationCount: 0 } },
-  ]) await ok(400, "sync/push", "POST", a, { protocolVersion: 2, operations: [operation(invalid)] });
+  ]) await ok(400, "sync/push", "POST", a, { protocolVersion: 3, operations: [operation(invalid)] });
   const publication = { schemaVersion: 1, recommendations: { enabled: true, mode: "manual", countOverride: null, inputFingerprint: null,
     items: [{ entryId: "past", title: "往期文章", url: "https://mp.weixin.qq.com/s?__biz=a&mid=1&idx=1&sn=complete" }] } };
   const configured = entry("publication-roundtrip", "正文不追加推荐"); configured.payload.wechatPublication = publication;
@@ -309,9 +310,10 @@ export async function runContract(base, setupSecret) {
   assert.deepEqual((await ok(200, "sync/entities/entry/publication-roundtrip", "GET", a)).payload.wechatPublication.recommendations.items, []);
   const invalidPublication = { ...configured, payload: { ...configured.payload, wechatPublication: { ...publication,
     recommendations: { ...publication.recommendations, items: [{ entryId: "past", title: "外站", url: "https://example.com/article" }] } } } };
-  await ok(400, "sync/push", "POST", a, { protocolVersion: 2, operations: [operation(invalidPublication)] });
-  await ok(400, "sync/push", "POST", a, { protocolVersion: 2, operations: [operation({ ...configured,
+  await ok(400, "sync/push", "POST", a, { protocolVersion: 3, operations: [operation(invalidPublication)] });
+  await ok(400, "sync/push", "POST", a, { protocolVersion: 3, operations: [operation({ ...configured,
     payload: { ...configured.payload, wechatPublication: { ...publication, recommendations: { ...publication.recommendations, mode: ["auto"] } } } })] });
+  await runImageCanvasContract({ ok, push, a, b, lookup, deviceId: first.deviceId });
   await ok(204, "devices/" + second.deviceId, "DELETE", a);
   await ok(401, "blobs/" + hash, "GET", b);
   await ok(401, "sync/pull", "GET", b);

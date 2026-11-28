@@ -9,11 +9,16 @@ import { SyncStatus } from "./SyncStatus";
 const conflictLabels: Record<SyncConflict["entityType"], string> = {
   entry: "文稿冲突", category: "目录冲突", asset: "素材冲突",
   collection: "专题冲突", collection_node: "画布卡片冲突", collection_edge: "画布连线冲突", wechat_publication_defaults: "公众号默认设置冲突",
+  image_project: "图片工程冲突", image_render: "图片成品冲突",
 };
 
 function canvasVersion(type: SyncConflict["entityType"], version: SyncConflict["local"], deleted: boolean) {
   if (deleted || !version) return "此项已删除";
   if (type === "wechat_publication_defaults") return `默认生成数量：${version.recommendationCount} 篇`;
+  if (type === "image_project" || type === "image_render") {
+    const scene = version.scene;
+    return scene ? `画板：${scene.artboard.width} × ${scene.artboard.height}\n图片：${scene.layers.length} 张` : "工程内容不可用";
+  }
   if (type === "collection") return `标题：${version.title}\n说明：${version.description}`;
   if (type === "collection_edge") return `连线文字：${version.label}\n起点：${version.sourceNodeId}\n终点：${version.targetNodeId}`;
   const kinds: Record<string, string> = { text: "文字", entry: "文章引用", image: "图片", web: "网页" };
@@ -55,13 +60,15 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
   const [activity, setActivity] = useState<SyncActivity | null>();
   const [devices, setDevices] = useState<SyncDevices>();
   const [url, setUrl] = useState("");
+  const [addressDraft, setAddressDraft] = useState<{ saved: string; value: string }>();
   const [name, setName] = useState<string>();
   const [code, setCode] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
-  const [busy, setBusy] = useState<"connect" | "reauthorize" | "secret" | "info" | "access" | "recovery" | "recover" | "revoke" | "sync" | "resolve" | "rebuild" | "reveal">();
+  const [busy, setBusy] = useState<"address" | "connect" | "reauthorize" | "secret" | "info" | "access" | "recovery" | "recover" | "revoke" | "sync" | "resolve" | "rebuild" | "reveal">();
   const { start, finish, label: buttonLabel, props: buttonProps } = useSettingsButtonFeedback();
   const blocked = Boolean(busy) || applicationBusy;
   const [error, setError] = useState("");
+  const [addressError, setAddressError] = useState("");
   const [confirm, setConfirm] = useState<SyncDevice>();
   const [recoveryArchive, setRecoveryArchive] = useState("");
   const [needsReconnect, setNeedsReconnect] = useState(false);
@@ -122,13 +129,17 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     setBusy(kind);
     onBusyChange?.(true);
     setError("");
+    setAddressError("");
     try {
       await operation();
       finish(key, true);
     } catch (failure) {
       finish(key, false);
-      setError(errorMessage(failure));
-      if (credentialRejected(failure)) setNeedsReconnect(true);
+      if (kind === "address") setAddressError(errorMessage(failure));
+      else {
+        setError(errorMessage(failure));
+        if (credentialRejected(failure)) setNeedsReconnect(true);
+      }
     } finally {
       setBusy(undefined);
       onBusyChange?.(false);
@@ -166,6 +177,7 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
   </div>;
   const deviceName = name ?? active.find(device => device.deviceId === devices?.currentDeviceId)?.name ?? "";
   const lastExchangeAt = activity?.lastExchangeAt;
+  const boundUrl = addressDraft && addressDraft.saved === binding?.url ? addressDraft.value : binding?.url ?? "";
   return <div className="settings-card sync-settings">
     <SettingRow label="连接状态" hint={binding?.pauseReason ? pauseLabels[binding.pauseReason] : undefined}>
       {() => <SyncStatus binding={binding} activity={activity} reconnect={needsReconnect} error={error || automaticError} waitingReason={waitingReason} />}
@@ -176,9 +188,25 @@ export function SyncSettings({ onSync, onResolve, onRebuild, automaticError, wai
     {binding && activity?.pendingCount !== undefined && <SettingRow label={`待上传 ${activity.pendingCount} 项`}>
       {() => <span className="muted-text">需处理 {activity.issues} 项</span>}
     </SettingRow>}
-    {binding && <SettingRow id="sync-bound-url" label="服务地址">
-      {() => <TextField.Root id="sync-bound-url" readOnly value={binding.url} />}
-    </SettingRow>}
+    {binding && <form onSubmit={event => {
+      event.preventDefault();
+      void perform("address", async () => {
+        const saved = await desktop.syncChangeUrl(boundUrl.trim());
+        setBinding(saved);
+        setAddressDraft(undefined);
+      });
+    }}>
+      <SettingRow id="sync-bound-url" label="服务地址" error={addressError}>
+        {hintId => <Flex className="sync-address-control" gap="2" width="100%">
+          <TextField.Root id="sync-bound-url" type="url" aria-describedby={hintId} required value={boundUrl} disabled={blocked}
+            style={{ flex: 1, minWidth: 0 }} onChange={event => setAddressDraft({ saved: binding.url, value: event.target.value })} />
+          <Button type="submit" variant="soft" loading={busy === "address"}
+            {...buttonProps("address", blocked || !boundUrl.trim() || boundUrl.trim() === binding.url)}>
+            {buttonLabel("address", "保存", "已保存", "保存失败")}
+          </Button>
+        </Flex>}
+      </SettingRow>
+    </form>}
     {showConnectionForm && <form onSubmit={event => {
       event.preventDefault();
       void perform("connect", async () => connected(await desktop.syncConnect(binding?.url ?? url, name ?? "", code || undefined)));

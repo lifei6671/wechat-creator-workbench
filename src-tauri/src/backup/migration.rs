@@ -1,9 +1,9 @@
 use super::restore::{PendingRestore, file_error, make_snapshot, prepare_file};
 use crate::db::{AppError, Result, workspace_id};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap,BTreeSet},
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
@@ -15,6 +15,9 @@ fn archive_error(error: zip::result::ZipError) -> AppError {
     AppError::new("MIGRATION_ZIP", format!("无法处理工作区迁移包：{error}"))
 }
 
+#[cfg(test)]
+mod image_tests;
+
 fn assets(database: &Path) -> Result<Vec<(String, String, bool)>> {
     let db = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut query = db.prepare(
@@ -24,7 +27,42 @@ fn assets(database: &Path) -> Result<Vec<(String, String, bool)>> {
          ) FROM assets WHERE relative_path IS NOT NULL",
     )?;
     let sources = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-    Ok(sources.collect::<rusqlite::Result<_>>()?)
+    let mut sources=sources.collect::<rusqlite::Result<Vec<_>>>()?;
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='image_gc_remote' AND type='table')",[],|r|r.get::<_,bool>(0))? {
+        let mut query=db.prepare("SELECT DISTINCT a.relative_path FROM assets a JOIN image_gc_remote g ON g.sha256=a.sha256 WHERE g.state IN ('retired','expired') AND g.payload_json->>'$.current'=1 AND g.payload_json->>'$.backend'='private' AND a.relative_path IS NOT NULL")?;
+        let retired=query.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<BTreeSet<_>>>()?;
+        crate::assets::version_cleanup::prepare_connection(&db)?;
+        let required=crate::assets::version_cleanup::backup_hashes(&db)?;
+        let mut expired=db.prepare("SELECT DISTINCT a.relative_path FROM assets a JOIN image_version_cleanup c ON c.sha256=a.sha256 WHERE c.state='expired' AND a.relative_path IS NOT NULL")?;
+        let mut optional=retired;
+        optional.extend(expired.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        for source in &mut sources {if optional.contains(&source.0)&&!required.contains(&source.1){source.2=true;}}
+        for hash in required {
+            let relative=db.query_row("SELECT relative_path FROM assets WHERE sha256=?1 AND relative_path IS NOT NULL ORDER BY id LIMIT 1",[&hash],|row|row.get::<_,String>(0)).optional()?.ok_or_else(||AppError::new("MIGRATION_ASSET","迁移包缺少已引用图片的原图"))?;
+            if let Some(source)=sources.iter_mut().find(|(path,h,_)|path==&relative&&h==&hash){source.2=false;}else{sources.push((relative,hash,false));}
+        }
+    }
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_projects')",[],|r|r.get::<_,bool>(0))? {
+        for id in crate::image_canvas::required_asset_ids(&db)? {
+            let metadata=db.query_row("SELECT relative_path,sha256 FROM assets WHERE id=?1",[&id],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?))).optional()?;
+            let Some((Some(path),Some(hash)))=metadata else {return Err(AppError::new("MIGRATION_ASSET","迁移包缺少图片工程原图记录或文件路径"));};
+            if let Some(source)=sources.iter_mut().find(|(name,checksum,_)|*name==path&&*checksum==hash) {source.2=false;} else {sources.push((path,hash,false));}
+        }
+        let mut staging=db.prepare("SELECT DISTINCT relative_path,sha256,0 FROM image_render_staging")?;
+        for file in staging.query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))? {
+            let file=file?;
+            if let Some(source)=sources.iter_mut().find(|(path,checksum,_)|*path==file.0&&*checksum==file.1) {source.2=false;} else {sources.push(file);}
+        }
+    }
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_version_cleanup')",[],|row|row.get::<_,bool>(0))? {
+        let mut query=db.prepare("SELECT DISTINCT backup_path,sha256,0 FROM image_version_cleanup WHERE state='removed' AND backup_path IS NOT NULL")?;
+        sources.extend(query.query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='image_public_copies' AND type='table')",[],|r|r.get::<_,bool>(0))? {
+        let mut query=db.prepare("SELECT DISTINCT backup_path,content_sha256,0 FROM image_public_copies WHERE backup_path IS NOT NULL")?;
+        sources.extend(query.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    Ok(sources)
 }
 
 fn write_entry(archive: &mut ZipWriter<&mut File>, name: &str, path: &Path) -> Result<()> {
@@ -68,6 +106,11 @@ fn write_archive(
     let root = database.with_file_name("assets");
     if recovery {
         let snapshot = Connection::open(draft.path())?;
+        let required=crate::image_canvas::required_asset_ids(&snapshot)?;
+        let mut required_paths=BTreeSet::new();
+        for id in required {
+            if let Some(path)=snapshot.query_row("SELECT relative_path FROM assets WHERE id=?1",[id],|row|row.get::<_,Option<String>>(0)).optional()?.flatten() {required_paths.insert(path);}
+        }
         let mut cached = snapshot.prepare(
             "SELECT DISTINCT a.relative_path FROM assets a JOIN sync_revisions r
               ON r.entity_type='asset' AND r.entity_id=a.id
@@ -78,7 +121,7 @@ fn write_archive(
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for path in paths {
-            if !root.join(&path).try_exists().map_err(file_error)? {
+            if !required_paths.contains(&path) && !root.join(&path).try_exists().map_err(file_error)? {
                 snapshot.execute(
                     "UPDATE assets SET relative_path=NULL WHERE relative_path=?1
                      AND EXISTS(SELECT 1 FROM sync_revisions r WHERE r.entity_type='asset' AND r.entity_id=assets.id)

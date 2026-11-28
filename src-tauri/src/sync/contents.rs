@@ -22,6 +22,11 @@ const MAX_ENTITY_BYTES: usize = 512 * 1024;
 const MAX_GROUP: usize = 256;
 
 mod canvas_conflicts;
+mod image_conflicts;
+mod image_gc;
+pub(crate) use image_gc::{protect as protect_image_versions,public_request as image_public_request,public_backup as image_public_backup,restore_blob as restore_image_blob};
+#[cfg(test)]
+mod image_tests;
 mod dependencies;
 #[cfg(test)]
 mod contract_tests;
@@ -42,6 +47,8 @@ pub enum Kind {
     CollectionNode,
     CollectionEdge,
     WechatPublicationDefaults,
+    ImageProject,
+    ImageRender,
 }
 
 impl Kind {
@@ -54,6 +61,8 @@ impl Kind {
             Self::CollectionNode => "collection_node",
             Self::CollectionEdge => "collection_edge",
             Self::WechatPublicationDefaults => "wechat_publication_defaults",
+            Self::ImageProject => "image_project",
+            Self::ImageRender => "image_render",
         }
     }
 
@@ -152,6 +161,7 @@ struct Version {
 }
 
 struct Remote<'a> {
+    image_gc: u32,
     sync: &'a SyncConnection,
     base: Url,
     token: String,
@@ -160,9 +170,12 @@ struct Remote<'a> {
 
 impl<'a> Remote<'a> {
     async fn open(db: &Workspace, sync: &'a SyncConnection) -> Result<Self> {
-        let (base, token, _) = connected(db, sync).await?;
+        let (base, token, meta) = connected(db, sync).await?;
         let binding = Binding::read(db)?.ok_or_else(|| AppError::invalid("请先连接同步服务"))?;
+        let adopted=db.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM image_gc_remote WHERE instance_id=?1 AND epoch=?2)",params![binding.instance_id,binding.epoch],|row|row.get::<_,bool>(0))?))?;
+        if meta.image_version_gc!=1 && adopted {return Err(AppError::new("SYNC_SERVER_UPDATE","此工作区已启用图片回收，请更新同步服务后继续同步"));}
         Ok(Self {
+            image_gc: meta.image_version_gc,
             sync,
             base,
             token,
@@ -204,13 +217,13 @@ impl<'a> Remote<'a> {
         let route = blob_route(hash)?;
         let head = self
             .request(Method::HEAD, &route)?
-            .header("X-Sync-Protocol", "2")
+            .header("X-Sync-Protocol", "3")
             .send()
             .await
             .map_err(network_error)?;
         match head.status() {
             StatusCode::OK => return Ok(()),
-            StatusCode::NOT_FOUND => {}
+            StatusCode::NOT_FOUND | StatusCode::GONE => {}
             StatusCode::CONFLICT => return Err(AppError::new("SYNC_RESET", "同步基线已失效")),
             _ => {
                 return Err(AppError::new(
@@ -219,7 +232,7 @@ impl<'a> Remote<'a> {
                 ));
             }
         }
-        send(self.request(Method::PUT, &route)?.body(bytes)).await?;
+        send(self.request(Method::PUT, &route)?.header("X-Image-Version-Gc", self.image_gc.to_string()).body(bytes)).await?;
         Ok(())
     }
 
@@ -423,6 +436,8 @@ fn local_snapshot(conn: &Connection, key: &Key) -> Result<Option<Value>> {
     let id = &key.entity_id;
     match key.entity_type {
         Kind::Entry => entries::snapshot(conn, id),
+        Kind::ImageProject => crate::image_canvas::project_snapshot(conn,id),
+        Kind::ImageRender => crate::image_canvas::render_snapshot(conn,id),
         Kind::WechatPublicationDefaults => crate::content::publication::defaults_snapshot(conn,id),
         Kind::Collection => canvas::snapshot_topic(conn,id),
         Kind::CollectionNode => canvas::snapshot_card(conn,id),
@@ -517,7 +532,7 @@ fn stage_outbox(db: &Workspace) -> Result<Option<(Operation, Vec<i64>)>> {
                 let entity_type = serde_json::from_value(Value::String(kind)).map_err(invalid_response)?;
                 let key = Key { entity_type, entity_id: id };
                 let payload = local_snapshot(tx,&key)?;
-                if entity_type == Kind::CollectionNode && let Some(assets) = payload.as_ref().and_then(|value| value["assetIds"].as_array()) {
+                if matches!(entity_type,Kind::CollectionNode|Kind::ImageProject|Kind::ImageRender) && let Some(assets) = payload.as_ref().and_then(|value| value["assetIds"].as_array()) {
                     for asset in assets.iter().filter_map(Value::as_str) {
                         queued_assets |= tx.execute(
                             "INSERT OR IGNORE INTO sync_dirty (entity_type,entity_id,generation) SELECT 'asset',?1,1
@@ -537,6 +552,15 @@ fn stage_outbox(db: &Workspace) -> Result<Option<(Operation, Vec<i64>)>> {
                 generations.push(generation);
             }
             if mutations.is_empty() || queued_assets { continue; }
+            let keys=mutations.iter().map(|mutation|mutation.key.clone()).collect::<Vec<_>>();
+            if let Some(missing)=dependencies::missing_image_dependency(tx,&keys)? {
+                let (code,reason)=if missing==Kind::ImageProject {("image_project_missing","云端缺少关联图片工程")} else {("asset_missing","云端缺少关联素材")};
+                for (mutation,generation) in mutations.iter().zip(&generations) {
+                    issue(tx,&mutation.key,*generation,reason,None)?;
+                    tx.execute("UPDATE sync_issues SET code=?1 WHERE entity_type=?2 AND entity_id=?3",params![code,mutation.key.entity_type.key(),mutation.key.entity_id])?;
+                }
+                continue;
+            }
             let operation = Operation { operation_id: id(), mutations };
             tx.execute("INSERT INTO sync_outbox (id,operation_json,generations_json,origin_device_id)
                 VALUES (1,?1,?2,(SELECT device_id FROM sync_binding WHERE id=1))",
@@ -592,18 +616,20 @@ async fn prepare_uploads(
     remote: &Remote<'_>,
     operation: &Operation,
 ) -> Result<Operation> {
+    image_gc::prepare_references(db, assets, remote, operation).await?;
     let (wire, bodies) = wire_operation(operation)?;
     for mutation in &wire.mutations {
         let Some(data) = mutation.payload.as_ref() else {
             continue;
         };
         if mutation.key.entity_type == Kind::Asset {
+            if image_gc::history_only(db,remote,&mutation.key.entity_id,data).await? {continue;}
             let asset = serde_json::from_value::<images::Snapshot>(data.clone())
                 .map_err(invalid_response)?;
             if let Some(hash) = asset.sha256.as_deref() {
                 let bytes = assets
                     .sync_upload_bytes(&mutation.key.entity_id, &asset, db)
-                    .await?;
+                    .await.map_err(|error|if error.code()=="IMAGE_VERSION_EXPIRED" && remote.image_gc!=1 {AppError::new("SYNC_SERVER_UPDATE","部分闲置历史图片已回收，请更新同步服务后继续同步")}else{error})?;
                 remote.upload(hash, bytes).await?;
             }
         }
@@ -714,7 +740,7 @@ async fn push_one(
         }
         Err(error) => return Err(error),
     };
-    let encoded = encode(&json!({"protocolVersion":2,"cursor":cursor,"operations":[wire]}))?;
+    let encoded = encode(&json!({"protocolVersion":3,"cursor":cursor,"operations":[wire]}))?;
     if operation.mutations.len() > MAX_GROUP || encoded.len() > 1024 * 1024 {
         reject_outbox(db, &operation, &generations, "变更组超过服务限制")?;
         return Ok(true);
@@ -783,6 +809,11 @@ fn apply_outcome(
                 Some("category_in_use") => "云端目录仍有条目或子目录",
                 Some("category_missing") => "云端缺少关联目录",
                 Some("asset_missing" | "blob_missing") => "云端缺少关联素材",
+                Some("image_project_missing") => "云端缺少关联图片工程",
+                Some("invalid_image_crop") => "裁剪范围超出原图",
+                Some("image_render_output_mismatch") => "图片成品与工程不一致",
+                Some("image_render_immutable") => "图片成品快照不可修改",
+                Some("image_asset_immutable") => "原图已被图片工程引用，不能替换为其他图片",
                 Some("source_entry_missing") => "云端缺少关联条目",
                 Some("collection_missing") => "云端缺少关联专题",
                 Some("canvas_endpoint_missing") => "云端缺少连线引用的卡片",
@@ -867,6 +898,8 @@ fn queue_local_items(conn: &Connection) -> Result<()> {
          INSERT OR IGNORE INTO sync_dirty SELECT 'collection',id,1,NULL FROM collections;
          INSERT OR IGNORE INTO sync_dirty SELECT 'collection_node',id,1,NULL FROM collection_nodes;
          INSERT OR IGNORE INTO sync_dirty SELECT 'collection_edge',id,1,NULL FROM collection_edges;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'image_project',id,1,NULL FROM image_projects;
+         INSERT OR IGNORE INTO sync_dirty SELECT 'image_render',id,1,NULL FROM image_renders;
          INSERT OR IGNORE INTO sync_dirty SELECT 'wechat_publication_defaults',id,1,NULL FROM wechat_publication_defaults;",
     )?;
     Ok(())
@@ -997,6 +1030,7 @@ async fn download_changes(db: &Workspace, remote: &Remote<'_>, mut cursor: i64) 
 
 async fn exchange(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Result<()> {
     let remote = Remote::open(db, sync).await?;
+    if remote.image_gc==1 {image_gc::refresh(db,assets,sync).await?;}
     let (initialized, _, cursor, staged) = progress(db)?;
     // Automatic scheduling waits for staged snapshots; manual retry can replace a failed one.
     let failed = db.read(|conn| Ok(conn.query_row(
@@ -1085,6 +1119,9 @@ async fn exchange(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Res
 /// Exchanges persisted data. The caller owns the shared synchronization gate.
 pub(super) async fn run(db: &Workspace, assets: &Assets, sync: &SyncConnection) -> Result<()> {
     let result = exchange(db, assets, sync).await;
+    if result.is_ok() {
+        image_gc::maintain(db, assets, sync).await?;
+    }
     if result.is_ok() && let Some(binding) = Binding::read(db)? {
         db.set_setting("sync-last-success", &(binding.instance_id,binding.epoch,crate::db::now()))?;
     }
@@ -1114,6 +1151,8 @@ fn apply_entity(conn: &Connection, entity: &Entity, changed: &mut Applied) -> Re
             images::apply(conn, id, &snapshot)?;
         }
         Kind::Entry => entries::apply(conn, id, data, entity.deleted_at)?,
+        Kind::ImageProject => {crate::image_canvas::apply_project(conn,id,data,entity.deleted_at)?;changed.changed_image_projects.push(id.clone());},
+        Kind::ImageRender => crate::image_canvas::apply_render(conn,id,data,entity.deleted_at)?,
         Kind::WechatPublicationDefaults => {
             if entity.deleted_at.is_some() { return Err(protocol_error()); }
             crate::content::publication::apply_defaults(conn,id,data)?;
@@ -1166,6 +1205,8 @@ fn apply_order(conn: &Connection, entity: &Entity) -> Result<u8> {
         Kind::Category if entity.deleted_at.is_none() && entity.payload["parentId"].is_null() => 1,
         Kind::Category if entity.deleted_at.is_none() => 2,
         Kind::Entry => 3,
+        Kind::ImageProject => 1,
+        Kind::ImageRender => 2,
         Kind::WechatPublicationDefaults => 11,
         Kind::Collection if entity.deleted_at.is_none() => 6,
         Kind::CollectionNode if entity.deleted_at.is_none() => 7,
@@ -1190,6 +1231,7 @@ fn apply_order(conn: &Connection, entity: &Entity) -> Result<u8> {
 #[serde(rename_all = "camelCase")]
 pub struct Applied {
     changed_entries: Vec<String>,
+    changed_image_projects: Vec<String>,
     publication_defaults_changed: bool,
     changed_collections: std::collections::BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1201,6 +1243,7 @@ pub struct Applied {
 impl Applied {
     fn extend(&mut self, other: Self) {
         self.changed_entries.extend(other.changed_entries);
+        self.changed_image_projects.extend(other.changed_image_projects);
         self.publication_defaults_changed |= other.publication_defaults_changed;
         self.changed_collections.extend(other.changed_collections);
         self.network_ready |= other.network_ready;
@@ -1404,6 +1447,8 @@ fn ordered_baseline(conn: &Connection) -> Result<rusqlite::Statement<'_>> {
     Ok(conn.prepare(
         "SELECT payload_json FROM sync_bootstrap ORDER BY CASE
            WHEN entity_type='asset' THEN 0
+           WHEN entity_type='image_project' THEN 1
+           WHEN entity_type='image_render' THEN 2
            WHEN entity_type='category' AND payload_json->>'$.payload.parentId' IS NULL THEN 1
            WHEN entity_type='category' THEN 2
            WHEN entity_type='entry' THEN 3
@@ -1545,6 +1590,7 @@ async fn recovery_remote<'a>(db: &Workspace, sync: &'a SyncConnection) -> Result
         .active
         .ok_or_else(reauth)?;
     Ok(Remote {
+        image_gc: meta.image_version_gc,
         sync,
         base,
         token,
@@ -1554,6 +1600,7 @@ async fn recovery_remote<'a>(db: &Workspace, sync: &'a SyncConnection) -> Result
 
 async fn stage_recovery(db: &Workspace, sync: &SyncConnection) -> Result<()> {
     let remote = recovery_remote(db, sync).await?;
+    image_gc::refresh_remote(db,&remote,false).await?;
     match download_baseline(db, &remote).await {
         Err(error) if error.code() == "SYNC_CREDENTIAL" => Err(AppError::new(
             "SYNC_REAUTH",
@@ -1604,6 +1651,7 @@ fn replace_baseline(db: &Workspace, backups: &crate::backup::Backups) -> Result<
              DELETE FROM sync_outbox;
              DELETE FROM sync_issues;"
         )?;
+        tx.execute("UPDATE image_projects SET deleted_at=COALESCE(deleted_at,?1),version=version+1 WHERE NOT EXISTS(SELECT 1 FROM sync_bootstrap b WHERE b.entity_type='image_project' AND b.entity_id=image_projects.id)",[crate::db::now()])?;
         let mut affected = tx.prepare(
             "UPDATE entries SET deleted_at=COALESCE(deleted_at,?1)
              WHERE NOT EXISTS(SELECT 1 FROM sync_bootstrap b WHERE b.entity_type='entry' AND b.entity_id=entries.id)
@@ -1641,6 +1689,7 @@ pub async fn sync_rebuild_apply(
     // Re-check the service epoch immediately before committing the staged snapshot.
     let remote = recovery_remote(&db, &sync).await?;
     super::fetch_devices(sync.client(&remote.base), &remote.base, &remote.token).await?;
+    prepare_rebuild_image_projects(&db,&app.state::<Assets>(),&remote).await?;
     tokio::task::spawn_blocking(move || {
         replace_baseline(
             &app.state::<Workspace>(),
@@ -1649,6 +1698,24 @@ pub async fn sync_rebuild_apply(
     })
     .await
     .map_err(|_| AppError::new("SYNC_RECOVERY", "同步基线重建任务已中断"))?
+}
+
+async fn prepare_rebuild_image_projects(db:&Workspace,assets:&Assets,remote:&Remote<'_>)->Result<()> {
+    for id in db.read(crate::image_canvas::required_asset_ids)? {
+        match assets.read_canvas_original(db,&format!("asset://{id}")).await {
+            Ok(_)=>{},
+            Err(error) if matches!(error.code(),"SYNC_PAUSED"|"ASSET_MISSING"|"ASSET_ORIGINAL_MISSING")=>{
+                let snapshot=db.read(|conn|images::snapshot(conn,&id))?.ok_or_else(||AppError::new("ASSET_MISSING","图片工程缺少原图记录"))?;
+                let hash=snapshot.sha256.as_deref().ok_or_else(||AppError::new("ASSET_MISSING","图片工程缺少原图摘要"))?;
+                let size=snapshot.bytes.ok_or_else(||AppError::new("ASSET_MISSING","图片工程缺少原图大小"))?;
+                let relative=snapshot.relative()?.ok_or_else(||AppError::new("ASSET_MISSING","图片工程缺少原图路径"))?;
+                let bytes=remote.download(hash,size).await?;
+                assets.cache_original(&relative,&bytes)?;
+            },
+            Err(error)=>return Err(error),
+        }
+    }
+    assets.prepare_image_project_export(db).await
 }
 
 #[derive(Serialize)]
@@ -1705,6 +1772,11 @@ pub async fn sync_run(
 pub async fn sync_apply(app: tauri::AppHandle, sync: State<'_, SyncConnection>) -> Result<Applied> {
     use tauri::Manager;
     let _guard = sync.gate.lock().await;
+    let needs_archive=app.state::<Workspace>().read(|conn|{
+        let (initialized,bootstrap):(bool,Option<i64>)=conn.query_row("SELECT initialized,bootstrap_cursor FROM sync_progress WHERE id=1",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        Ok(!initialized&&bootstrap.is_some()&&!empty_local(conn)?)
+    })?;
+    if needs_archive {app.state::<Assets>().prepare_image_project_export(&app.state::<Workspace>()).await?;}
     super::scheduler::set_phase(&sync, &app, "merging");
     let worker_app = app.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -1756,10 +1828,10 @@ fn conflicts(conn: &Connection) -> Result<Vec<Conflict>> {
                 .map_err(invalid_response)?;
             let local_generation = generation(conn, &key)?;
             let remote_revision = remote.as_ref().map(|entity| entity.remote_revision);
-            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas() || entity_type == Kind::WechatPublicationDefaults)
+            let resolvable = (entity_type == Kind::Entry || entity_type.is_canvas() || matches!(entity_type,Kind::WechatPublicationDefaults|Kind::ImageProject))
                 && local_generation.is_some()
                 && remote.is_some();
-            let can_keep_local = (entity_type.is_canvas() || entity_type == Kind::WechatPublicationDefaults)
+            let can_keep_local = (entity_type.is_canvas() || matches!(entity_type,Kind::WechatPublicationDefaults|Kind::ImageProject))
                 && local_generation.is_some()
                 && remote
                     .as_ref()
@@ -1842,6 +1914,12 @@ pub async fn sync_resolve(
         if result.is_ok() {
             sync.wake();
         }
+        return result;
+    }
+    if entity_type==Kind::ImageProject {
+        let result=image_conflicts::resolve(&db,&Key{entity_type,entity_id},choice,remote_revision,local_generation);
+        super::scheduler::settled(&sync,&app,result.as_ref().err());
+        if result.is_ok(){sync.wake();}
         return result;
     }
     if entity_type == Kind::WechatPublicationDefaults && matches!(choice, Resolution::Copy) {
@@ -3019,6 +3097,97 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires an isolated fresh v1 service and a native system keyring"]
+    async fn url_change_between_aliases_preserves_pending_sync() {
+        use crate::sync::{Credential, change_url};
+        let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
+        let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let a = Workspace::open(&root.path().join("a.sqlite")).unwrap();
+        let b = Workspace::open(&root.path().join("b.sqlite")).unwrap();
+        let a_assets = Assets::new(root.path().join("assets-a"), &a).unwrap();
+        let b_assets = Assets::new(root.path().join("assets-b"), &b).unwrap();
+        let sync = SyncConnection::new().unwrap();
+        let first = connect(&a, &sync, &url, "换域名设备", ConnectWith::Claim, &setup)
+            .await
+            .unwrap();
+        let first_key = first.key(&a).unwrap();
+        let original = Credential::read(&first_key).unwrap();
+        let second = connect(&b, &sync, &url, "另一台设备", ConnectWith::Join, &setup)
+            .await
+            .unwrap();
+        exchange(&a, &a_assets, &sync).await.unwrap();
+        apply_received(&a).unwrap();
+        exchange(&b, &b_assets, &sync).await.unwrap();
+        apply_received(&b).unwrap();
+        a.write(|tx| {
+                tx.execute_batch("INSERT INTO entries (id,kind,title,status,content_md,created_at,updated_at)
+                    VALUES ('pending-domain','article','待同步文稿','draft','更换域名前的待上传正文',1,1)")?;
+                Ok(())
+            }).unwrap();
+        let queued = encode(&stage_outbox(&a).unwrap().unwrap().0).unwrap();
+        let progress = a.read(|conn| Ok(conn.query_row("SELECT json_object('cursor',cursor,'initialized',initialized,'bootstrap',bootstrap_cursor) FROM sync_progress", [], |row| row.get::<_,String>(0))?)).unwrap();
+        let alias = url.replace("127.0.0.1", "localhost");
+        assert_ne!(alias, url);
+        let alias_key = crate::sync::credential(&a, &alias, &first.instance_id, &first.epoch).unwrap();
+
+        // Failed database commit must leave the original binding and credential usable.
+        a.write(|tx| { tx.execute_batch("CREATE TRIGGER reject_url BEFORE UPDATE OF url ON sync_binding BEGIN SELECT RAISE(ABORT,'test rejects URL update'); END;")?; Ok(()) }).unwrap();
+        assert!(change_url(&a, &sync, &alias).await.is_err());
+        assert_eq!(Binding::read(&a).unwrap().unwrap().url, url);
+        assert_eq!(
+            Credential::read(&first_key).unwrap().active,
+            original.active
+        );
+        a.write(|tx| {
+            tx.execute_batch("DROP TRIGGER reject_url")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let migrated = change_url(&a, &sync, &alias).await.unwrap();
+        assert_eq!(migrated.url, alias);
+        assert_eq!(migrated.device_id, first.device_id);
+        assert_eq!(migrated.instance_id, first.instance_id);
+        assert_eq!(migrated.epoch, first.epoch);
+        assert!(!migrated.paused);
+        let saved = Credential::read(&alias_key).unwrap();
+        assert_eq!(saved.active, original.active);
+        assert_eq!(saved.access_key, original.access_key);
+        assert_eq!(
+            encode(&stage_outbox(&a).unwrap().unwrap().0).unwrap(),
+            queued
+        );
+        assert_eq!(a.read(|conn| Ok(conn.query_row("SELECT json_object('cursor',cursor,'initialized',initialized,'bootstrap',bootstrap_cursor) FROM sync_progress", [], |row| row.get::<_,String>(0))?)).unwrap(), progress);
+        exchange(&a, &a_assets, &sync).await.unwrap();
+        apply_received(&a).unwrap();
+        exchange(&b, &b_assets, &sync).await.unwrap();
+        apply_received(&b).unwrap();
+        assert_eq!(
+            b.read(|conn| entries::snapshot(conn, "pending-domain"))
+                .unwrap()
+                .unwrap()["contentMd"],
+            "更换域名前的待上传正文"
+        );
+        let devices = crate::sync::fetch_devices(
+            sync.client(&service_url(&alias).unwrap()),
+            &service_url(&alias).unwrap(),
+            saved.active.as_deref().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(devices.devices.len(), 2);
+        change_url(&a, &sync, &url).await.unwrap();
+        assert_eq!(
+            Binding::read(&a).unwrap().unwrap().device_id,
+            first.device_id
+        );
+        first_key.delete_credential().unwrap();
+        alias_key.delete_credential().unwrap();
+        second.key(&b).unwrap().delete_credential().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated fresh v1 service and a native system keyring"]
     async fn articles_and_private_images_between_workspaces() {
         let url = std::env::var("WCB_SYNC_TEST_URL").unwrap();
         let setup = std::env::var("WCB_SYNC_TEST_SETUP").unwrap();
@@ -3126,7 +3295,7 @@ mod tests {
             remote
                 .request(Method::POST, "v1/sync/push")
                 .unwrap()
-                .json(&json!({"protocolVersion":2,"cursor":cursor,"operations":[frozen]})),
+                .json(&json!({"protocolVersion":3,"cursor":cursor,"operations":[frozen]})),
         )
         .await
         .unwrap();
@@ -3242,7 +3411,7 @@ mod tests {
         let revoked = remote_a
             .request(Method::DELETE, &format!("v1/devices/{}", second.device_id))
             .unwrap()
-            .header("X-Sync-Protocol", "2")
+            .header("X-Sync-Protocol", "3")
             .send()
             .await
             .unwrap();

@@ -8,7 +8,7 @@ use std::sync::{
 #[tokio::test]
 async fn hydrate_rejects_ambiguous_body_modes_before_requesting_a_blob() {
     let sync = SyncConnection::new().unwrap();
-    let remote = Remote {
+    let remote = Remote { image_gc: 0,
         sync: &sync,
         base: Url::parse("http://127.0.0.1:1/").unwrap(),
         token: "test-token".into(),
@@ -45,7 +45,7 @@ async fn hydrate_checks_body_size_digest_and_utf8_before_apply() {
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
         let sync = SyncConnection::new().unwrap();
-        let remote = Remote { sync: &sync, base: Url::parse(&url).unwrap(), token: "test-token".into(),
+        let remote = Remote { image_gc: 0, sync: &sync, base: Url::parse(&url).unwrap(), token: "test-token".into(),
             binding: Binding { url, instance_id: "instance".into(), epoch: "epoch".into(), device_id: "device".into(), paused: false, pause_reason: None } };
         let mut entity = Entity { key: Key { entity_type: Kind::Entry, entity_id: "entry".into() }, remote_revision: 1,
             deleted_at: None, payload: json!({"kind":"article","title":"正文","contentBlobHash":if wrong_hash { "0".repeat(64) } else { digest(&bytes) },"contentBlobSize":bytes.len()+usize::from(wrong_size)}) };
@@ -67,7 +67,7 @@ async fn attachment_upload_checks_protocol_before_skipping_or_putting_blob() {
                 if headers
                     .get("x-sync-protocol")
                     .and_then(|value| value.to_str().ok())
-                    != Some("2")
+                    != Some("3")
                 {
                     StatusCode::UPGRADE_REQUIRED
                 } else if exists {
@@ -78,7 +78,7 @@ async fn attachment_upload_checks_protocol_before_skipping_or_putting_blob() {
             })
             .put(
                 move |headers: HeaderMap, body: axum::body::Bytes| async move {
-                    assert_eq!(headers["x-sync-protocol"], "2");
+                    assert_eq!(headers["x-sync-protocol"], "3");
                     assert_eq!(body.as_ref(), b"attachment bytes");
                     writes.fetch_add(1, Ordering::SeqCst);
                     StatusCode::OK
@@ -91,7 +91,7 @@ async fn attachment_upload_checks_protocol_before_skipping_or_putting_blob() {
             axum::serve(listener, app).await.unwrap();
         });
         let sync = SyncConnection::new().unwrap();
-        let remote = Remote {
+        let remote = Remote { image_gc: 0,
             sync: &sync,
             base: Url::parse(&url).unwrap(),
             token: "test-token".into(),

@@ -13,6 +13,7 @@ impl Assets {
         path: &Path,
     ) -> Result<()> {
         let (rewritten, files) = db.read(|conn| prepare(self, conn, markdown))?;
+        let rewritten=super::version_cleanup::protect_external(db, self, &rewritten).await?;
         let parent = path.parent().expect("save dialog returns an absolute path");
         if !files.is_empty() {
             std::fs::create_dir_all(parent.join("assets")).map_err(local_error)?;
@@ -47,6 +48,7 @@ impl Assets {
             path.parent().expect("save dialog returns absolute path"),
         )
         .map_err(local_error)?;
+        let markdown=super::version_cleanup::protect_external(db, self, &markdown).await?;
         let mut zip = ZipWriter::new(temporary.as_file_mut());
         let options = SimpleFileOptions::default();
         zip.start_file("article.md", options).map_err(zip_error)?;

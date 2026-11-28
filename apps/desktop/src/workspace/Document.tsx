@@ -5,7 +5,8 @@ import {
   ListFilter, ListTree, Palette, PencilLine, Save, Search, Share2, SlidersHorizontal, Sparkles, Trash2, Workflow, X,
 } from "lucide-react";
 import type { Category, CategoryPlacement, Collection } from "../../../../packages/shared-types";
-import { MarkdownEditor, type ClipboardIO, type ImageContext, type ImageUploadState, type MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { MarkdownEditor, type ClipboardIO, type ImageContext, type MarkdownEditorHandle } from "../../../../packages/editor-react";
+import { readImageUploadState } from "../editor/image-upload-state";
 import { footnoteId } from "../../../../packages/markdown-core";
 import { renderWechat, wechatEditorStyles, wechatThemeId, wechatThemes, type RenderedWechat } from "../../../../packages/wechat-renderer";
 import "../styles/article.css";
@@ -22,6 +23,7 @@ import { EditorContextMenu, editorDisplayItems, type EditorDisplay } from "./Edi
 import { InlineEntryTitle } from "./InlineEntryTitle";
 import { MoveEntryMenu } from "./MoveEntryMenu";
 import { AddToCollectionMenu } from "./CollectionMenu";
+import { useImageCanvasEditor } from "./ImageCanvasHost";
 import { usePointerDrag } from "./pointer-drag";
 import { applyPreviewAppearance, type PreviewAppearance } from "./preview-appearance";
 
@@ -361,15 +363,6 @@ function DocumentTab({ queue, feedback, active, tabbable, reading, locked, hasOt
   </ContextMenu.Root>;
 }
 
-async function readImageUploadState(url: string): Promise<ImageUploadState> {
-  const asset = await desktop.assetDetail(url.slice("asset://".length));
-  return {
-    pending: Boolean(asset?.uploadStatus && ["queued", "running", "retrying"].includes(asset.uploadStatus)),
-    publicUrl: asset?.publicUrl,
-    error: asset?.uploadError,
-  };
-}
-
 export function DocumentEditor({ queue, active, locked, reading, clipboard, display, onDisplayChange, handle, onImages, localizeImageLink, autoUploadImages, assetRevision, onImageZoom, onError, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat }: {
   queue: SaveQueue;
   active: boolean;
@@ -393,12 +386,13 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
 }) {
   const fields = useSyncExternalStore(queue.subscribe, queue.snapshotFields);
   const editor = useRef<MarkdownEditorHandle>(null);
+  const imageCanvas = useImageCanvasEditor(queue, editor, onError);
   const themeStyles = useMemo(() => wechatEditorStyles(fields.themeId), [fields.themeId]);
   const readOnly = reading || locked || queue.entry.deletedAt !== null;
   return <div className="document-editor" data-limit-width={display.limitWidth} data-line-numbers={display.lineNumbers}
     data-wechat-theme={wechatThemeId(fields.themeId)} style={themeStyles as CSSProperties} hidden={!active}>
     <EditorContextMenu editor={editor} clipboard={clipboard} readOnly={readOnly} display={display} onDisplayChange={onDisplayChange} onError={onError}
-      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onAddSelectionToChat={onAddSelectionToChat}>
+      canHost={canHost} hostBusy={hostBusy} uploadingSource={uploadingSource} onHostImage={onHostImage} onEditImage={imageCanvas.open} onAddSelectionToChat={onAddSelectionToChat}>
       <MarkdownEditor entryId={queue.entry.id} value={fields.contentMd} readOnly={readOnly} active={active} lineNumbers={display.lineNumbers} convertLinks={display.convertLinks}
         uploadRevision={assetRevision}
         readImageUploadState={autoUploadImages && !locked && queue.entry.deletedAt === null ? readImageUploadState : undefined}
@@ -427,6 +421,7 @@ export function DocumentEditor({ queue, active, locked, reading, clipboard, disp
         onDocumentChanged={(_id, revision) => queue.markContentDirty(revision)}
         onBlur={() => { void queue.flush(); }} onImages={onImages} localizeImageLink={localizeImageLink} />
     </EditorContextMenu>
+    {imageCanvas.element}
   </div>;
 }
 

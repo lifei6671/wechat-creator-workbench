@@ -31,6 +31,8 @@ interface Props {
   dark: boolean;
   revision: number;
   articleLocked: boolean;
+  autoUploadImages?: boolean;
+  assetRevision?: number;
   previewBlocked?: boolean;
   clipboard: ClipboardIO;
   canvasRef: Ref<CollectionCanvasHandle>;
@@ -89,7 +91,7 @@ type TextDraft = { value: string; saving?: Promise<void> };
 type TextEdit = { nodeId: string; handle: MarkdownEditorHandle; revision: number; captured: number; timer?: number };
 type ArticleEdit = { nodeId: string; queue: SaveQueue };
 
-function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, previewBlocked, clipboard, canvasRef, track, onOpenEntry,
+function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, autoUploadImages, assetRevision, previewBlocked, clipboard, canvasRef, track, onOpenEntry,
   onLoadArticle, onSaveArticle, onArticleImages, downloadLinkImages, onEntryCreated, onError, onDelete }: Props & { initial: Canvas }) {
   const collectionId = collection.id;
   const buttons = useButtonFeedback();
@@ -755,10 +757,10 @@ function CanvasWorkspace({ collection, initial, dark, revision, articleLocked, p
     feedback: buttons,
     editingId, convertingId, edit, remove, focus, color, fitImage, registerTextEditor, markTextDirty, saveText, finishText, resize, loadArticle,
     activeWebNodeId, webPreviews, setWebSlot, copyText, convertText,
-    articleQueue: articleEdit?.queue, articleLocked, clipboard,
+    articleQueue: articleEdit?.queue, articleLocked, autoUploadImages, assetRevision, clipboard,
     registerArticleEditor, finishArticle, discardArticle, onArticleImages, onError,
   }), [editingId, convertingId, edit, remove, focus, color, fitImage, registerTextEditor, markTextDirty, saveText, finishText, resize, loadArticle, activeWebNodeId,
-    webPreviews, copyText, convertText, articleEdit, articleLocked, clipboard, registerArticleEditor, finishArticle, discardArticle, onArticleImages, onError, buttons]);
+    webPreviews, copyText, convertText, articleEdit, articleLocked, autoUploadImages, assetRevision, clipboard, registerArticleEditor, finishArticle, discardArticle, onArticleImages, onError, buttons]);
 
   function closeDialog() {
     setDialog(null);

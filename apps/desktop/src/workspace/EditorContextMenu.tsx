@@ -3,7 +3,7 @@ import { autoUpdate, flip, FloatingPortal, hide, offset, shift, useFloating } fr
 import { Button, ContextMenu, Dialog, TextField } from "@radix-ui/themes";
 import {
   Bold, CaseSensitive, Clipboard, ClipboardType, CloudUpload, Code2, Copy, FileCode2, FileDown, Heading, ImageMinus, Italic, Link2, List, ListOrdered,
-  ListPlus, Minus, Pilcrow, Quote, Redo2, Ruler, Scan, Scissors, Sigma, Sparkles, Strikethrough, Table2, Undo2,
+  ListPlus, Minus, Pilcrow, Quote, Redo2, Ruler, Scan, Scissors, Sigma, Sparkles, Strikethrough, Table2, Undo2, ImagePlus,
 } from "lucide-react";
 import type { ClipboardIO, EditorCommand, ImageContext, LinkContext, MarkdownEditorHandle, TableContext } from "../../../../packages/editor-react";
 import type { ChatSelection } from "../ai/context";
@@ -51,7 +51,7 @@ function ImageActionFeedback({ actions, buttons, portalRoot }: {
   </FloatingPortal>;
 }
 
-export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onLeave, canHost, hostBusy, uploadingSource, onHostImage, onAddSelectionToChat, children }: {
+export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisplayChange, onLeave, canHost, hostBusy, uploadingSource, onHostImage, onEditImage, onAddSelectionToChat, children }: {
   editor: RefObject<MarkdownEditorHandle | null>;
   clipboard: ClipboardIO;
   readOnly: boolean;
@@ -63,6 +63,7 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
   hostBusy?: boolean;
   uploadingSource?: string;
   onHostImage?(image: ImageContext): void;
+  onEditImage?(image: ImageContext): void;
   onAddSelectionToChat?(selection: ChatSelection): void;
   children: ReactNode;
 }) {
@@ -168,6 +169,9 @@ export function EditorContextMenu({ editor, clipboard, readOnly, display, onDisp
         <div ref={area} className="editor-area">{children}<ActionError className="editor-action-feedback" error={buttons.error()} /></div>
       </ContextMenu.Trigger>
       {typeof menu === "object" ? ("kind" in menu ? <ContextMenu.Content size="1" aria-label="图片操作" {...menuFocus}>
+        {!readOnly && onEditImage && <ContextMenu.Item disabled={!menu.isCurrent()} onSelect={() => {
+          afterMenuClose.current = () => onEditImage(menu);
+        }}><ImagePlus size={15} />编辑图片</ContextMenu.Item>}
         <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`copy:${menu.src}`)} onSelect={() => performImageAction(menu, "copy")}><Copy size={15} />复制图片</ContextMenu.Item>
         <ContextMenu.Item disabled={!menu.available || buttons.isLocked(`save:${menu.src}`)} onSelect={() => performImageAction(menu, "save")}><FileDown size={15} />另存为</ContextMenu.Item>
         {!readOnly && (uploadingImage || (menu.isCurrent() && canHost?.(menu.src))) && <ContextMenu.Item disabled={uploadingImage || hostBusy}
