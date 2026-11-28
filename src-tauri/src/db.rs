@@ -70,6 +70,7 @@ enum Phase {
 pub struct Workspace(Mutex<Database>);
 pub struct Database {
     search_worker: Option<crate::search_index::Worker>,
+    assets_root: Option<std::path::PathBuf>,
     conn: Option<Connection>,
     phase: Phase,
     running: tokio_util::sync::CancellationToken,
@@ -123,6 +124,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0035_sync_issue_codes.sql"),
     include_str!("../migrations/0036_editor_recovery.sql"),
     include_str!("../migrations/0037_asset_lifecycle.sql"),
+    include_str!("../migrations/0038_image_canvas.sql"),
+    include_str!("../migrations/0039_image_version_cleanup.sql"),
 ];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -158,8 +161,10 @@ impl Workspace {
         migrate(&mut conn, version, SCHEMA_VERSION)?;
         crate::search_index::prepare_empty(&conn)?;
         check_integrity(&conn)?;
+        crate::assets::version_cleanup::prepare_connection(&conn)?;
         Ok(Self(Mutex::new(Database {
             search_worker: None,
+            assets_root: None,
             conn: Some(conn),
             phase: Phase::Running,
             running: tokio_util::sync::CancellationToken::new(),
@@ -235,6 +240,10 @@ impl Workspace {
         self.transaction(false, operation)
     }
 
+    pub(crate) fn bind_assets_root(&self, root: &Path) {
+        self.lock().assets_root = Some(root.to_owned());
+    }
+
     pub fn save<T>(&self, operation: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.transaction(true, operation)
     }
@@ -272,12 +281,16 @@ impl Workspace {
         if db.phase != Phase::Running && !(editor_save && db.phase == Phase::SavingForExit) {
             return Err(AppError::new("EXIT_PENDING", "正在保存并退出"));
         }
+        let assets_root = db.assets_root.clone();
         let tx = db
             .conn
             .as_mut()
             .ok_or_else(closed)?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = operation(&tx)?;
+        if let Some(root) = assets_root {
+            crate::assets::version_cleanup::restore_references(&tx, &root)?;
+        }
         tx.commit()?;
         Ok(result)
     }

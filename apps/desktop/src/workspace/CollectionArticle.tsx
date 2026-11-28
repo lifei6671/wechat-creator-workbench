@@ -7,10 +7,12 @@ import { createMarkdownParser, footnoteId, sanitizeRenderedMarkdown } from "../.
 import type { Entry } from "../../../../packages/shared-types";
 import { desktop, errorMessage } from "../desktop";
 import type { SaveQueue } from "../editor/save-queue";
+import { readImageUploadState } from "../editor/image-upload-state";
 import { CollectionEditorScope } from "./CollectionEditorScope";
 import { Confirm } from "./Dialogs";
 import { EditorContextMenu } from "./EditorContextMenu";
 import { loadLocalImage } from "./Publishing";
+import { useImageCanvasEditor } from "./ImageCanvasHost";
 
 const articleMarkdown = createMarkdownParser().use(footnote as unknown as PluginSimple);
 
@@ -88,10 +90,12 @@ function ArticleMarkdown({ body, githubRepo, onError }: { body: string; githubRe
   }} />;
 }
 
-export function CollectionArticleEditor({ queue, locked, clipboard, onEditor, onFinish, onDiscard, onError, onImages }: {
+export function CollectionArticleEditor({ queue, locked, clipboard, autoUploadImages, assetRevision, onEditor, onFinish, onDiscard, onError, onImages }: {
   queue: SaveQueue;
   locked: boolean;
   clipboard: ClipboardIO;
+  autoUploadImages?: boolean;
+  assetRevision?: number;
   onEditor(handle: MarkdownEditorHandle | null): void;
   onFinish(): void;
   onDiscard(): void;
@@ -101,6 +105,7 @@ export function CollectionArticleEditor({ queue, locked, clipboard, onEditor, on
   const state = useSyncExternalStore(queue.subscribe, queue.snapshot);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const editorRef = useRef<MarkdownEditorHandle>(null);
+  const imageCanvas = useImageCanvasEditor(queue, editorRef, onError);
   const leave = () => { if (!confirmDiscard) onFinish(); };
   return <CollectionEditorScope className="collection-article-editor" role="group" aria-label="文章正文编辑器" onLeave={leave} onKeyDown={event => {
     if (confirmDiscard) return;
@@ -112,8 +117,10 @@ export function CollectionArticleEditor({ queue, locked, clipboard, onEditor, on
       onFinish();
     }
   }}>
-    <EditorContextMenu editor={editorRef} clipboard={clipboard} readOnly={locked} onError={onError} onLeave={leave}>
-    <MarkdownEditor entryId={queue.entry.id} value={queue.entry.contentMd} githubRepo={queue.entry.source?.url} readOnly={locked} ref={editor => {
+    <EditorContextMenu editor={editorRef} clipboard={clipboard} readOnly={locked} onError={onError} onLeave={leave} onEditImage={imageCanvas.open}>
+    <MarkdownEditor entryId={queue.entry.id} value={queue.entry.contentMd} githubRepo={queue.entry.source?.url} readOnly={locked}
+      uploadRevision={assetRevision} readImageUploadState={autoUploadImages && !locked && queue.entry.deletedAt === null ? readImageUploadState : undefined}
+      resolveHostedImage={desktop.publicImage} onImageProcessingChange={queue.setProcessingImages} ref={editor => {
       if (!editor) return;
       editorRef.current = editor;
       const release = queue.bindContentProvider(editor.captureMarkdown);
@@ -124,6 +131,7 @@ export function CollectionArticleEditor({ queue, locked, clipboard, onEditor, on
       onEscape={confirmDiscard ? undefined : onFinish}
       onError={onError} onImages={onImages} resolveImage={loadLocalImage} imageErrorMessage={errorMessage} onOpenLink={desktop.openLink} />
     </EditorContextMenu>
+    {imageCanvas.element}
     {state.error != null && <div className="collection-article-editor-actions">
       <span className="inline-error" role="alert">{errorMessage(state.error)}</span>
       <Button size="1" color="gray" variant="ghost" onClick={() => setConfirmDiscard(true)}>放弃修改</Button>

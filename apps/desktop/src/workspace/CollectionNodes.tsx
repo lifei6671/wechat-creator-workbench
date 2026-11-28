@@ -39,6 +39,8 @@ export const CollectionNodeContext = createContext<{
   loadArticle(id: string): Promise<Entry>;
   articleQueue?: SaveQueue;
   articleLocked: boolean;
+  autoUploadImages?: boolean;
+  assetRevision?: number;
   clipboard: ClipboardIO;
   registerArticleEditor(handle: MarkdownEditorHandle | null): void;
   finishArticle(): void;
@@ -78,6 +80,7 @@ const CanvasCard = memo(function CanvasCard({ id, data, selected, width, height 
     {caption && <div className="collection-card-caption" aria-hidden="true">{caption}</div>}
     {data.entryId && (editing && actions.articleQueue
       ? <CollectionArticleEditor queue={actions.articleQueue} locked={actions.articleLocked || entry?.deletedAt !== null} clipboard={actions.clipboard}
+        autoUploadImages={actions.autoUploadImages} assetRevision={actions.assetRevision}
         onEditor={actions.registerArticleEditor} onFinish={actions.finishArticle} onDiscard={actions.discardArticle}
         onImages={actions.onArticleImages} onError={actions.onError} />
       : entry?.deletedAt === null ? <CollectionArticlePreview id={data.entryId} title={title} source={entry.sourcePlatform} load={actions.loadArticle} onError={actions.onError} />

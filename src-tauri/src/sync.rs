@@ -87,7 +87,7 @@ impl SyncConnection {
                 .get(url.join("v1/meta").map_err(invalid_response)?),
         )
         .await?;
-        if meta.protocol_version != 2
+        if meta.protocol_version != 3
             || !valid_id(&meta.server_instance_id)
             || !valid_id(&meta.sync_epoch)
         {
@@ -152,6 +152,8 @@ impl Binding {
 #[serde(rename_all = "camelCase")]
 struct Meta {
     protocol_version: u32,
+    #[serde(default)]
+    image_version_gc: u32,
     #[serde(default)]
     canvas_sync: bool,
     #[serde(default)]
@@ -235,7 +237,7 @@ pub enum ConnectWith {
     Recover,
 }
 
-fn valid_id(value: &str) -> bool {
+pub(crate) fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
@@ -289,7 +291,7 @@ fn invalid_response(_: impl std::fmt::Display) -> AppError {
 }
 
 async fn send(request: RequestBuilder) -> Result<reqwest::Response> {
-    let response = request.header("X-Sync-Protocol", "2").send().await.map_err(network_error)?;
+    let response = request.header("X-Sync-Protocol", "3").send().await.map_err(network_error)?;
     if response.status().is_success() {
         return Ok(response);
     }
@@ -320,6 +322,12 @@ async fn send(request: RequestBuilder) -> Result<reqwest::Response> {
         Some("operation_id_reused") => {
             AppError::new("SYNC_OPERATION_MISMATCH", "原操作回执与本地载荷不匹配")
         }
+        Some("gc_not_eligible") => AppError::new("SYNC_GC_NOT_ELIGIBLE", "等待其他设备完成图片引用检查"),
+        Some("gc_recovery_retained") => AppError::new("SYNC_GC_RETAINED", "图片仍需要保留"),
+        Some("blob_not_found") => AppError::new("SYNC_BLOB_NOT_FOUND", "云端不存在这张图片"),
+        Some("gc_restore_required") => AppError::new("SYNC_GC_RESTORE", "图片需要先从回收副本恢复"),
+        Some("gc_backup_pending") => AppError::new("SYNC_GC_BACKUP_PENDING", "图片仍在备份，请稍后重试"),
+        Some("gc_recovery_expired") => AppError::new("SYNC_GC_EXPIRED", "图片回收副本已到期，请重新导入图片"),
         Some("seed_in_progress") => AppError::new("SYNC_WAITING_SEED", "等待云端初始化"),
         _ if status == StatusCode::UNAUTHORIZED => {
             AppError::new("SYNC_CREDENTIAL", "同步设备凭据已失效")
@@ -423,6 +431,65 @@ async fn connected(db: &Workspace, sync: &SyncConnection) -> Result<(Url, String
 #[tauri::command]
 pub fn sync_status(db: State<'_, Workspace>) -> Result<Option<Binding>> {
     Binding::read(&db)
+}
+
+#[tauri::command]
+pub async fn sync_change_url(
+    app: tauri::AppHandle,
+    db: State<'_, Workspace>,
+    sync: State<'_, SyncConnection>,
+    url: String,
+) -> Result<Binding> {
+    let binding = change_url(&db, &sync, &url).await?;
+    sync.runtime
+        .lock()
+        .expect("sync runtime lock poisoned")
+        .error = None;
+    sync.changed(&app);
+    Ok(binding)
+}
+
+async fn change_url(db: &Workspace, sync: &SyncConnection, url: &str) -> Result<Binding> {
+    let _guard = sync.gate.lock().await;
+    let url = service_url(url)?;
+    let mut binding = Binding::read(db)?.ok_or_else(|| AppError::invalid("请先连接同步服务"))?;
+    if url.as_str() == binding.url {
+        return Ok(binding);
+    }
+    let meta = sync.meta(&url).await?;
+    if !binding.matches(&meta) {
+        return Err(AppError::new(
+            "SYNC_ADDRESS_IDENTITY",
+            "新地址不属于当前同步服务，未修改服务地址。请将新域名绑定到原服务。",
+        ));
+    }
+    let saved = Credential::read(&binding.key(db)?)?;
+    let token = saved
+        .active
+        .as_deref()
+        .ok_or_else(|| AppError::new("SYNC_CREDENTIAL", "请先重新授权此设备，再修改服务地址"))?;
+    let devices = fetch_devices(sync.client(&url), &url, token).await?;
+    if devices.current_device_id != binding.device_id {
+        return Err(AppError::new(
+            "SYNC_ADDRESS_DEVICE",
+            "新地址返回的设备身份不一致，未修改服务地址",
+        ));
+    }
+    // Store at the new origin before switching the binding. A failed write leaves
+    // the old address and its usable credential intact.
+    saved.store(&credential(
+        db,
+        url.as_str(),
+        &binding.instance_id,
+        &binding.epoch,
+    )?)?;
+    db.write(|tx| {
+        tx.execute("UPDATE sync_binding SET url=?1 WHERE id=1", [url.as_str()])?;
+        Ok(())
+    })?;
+    binding.url = url.into();
+    sync.wake();
+    Ok(binding)
 }
 
 #[tauri::command]
@@ -876,6 +943,66 @@ pub async fn sync_revoke_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn url_change_rejects_other_service_before_sending_credentials() {
+        use axum::{Json, Router, routing::get};
+        use std::sync::{Arc, atomic::AtomicUsize};
+        for (instance, epoch) in [("another-instance", "epoch"), ("instance", "another-epoch")] {
+            let db = Workspace::open(std::path::Path::new(":memory:")).unwrap();
+            db.write(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO sync_binding(id,url,instance_id,epoch,device_id)
+                        VALUES(1,'https://old.example.test/','instance','epoch','device');
+                        UPDATE sync_progress SET cursor=123,initialized=1;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let device_calls = calls.clone();
+            let app = Router::new()
+                .route(
+                    "/v1/meta",
+                    get(move || async move {
+                        Json(json!({
+                            "protocolVersion":3, "canvasSync":true, "unifiedConnect":true,
+                            "operationReceiptLookup":true, "serverInstanceId":instance,
+                            "syncEpoch":epoch,"seedStatus":"ready"
+                        }))
+                    }),
+                )
+                .route(
+                    "/v1/devices",
+                    get(move || async move {
+                        device_calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::UNAUTHORIZED
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let sync = SyncConnection::new().unwrap();
+            assert_eq!(
+                change_url(&db, &sync, &url).await.err().unwrap().code(),
+                "SYNC_ADDRESS_IDENTITY"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            let binding = Binding::read(&db).unwrap().unwrap();
+            assert_eq!(binding.url, "https://old.example.test/");
+            assert!(!binding.paused);
+            assert_eq!(
+                db.read(|conn| Ok(conn
+                    .query_row("SELECT cursor FROM sync_progress", [], |row| row
+                        .get::<_, i64>(0))?))
+                    .unwrap(),
+                123
+            );
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn network_errors_distinguish_timeouts_from_connection_failures() {

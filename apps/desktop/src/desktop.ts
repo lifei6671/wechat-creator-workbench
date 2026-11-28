@@ -11,6 +11,7 @@ import type {
   CanvasCardColor, CanvasEdge, CanvasGeometry, CanvasNode, CanvasNodeContent, CanvasPosition, CanvasViewport, Collection, CollectionCanvas,
   Category, CategoryIcon, CategoryPlacement, Entry, EntryFields, EntryFilter, EntryKind, EntryPage, Library, Revision, SaveMode, SaveResult, TimelineSelection, RecoveryCommit, RecoveryDraft, RecoverySummary,
   WechatPublicationDefaults, WechatRecommendationInput, WechatRecommendation, WechatCandidatePage, WechatRecommendationResult, WechatResolvedRecommendations,
+  ImageProject, ImageScene, ImageCanvasAsset, PreparedImageRender, ImageRenderResult, ImageExportOptions,
 } from "../../../packages/shared-types";
 
 export interface ImageTarget { endpoint: string; region: string; bucket: string; prefix: string; publicBase: string }
@@ -31,12 +32,19 @@ export interface AssetRow {
   id: string; name: string; width: number | null; height: number | null; bytes: number | null;
   uploadStatus: "queued" | "running" | "retrying" | "completed" | "failed" | null;
   uploadError: string | null; cleanupError: string | null; publicUrl: string | null;
+  preserveSource?: boolean;
 }
 export interface AssetIntegrityItem {
   id: string; name: string; state: "local" | "sync" | "hosted" | "missing" | "corrupt"; canRestore: boolean;
   references: { kind: "entry" | "collection"; id: string; title: string }[];
 }
 export interface AssetLibrary { items: AssetRow[]; target: ImageTarget | null; page: number; hasNext: boolean }
+export interface ImageVersionFile {
+  sha256: string; location?: "local" | "s3"; copyId?: string | null; assetId: string; renderId: string; projectId: string; name: string;
+  createdAt: number; bytes: number; versions: number; reasons: string[];
+  state: string | null; dueAt: number | null; expiresAt: number | null; error: string | null;
+}
+export interface ImageVersionStatus { revision: string; files: ImageVersionFile[]; reclaimableBytes: number }
 export interface UploadProgress { completed: number; total: number }
 export interface WechatImportJob {
   id: string; url: string; status: "queued" | "running" | "completed" | "partial" | "needs_attention" | "failed";
@@ -65,15 +73,15 @@ export interface SyncActivity {
 export interface SyncDevice { deviceId: string; name: string; createdAt: number; revokedAt: number | null }
 export interface SyncDevices { currentDeviceId: string; devices: SyncDevice[] }
 export type SyncResolution = "cloud" | "local" | "copy";
-export interface SyncApplied { changedEntries: string[]; changedCollections: string[]; mergeArchive?: string; publicationDefaultsChanged?: boolean }
+export interface SyncApplied { changedEntries: string[]; changedCollections: string[]; changedImageProjects?: string[]; mergeArchive?: string; publicationDefaultsChanged?: boolean }
 export interface SyncConflict {
-  entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge" | "wechat_publication_defaults";
+  entityType: "entry" | "category" | "asset" | "collection" | "collection_node" | "collection_edge" | "wechat_publication_defaults" | "image_project" | "image_render";
   entityId: string;
   reason: string;
   local: { title?: string; name?: string; description?: string; contentMd?: string; label?: string;
     kind?: string; entryId?: string | null; assetId?: string | null; externalUrl?: string | null;
     collectionId?: string; sourceNodeId?: string; targetNodeId?: string;
-    color?: string | null; customColor?: string | null; x?: number; y?: number; width?: number; height?: number; recommendationCount?: number } | null;
+    color?: string | null; customColor?: string | null; x?: number; y?: number; width?: number; height?: number; recommendationCount?: number; scene?: ImageScene } | null;
   remote: SyncConflict["local"];
   remoteDeleted: boolean;
   resolvable: boolean;
@@ -187,6 +195,9 @@ export const desktop = {
   save: (id: string, expectedVersion: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit) =>
     invoke<SaveResult>("save_entry", { id, expectedVersion, fields, mode, recovery }),
   assetIntegrity: () => invoke<AssetIntegrityItem[]>("asset_integrity"),
+  imageVersionStatus: () => invoke<ImageVersionStatus>("image_version_status"),
+  imageVersionKeep: (assetId: string) => invoke<void>("image_version_keep", { assetId }),
+  imageVersionRestore: (assetId: string) => invoke<void>("image_version_restore", { assetId }),
   assetRecoverOriginal: (id: string) => invoke<void>("asset_recover_original", { id }),
   recoveryPut: (draft: RecoveryDraft) => invoke<void>("editor_recovery_put", { draft }),
   recoveryList: () => invoke<RecoverySummary[]>("editor_recovery_list"),
@@ -223,6 +234,7 @@ export const desktop = {
   wechatGraphics: (markdown: string) => invoke<SourceFragment[]>("wechat_graphics", { markdown }),
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
   syncStatus: () => invoke<SyncBinding | null>("sync_status"),
+  syncChangeUrl: (url: string) => invoke<SyncBinding>("sync_change_url", { url }),
   syncDefaultDeviceName: () => invoke<string | null>("sync_default_device_name"),
   syncConnect: (url: string, name: string, accessKey?: string) =>
     invoke<SyncBinding>("sync_connect", { url, name, accessKey }),
@@ -325,6 +337,24 @@ export const desktop = {
     });
   },
   assetRead: (url: string, retry = false) => invoke<ArrayBuffer>("asset_read", { url, retry }),
+  imageProjectOpen: (entryId: string, src: string) => invoke<ImageProject>("image_project_open", { entryId, src }),
+  imageCanvasRead: (url: string) => invoke<ArrayBuffer>("image_canvas_read", { url }),
+  imageCanvasInfo: (url: string) => invoke<ImageCanvasAsset>("image_canvas_info", { url }),
+  imageProjectSave: (id: string, expectedVersion: number, scene: ImageScene) =>
+    invoke<{ version: number }>("image_project_save", { id, expectedVersion, scene }),
+  imageCanvasImport: async (file: File) => {
+    if (file.size > 20 * 1024 * 1024) throw new Error("单张图片不能超过 20 MB");
+    return invoke<ImageCanvasAsset>("image_canvas_import", await file.arrayBuffer(), {
+      headers: { "x-asset-name": encodeURIComponent(file.name) },
+    });
+  },
+  imageRenderPrepare: (projectId: string, version: number, renderId: string, options: ImageExportOptions, bytes: Uint8Array) =>
+    invoke<PreparedImageRender>("image_render_prepare", bytes, { headers: {
+      "x-project-id": projectId, "x-project-version": String(version), "x-render-id": renderId,
+      "x-export-options": encodeURIComponent(JSON.stringify(options)),
+    } }),
+  imageRenderCommit: (renderId: string, entry?: { id: string; expectedVersion: number; fields: EntryFields; recovery?: RecoveryCommit }) =>
+    invoke<ImageRenderResult>("image_render_commit", { renderId, entry }),
   assetThumbnail: (id: string) => invoke<ArrayBuffer>("asset_thumbnail", { id }),
   localizeImage: (url: string) => invoke<string>("asset_localize_image", { url }),
   assetUpload: (id: string) => invoke<void>("asset_upload", { id }),

@@ -6,9 +6,10 @@ export interface Database {
 }
 
 export interface BlobStore {
-  head(hash: string): Promise<{ size: number } | null>;
-  put(hash: string, size: number, source: ReadableStream<Uint8Array>): Promise<void>;
+  head(hash: string): Promise<{ size: number; version?: string } | null>;
+  put(key: string, size: number, source: ReadableStream<Uint8Array> | Uint8Array, checksum?: string): Promise<void>;
   get(hash: string): Promise<ReadableStream<Uint8Array> | null>;
+  remove?(key: string): Promise<void>;
 }
 
 export async function query<T>(db: Database, statement: Statement): Promise<T[]> {

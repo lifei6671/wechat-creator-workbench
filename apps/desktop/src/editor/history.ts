@@ -3,6 +3,8 @@ export function editHistory(action: "undo" | "redo") {
   const target = document.activeElement;
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
     if (!target.readOnly && !target.disabled) document.execCommand(action);
+  } else if (target instanceof HTMLElement && target.closest(".image-canvas-dialog")) {
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: action === "redo", bubbles: true, cancelable: true }));
   } else if (target instanceof HTMLElement && target.closest(".ProseMirror")) {
     target.dispatchEvent(new InputEvent("beforeinput", {
       inputType: action === "undo" ? "historyUndo" : "historyRedo",

@@ -1096,7 +1096,7 @@ fn record_revision(conn: &Connection, id: &str, reason: &str, timestamp: i64) ->
     Ok(())
 }
 
-fn save_in_transaction(
+pub(crate) fn save_in_transaction(
     tx: &Transaction<'_>, id: &str, expected_version: i64, fields: Fields, mode: SaveMode,
     recovery: Option<&recovery::Commit>,
 ) -> Result<SaveResult> {

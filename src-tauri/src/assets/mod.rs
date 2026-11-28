@@ -10,6 +10,7 @@ mod remote_image;
 pub(crate) mod s3;
 pub(crate) mod sync;
 pub(crate) mod upload_format;
+pub(crate) mod version_cleanup;
 
 use crate::db::{AppError, Result, Workspace, id, now, workspace_id};
 use image::{ImageDecoder, ImageFormat, ImageReader};
@@ -36,6 +37,22 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) const MAX_BYTES: usize = 20 * 1024 * 1024;
 
+pub(crate) struct CanvasFile {
+    pub hash: String,
+    pub relative: String,
+    pub mime: String,
+    pub bytes: i64,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub(crate) fn enqueue_canvas_output(conn: &Connection, asset_id: &str, hash: &str) -> Result<()> {
+    if let Some(profile) = Profile::for_incoming_image(conn, None)? {
+        enqueue(conn, asset_id, hash, &profile.id, false)?;
+    }
+    Ok(())
+}
+
 pub struct Assets {
     root: PathBuf,
     ready: Notify,
@@ -58,6 +75,7 @@ enum ImageOrigin<'a> {
     Attachment,
     Hosting(&'a Target),
     Library,
+    Canvas,
     ImportPlaceholder(&'a str),
     Derived(&'a str),
 }
@@ -153,12 +171,14 @@ pub struct AssetRow {
     upload_error: Option<String>,
     cleanup_error: Option<String>,
     public_url: Option<String>,
+    preserve_source: bool,
 }
 
 const ASSET_ROW_QUERY: &str =
     "SELECT a.id,a.name,a.width,a.height,a.bytes,
             CASE WHEN j.status<>'completed' THEN j.status END,j.error,c.error,
-            CASE WHEN l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL THEN l.public_url END
+            CASE WHEN l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL THEN l.public_url END,
+            COALESCE(a.source_key LIKE 'image-render:%',0)
      FROM assets a
      LEFT JOIN asset_locations l ON l.sha256=a.sha256 AND l.storage_profile_id=:profile
      LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE kind='upload' AND sha256=a.sha256
@@ -178,6 +198,7 @@ impl AssetRow {
             upload_error: row.get(6)?,
             cleanup_error: row.get(7)?,
             public_url: row.get(8)?,
+            preserve_source: row.get(9)?,
         })
     }
 }
@@ -220,6 +241,7 @@ impl Assets {
     }
 
     pub fn new(root: PathBuf, db: &Workspace) -> Result<Self> {
+        db.bind_assets_root(&root);
         db.write(|tx| {
             tx.execute(
                 "UPDATE jobs SET status='retrying', error=NULL, updated_at=?1
@@ -300,6 +322,91 @@ impl Assets {
         self.store_image(db, name, bytes, ImageOrigin::Library)
     }
 
+    pub(crate) fn import_canvas(&self, db: &Workspace, name: &str, bytes: &[u8]) -> Result<String> {
+        self.store_image(db, name, bytes, ImageOrigin::Canvas)
+    }
+
+    pub(crate) async fn normalize_canvas(&self, bytes:Vec<u8>)->Result<Vec<u8>> {
+        remote_image::normalize(bytes).await
+    }
+
+    pub(crate) async fn read_canvas(&self,db:&Workspace,url:&str)->Result<Vec<u8>> {
+        let mut bytes=self.read_canvas_original(db,url).await?;
+        if canvas_orientation(&bytes)?==1 {return Ok(bytes);}
+        if image_header(&bytes)?.0==ImageFormat::Jpeg {
+            let mut cursor=2;
+            while cursor+1<bytes.len() {
+                if bytes[cursor]!=0xff {return Err(AppError::invalid("JPEG 图片标记无效"));}
+                while cursor<bytes.len() && bytes[cursor]==0xff {cursor+=1;}
+                let marker=*bytes.get(cursor).ok_or_else(||AppError::invalid("JPEG 图片标记不完整"))?;cursor+=1;
+                if matches!(marker,0xda|0xd9){break;}
+                if matches!(marker,0x01|0xd0..=0xd8){continue;}
+                let length=bytes.get(cursor..cursor+2).map(|part|usize::from(u16::from_be_bytes([part[0],part[1]]))).ok_or_else(||AppError::invalid("JPEG 图片段不完整"))?;
+                let end=cursor.checked_add(length).filter(|end|length>=2&&*end<=bytes.len()).ok_or_else(||AppError::invalid("JPEG 图片段长度无效"))?;
+                if marker==0xe1 && length>=8 && bytes.get(cursor+2..cursor+8)==Some(b"Exif\0\0") {
+                    let _=image::metadata::Orientation::remove_from_exif_chunk(&mut bytes[cursor+8..end]);
+                }
+                cursor=end;
+            }
+            if canvas_orientation(&bytes)?!=1 {return Err(AppError::invalid("无法读取图片原始方向"));}
+            return Ok(bytes);
+        }
+        tokio::task::spawn_blocking(move || {
+            let image=image::load_from_memory(&bytes).map_err(|error|AppError::new("IMAGE_FORMAT",format!("无法解码原图：{error}")))?;
+            let mut output=Cursor::new(Vec::new());
+            image.write_to(&mut output,ImageFormat::Png).map_err(|error|AppError::new("IMAGE_FORMAT",format!("无法读取原图像素：{error}")))?;
+            Ok(output.into_inner())
+        }).await.map_err(|error|AppError::new("IMAGE_FORMAT",format!("无法读取原图像素：{error}")))?
+    }
+
+    pub(crate) async fn read_canvas_original(&self, db:&Workspace, url:&str)->Result<Vec<u8>> {
+        if !url.starts_with("asset://") { return self.read(db,url).await; }
+        let mut file=db.read(|conn|by_url(conn,url))?;
+        self.prepare_version_read(db,&file).await?;
+        db.maintenance(|conn| {
+            if let Some(hash)=&file.hash {version_cleanup::restore_for_read(conn,&self.root,hash)?;}
+            conn.query_row("SELECT image_session_pin(?1)",[&file.id],|row|row.get::<_,bool>(0))?;
+            Ok(())
+        })?;
+        file=db.read(|conn|by_url(conn,url))?;
+        if file.path.is_none() {
+            file.path=db.read(|conn|sync::snapshot(conn,&file.id)?.map(|snapshot|snapshot.relative()).transpose().map(Option::flatten))?;
+            if let Some(path)=&file.path {db.save(|tx|{tx.execute("UPDATE assets SET relative_path=?2 WHERE id=?1 AND sha256=?3 AND relative_path IS NULL",params![file.id,path,file.hash])?;Ok(())})?;}
+        }
+        let hash=file.hash.as_deref().ok_or_else(||AppError::new("ASSET_MISSING","图片工程缺少原图"))?;
+        if let Some(path)=&file.path {
+            match tokio::fs::read(self.root.join(path)).await {
+                Ok(bytes) if hex::encode(Sha256::digest(&bytes))==hash => { image_header(&bytes)?;return Ok(bytes); },
+                Ok(_) => {},
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(local_error(error)),
+            }
+        }
+        match self.read_synced_file(db,&file).await {
+            Ok(Some(bytes))=>return Ok(bytes),
+            Ok(None)=>{},
+            Err(error)=>{if db.read(|conn|Ok(hosted_location(conn,&file)?.is_none()))? {return Err(error);}},
+        }
+        let bytes=self.read_remote_file(db,&file).await?;
+        if hex::encode(Sha256::digest(&bytes))!=hash {return Err(AppError::new("ASSET_ORIGINAL_MISSING","图片工程需要原图，图床中的压缩图片不能替代原图"));}
+        image_header(&bytes)?;
+        if let Some(relative)=&file.path {self.cache_original(relative,&bytes)?;}
+        Ok(bytes)
+    }
+
+    pub(crate) fn stage_canvas(&self, bytes: &[u8]) -> Result<CanvasFile> {
+        let (format, width, height) = image_header(bytes)?;
+        let hash = hex::encode(Sha256::digest(bytes));
+        let relative = format!("{}/{}/{}.{}", &hash[..2], &hash[2..4], hash, format.extensions_str()[0]);
+        let path = self.root.join(&relative);
+        let parent = path.parent().expect("asset path has parent");
+        std::fs::create_dir_all(parent).map_err(local_error)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(local_error)?;
+        temporary.write_all(bytes).map_err(local_error)?;
+        temporary.persist(&path).map_err(|error| local_error(error.error))?;
+        Ok(CanvasFile { hash, relative, mime: format.to_mime_type().into(), bytes: bytes.len() as i64, width, height })
+    }
+
     pub async fn fill(&self, db: &Workspace, asset_id: &str, bytes: Vec<u8>) -> Result<String> {
         let bytes = remote_image::normalize(bytes).await?;
         self.store_image(
@@ -337,6 +444,7 @@ impl Assets {
         let (kind, source, placeholder, retained) = match origin {
             ImageOrigin::Attachment | ImageOrigin::Hosting(_) => ("original", None, None, false),
             ImageOrigin::Library => ("original", None, None, true),
+            ImageOrigin::Canvas => ("original", None, None, false),
             ImageOrigin::ImportPlaceholder(id) => ("original", None, Some(id), false),
             ImageOrigin::Derived(key) => ("derived", Some(key), None, false),
         };
@@ -350,7 +458,7 @@ impl Assets {
             format.extensions_str()[0]
         );
         let asset_id = db.write(|tx| {
-            let active = if kind == "original" { Profile::for_incoming_image(tx, expected)? } else { None };
+            let active = if kind == "original" && !matches!(origin, ImageOrigin::Canvas) { Profile::for_incoming_image(tx, expected)? } else { None };
             if let Some(placeholder) = placeholder
                 && !cleanup::referenced(tx)?.0.contains(placeholder) {
                 return Err(AppError::new("ASSET_UNUSED", "图片已不再被引用"));
@@ -493,7 +601,7 @@ impl Assets {
             .acquire()
             .await
             .expect("thumbnail semaphore stays open");
-        let bytes = self.read_file(db, &file).await?;
+        let bytes = self.read_without_session(db, &file).await?;
         tauri::async_runtime::spawn_blocking(move || {
             let (format, _, _) = image_header(&bytes)?;
             let decode_error =
@@ -623,7 +731,46 @@ impl Assets {
         remote_image::normalize(bytes).await
     }
 
+    async fn read_without_session(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {
+        if let Some(relative)=&file.path {
+            match tokio::fs::read(self.root.join(relative)).await {
+                Ok(bytes)=>return Ok(bytes),
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                Err(error)=>return Err(local_error(error)),
+            }
+        }
+        let recovery=db.read(|conn|Ok(conn.query_row("SELECT state,backup_path,bytes FROM image_version_cleanup
+            WHERE sha256=?1 AND state IN ('copying','removed','failed','expired') ORDER BY created_at DESC LIMIT 1",
+            [file.hash.as_deref()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,i64>(2)?))).optional()?))?;
+        if let Some((state,backup,size))=recovery {
+            if state=="expired" {return Err(AppError::new("IMAGE_VERSION_EXPIRED","旧版图片已超过回收保留期"));}
+            if let Some(backup)=backup {
+                let bytes=tokio::fs::read(self.root.join(backup)).await.map_err(local_error)?;
+                if bytes.len() as i64!=size || Some(hex::encode(Sha256::digest(&bytes)))!=file.hash {
+                    return Err(AppError::new("IMAGE_CLEANUP_CHANGED","图片回收副本校验失败"));
+                }
+                return Ok(bytes);
+            }
+        }
+        self.read_remote_file(db,file).await
+    }
+
     pub(super) async fn read_file(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {
+        self.prepare_version_read(db,file).await?;
+        let current=db.read(|conn|by_id(conn,&file.id))?;
+        let file=&current;
+        if let Some(hash) = &file.hash {
+            let restored = db.maintenance(|conn| {
+                let restored=version_cleanup::restore_for_read(conn, &self.root, hash)?;
+                conn.query_row("SELECT image_session_pin(?1)",[&file.id],|row|row.get::<_,bool>(0))?;
+                Ok(restored)
+            })?;
+            if restored {
+                let current = db.read(|conn| by_id(conn, &file.id))?;
+                let relative = current.path.ok_or_else(|| AppError::new("ASSET_MISSING", "恢复后的图片缺少本地路径"))?;
+                return tokio::fs::read(self.root.join(relative)).await.map_err(local_error);
+            }
+        }
         if let Some(relative) = &file.path {
             match tokio::fs::read(self.root.join(relative)).await {
                 Ok(data) => return Ok(data),
@@ -632,6 +779,21 @@ impl Assets {
             }
         }
         self.read_remote_file(db,file).await
+    }
+
+    async fn prepare_version_read(&self,db:&Workspace,file:&AssetFile)->Result<()> {
+        let Some(hash)=file.hash.as_deref() else{return Ok(());};
+        let local=db.maintenance(|conn|version_cleanup::restore_for_read(conn,&self.root,hash));
+        if local.as_ref().is_ok_and(|restored|*restored) {return Ok(());}
+        if let Some(relative)=&file.path && self.root.join(relative).try_exists().map_err(local_error)? {return Ok(());}
+        let known=db.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM image_gc_remote g JOIN sync_binding b ON b.instance_id=g.instance_id AND b.epoch=g.epoch WHERE g.sha256=?1 AND g.payload_json->>'$.backend'='private')",[hash],|row|row.get::<_,bool>(0))?))?;
+        if !known {local?;return Ok(());}
+        crate::sync::contents::restore_image_blob(db,hash).await?;
+        let snapshot=db.read(|conn|sync::snapshot(conn,&file.id))?.ok_or_else(||AppError::new("ASSET_MISSING","图片记录已不存在"))?;
+        let relative=snapshot.relative()?.ok_or_else(||AppError::new("ASSET_MISSING","图片缺少文件路径"))?;
+        let bytes=crate::sync::synced_blob(db,hash,snapshot.bytes.ok_or_else(||AppError::new("ASSET_MISSING","图片缺少大小记录"))?).await?;
+        self.cache_original(&relative,&bytes)?;
+        db.maintenance(|conn|{conn.execute("UPDATE assets SET relative_path=?2 WHERE sha256=?1",params![hash,relative])?;conn.execute("UPDATE image_version_cleanup SET state='restored',error=NULL WHERE sha256=?1 AND state IN ('expired','removed','failed','copying')",[hash])?;Ok(())})
     }
 
     async fn read_remote_file(&self, db: &Workspace, file: &AssetFile) -> Result<Vec<u8>> {
@@ -809,13 +971,27 @@ impl Assets {
     }
 
     async fn perform_upload(&self, db: &Workspace, upload: &Upload) -> Result<()> {
-        let bytes = self.read_file(db, &upload.file).await?;
+        let bytes = self.read_without_session(db, &upload.file).await?;
         let options = upload.options.clone();
         let (format, bytes) = tokio::task::spawn_blocking(move || options.encode(bytes))
             .await
             .map_err(|error| AppError::new("IMAGE_FORMAT", error.to_string()))??;
-        let key = name_for_format(&upload.key, format);
+        let mut key = name_for_format(&upload.key, format);
         let content_hash = hex::encode(Sha256::digest(&bytes));
+        let derived=db.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM assets a JOIN image_renders r ON r.output_asset_id=a.id WHERE a.id=?1 AND a.source_key='image-render:'||r.id)",[&upload.file.id],|row|row.get::<_,bool>(0))?))?;
+        let hash=upload.file.hash.as_deref().expect("upload hash");
+        let previous=if derived && upload.registered {version_cleanup::s3::registered(db,&upload.profile,hash,&upload.key)?}else{None};
+        let managed=if derived && (!upload.registered || version_cleanup::s3::is_managed(db,&upload.profile,hash,&upload.key)?) {
+            // Reuse only the never-admitted uploading identity with the same actual bytes.
+            let previous=if let Some(previous)=previous {
+                let same=db.read(|conn|Ok(conn.query_row("SELECT content_sha256=?2 FROM image_public_copies WHERE id=?1",params![previous.id,content_hash],|r|r.get::<_,bool>(0))?))?;
+                if same {Some(previous)}else{version_cleanup::s3::resolve_upload(db,&upload.profile,&previous).await?;None}
+            } else {None};
+            let value=if let Some(previous)=previous {previous}else{
+                version_cleanup::s3::reserve(db,&upload.profile,hash,&content_hash,bytes.len(),format.extensions_str()[0]).await?
+            };
+            key=value.key.clone().into();Some(value)
+        } else {None};
         let store = upload.profile.provider()?;
         if self.uploads_stopped.is_cancelled() {
             return Err(AppError::new(
@@ -826,17 +1002,23 @@ impl Assets {
         tokio::select! {
             biased;
             result = async {
-                if upload.registered && key != upload.key {
+                if upload.registered && key != upload.key && !version_cleanup::s3::is_managed(db,&upload.profile,hash,&upload.key)? {
                     store.delete(&upload.key).await?;
                 }
                 register_target(db, upload, &key, &content_hash)?;
-                store.put(&key, format.to_mime_type(), bytes).await
+                if let Some(managed)=managed {
+                    let version=version_cleanup::s3::put(&store,&managed,format.to_mime_type(),bytes.clone()).await?;
+                    let readback=store.get(&key).await?;
+                    if readback!=bytes {return Err(AppError::new("IMAGE_CLEANUP_CHANGED","图床上传回读与原数据不一致"));}
+                    version_cleanup::s3::committed(db,&managed,version).await
+                } else {store.put(&key, format.to_mime_type(), bytes).await}
             } => result,
             () = self.uploads_stopped.cancelled() => Err(AppError::new("UPLOAD_UNCERTAIN", "退出前上传未结束，可手动重试")),
         }
     }
 
     pub fn spawn(app: AppHandle) {
+        Self::spawn_version_cleanup(app.clone());
         tauri::async_runtime::spawn(async move {
             app.state::<Assets>()
                 .run_uploads(&app.state::<Workspace>(), &app)
@@ -964,7 +1146,13 @@ fn hosted_location(conn: &Connection, file: &AssetFile) -> Result<Option<HostedL
     ).optional()?)
 }
 
-fn image_header(bytes: &[u8]) -> Result<(ImageFormat, u32, u32)> {
+pub(crate) fn canvas_orientation(bytes:&[u8])->Result<u8>{
+    let (format,_,_)=image_header(bytes)?;
+    let mut decoder=ImageReader::with_format(Cursor::new(bytes),format).into_decoder().map_err(|error|AppError::new("IMAGE_FORMAT",format!("无法读取图片方向：{error}")))?;
+    decoder.orientation().map(|orientation|orientation.to_exif()).map_err(|error|AppError::new("IMAGE_FORMAT",format!("无法读取图片方向：{error}")))
+}
+
+pub(crate) fn image_header(bytes: &[u8]) -> Result<(ImageFormat, u32, u32)> {
     if bytes.len() > MAX_BYTES {
         return Err(AppError::new("IMAGE_SIZE", "单张图片不能超过 20 MB"));
     }
@@ -1012,15 +1200,48 @@ fn file_row(r: &Row<'_>) -> rusqlite::Result<AssetFile> {
 
 fn by_id(conn: &Connection, id: &str) -> Result<AssetFile> {
     Ok(conn.query_row(
-        "SELECT id,sha256,relative_path FROM assets WHERE id=?1",
+        "SELECT id,sha256,relative_path FROM assets WHERE id=?1
+         UNION ALL SELECT output_asset_id,sha256,relative_path FROM image_render_staging WHERE output_asset_id=?1
+         AND NOT EXISTS(SELECT 1 FROM assets WHERE id=?1) LIMIT 1",
         [id],
         file_row,
     )?)
 }
 
+pub(crate) fn canvas_output_id(conn: &Connection, value: &str) -> Result<Option<String>> {
+    let Ok(url) = url::Url::parse(value) else {
+        return Ok(None);
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return Ok(None);
+    }
+    let Some(id) = url
+        .fragment()
+        .and_then(|fragment| fragment.strip_prefix("wcb-image="))
+    else {
+        return Ok(None);
+    };
+    if !crate::sync::valid_id(id) {
+        return Err(AppError::invalid("图片工程标识无效"));
+    }
+    let asset = conn
+        .query_row(
+            "SELECT a.id FROM assets a JOIN image_renders r ON r.output_asset_id=a.id WHERE a.id=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    asset.map(Some).ok_or_else(|| {
+        AppError::invalid("图片工程尚未同步完成或已不可用，请同步完成后重试")
+    })
+}
+
 fn by_url(conn: &Connection, url: &str) -> Result<AssetFile> {
     if let Some(id) = url.strip_prefix("asset://") {
         return by_id(conn, id);
+    }
+    if let Some(id) = canvas_output_id(conn, url)? {
+        return by_id(conn, &id);
     }
     Ok(conn.query_row(
         "SELECT id,sha256,relative_path FROM assets

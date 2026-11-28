@@ -397,6 +397,7 @@ impl McpClient {
 #[tauri::command]
 pub async fn mcp_copy_config(
     db: State<'_, Workspace>,
+    assets: State<'_, crate::assets::Assets>,
     mcp: State<'_, McpServer>,
     client: McpClient,
 ) -> Result<()> {
@@ -409,7 +410,7 @@ pub async fn mcp_copy_config(
     let token = secrets::entry(&db, CREDENTIAL)?
         .get_password()
         .map_err(secrets::error)?;
-    clipboard::clipboard_write(client.configuration(running.config.port, &token))
+    clipboard::clipboard_write(db, assets, client.configuration(running.config.port, &token)).await
 }
 
 #[cfg(test)]

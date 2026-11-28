@@ -66,6 +66,7 @@ export async function editClipboardField(field: HTMLInputElement | HTMLTextAreaE
 
 export function attachClipboard(editor: HandleEditorClipboard, onError: ClipboardIO["onError"]) {
   function handle(action: ClipboardAction, event: Event, plainText?: boolean) {
+    if (event.target instanceof Element && event.target.closest(".image-canvas-dialog, .image-canvas-small-dialog")) return;
     event.preventDefault();
     event.stopPropagation();
     if (editor(action, event.target, plainText)) return;

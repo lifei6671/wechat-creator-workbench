@@ -76,6 +76,7 @@ pub enum Image {
         url: String,
         alt: String,
         title: String,
+        canvas_output: Option<String>,
     },
     Html(Vec<Range<usize>>),
 }
@@ -114,35 +115,37 @@ pub fn images(markdown: &str) -> Vec<Image> {
                     String::new(),
                     String::from(title),
                     1,
+                    canvas_output_reference(&dest_url),
                 ));
             }
             Event::Start(Tag::Image { .. }) => {
-                if let Some((_, _, _, _, depth)) = &mut image {
+                if let Some((_, _, _, _, depth, _)) = &mut image {
                     *depth += 1;
                 }
             }
             Event::Text(text) | Event::Code(text) => {
-                if let Some((_, _, alt, _, _)) = &mut image {
+                if let Some((_, _, alt, _, _, _)) = &mut image {
                     alt.push_str(&text);
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some((_, _, alt, _, _)) = &mut image {
+                if let Some((_, _, alt, _, _, _)) = &mut image {
                     alt.push(' ');
                 }
             }
             Event::End(TagEnd::Image) => {
-                if let Some((_, _, _, _, depth)) = &mut image {
+                if let Some((_, _, _, _, depth, _)) = &mut image {
                     *depth -= 1;
                 }
-                if matches!(image, Some((_, _, _, _, 0)))
-                    && let Some((start, url, alt, title, _)) = image.take()
+                if matches!(image, Some((_, _, _, _, 0, _)))
+                    && let Some((start, url, alt, title, _, canvas_output)) = image.take()
                 {
                     images.push(Image::Markdown {
                         range: start..range.end,
                         url,
                         alt,
                         title,
+                        canvas_output,
                     });
                 }
             }
@@ -168,6 +171,16 @@ pub fn images(markdown: &str) -> Vec<Image> {
 pub struct HtmlImage {
     pub url: String,
     pub attributes: Vec<Vec<Range<usize>>>,
+    canvas_output: Option<String>,
+}
+
+fn canvas_output_reference(value: &str) -> Option<String> {
+    let url = url::Url::parse(value).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let id = url.fragment()?.strip_prefix("wcb-image=")?;
+    crate::sync::valid_id(id).then(|| format!("asset://{id}"))
 }
 
 pub fn html_images(markdown: &str, parts: &[Range<usize>]) -> Result<Vec<HtmlImage>> {
@@ -207,6 +220,7 @@ pub fn html_images(markdown: &str, parts: &[Range<usize>]) -> Result<Vec<HtmlIma
                 images.push(HtmlImage {
                     url: canonical_url(&html_escape::decode_html_entities(&src.value())),
                     attributes: locations,
+                    canvas_output: canvas_output_reference(&html_escape::decode_html_entities(&src.value())),
                 });
             }
             Ok(())
@@ -224,14 +238,20 @@ pub fn urls(markdown: &str) -> Result<BTreeSet<String>> {
     let mut urls = BTreeSet::new();
     for image in images(markdown) {
         match image {
-            Image::Markdown { url, .. } => {
+            Image::Markdown { url, canvas_output, .. } => {
                 urls.insert(url);
+                if let Some(output) = canvas_output {
+                    urls.insert(output);
+                }
             }
-            Image::Html(parts) => urls.extend(
-                html_images(markdown, &parts)?
-                    .into_iter()
-                    .map(|image| image.url),
-            ),
+            Image::Html(parts) => {
+                for image in html_images(markdown, &parts)? {
+                    urls.insert(image.url);
+                    if let Some(output) = image.canvas_output {
+                        urls.insert(output);
+                    }
+                }
+            }
         }
     }
     Ok(urls)
@@ -249,6 +269,7 @@ pub fn image_edits(
                 url,
                 alt,
                 title,
+                ..
             } => {
                 let Some(name) = resolve(&url)? else { continue };
                 let alt = alt

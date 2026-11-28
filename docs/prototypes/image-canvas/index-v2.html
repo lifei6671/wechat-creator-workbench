@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>图片编辑画布</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="canvas-v2.css">
+  <script src="icons-v2.js" defer></script>
+  <script src="canvas-v2.js" defer></script>
+</head>
+<body>
+  <main class="canvas-app" aria-label="图片编辑画布" data-screen-label="统一图片画布">
+    <div id="stage" tabindex="0" aria-label="画布，点击图片选择，按住 Shift 多选">
+      <div id="world"><div id="board"><div id="board-background"></div><div id="nodes"></div></div><div id="board-caption"></div><div id="selection-size" hidden></div></div>
+      <div id="marquee" hidden></div>
+    </div>
+
+    <header class="document-bar floating">
+      <button class="icon-button" id="leave" aria-label="返回文章" title="返回文章" data-icon="close"></button>
+      <span class="document-icon" data-icon="image"></span>
+      <div><h1>编辑图片</h1><span class="document-name">文章配图</span></div>
+    </header>
+
+    <div class="view-bar floating" role="toolbar" aria-label="画布视图">
+      <button class="icon-button" id="undo" aria-label="撤销" title="撤销" data-icon="undo" disabled></button>
+      <button class="icon-button" id="redo" aria-label="重做" title="重做" data-icon="redo" disabled></button>
+      <span class="divider"></span>
+      <button class="icon-button" id="zoom-out" aria-label="缩小" title="缩小" data-icon="minus"></button>
+      <button id="zoom-value" title="恢复 100%">60%</button>
+      <button class="icon-button" id="zoom-in" aria-label="放大" title="放大" data-icon="plus"></button>
+      <button class="icon-button" id="fit" aria-label="显示全部内容" title="显示全部内容" data-icon="fit"></button>
+      <span class="divider"></span>
+      <button class="icon-button" id="select-all" aria-label="全选图片" title="全选图片" data-icon="grid"></button>
+    </div>
+
+    <nav class="tool-rail floating" aria-label="画布工具">
+      <button class="icon-button active" id="select-tool" aria-label="选择工具" aria-pressed="true" title="选择工具" data-icon="pointer"></button>
+      <button class="icon-button" id="pan-tool" aria-label="平移画布" aria-pressed="false" title="平移画布，或按住空格拖动" data-icon="hand"></button>
+      <span class="rail-divider"></span>
+      <button class="icon-button add-tool" id="add" aria-label="添加图片" title="添加图片" data-icon="plus"></button>
+      <button class="icon-button" id="edit-background" aria-label="编辑画板背景" title="画板与背景" data-icon="image"></button>
+      <button class="icon-button" id="toggle-layers" aria-label="图层列表" aria-expanded="false" title="图层列表" data-icon="layers"></button>
+    </nav>
+
+    <aside class="inspector floating" aria-label="属性面板">
+      <div class="inspector-heading"><div class="context-icon" id="context-icon" data-icon="image"></div><div class="context-title"><h2 id="context-title">图片</h2><span id="context-subtitle">城市桌面.png</span></div><button class="icon-button" id="board-settings" aria-label="画板设置" title="画板设置" data-icon="fit"></button></div>
+      <div class="panel-scroll">
+        <section class="section" id="single-properties">
+          <div class="section-title"><h3>图片尺寸</h3><span id="original-size" class="muted"></span></div>
+          <div class="dimension-row"><label class="number-field"><span>宽</span><input id="image-w" type="number" min="20" max="16000" aria-label="图片宽度"></label><button class="lock-button active" id="lock-ratio" aria-label="锁定比例" aria-pressed="true" title="锁定比例" data-icon="lock"></button><label class="number-field"><span>高</span><input id="image-h" type="number" min="20" max="16000" aria-label="图片高度"></label></div>
+          <div class="size-presets" aria-label="图片缩放比例"><button data-size="25">25%</button><button data-size="50">50%</button><button data-size="75">75%</button><button data-size="100">100%</button></div>
+          <label class="slider-label" for="opacity"><span>不透明度</span><output id="opacity-value">100%</output></label><input id="opacity" class="range" type="range" min="0" max="100" value="100">
+        </section>
+        <section class="section" id="multiple-properties" hidden>
+          <div class="section-title"><h3>拼接布局</h3></div>
+          <div class="layout-grid" aria-label="拼接布局"><button data-layout="horizontal" aria-label="横向排列"><span data-icon="horizontal"></span>横向</button><button data-layout="vertical" aria-label="纵向排列"><span data-icon="vertical"></span>纵向</button><button data-layout="grid" aria-label="宫格排列"><span data-icon="grid"></span>宫格</button></div>
+          <div class="field-line"><label for="size-policy">统一尺寸</label><select id="size-policy"><option value="min">以较小图片为准</option><option value="max">以较大图片为准</option></select></div>
+          <div class="field-line" id="columns-line" hidden><label for="columns">列数</label><input type="number" id="columns" min="1" max="4" value="2" aria-label="宫格列数"></div>
+          <label class="slider-label" for="gap"><span>图片间距</span><output id="gap-value">24 px</output></label><input id="gap" class="range" type="range" min="0" max="100" value="24">
+        </section>
+        <section class="section" id="board-properties" hidden>
+          <div class="section-title"><h3>画板尺寸</h3></div>
+          <div class="dimension-row"><label class="number-field"><span>宽</span><input id="board-w" type="number" min="100" max="16000" aria-label="画板宽度"></label><span class="size-times">×</span><label class="number-field"><span>高</span><input id="board-h" type="number" min="100" max="16000" aria-label="画板高度"></label></div>
+          <div class="size-presets"><button data-board-ratio="1:1">1:1</button><button data-board-ratio="4:3">4:3</button><button data-board-ratio="16:9">16:9</button><button data-board-ratio="3:4">3:4</button></div>
+        </section>
+
+        <section class="section background-section">
+          <div class="section-title"><h3>背景</h3><button class="text-button" id="custom-background">自选图片<span data-icon="plus"></span></button></div>
+          <div class="segmented" aria-label="背景类型"><button data-background="solid">纯色</button><button data-background="gradient" aria-pressed="true">渐变</button><button data-background="wallpaper">壁纸</button><button data-background="transparent">透明</button></div>
+          <div id="background-presets" class="background-presets" aria-label="背景预设"></div>
+          <div class="color-fields" id="color-fields"><label class="color-field"><input type="color" id="color-a" aria-label="背景起始颜色"><span id="color-a-code"></span></label><span class="color-arrow" id="color-arrow" data-icon="arrow-right"></span><label class="color-field" id="second-color"><input type="color" id="color-b" aria-label="背景结束颜色"><span id="color-b-code"></span></label></div>
+        </section>
+
+        <section class="section style-section">
+          <label class="slider-label" for="padding"><span>四周留白</span><output id="padding-value">88 px</output></label><input class="range" id="padding" type="range" min="0" max="180" value="88">
+          <label class="slider-label" for="radius"><span>圆角</span><output id="radius-value">18 px</output></label><input class="range" id="radius" type="range" min="0" max="60" value="18">
+          <label class="slider-label" for="shadow"><span>阴影</span><output id="shadow-value">24%</output></label><input class="range" id="shadow" type="range" min="0" max="80" value="24">
+        </section>
+
+        <details class="section advanced" id="advanced"><summary>位置与层级<span data-icon="plus"></span></summary><div class="advanced-body"><div class="dimension-row"><label class="number-field"><span>X</span><input id="image-x" type="number" aria-label="图片 X 坐标"></label><label class="number-field"><span>Y</span><input id="image-y" type="number" aria-label="图片 Y 坐标"></label></div><div class="alignment"><button class="icon-button" data-align="left" aria-label="左对齐" title="左对齐" data-icon="align-left"></button><button class="icon-button" data-align="center" aria-label="水平居中" title="水平居中" data-icon="align-center"></button><button class="icon-button" data-align="right" aria-label="右对齐" title="右对齐" data-icon="align-right"></button><span class="divider"></span><button class="icon-button" id="lower" aria-label="下移一层" title="下移一层" data-icon="back"></button><button class="icon-button" id="raise" aria-label="上移一层" title="上移一层" data-icon="front"></button></div></div></details>
+      </div>
+      <footer class="export-panel"><div class="export-options"><div class="segmented" aria-label="导出格式"><button data-format="PNG" aria-pressed="true">PNG</button><button data-format="JPEG">JPG</button><button data-format="WebP">WebP</button></div><select id="export-scale" aria-label="导出倍率"><option value="1">1×</option><option value="2">2×</option></select></div><div class="export-bottom"><span id="output-size">1600 × 1112 px</span><div><button class="icon-button" id="copy" aria-label="复制成品" title="复制成品" data-icon="copy"></button><button class="icon-button" id="export" aria-label="另存为图片" title="另存为图片" data-icon="download"></button></div></div></footer>
+    </aside>
+
+    <div class="selection-dock floating" role="toolbar" aria-label="选中内容操作">
+      <div id="single-actions" class="dock-group"><button class="dock-action" id="crop"><span data-icon="crop"></span><span>裁剪</span></button><button class="icon-button" id="rotate" aria-label="向右旋转" title="向右旋转" data-icon="rotate"></button><button class="icon-button" id="flip" aria-label="水平翻转" title="水平翻转" data-icon="flip"></button></div>
+      <div id="multi-actions" class="dock-group" hidden><button class="dock-action" data-layout="horizontal" aria-label="横向拼接"><span data-icon="horizontal"></span><span>横向</span></button><button class="dock-action" data-layout="vertical" aria-label="纵向拼接"><span data-icon="vertical"></span><span>纵向</span></button><button class="dock-action" data-layout="grid" aria-label="宫格拼接"><span data-icon="grid"></span><span>宫格</span></button><button class="icon-button" id="free-layout" aria-label="自由摆放" title="自由摆放" data-icon="pointer"></button></div>
+      <div id="board-actions" class="dock-group" hidden><button class="dock-action" id="dock-add"><span data-icon="plus"></span><span>添加图片</span></button></div>
+      <span class="divider" id="selection-divider"></span><button class="icon-button" id="duplicate" aria-label="复制一份" title="复制一份" data-icon="copy"></button><button class="icon-button" id="delete" aria-label="删除选中图片" title="删除" data-icon="trash"></button>
+      <span class="divider"></span><button class="primary-button" id="apply"><span data-icon="check"></span><span>应用到文章</span></button>
+    </div>
+
+    <button class="canvas-status" id="status-button"><span id="status-dot"></span><span id="status" role="status">草稿已保存</span></button>
+    <div class="error-message" id="error" role="alert"></div>
+    <div class="preview-control"><button class="icon-button" id="preview-settings" aria-label="原型预览设置" title="原型预览设置" data-icon="sun"></button></div>
+    <div class="preview-popover floating" id="preview-popover" hidden><h3>原型预览</h3><button id="theme">切换深浅色</button><label for="sync-state">模拟状态</label><select id="sync-state"><option value="saved">已保存</option><option value="offline">离线</option><option value="conflict">同步冲突</option><option value="missing">素材缺失</option></select><button id="reset">恢复初始画布</button><a href="index.html">查看上一版</a></div>
+    <div class="layers-popover floating" id="layers-popover" hidden><div class="popover-title"><h3>图层</h3><button class="icon-button" id="close-layers" aria-label="关闭图层列表" data-icon="close"></button></div><div id="layer-list"></div></div>
+    <div class="context-menu floating" id="context-menu" hidden><button data-command="duplicate">复制一份</button><button data-command="front">移到顶层</button><button data-command="delete" class="danger">删除图片</button></div>
+    <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp" multiple hidden>
+  </main>
+
+  <dialog id="add-dialog" class="dialog library-dialog"><div class="dialog-title"><h2>添加图片</h2><button class="icon-button" id="close-add" aria-label="关闭添加窗口" data-icon="close"></button></div><button class="file-drop" id="choose-file"><span data-icon="plus"></span><span>选择本地图片</span><span class="muted">也可以拖入或粘贴图片</span></button><div class="library-heading"><h3>素材库</h3><span class="muted">示例素材</span></div><div id="library" class="library"></div><div class="dialog-actions"><button class="button" id="cancel-add">取消</button><button class="primary-button" id="add-selected" disabled>添加所选图片</button></div></dialog>
+  <dialog id="export-dialog" class="dialog"><div class="dialog-title"><h2>导出预览</h2><button class="icon-button" id="close-export" aria-label="关闭导出预览" data-icon="close"></button></div><div id="export-preview"></div><div class="export-meta"><span id="export-filename"></span><span id="export-dimensions" class="muted"></span></div><p class="prototype-note">原型仅展示效果，不生成文件。</p><div class="dialog-actions"><button class="button" id="cancel-export">返回编辑</button><button class="primary-button" id="confirm-export">演示保存</button></div></dialog>
+  <dialog id="conflict-dialog" class="dialog"><div class="dialog-title"><h2>画布有两个版本</h2><button class="icon-button" id="close-conflict" aria-label="关闭冲突窗口" data-icon="close"></button></div><div class="conflict-options"><button data-resolve="local"><span data-icon="monitor"></span><strong>保留本机版本</strong><span>保留当前编辑</span></button><button data-resolve="cloud"><span data-icon="cloud"></span><strong>采用云端版本</strong><span>恢复另一份画布</span></button></div><button class="button full" data-resolve="both">保留两份</button></dialog>
+  <dialog id="return-dialog" class="dialog return-dialog"><span class="return-icon" data-icon="check"></span><h2>已返回文章</h2><p id="return-message"></p><button class="primary-button" id="reopen">继续编辑图片</button></dialog>
+</body>
+</html>

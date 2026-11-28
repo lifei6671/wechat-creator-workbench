@@ -2,7 +2,7 @@
 
 本目录是 **wechat-creator-workbench** 的研发基线，面向微信公众号作者的本地优先开源桌面应用。
 
-当前技术方案与实施计划为 **1.3 核心功能优先版**；保留现有技术栈、MVP 范围及图片生命周期规则，本轮只更新文档，验收清单尚未执行。
+各功能的实现范围与验证状态见对应实施说明及验收记录。
 
 | 文档 | 内容 |
 | --- | --- |
@@ -19,6 +19,8 @@
 | [Obsidian 成熟功能内置化技术方案](./obsidian-feature-integration-plan.md) | 长文大纲、格式规范化、素材增强、快捷采集、写作模板、选题看板、AI 体验与公众号发布的源码复用、任务分解及验收 |
 | [专题画布与 GitHub README 导入技术方案](./topic-canvas-technical-design.md) | React Flow 无限画布、文章引用、专题私有截图与文本、关系连线、SQLite 持久化、素材生命周期、README 导入与验收 |
 | [专题画布文本编辑与网页预览增量技术方案](./topic-canvas-inline-editing-plan.md) | 文本卡片 Milkdown 编辑、保存与素材引用，以及粘贴外部链接生成网页卡片并在画布内浏览原网页 |
+| [图片无限画布编辑、拼接与云端同步技术方案](./image-canvas-technical-design.md) | 统一画布、单图美化、多图拼接、工程保存与同步协议 3；[已批准原型](./prototypes/image-canvas/index-v2.html)、[验收记录](./image-canvas-validation.md) |
+| [图片旧版本清理技术方案](./image-version-cleanup-technical-design.md) | 原图与引用保护、已发布及外发图片保留、后台自动清理、跨设备协调及字节备份恢复；[实施说明](./image-version-cleanup-implementation.md)、[验收记录](./image-version-cleanup-validation.md) |
 
 ## 已确定的技术决策
 

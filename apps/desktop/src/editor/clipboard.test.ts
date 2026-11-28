@@ -5,6 +5,26 @@ import { attachClipboard, writeClipboard } from "./clipboard";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+it("leaves image canvas keyboard and paste events to the private canvas import path", () => {
+  const handler = vi.fn();
+  const detach = attachClipboard(handler, vi.fn());
+  const canvas = document.body.appendChild(document.createElement("div"));
+  canvas.className = "image-canvas-dialog";
+  canvas.tabIndex = 0;
+  const paste = vi.fn();
+  canvas.addEventListener("paste", paste);
+  try {
+    const key = new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true });
+    canvas.dispatchEvent(key);
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    canvas.dispatchEvent(event);
+    expect(handler).not.toHaveBeenCalled();
+    expect(key.defaultPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(false);
+    expect(paste).toHaveBeenCalledOnce();
+  } finally { detach(); canvas.remove(); }
+});
+
 it.each([
   ["image/png", [137, 80, 78, 71, 13, 10, 26, 10]],
   ["image/jpeg", [255, 216, 255, 224]],

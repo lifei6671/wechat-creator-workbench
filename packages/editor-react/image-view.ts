@@ -1,5 +1,5 @@
 import type { Node as ProseNode } from "@milkdown/kit/prose/model";
-import { NodeSelection } from "@milkdown/kit/prose/state";
+import { NodeSelection, type Transaction } from "@milkdown/kit/prose/state";
 import type { EditorView, NodeView } from "@milkdown/kit/prose/view";
 
 export const imagePattern = /^(?:https?:\/\/|asset:\/\/)/i;
@@ -17,6 +17,11 @@ export interface ImageContext {
 }
 
 const imageContexts = new WeakMap<Element, () => ImageContext>();
+const replacements = new WeakMap<ImageContext, (view: EditorView, url: string) => Transaction | null>();
+
+export function imageReplacement(view: EditorView, context: ImageContext, url: string) {
+  return replacements.get(context)?.(view, url) ?? null;
+}
 
 export function imageContext(target: Node | null) {
   return target instanceof Element ? imageContexts.get(target)?.() ?? null : null;
@@ -97,9 +102,11 @@ export function imageView(
     const pos = getPos();
     if (pos !== undefined && view.state.doc.nodeAt(pos) === node) return pos;
   }
-  imageContexts.set(dom, () => ({
+  imageContexts.set(dom, () => {
+    const original = node;
+    const context: ImageContext = {
     kind: "image", src: node.attrs.src, available: media.firstElementChild instanceof HTMLImageElement, feedbackTarget: frame,
-    isCurrent: () => currentPosition() !== undefined,
+    isCurrent: () => node === original && currentPosition() !== undefined,
     isUploading: () => !uploadStatus.hidden,
     setUploading: (uploading, background = false) => {
       if (background) backgroundUploading = uploading;
@@ -118,7 +125,14 @@ export function imageView(
       view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
       view.focus();
     },
-  }));
+    };
+    replacements.set(context, (expectedView, url) => {
+      const pos = currentPosition();
+      if (view !== expectedView || pos === undefined || node !== original || node.attrs.src !== context.src) return null;
+      return view.state.tr.setNodeAttribute(pos, "src", url);
+    });
+    return context;
+  });
   const status = document.createElement("span");
   status.className = "rich-image-status";
   const message = document.createElement("span");

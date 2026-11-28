@@ -3,7 +3,8 @@ import { useSettingsButtonFeedback } from "./settings-button-feedback";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type RefObject } from "react";
 import { Button, Checkbox, Select, TextField } from "@radix-ui/themes";
 import { readS3Settings, S3Fields, SettingRow } from "./Settings";
-import { ChevronLeft, ChevronRight, CloudUpload, Grid2X2, Grid3X3, ImageOff, Plus, Settings2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, CloudUpload, Grid2X2, Grid3X3, History, ImageOff, Plus, Settings2 } from "lucide-react";
+import { ImageVersions } from "./ImageVersions";
 import { desktop, errorMessage, type AssetLibrary, type AssetRow, type ImageTarget, type ImageUploadOptions } from "../desktop";
 import { persist, Tool, Tooltip, useStoredInitial } from "../ui";
 
@@ -65,6 +66,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   onConfigure(): void;
 }) {
   const [library, setLibrary] = useState<AssetLibrary | null>(null);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const [selected, setSelected] = useState<{ item: AssetRow; key: string; thumbnail?: string } | null>(null);
   const selectedId = selected?.item.id;
   const [selectedError, setSelectedError] = useState("");
@@ -153,6 +155,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
   }
 
   return <aside className="explorer" aria-label="素材库">
+    {versionsOpen && <ImageVersions onClose={() => setVersionsOpen(false)} />}
     <div className="section-bar explorer-title">
       <div className="asset-heading">
         <h1>素材库</h1>
@@ -162,6 +165,7 @@ export function AssetPanel({ onImport, onInsert, onCover, onConfigure, canInsert
         </Tool>
       </div>
       <div className="button-strip">
+        <Tool label="旧版本图片" onClick={() => setVersionsOpen(true)}><History size={16} /></Tool>
         <Tool label="导入图片" {...assetButtons.props("import", loading)} onClick={() => input.current?.click()}>{assetButtons.icon("import", <Plus size={16} />)}</Tool>
         <Tool label="S3 图床设置" onClick={onConfigure}><Settings2 size={16} /></Tool>
       </div>

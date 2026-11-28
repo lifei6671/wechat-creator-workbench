@@ -118,12 +118,20 @@ export function repairInlineStrong(transaction: Transaction, state: EditorState,
     const [source, delimiter, body] = match;
     const inner = match.index + delimiter.length;
     const close = match.index + source.length - delimiter.length;
-    if (start < inner || end > close || body === body.trim()) continue;
-    const repaired = text.slice(inner, start) + replacement + text.slice(end, close);
+    const trimsBody = start >= inner && end <= close && body !== body.trim();
+    const separatesClosing = start === close + delimiter.length && /^\s/.test(replacement);
+    if (!trimsBody && !separatesClosing) continue;
+    const repaired = trimsBody ? text.slice(inner, start) + replacement + text.slice(end, close) : body;
     if (!repaired || repaired !== repaired.trim()) continue;
     const before = text.charAt(match.index - 1) || parent.maybeChild(index - 1)?.text?.slice(-1) || "";
-    const after = text.charAt(close + delimiter.length) || parent.maybeChild(index + 1)?.text?.charAt(0) || "";
+    const oldAfter = text.charAt(close + delimiter.length) || parent.maybeChild(index + 1)?.text?.charAt(0) || "";
     const prefix = "x " + before;
+    if (separatesClosing) {
+      const original = parse(prefix + delimiter + body + delimiter + oldAfter + " x").firstChild;
+      const content = original?.childCount === 3 ? original.child(1) : null;
+      if (content?.text === body && content.marks.some(mark => mark.type.name === "strong")) continue;
+    }
+    const after = separatesClosing ? replacement.charAt(0) : oldAfter;
     const suffix = after + " x";
     const paragraph = parse(prefix + delimiter + repaired + delimiter + suffix).firstChild;
     const content = paragraph?.childCount === 3 ? paragraph.child(1) : null;

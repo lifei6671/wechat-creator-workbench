@@ -1,5 +1,5 @@
 import type { AppError, Entry, EntryFields, SaveMode, SaveResult, RecoveryCommit, RecoveryDraft } from "../../../../packages/shared-types";
-import type { MarkdownSnapshot } from "../../../../packages/editor-react";
+import type { MarkdownSnapshot, PreparedImageReplacement } from "../../../../packages/editor-react";
 
 type Commit = (id: string, version: number, fields: EntryFields, mode: SaveMode, recovery?: RecoveryCommit) => Promise<SaveResult>;
 type SaveOptions = { manual?: boolean; retry?: boolean; aiReplace?: boolean };
@@ -39,6 +39,7 @@ export class SaveQueue {
   private aiReplace = false;
   private drainToLatest = false;
   private saveRequested = false;
+  private externalCommit = false;
 
   constructor(
     readonly entry: Entry,
@@ -100,6 +101,7 @@ export class SaveQueue {
   }
 
   edit(change: Partial<EntryFields>) {
+    if (this.externalCommit) throw new Error("正在应用图片，请稍后编辑内容属性");
     if (change.contentMd !== undefined) this.pendingContentRevision = undefined;
     this.change({ ...this.state.fields, ...change });
   }
@@ -136,6 +138,50 @@ export class SaveQueue {
 
   flush(options: SaveOptions = {}): Promise<boolean> {
     return this.requestSave(options);
+  }
+
+  async applyExternalContent(
+    prepare: () => PreparedImageReplacement,
+    commit: (version: number, fields: EntryFields, recovery: RecoveryCommit) => Promise<SaveResult>,
+  ): Promise<void> {
+    if (!await this.flush({ retry: true })) throw this.saveError();
+    if (this.inFlight) throw new Error("正文正在保存，请稍后重试");
+    const prepared = prepare();
+    const { fields, version, revision } = this.capture();
+    const nextFields = { ...fields, contentMd: prepared.markdown };
+    this.externalCommit = true;
+    this.update({ saving: true });
+    let committed = false;
+    const operation = Promise.resolve().then(async () => {
+      const result = await commit(version, nextFields, { sessionId: this.recoverySessionId, localRevision: revision + 1 });
+      committed = true;
+      // Advance the confirmed version before publishing the prepared editor transaction.
+      this.update({ version: result.version });
+      prepared.commit();
+      const installed = this.capture();
+      if (installed.fields.contentMd !== prepared.markdown) throw new Error("正文应用确认失败，请重新打开文章");
+      clearTimeout(this.timer);
+      this.pendingContentRevision = undefined;
+      this.captured = undefined;
+      this.update({ fields: nextFields, savedRevision: this.state.revision, error: null, recoveryError: null });
+      this.onCommit();
+    }).catch(error => {
+      if (committed) {
+        // A committed native receipt is authoritative. Never save the stale editor over it.
+        this.pendingContentRevision = undefined;
+        this.captured = undefined;
+        this.update({ fields: nextFields, savedRevision: this.state.revision,
+          error: { code: "VERSION_CONFLICT", message: "图片已保存，请重新打开文章以读取最新正文" } });
+      } else this.update({ error });
+      throw error;
+    }).finally(() => {
+      prepared.cancel();
+      this.externalCommit = false;
+      this.inFlight = undefined;
+      this.update({ saving: false });
+    });
+    this.inFlight = operation.then(() => true, () => false);
+    await operation;
   }
 
   private requestSave(options?: SaveOptions): Promise<boolean> {

@@ -584,6 +584,16 @@ async fn hosted_webp_fallback_uses_its_own_digest_and_extension() {
 }
 
 #[tokio::test]
+async fn image_canvas_rejects_hosted_compression_in_place_of_the_original(){
+    let (_root,db,media)=setup();let original=png();let id=media.import_canvas(&db,"原图.png",&original).unwrap();
+    let file=db.read(|conn|by_id(conn,&id)).unwrap();std::fs::remove_file(media.root.join(file.path.as_deref().unwrap())).unwrap();
+    let mut bytes=Cursor::new(Vec::new());image::DynamicImage::new_rgb8(3,2).write_to(&mut bytes,ImageFormat::WebP).unwrap();let hosted=bytes.into_inner();let checksum=hex::encode(Sha256::digest(&hosted));
+    let listener=TcpListener::bind(("127.0.0.1",0)).await.unwrap();let url=format!("http://{}/image.webp",listener.local_addr().unwrap());
+    db.write(|tx|{tx.execute("INSERT INTO storage_profiles VALUES ('fallback','images','http://127.0.0.1','auto','images','','http://127.0.0.1',?1)",[crate::db::id()])?;tx.execute("INSERT INTO asset_locations(sha256,storage_profile_id,object_key,public_url,uploaded_at,content_sha256) VALUES (?1,'fallback','image.webp',?2,1,?3)",params![file.hash,url,checksum])?;Ok(())}).unwrap();
+    let server=tokio::spawn(serve_image(listener,hosted));let result=media.read_canvas(&db,&format!("asset://{id}")).await;server.await.unwrap();assert_eq!(result.unwrap_err().code(),"ASSET_ORIGINAL_MISSING");
+}
+
+#[tokio::test]
 async fn publication_keeps_public_image_links_without_asset_records() {
     let (_folder, db, mut assets) = setup();
     image_profile(&db);

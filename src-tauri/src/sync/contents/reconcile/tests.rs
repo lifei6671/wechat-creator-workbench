@@ -192,7 +192,7 @@ async fn regression_frozen_oversized_outbox_is_rejected_without_blocking_later_e
             .unwrap();
         }
         let sync = SyncConnection::new().unwrap();
-        let remote = Remote {
+        let remote = Remote { image_gc: 0,
             sync: &sync,
             base: "http://127.0.0.1:1/".parse().unwrap(),
             token: String::new(),
@@ -797,7 +797,7 @@ async fn blob_group_receipt_survives_response_loss_and_device_reregistration() {
     }));
     let receipt: Receipt =
         response(remote.request(Method::POST, "v1/sync/push").unwrap().json(
-            &json!({"protocolVersion":2,"cursor":progress(&db).unwrap().2,"operations":[wire]}),
+            &json!({"protocolVersion":3,"cursor":progress(&db).unwrap().2,"operations":[wire]}),
         ))
         .await
         .unwrap();

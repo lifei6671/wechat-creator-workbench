@@ -13,6 +13,8 @@ fn dependency_issue(code: Option<&str>, reason: &str) -> bool {
                 | "collection_missing"
                 | "canvas_endpoint_missing"
                 | "blob_missing"
+                | "gc_restore_required"
+                | "image_project_missing"
         ),
         None => matches!(
             reason,
@@ -27,6 +29,9 @@ fn dependency_issue(code: Option<&str>, reason: &str) -> bool {
                 | "collection_missing"
                 | "canvas_endpoint_missing"
                 | "blob_missing"
+                | "gc_restore_required"
+                | "image_project_missing"
+                | "云端缺少关联图片工程"
         ),
     }
 }
@@ -69,6 +74,11 @@ fn references(kind: Kind, data: &Value) -> Vec<(Key, bool)> {
             add(Kind::Entry, id.as_str(), false);
         }
     }
+    if kind==Kind::ImageProject { add(Kind::Asset,data["baseAssetId"].as_str(),false); }
+    if kind==Kind::ImageRender {
+        add(Kind::ImageProject,data["projectId"].as_str(),false);
+        add(Kind::Asset,data["outputAssetId"].as_str(),false);
+    }
     if matches!(kind, Kind::CollectionNode | Kind::CollectionEdge) {
         add(Kind::Collection, data["collectionId"].as_str(), true);
         if kind == Kind::CollectionNode {
@@ -79,12 +89,27 @@ fn references(kind: Kind, data: &Value) -> Vec<(Key, bool)> {
             add(Kind::CollectionNode, data["targetNodeId"].as_str(), true);
         }
     }
-    if matches!(kind, Kind::Entry | Kind::CollectionNode) {
+    if matches!(kind, Kind::Entry | Kind::CollectionNode | Kind::ImageProject | Kind::ImageRender) {
         for id in data["assetIds"].as_array().into_iter().flatten() {
             add(Kind::Asset, id.as_str(), false);
         }
     }
     refs
+}
+
+pub(super) fn missing_image_dependency(conn:&Connection,keys:&[Key])->Result<Option<Kind>> {
+    for key in keys.iter().filter(|k|matches!(k.entity_type,Kind::ImageProject|Kind::ImageRender)) {
+        let Some(data)=local_snapshot(conn,key)? else {continue;};
+        for (dependency,active) in references(key.entity_type,&data) {
+            let (base,deleted)=revision(conn,&dependency)?;
+            if !keys.iter().any(|key|key.entity_type==dependency.entity_type&&key.entity_id==dependency.entity_id)
+                && (base==0 || active&&deleted) {
+                conn.execute("INSERT OR IGNORE INTO sync_dirty(entity_type,entity_id,generation) SELECT ?1,?2,1 WHERE EXISTS(SELECT 1 FROM assets WHERE id=?2 AND ?1='asset') OR EXISTS(SELECT 1 FROM image_projects WHERE id=?2 AND ?1='image_project')",params![dependency.entity_type.key(),dependency.entity_id])?;
+                return Ok(Some(dependency.entity_type));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn group_ready(conn: &Connection, keys: &[Key], source: RetrySource) -> Result<bool> {
@@ -183,7 +208,10 @@ pub(super) fn retry(conn: &Connection, acknowledged: &[Key]) -> Result<()> {
                 OR EXISTS(SELECT 1 FROM entries e WHERE e.id=i.entity_id AND e.cover_asset_id=?1)))
                 OR (i.entity_type='collection_node' AND EXISTS(SELECT 1 FROM collection_nodes n WHERE n.id=i.entity_id
                   AND (n.asset_id=?1 OR (n.kind='text' AND instr(n.content_md,'asset://' || ?1)>0))))
-                OR (i.entity_type='asset' AND EXISTS(SELECT 1 FROM assets a JOIN assets b ON a.sha256=b.sha256 WHERE a.id=i.entity_id AND b.id=?1))",
+                OR (i.entity_type='asset' AND EXISTS(SELECT 1 FROM assets a JOIN assets b ON a.sha256=b.sha256 WHERE a.id=i.entity_id AND b.id=?1))
+                OR (i.entity_type='image_project' AND EXISTS(SELECT 1 FROM image_project_assets a WHERE a.project_id=i.entity_id AND a.asset_id=?1))
+                OR (i.entity_type='image_render' AND EXISTS(SELECT 1 FROM image_renders r WHERE r.id=i.entity_id AND (r.output_asset_id=?1 OR EXISTS(SELECT 1 FROM json_each(r.asset_ids_json) WHERE value=?1))))",
+            Kind::ImageProject => "i.entity_type='image_render' AND EXISTS(SELECT 1 FROM image_renders r WHERE r.id=i.entity_id AND r.project_id=?1)",
             Kind::Category => "(i.entity_type='entry' AND EXISTS(SELECT 1 FROM entries e WHERE e.id=i.entity_id AND e.category_id=?1))
                 OR (i.entity_type='category' AND EXISTS(SELECT 1 FROM categories c WHERE c.id=i.entity_id AND c.parent_id=?1))",
             Kind::Entry => "(i.entity_type='entry' AND EXISTS(SELECT 1 FROM entry_links l WHERE l.article_id=i.entity_id AND l.source_entry_id=?1))
@@ -196,9 +224,9 @@ pub(super) fn retry(conn: &Connection, acknowledged: &[Key]) -> Result<()> {
         let mut query = conn.prepare(&format!(
             "SELECT i.entity_type,i.entity_id,i.code,i.reason FROM sync_issues i JOIN sync_dirty d
              ON (i.entity_type,i.entity_id,i.generation)=(d.entity_type,d.entity_id,d.generation)
-             WHERE i.remote_json IS NULL AND (i.code IN ('asset_missing','category_missing','source_entry_missing','collection_missing','canvas_endpoint_missing','blob_missing')
+             WHERE i.remote_json IS NULL AND (i.code IN ('asset_missing','category_missing','source_entry_missing','collection_missing','canvas_endpoint_missing','blob_missing','image_project_missing')
              OR (i.code IS NULL AND i.reason IN ('asset_missing','category_missing','source_entry_missing','collection_missing','canvas_endpoint_missing','blob_missing',
-               '云端缺少关联素材','云端缺少关联目录','云端缺少关联条目','云端缺少关联专题','云端缺少连线引用的卡片'))) AND ({relation})"
+               '云端缺少关联素材','云端缺少关联目录','云端缺少关联条目','云端缺少关联专题','云端缺少连线引用的卡片','云端缺少关联图片工程'))) AND ({relation})"
         ))?;
         let candidates = query
             .query_map([&changed.entity_id], |row| {

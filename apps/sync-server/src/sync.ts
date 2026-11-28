@@ -1,5 +1,6 @@
 import { MAX_PAGE_BYTES, sha256, SyncError, type operation } from "./protocol.js";
 import { query, type Database, type Identity } from "./storage.js";
+import { imageSceneHash } from "./image-canvas.js";
 
 export type Client = { instanceId: string; epoch: string; deviceId: string; tokenHash: string };
 
@@ -78,12 +79,18 @@ const applyGate = `
     AND EXISTS (SELECT 1 FROM sync_devices WHERE id = ? AND token_hash = ? AND revoked_at IS NULL)`;
 
 export async function apply(db: Database, client: Client, cursor: number, input: ReturnType<typeof operation>) {
+  for (const mutation of input.mutations) {
+    if (mutation.entityType === "image_render" && mutation.payload
+        && mutation.payload.sceneHash !== await imageSceneHash(mutation.payload.scene)) {
+      return { operationId: input.operationId, status: "rejected", reason: "invalid_image_scene_hash" };
+    }
+  }
   const mutations = JSON.stringify(input.mutations);
   const digest = await sha256(mutations);
   const groupId = crypto.randomUUID();
   const now = Date.now();
   const key = [client.epoch, client.deviceId, input.operationId] as const;
-  const [, , , , , , receiptRows, stateRows] = await db.batch([
+  const [, imageValidation, , , , , , receiptRows, stateRows] = await db.batch([
     [`INSERT INTO sync_pending
         (entity_type, entity_id, base_revision, revision, operation, payload_json, deleted_at, group_index)
       SELECT m.value ->> '$.entityType', m.value ->> '$.entityId', m.value ->> '$.baseRevision',
@@ -94,7 +101,7 @@ export async function apply(db: Database, client: Client, cursor: number, input:
           ELSE m.value ->> '$.operation' END,
         CASE WHEN m.value ->> '$.operation' = 'delete'
           THEN COALESCE(NULLIF(m.value -> '$.payload', 'null'),
-               CASE WHEN e.entity_type = 'entry' THEN e.payload_json ELSE '{}' END)
+               CASE WHEN e.entity_type IN ('entry', 'image_project') THEN e.payload_json ELSE '{}' END)
           ELSE m.value -> '$.payload' END,
         CASE WHEN m.value ->> '$.operation' = 'delete' THEN ? ELSE NULL END,
         CAST(m.key AS INTEGER)
@@ -104,11 +111,13 @@ export async function apply(db: Database, client: Client, cursor: number, input:
       WHERE ${applyGate}
         AND NOT EXISTS (SELECT 1 FROM sync_operations WHERE (epoch, device_id, operation_id) = (?, ?, ?))`,
       now, mutations, client.instanceId, client.epoch, client.deviceId, cursor, client.deviceId, client.tokenHash, ...key],
+    ["SELECT image_reason,gc_reason FROM sync_image_dependencies CROSS JOIN sync_image_gc_dependencies"],
     [`INSERT INTO sync_operations (epoch, device_id, operation_id, request_hash, group_id, status, reason, versions_json)
       SELECT ?, ?, ?, ?, ?,
         CASE WHEN reason IS NULL THEN 'applied'
           WHEN reason IN ('category_missing', 'blob_missing', 'asset_missing', 'source_entry_missing',
-            'collection_missing', 'canvas_endpoint_missing', 'canvas_parent_changed') THEN 'rejected' ELSE 'conflict' END,
+            'collection_missing', 'canvas_endpoint_missing', 'canvas_parent_changed',
+            'image_project_missing', 'invalid_image_crop', 'image_render_output_mismatch') THEN 'rejected' ELSE 'conflict' END,
         reason,
         (SELECT json_group_array(json_object('entityType', entity_type, 'entityId', entity_id,
           'remoteRevision', revision) ORDER BY group_index, entity_id)
@@ -126,9 +135,11 @@ export async function apply(db: Database, client: Client, cursor: number, input:
              AND NOT EXISTS (SELECT 1 FROM sync_pending x WHERE (x.entity_type, x.entity_id) = (e.entity_type, e.entity_id))
          ))
       FROM (
-        SELECT COALESCE(reason, dependency_reason, canvas_reason) AS reason
-        FROM sync_validation CROSS JOIN sync_article_dependencies CROSS JOIN sync_canvas_dependencies
-      ) WHERE EXISTS (SELECT 1 FROM sync_pending)`, ...key, digest, groupId],
+        SELECT COALESCE(reason, dependency_reason, canvas_reason, image_reason, gc_reason) AS reason
+        FROM sync_validation CROSS JOIN sync_article_dependencies CROSS JOIN sync_canvas_dependencies CROSS JOIN sync_image_dependencies CROSS JOIN sync_image_gc_dependencies
+      ) WHERE EXISTS (SELECT 1 FROM sync_pending)
+        AND NOT EXISTS (SELECT 1 FROM sync_image_dependencies WHERE image_reason = 'image_asset_immutable')
+        AND NOT EXISTS (SELECT 1 FROM sync_image_gc_dependencies WHERE gc_reason IS NOT NULL)`, ...key, digest, groupId],
     [`INSERT INTO sync_entities (entity_type, entity_id, revision, payload_json, deleted_at, updated_at)
       SELECT entity_type, entity_id, revision, payload_json, deleted_at, ?
       FROM sync_pending WHERE EXISTS (SELECT 1 FROM sync_operations WHERE group_id = ? AND status = 'applied')
@@ -151,6 +162,12 @@ export async function apply(db: Database, client: Client, cursor: number, input:
   const state = stateRows[0] as Identity & { active: number };
   if (!state.active) throw new SyncError(401, "invalid_device");
   checkPush(state, client, cursor);
+  if ((imageValidation[0] as { image_reason: string | null }).image_reason === "image_asset_immutable") {
+    return { operationId: input.operationId, status: "rejected", reason: "image_asset_immutable" };
+  }
+  if ((imageValidation[0] as { gc_reason: string | null }).gc_reason) {
+    return { operationId: input.operationId, status: "rejected", reason: "gc_restore_required" };
+  }
   const receipt = receiptRows[0] as Receipt;
   if (receipt.request_hash !== digest) {
     return { operationId: input.operationId, status: "rejected", reason: "operation_id_reused" };

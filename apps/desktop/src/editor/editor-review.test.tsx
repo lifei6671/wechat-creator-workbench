@@ -47,6 +47,52 @@ function click(container: HTMLElement, label: string) {
   flushSync(() => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click());
 }
 
+it.each(["**", "__"])("recognizes %s bold when a separator is added after its closing delimiter", async delimiter => {
+  const source = `${delimiter}标题：${delimiter}不到两个月斩获 2.3K Star！`;
+  const m = await mount(source);
+  try {
+    expect(m.container.querySelector("strong")).toBeNull();
+    const pos = source.indexOf("不到") + 1;
+    m.view.dispatch(m.view.state.tr.setSelection(TextSelection.create(m.view.state.doc, pos)));
+    m.view.dispatch(m.view.state.tr.insertText(" "));
+    expect(m.container.querySelector("strong")?.textContent).toBe("标题：");
+    expect(m.view.state.doc.textContent).toBe("标题： 不到两个月斩获 2.3K Star！");
+    expect(m.view.state.selection.from).toBe(5);
+    const changed = m.handle.captureMarkdown().markdown;
+    m.handle.command("undo");
+    expect(m.container.querySelector("strong")).toBeNull();
+    expect(m.view.state.doc.textContent).toBe(source);
+    m.handle.command("redo");
+    expect(m.handle.captureMarkdown().markdown).toBe(changed);
+    expect(m.container.querySelector("strong")?.textContent).toBe("标题：");
+  } finally { m.dispose(); }
+});
+
+it.each(["**", "__"])("still recognizes %s bold after removing invalid inner whitespace", async delimiter => {
+  const source = `${delimiter}标题： ${delimiter} 后文`;
+  const m = await mount(source);
+  try {
+    const pos = source.indexOf(" ") + 1;
+    m.view.dispatch(m.view.state.tr.delete(pos, pos + 1));
+    expect(m.container.querySelector("strong")?.textContent).toBe("标题：");
+  } finally { m.dispose(); }
+});
+
+it.each([
+  { source: "\\*\\*literal\\*\\*后文", needle: "后文" },
+  { source: "`**标题：**后文`", needle: "后文" },
+  { source: "**标题：**后文", needle: "文" },
+  { source: "**标题： **后文", needle: "后文" },
+])("keeps unrelated or still-invalid literal syntax when inserting a space ($source)", async ({ source, needle }) => {
+  const m = await mount(source);
+  try {
+    const text = m.view.state.doc.textContent;
+    m.view.dispatch(m.view.state.tr.insertText(" ", text.indexOf(needle) + 1));
+    expect(m.container.querySelector("strong")).toBeNull();
+    expect(m.view.state.doc.textContent).toBe(text.replace(needle, " " + needle));
+  } finally { m.dispose(); }
+});
+
 it.each([
   { closingFirst: false, surrounding: false }, { closingFirst: true, surrounding: false },
   { closingFirst: false, surrounding: true }, { closingFirst: true, surrounding: true },

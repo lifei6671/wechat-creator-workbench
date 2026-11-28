@@ -1,3 +1,4 @@
+export type * from "./image-canvas";
 export type EntryKind = "idea" | "reference" | "article";
 export type EntryStatus = "inbox" | "planned" | "used" | "archived" | "unread" | "reviewed" | "draft" | "ready" | "published";
 export const statuses: Record<EntryKind, readonly EntryStatus[]> = {

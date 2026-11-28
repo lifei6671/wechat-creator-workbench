@@ -24,7 +24,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub(super) fn relative(&self) -> Result<Option<String>> {
+    pub(crate) fn relative(&self) -> Result<Option<String>> {
         let Some(hash) = self.sha256.as_deref() else {
             return Ok(None);
         };
@@ -64,6 +64,13 @@ pub fn snapshot(conn: &Connection, id: &str) -> Result<Option<Snapshot>> {
 }
 
 pub fn apply(conn: &Connection, id: &str, asset: &Snapshot) -> Result<()> {
+    crate::image_canvas::guard_asset_change(conn,id,asset.sha256.as_deref())?;
+    if let Some(previous)=snapshot(conn,id)? && previous.sha256.is_some()
+        && crate::image_canvas::asset_referenced(conn,id)?
+        && (previous.bytes!=asset.bytes || previous.mime_type!=asset.mime_type || previous.width!=asset.width
+            || previous.height!=asset.height || previous.kind!=asset.kind || previous.source_key!=asset.source_key) {
+        return Err(AppError::new("IMAGE_ASSET_CONFLICT","原图已被图片工程引用，无法替换其格式或尺寸"));
+    }
     let relative = asset.relative()?;
     conn.execute(
         "INSERT INTO assets (id,sha256,bytes,mime_type,kind,source_key,created_at,name,width,height,retain_on_exit,relative_path)
@@ -78,15 +85,34 @@ pub fn apply(conn: &Connection, id: &str, asset: &Snapshot) -> Result<()> {
 }
 
 impl Assets {
+    pub(crate) async fn prepare_image_project_export(&self,db:&Workspace)->Result<()> {
+        let ids=db.read(crate::image_canvas::required_asset_ids)?;
+        for id in ids {self.read_canvas_original(db,&format!("asset://{id}")).await?;}
+        let staged=db.read(|conn|{
+            let mut query=conn.prepare("SELECT relative_path,sha256 FROM image_render_staging")?;
+            Ok(query.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for (path,hash) in staged {crate::backup::verify_asset_file(&self.root.join(path),&hash)?;}
+        Ok(())
+    }
     pub(crate) async fn prepare_synced_workspace_export(&self, db: &Workspace) -> Result<()> {
+        self.prepare_image_project_export(db).await?;
+        let required=db.read(super::version_cleanup::backup_hashes)?;
+        for hash in &required {
+            let id=db.read(|conn|Ok(conn.query_row("SELECT id FROM assets WHERE sha256=?1 ORDER BY id LIMIT 1",[hash],|r|r.get::<_,String>(0))?))?;
+            self.read_canvas_original(db,&format!("asset://{id}")).await?;
+        }
+        let required=serde_json::to_string(&required).expect("hash list serializes");
         let ids = db.read(|conn| {
             let mut query = conn.prepare(
                 "SELECT a.id FROM assets a JOIN sync_revisions r ON r.entity_type='asset' AND r.entity_id=a.id
-                 WHERE a.relative_path IS NOT NULL AND NOT EXISTS (
+                 WHERE a.relative_path IS NOT NULL AND (NOT EXISTS (
                     SELECT 1 FROM asset_locations l WHERE l.sha256=a.sha256
-                      AND l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL)",
+                      AND l.uploaded_at IS NOT NULL AND l.deleted_at IS NULL))
+                   AND (a.sha256 IN(SELECT value FROM json_each(?1)) OR NOT EXISTS(SELECT 1 FROM image_gc_remote g
+                   WHERE g.sha256=a.sha256 AND g.state IN ('retired','expired') AND g.payload_json->>'$.current'=1 AND g.payload_json->>'$.backend'='private') AND NOT EXISTS(SELECT 1 FROM image_version_cleanup c WHERE c.sha256=a.sha256 AND c.state='expired'))",
             )?;
-            Ok(query.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+            Ok(query.query_map([required], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
         for id in ids {
             let file = db.read(|conn| super::by_id(conn, &id))?;
@@ -110,7 +136,7 @@ impl Assets {
             hash: asset.sha256.clone(),
             path: asset.relative()?,
         };
-        let bytes = self.read_file(db, &file).await?;
+        let bytes = self.read_without_session(db, &file).await?;
         if Some(hex::encode(Sha256::digest(&bytes))) != asset.sha256
             || i64::try_from(bytes.len()).ok() != asset.bytes
         {
@@ -148,7 +174,7 @@ impl Assets {
         self.cache_original(relative,&bytes)?;
         Ok(Some(bytes))
     }
-    pub(super) fn cache_original(&self, relative: &str, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn cache_original(&self, relative: &str, bytes: &[u8]) -> Result<()> {
         let path = self.root.join(relative);
         std::fs::create_dir_all(path.parent().expect("asset path has a parent"))
             .map_err(local_error)?;

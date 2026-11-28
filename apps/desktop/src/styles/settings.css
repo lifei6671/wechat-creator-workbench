@@ -149,10 +149,12 @@
 .settings-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-block: 12px; }
 .settings-state { color: var(--text-muted); }
 .settings-state[data-running="true"] { color: var(--green-11); }
-.sync-settings .setting-row:has(> .setting-control > :is(.rt-TextFieldRoot, .rt-SelectTrigger)) {
+.sync-settings .setting-row:has(> .setting-control > :is(.rt-TextFieldRoot, .rt-SelectTrigger, .sync-address-control)) {
   display: grid; grid-template-columns: minmax(0, 1fr) min(310px, 48%);
 }
-.sync-settings .setting-control:has(> :is(.rt-TextFieldRoot, .rt-SelectTrigger)) { max-width: none; }
+.sync-settings .setting-control:has(> :is(.rt-TextFieldRoot, .rt-SelectTrigger, .sync-address-control)) { max-width: none; }
+.sync-address-control { min-width: 0; }
+.sync-address-control > .rt-Button { flex-shrink: 0; }
 .sync-settings .setting-control > .rt-TextFieldRoot { width: 100%; }
 .sync-connect-footer, .sync-actions-footer { align-items: center; flex-wrap: nowrap; }
 .sync-settings .setting-row:has(.sync-conflict) { display: block; }
@@ -292,7 +294,7 @@
   .settings-card { padding-inline: 12px; }
   .setting-row { flex-wrap: wrap; gap: 7px 12px; }
   .setting-control { max-width: 100%; }
-  .sync-settings .setting-row:has(> .setting-control > :is(.rt-TextFieldRoot, .rt-SelectTrigger)) {
+  .sync-settings .setting-row:has(> .setting-control > :is(.rt-TextFieldRoot, .rt-SelectTrigger, .sync-address-control)) {
     grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -1,0 +1,31 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "图片画布编辑窗口": {
+      "versions": [
+        {
+          "path": "index.html",
+          "createdAt": "2026-11-28T04:47:46.329Z",
+          "status": "changes-requested",
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          }
+        },
+        {
+          "path": "index-v2.html",
+          "createdAt": "2026-11-28T05:18:32.441Z",
+          "status": "approved",
+          "viewport": {
+            "width": 1280,
+            "height": 720
+          }
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-11-28T04:47:46.330Z",
+  "updatedAt": "2026-11-28T05:18:32.441Z"
+}

@@ -55,11 +55,11 @@ test("HTTP rejects invalid UTF-8 Markdown blobs without accepting an entity or r
   const client = { instanceId: state.instance_id, epoch: state.epoch, deviceId: device.deviceId, tokenHash: auth.tokenHash };
   await seed(db, client, "begin");
   const blobs = await localFiles(directory), app = createApp(db, blobs, key);
-  const headers = { Authorization: "Bearer " + token, "X-Sync-Protocol": "2", "X-Sync-Instance": state.instance_id, "X-Sync-Epoch": state.epoch };
+  const headers = { Authorization: "Bearer " + token, "X-Sync-Protocol": "3", "X-Sync-Instance": state.instance_id, "X-Sync-Epoch": state.epoch };
   const bytes = Buffer.from([0xc3, 0x28]), hash = createHash("sha256").update(bytes).digest("hex");
   assert.equal((await app.request("http://localhost/v1/blobs/" + hash, { method: "PUT", headers: { ...headers, "Content-Length": String(bytes.length) }, body: bytes })).status, 204);
   const input = { operationId: "bad-utf8", mutations: [mutation("entry", "candidate", { kind: "article", title: "正文", contentBlobHash: hash, contentBlobSize: bytes.length })] };
-  const response = await app.request("http://localhost/v1/sync/push", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ protocolVersion: 2, cursor: 0, operations: [input] }) });
+  const response = await app.request("http://localhost/v1/sync/push", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ protocolVersion: 3, cursor: 0, operations: [input] }) });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).results[0].reason, "invalid_content_utf8");
   const [[counts]] = await db.batch([["SELECT (SELECT COUNT(*) FROM sync_entities) AS entities, (SELECT COUNT(*) FROM sync_operations) AS receipts"]]);

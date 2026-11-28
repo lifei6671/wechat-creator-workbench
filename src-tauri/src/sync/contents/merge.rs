@@ -54,7 +54,7 @@ pub(super) fn baseline(conn: &Connection, backups: &Backups) -> Result<Applied> 
                 remember(conn, key, entity.remote_revision, true)?;
                 continue;
             }
-            if (key.entity_type == Kind::Entry || key.entity_type.is_canvas() || key.entity_type == Kind::WechatPublicationDefaults)
+            if (key.entity_type == Kind::Entry || key.entity_type.is_canvas() || matches!(key.entity_type,Kind::WechatPublicationDefaults|Kind::ImageProject|Kind::ImageRender))
                 && !entity.payload["purgedAt"].is_i64()
                 && !same_content(key.entity_type, local, &entity.payload)
             {
@@ -121,6 +121,8 @@ fn preserve_distinct_images(conn: &Connection, changed: &mut Applied) -> Result<
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut renamed = BTreeMap::new();
     for old in collisions {
+        let incoming:Option<String>=conn.query_row("SELECT payload_json->>'$.payload.sha256' FROM sync_bootstrap WHERE entity_type='asset' AND entity_id=?1",[&old],|row|row.get(0))?;
+        crate::image_canvas::guard_asset_change(conn,&old,incoming.as_deref())?;
         let new = id();
         conn.execute(
             "INSERT INTO assets

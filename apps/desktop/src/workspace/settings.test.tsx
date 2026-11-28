@@ -11,6 +11,60 @@ import { MigrationPanel } from "./Migration";
 import { McpSettings, S3Fields, SettingsDialog, TrashRetentionSetting, ViewShortcutSetting } from "./Settings";
 import { SyncSettings } from "./SyncSettings";
 
+it("saves a changed sync address, retains drafts during status refresh and keeps the old connection on failure", async () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const binding = { url: "https://old.example.test/", deviceId: "local", instanceId: "instance", epoch: "epoch", paused: false };
+  const status = vi.spyOn(desktop, "syncStatus").mockResolvedValue(binding);
+  vi.spyOn(desktop, "syncDevices").mockResolvedValue({ currentDeviceId: "local", devices: [] });
+  let refresh!: () => void;
+  vi.mocked(desktop.onSyncStatusChanged).mockImplementation(async listener => { refresh = listener; return () => {}; });
+  let finish!: (saved: typeof binding) => void;
+  const save = vi.spyOn(desktop, "syncChangeUrl").mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const sync = vi.fn();
+  const busyChanged = vi.fn();
+  function edit(value: string) {
+    const input = container.querySelector<HTMLInputElement>("#sync-bound-url")!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  try {
+    flushSync(() => root.render(<Theme><SyncSettings onSync={sync} onResolve={vi.fn()} onRebuild={vi.fn()} onBusyChange={busyChanged} /></Theme>));
+    await vi.waitFor(() => expect(container.querySelector<HTMLInputElement>("#sync-bound-url")?.value).toBe(binding.url));
+    const input = container.querySelector<HTMLInputElement>("#sync-bound-url")!;
+    const form = input.closest("form")!;
+    const button = form.querySelector<HTMLButtonElement>("button")!;
+    expect(input.readOnly).toBe(false);
+    expect(button.disabled).toBe(true);
+    edit("https://new.example.test");
+    flushSync(() => refresh());
+    await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    expect(input.value).toBe("https://new.example.test");
+    flushSync(() => form.requestSubmit());
+    expect(save).toHaveBeenCalledWith("https://new.example.test");
+    expect(input.disabled).toBe(true);
+    expect(button.disabled).toBe(true);
+    expect(button.querySelector(".rt-Spinner")).not.toBeNull();
+    flushSync(() => form.requestSubmit());
+    expect(save).toHaveBeenCalledTimes(1);
+    finish({ ...binding, url: "https://new.example.test/" });
+    await vi.waitFor(() => expect(button.textContent).toBe("已保存"));
+    expect(input.value).toBe("https://new.example.test/");
+    expect(busyChanged).toHaveBeenLastCalledWith(false);
+    expect(sync).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(button.textContent).toBe("保存"));
+    save.mockRejectedValueOnce({ code: "SYNC_ADDRESS_IDENTITY", message: "新地址不属于当前同步服务，未修改服务地址" });
+    edit("https://another.example.test/");
+    flushSync(() => form.requestSubmit());
+    await vi.waitFor(() => expect(button.textContent).toBe("保存失败"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("新地址不属于当前同步服务");
+    expect(input.value).toBe("https://another.example.test/");
+    expect(container.textContent).toContain("立即同步");
+  } finally { flushSync(() => root.unmount()); container.remove(); }
+});
+
 let enterSection: (section: HTMLElement) => void;
 it("shows seven-day trash retention and persists changes including disabling automatic cleanup", async () => {
   const preference = vi.spyOn(desktop, "trashRetention").mockImplementation(async days => days ?? 7);
@@ -342,7 +396,7 @@ it("offers reconnecting against the saved instance when its device credential wa
   try {
     flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
     await vi.waitFor(() => expect(container.textContent).toContain("需要重新连接"));
-    expect(container.querySelector<HTMLInputElement>("#sync-bound-url")?.readOnly).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("#sync-bound-url")?.readOnly).toBe(false);
     expect(container.querySelector('label[for="sync-code"]')?.textContent).toBe("连接密钥");
     expect(container.querySelector("#sync-code")?.getAttribute("aria-describedby")).toBe("sync-code-hint");
     expect(container.querySelector("#sync-code-hint")?.textContent).toContain("连接密钥");
@@ -588,7 +642,7 @@ it.each([
     flushSync(() => root.render(<Theme><SyncSettings onSync={vi.fn()} onResolve={vi.fn()} onRebuild={vi.fn()} /></Theme>));
     await vi.waitFor(() => expect(container.querySelector("#sync-name")).not.toBeNull());
     const notice = container.querySelector("#sync-merge-hint");
-    const form = container.querySelector("form")!;
+    const form = container.querySelector("#sync-name")!.closest("form")!;
     const connect = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
     expect(Boolean(notice)).toBe(state.visible);
     if (state.visible) {
@@ -889,7 +943,7 @@ it("keeps only core connected actions visible and refreshes devices without a re
     const advanced = container.querySelector<HTMLDetailsElement>(".sync-advanced")!;
     expect(advanced.open).toBe(false);
     const primary = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => !advanced.contains(button));
-    expect(primary.map(button => button.textContent)).toEqual(["复制连接信息", "立即同步"]);
+    expect(primary.map(button => button.textContent)).toEqual(["保存", "复制连接信息", "立即同步"]);
     expect(container.textContent).not.toContain("刷新设备");
     expect(container.textContent).not.toContain("输入连接密钥");
     expect([...advanced.querySelectorAll("button")].map(button => button.textContent)).toContain("更换并复制密钥");
