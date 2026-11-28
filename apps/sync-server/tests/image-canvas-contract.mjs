@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { imageSceneHash } from "../dist/image-canvas.js";
 
 export function imageScene(assetId = "image-canvas-input") {
   return {
@@ -14,6 +13,7 @@ export function imageScene(assetId = "image-canvas-input") {
 }
 
 export async function runImageCanvasContract({ ok, push, a, b, lookup, deviceId }) {
+  const { imageSceneHash } = await import("../dist/image-canvas.js");
   const mutation = (entityType, entityId, payload, baseRevision = 0, operation = "upsert") =>
     ({ entityType, entityId, payload, baseRevision, operation });
   const operation = (...mutations) => ({ operationId: randomUUID(), mutations });
